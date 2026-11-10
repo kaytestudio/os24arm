@@ -129,6 +129,59 @@ static void lx_flush_icache(void *addr, uint32_t size)
     __asm__ volatile("isb" ::: "memory");
 }
 
+/* Copies one LX object's pages to `dest` (an already-mapped, fixed
+ * region no bigger than max_size), zero-filling any gaps the file's page
+ * table leaves unspecified. Returns 0 on success (including a
+ * legitimately empty object, virtual_size == 0 - valid for a program
+ * with no writable data), a negative LX_ERR_* on a malformed file. */
+static int lx_copy_object(const uint8_t *base, uint32_t image_size,
+                          const lx_header_t *hdr, const lx_object_t *obj,
+                          uint8_t *dest, uint32_t max_size)
+{
+    if (obj->virtual_size > max_size) {
+        uart_puts("[LX] Object too large for its region\r\n");
+        return LX_ERR_TOOBIG;
+    }
+    if (obj->virtual_size == 0)
+        return 0;
+
+    /* page_table_entries must actually fit within the object's own
+     * (already bounds-checked) virtual_size, and the [page_table_index-1,
+     * +page_table_entries) slice must fall inside the file's real page
+     * table (bounded above by module_pages). */
+    uint32_t max_pages_for_size = (obj->virtual_size + hdr->page_size - 1) / hdr->page_size;
+    if (obj->page_table_index == 0 ||
+        obj->page_table_entries == 0 ||
+        obj->page_table_entries > max_pages_for_size ||
+        (uint64_t)(obj->page_table_index - 1) + obj->page_table_entries > hdr->module_pages) {
+        uart_puts("[LX] Bad page table range\r\n");
+        return LX_ERR_BADMAGIC;
+    }
+
+    const lx_page_t *pages = (const lx_page_t *)(base + hdr->object_page_table_offset);
+    const lx_page_t *obj_pages = &pages[obj->page_table_index - 1];
+
+    for (uint32_t p = 0; p < obj->page_table_entries; p++) {
+        const lx_page_t *pg = &obj_pages[p];
+        uint8_t *dst = dest + (uint32_t)p * hdr->page_size;
+
+        for (uint32_t i = 0; i < hdr->page_size; i++)
+            dst[i] = 0;
+
+        if (pg->flags == LXPAGE_VALID && pg->data_size > 0) {
+            if (pg->data_size > hdr->page_size ||
+                (uint64_t)pg->page_data_offset + pg->data_size > image_size) {
+                uart_puts("[LX] Page data out of bounds\r\n");
+                return LX_ERR_BADMAGIC;
+            }
+            const uint8_t *src = base + pg->page_data_offset;
+            for (uint32_t i = 0; i < pg->data_size; i++)
+                dst[i] = src[i];
+        }
+    }
+    return 0;
+}
+
 int lx_exec_image(const void *image, uint32_t image_size)
 {
     if (!image || image_size < sizeof(lx_header_t)) {
@@ -147,9 +200,14 @@ int lx_exec_image(const void *image, uint32_t image_size)
         uart_puts("[LX] Not built for ARM64\r\n");
         return LX_ERR_BADCPU;
     }
-    if (hdr->object_count == 0 || hdr->object_count > LX_MAX_OBJECTS ||
-        hdr->eip_object == 0 || hdr->eip_object > hdr->object_count) {
-        uart_puts("[LX] No valid entry object\r\n");
+    /* This project's own toolchain (lx/lxbuilder.c, lx/lx_app.ld) always
+     * emits exactly two objects - code (.text+.rodata) then data
+     * (.data+.bss) - so kernel/src/mmu.c can map them RX/RW+NX (W^X)
+     * instead of one flat RWX region. eip_object must be 1 (code); real
+     * OS/2 LX allows the entry point in any object, but there's nothing
+     * else this loader is prepared to place it in. */
+    if (hdr->object_count != 2 || hdr->eip_object != 1) {
+        uart_puts("[LX] Expected exactly 2 objects (code, data) with entry in object 1\r\n");
         return LX_ERR_BADMAGIC;
     }
     if (hdr->page_size < 512 || hdr->page_size > 65536) {
@@ -183,63 +241,35 @@ int lx_exec_image(const void *image, uint32_t image_size)
     }
 
     const lx_object_t *objects = (const lx_object_t *)(base + hdr->object_table_offset);
-    const lx_object_t *entry_obj = &objects[hdr->eip_object - 1];
+    const lx_object_t *code_obj = &objects[0];
+    const lx_object_t *data_obj = &objects[1];
 
-    if (entry_obj->virtual_size == 0 || entry_obj->virtual_size > LX_LOAD_MAX_SIZE) {
-        uart_puts("[LX] Entry object too large\r\n");
-        return LX_ERR_TOOBIG;
-    }
-    if (hdr->eip >= entry_obj->virtual_size) {
-        uart_puts("[LX] Entry point outside object\r\n");
+    if (code_obj->virtual_size == 0 || hdr->eip >= code_obj->virtual_size) {
+        uart_puts("[LX] Entry point outside code object\r\n");
         return LX_ERR_BADMAGIC;
     }
-
-    /* page_table_entries must actually fit within the object's own
-     * (already bounds-checked) virtual_size, and the [page_table_index-1,
-     * +page_table_entries) slice must fall inside the file's real page
-     * table (bounded above by module_pages). */
-    uint32_t max_pages_for_size = (entry_obj->virtual_size + hdr->page_size - 1) / hdr->page_size;
-    if (entry_obj->page_table_index == 0 ||
-        entry_obj->page_table_entries == 0 ||
-        entry_obj->page_table_entries > max_pages_for_size ||
-        (uint64_t)(entry_obj->page_table_index - 1) + entry_obj->page_table_entries > hdr->module_pages) {
-        uart_puts("[LX] Bad page table range\r\n");
-        return LX_ERR_BADMAGIC;
-    }
-
-    const lx_page_t *pages = (const lx_page_t *)(base + hdr->object_page_table_offset);
-    const lx_page_t *entry_pages = &pages[entry_obj->page_table_index - 1];
-
-    uint8_t *load_addr = (uint8_t *)LX_LOAD_BASE;
 
     /* Every LX program this project builds is linked (lx/lx_app.ld) at
-     * exactly LX_LOAD_BASE, so pages are copied verbatim - no relocation
-     * or fixup processing needed (and this project's own toolchain never
-     * emits any; see lx/lxbuilder.c). */
-    for (uint32_t p = 0; p < entry_obj->page_table_entries; p++) {
-        const lx_page_t *pg = &entry_pages[p];
-        uint8_t *dst = load_addr + (uint32_t)p * hdr->page_size;
+     * exactly LX_LOAD_BASE (code) / LX_DATA_LOAD_BASE (data), so pages
+     * are copied verbatim - no relocation or fixup processing needed
+     * (and this project's own toolchain never emits any; see
+     * lx/lxbuilder.c). Kept in two separate fixed regions (rather than
+     * one flat RWX blob) so kernel/src/mmu.c can give them real, different
+     * W^X permissions. */
+    int rc;
+    rc = lx_copy_object(base, image_size, hdr, code_obj,
+                        (uint8_t *)LX_LOAD_BASE, LX_CODE_REGION_SIZE);
+    if (rc != 0) return rc;
+    rc = lx_copy_object(base, image_size, hdr, data_obj,
+                        (uint8_t *)LX_DATA_LOAD_BASE, LX_DATA_REGION_SIZE);
+    if (rc != 0) return rc;
 
-        for (uint32_t i = 0; i < hdr->page_size; i++)
-            dst[i] = 0;
+    lx_flush_icache((void *)LX_LOAD_BASE, code_obj->virtual_size);
 
-        if (pg->flags == LXPAGE_VALID && pg->data_size > 0) {
-            if (pg->data_size > hdr->page_size ||
-                (uint64_t)pg->page_data_offset + pg->data_size > image_size) {
-                uart_puts("[LX] Page data out of bounds\r\n");
-                return LX_ERR_BADMAGIC;
-            }
-            const uint8_t *src = base + pg->page_data_offset;
-            for (uint32_t i = 0; i < pg->data_size; i++)
-                dst[i] = src[i];
-        }
-    }
+    kprintf("[LX] Loaded code at %p, data at %p, entry +0x%x\r\n",
+            (void *)LX_LOAD_BASE, (void *)LX_DATA_LOAD_BASE, hdr->eip);
 
-    lx_flush_icache(load_addr, entry_obj->virtual_size);
-
-    kprintf("[LX] Loaded at %p, entry +0x%x\r\n", (void *)load_addr, hdr->eip);
-
-    lx_entry_fn entry = (lx_entry_fn)(load_addr + hdr->eip);
+    lx_entry_fn entry = (lx_entry_fn)((uint8_t *)LX_LOAD_BASE + hdr->eip);
     return entry();
 }
 

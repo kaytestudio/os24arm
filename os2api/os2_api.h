@@ -11,117 +11,7 @@
 #ifndef OS2_API_H
 #define OS2_API_H
 
-#include "types.h"
-
-/* ── VFS Constants ────────────────────────────────────────────────────── */
-
-#ifndef VFS_PATH_MAX
-#define VFS_PATH_MAX        260     /* Maximum path length (DOS/OS2 compat) */
-#endif
-
-#ifndef VFS_NAME_MAX
-#define VFS_NAME_MAX        255     /* Maximum filename length */
-#endif
-
-#ifndef SECTOR_SIZE
-#define SECTOR_SIZE         512     /* Standard sector size */
-#endif
-
-/* File attributes (DOS/OS2 compatible) */
-#ifndef VFS_ATTR_RDONLY
-#define VFS_ATTR_RDONLY     0x01    /* Read-only */
-#define VFS_ATTR_HIDDEN     0x02    /* Hidden */
-#define VFS_ATTR_SYSTEM     0x04    /* System */
-#define VFS_ATTR_VOLUME     0x08    /* Volume label */
-#define VFS_ATTR_DIR        0x10    /* Directory */
-#define VFS_ATTR_ARCHIVE    0x20    /* Archive */
-#endif
-
-/* File open modes (DOS compatible; matches vfs.h's O_* exactly) */
-#ifndef O_RDONLY
-#define O_RDONLY            0x0000
-#define O_WRONLY            0x0001
-#define O_RDWR              0x0002
-#define O_CREAT             0x0040
-#define O_TRUNC             0x0200
-#define O_APPEND            0x0400
-#endif
-
-/* Seek whence values */
-#ifndef SEEK_SET
-#define SEEK_SET            0
-#define SEEK_CUR            1
-#define SEEK_END            2
-#endif
-
-/* ── DOS-Style Command Codes ─────────────────────────────────────────── */
-
-#define DOS_CMD_DIR         0x01    /* Directory listing */
-#define DOS_CMD_COPY        0x02    /* Copy file */
-#define DOS_CMD_DEL         0x03    /* Delete file */
-#define DOS_CMD_REN         0x04    /* Rename file */
-#define DOS_CMD_TYPE        0x05    /* Display file contents */
-#define DOS_CMD_MD          0x06    /* Make directory */
-#define DOS_CMD_RD          0x07    /* Remove directory */
-#define DOS_CMD_CD          0x08    /* Change directory */
-#define DOS_CMD_VOL         0x09    /* Volume label */
-#define DOS_CMD_CHKDSK      0x0A    /* Check disk */
-#define DOS_CMD_FORMAT      0x0B    /* Format disk */
-#define DOS_CMD_ATTRIB      0x0C    /* File attributes */
-
-/* ── OS/2 API Types ──────────────────────────────────────────────────── */
-
-typedef uint32_t HFILE;             /* File handle */
-typedef uint32_t HDIR;              /* Directory search handle */
-
-/* Standard OS/2 API return codes */
-#define ERROR_FILE_NOT_FOUND        2
-#define ERROR_PATH_NOT_FOUND        3
-#define ERROR_ACCESS_DENIED         5
-#define ERROR_INVALID_HANDLE        6
-#define ERROR_NOT_ENOUGH_MEMORY     8
-#define ERROR_INVALID_DRIVE         15
-#define ERROR_NO_MORE_FILES         18
-#define ERROR_WRITE_PROTECT         19
-#define ERROR_NOT_DOS_DISK          26
-#define ERROR_SHARING_VIOLATION     32
-#define ERROR_HANDLE_EOF            38
-#define ERROR_HANDLE_DISK_FULL      39
-#define ERROR_NOT_SUPPORTED         50
-#define ERROR_INVALID_PARAMETER     87
-#define ERROR_BUFFER_OVERFLOW       111
-#define ERROR_FILENAME_EXCED_RANGE  206
-#define ERROR_DIRECTORY             267
-
-/* ── OS/2 File Information Structures ───────────────────────────────── */
-
-/* File information level 1 (FIL_STANDARD) */
-typedef struct {
-    uint16_t  creation_date;
-    uint16_t  creation_time;
-    uint16_t  access_date;
-    uint16_t  access_time;
-    uint16_t  write_date;
-    uint16_t  write_time;
-    uint32_t  file_size;
-    uint32_t  alloc_size;
-    uint16_t  attributes;
-} FILESTATUS;
-
-/* File find buffer (for DosFindFirst/DosFindNext) */
-typedef struct {
-    uint16_t  creation_date;
-    uint16_t  creation_time;
-    uint16_t  access_date;
-    uint16_t  access_time;
-    uint16_t  write_date;
-    uint16_t  write_time;
-    uint32_t  file_size;
-    uint32_t  alloc_size;
-    uint16_t  attributes;
-    uint8_t   name_len;
-    char      name[VFS_NAME_MAX];
-} FILEFINDBUF;
+#include "os2_api_types.h"
 
 /* ── File APIs ───────────────────────────────────────────────────────── */
 
@@ -166,5 +56,119 @@ uint32_t os2_to_vfs_attrs(uint16_t os2_attrs);
 
 /** Convert VFS_ATTR_* to OS/2 (FILESTATUS-style) attributes */
 uint16_t vfs_to_os2_attrs(uint32_t vfs_attrs);
+
+/** This will convert a 16:32 SS:ESP value to a 16:16 SS:SP value. **/
+VOID APIENTRY KernThunkStackTo16(VOID);
+
+/** This will convert a 16:16 SS:SP value back to a 16:32 SS:ESP value. **/
+VOID APIENTRY KernThunkStackTo32(VOID);
+
+/** This will convert a 16:32 SS:ESP value to a native 64-bit AArch64 SP
+ *  value. There is no such conversion in real OS/2 (32-bit only); this
+ *  exists purely so 32-bit-shaped callers on this ARM64 port have a way
+ *  to land back on the native flat 64-bit stack. **/
+VOID APIENTRY KernThunkStackTo64(VOID);
+
+/** Acquire the global serialization lock real OS/2 required before entering
+ *  non-reentrant 16-bit device driver code. **/
+VOID APIENTRY KernSerialize16BitDD(VOID);
+
+/** Release the lock acquired by KernSerialize16BitDD(). **/
+VOID APIENTRY KernUnSerialize16BitDD(VOID);
+
+/** Copy a buffer of user space data into a kernel buffer. **/
+
+APIRET APIENTRY KernCopyIn(PVOID trgt, PVOID src, ULONG size);
+APIRET APIENTRY KernCopyOut(PVOID trgt, PVOID src, ULONG size);
+
+/* ── KernVMAlloc() flags ─────────────────────────────────────────────── */
+
+#define KEE_VMA_16MB        0x0001  /* allocate memory from below 16MB */
+#define KEE_VMA_FIXED       0x0002  /* allocate memory that won't be swapped out */
+#define KEE_VMA_SWAP        0x0004  /* allocate memory that is swappable */
+#define KEE_VMA_CONTIG      0x0008  /* allocate contiguous physical memory pages */
+#define KEE_VMA_PHYS        0x0010  /* allocate physical memory (pass address in physaddr argument) */
+#define KEE_VMA_PROCESS     0x0020  /* allocate memory in the process address space */
+#define KEE_VMA_SGSCONT     0x0040  /* register memory under screen group control */
+#define KEE_VMA_GETSEL      0x0080  /* return a GDT selector for the allocated memory (also undocumented in DevHlp_VMAlloc) */
+#define KEE_VMA_RESERVE     0x0100  /* don't commit the allocated memory */
+#define KEE_VMA_SHARED      0x0200  /* allocate memory that is shareable */
+#define KEE_VMA_USEHIGHMEM  0x0400  /* allocate memory from above 16MB */
+
+/** Allocate virtual memory. On success, *linaddr receives the allocated
+ *  pointer; *physaddr (if non-NULL) receives its physical address and
+ *  *sel (if non-NULL) a GDT selector for it - see KEE_VMA_* above. **/
+APIRET APIENTRY KernVMAlloc(ULONG size, ULONG flags, PVOID *linaddr, PULONG physaddr, PULONG sel);
+
+
+/** Frees dynamic memory allocated with KernVMAlloc. **/
+APIRET APIENTRY KernVMFree(PVOID linaddr);
+
+/* ── KernVMLock() flags ──────────────────────────────────────────────── */
+
+#define KEE_VML_NOTBLOCK    0x0001  /* Don't block the call, if the pages can't be locked. */
+#define KEE_VML_CONTIG      0x0002  /* Pages locked must be contiguous. */
+#define KEE_VML_16M         0x0004  /* Pages must be below 16MB. */
+#define KEE_VML_WRITEABLE   0x0008  /* Pages will be writeable. */
+#define KEE_VML_LONGLOCK    0x0010  /* The lock is for long time. */
+#define KEE_VML_VERIFYONLY  0x0020  /* Verify the accessibility of the region. If KEE_VML_WRITEABLE is set, check for R/W access, else R/O. */
+
+/* This port has no MMU-backed paging (see the comment above KernVMAlloc
+ * in os2_api.c) - there's no real page table to describe a lock/pagelist
+ * with, so these exist only to give KernVMLock() a well-formed shape to
+ * accept/reject against. */
+typedef struct {
+    ULONG reserved;
+} KEEVMLOCK;
+
+typedef struct {
+    ULONG page_count;
+} KEEVMPageList;
+
+/** Lock a region of memory (linaddr, size) against being paged out, per
+ *  flags (KEE_VML_* above); *lock receives the lock handle/data, *pglist
+ *  (if non-NULL) the region's page list, and *pgsize (if non-NULL) the
+ *  size of that page list. **/
+APIRET APIENTRY KernVMLock(ULONG flags, PVOID linaddr, ULONG size,
+                            KEEVMLOCK *lock, KEEVMPageList *pglist, PULONG pgsize);
+
+/** Unlock a memory region locked with KernVMLock (releases *lock). **/
+APIRET APIENTRY KernVMUnlock(KEEVMLOCK *lock);
+
+/** Build the list of physical page frames backing a linear address range
+ *  (linaddr, size); *list receives the page list and *pgsize (if
+ *  non-NULL) its size, same shape as KernVMLock's pglist/pgsize. **/
+APIRET APIENTRY KernLinToPageList(PVOID linaddr, ULONG size, KEEVMPageList *list, PULONG pgsize);
+
+/* ── KernVMSetMem() flags ────────────────────────────────────────────── */
+
+#define KEE_VMS_UNCOMMIT    0x0001  /* Uncommit the region */
+#define KEE_VMS_RESIDENT    0x0002  /* make the region resident */
+#define KEE_VMS_SWAPPABLE   0x0004  /* make the region swappable */
+
+/** Change the commit/residency/swap attributes of a region of memory
+ *  (linaddr, size), per flags (KEE_VMS_* above). **/
+APIRET APIENTRY KernVMSetMem(ULONG flags, PVOID linaddr, ULONG size);
+
+/** Convert a 16:16 selector:offset far pointer to a flat 32-bit linear
+ *  address (tiled mapping: selector index * 64K + offset). **/
+ULONG APIENTRY KernSelToFlat(ULONG addr16);
+
+/** Create a dynamic API entry point: a call gate letting 16-bit code call
+ *  the routine at addr with cnt parameter words; *sel receives its
+ *  selector. dummy is reserved (0). This port has no segmentation, so it
+ *  always fails with ERROR_NOT_SUPPORTED and sets *sel to 0. **/
+APIRET APIENTRY KernDynamicAPI(PVOID addr, ULONG cnt, ULONG dummy, PUSHORT sel);
+
+/** Add a RAS event to the RAS log.
+ *    major - major number of the RAS event
+ *    minor - minor number of the RAS event
+ *    buf   - buffer to be added to the RAS log (may be NULL if size is 0)
+ *    size  - size of the buffer, in bytes
+ *  This port has no in-memory RAS log, so the event is printed to the
+ *  UART console instead. **/
+APIRET APIENTRY KernRASSysTrace(ULONG major, ULONG minor, PVOID buf, ULONG size);
+
+
 
 #endif /* OS2_API_H */

@@ -1,16 +1,37 @@
 cmake_minimum_required(VERSION 3.21 FATAL_ERROR)
 
 # ── Platform Selection ────────────────────────────────────────────────────────
-# Set target platform: QEMU (default) or RPI3
-set(TARGET_PLATFORM "QEMU" CACHE STRING "Target platform: QEMU or RPI3")
-set_property(CACHE TARGET_PLATFORM PROPERTY STRINGS "QEMU" "RPI3")
+# Set target platform: QEMU (default), RPI3, BBB (BeagleBone Black),
+# BEAGLEV_AHEAD (BeagleV-Ahead) or QEMU_RISCV (QEMU riscv64 "virt")
+set(TARGET_PLATFORM "QEMU" CACHE STRING "Target platform: QEMU, RPI3, BBB, BEAGLEV_AHEAD or QEMU_RISCV")
+set_property(CACHE TARGET_PLATFORM PROPERTY STRINGS "QEMU" "RPI3" "BBB" "BEAGLEV_AHEAD" "QEMU_RISCV")
+
+# Each platform implies a CPU architecture. QEMU and RPI3 run the full
+# AArch64 kernel; BBB (TI AM335x, Cortex-A8) is 32-bit ARMv7-A and
+# BEAGLEV_AHEAD (T-Head TH1520, XuanTie C910) is RV64 - those two build a
+# serial-console kernel only (kernel/src/beagle_main.c), since the MMU,
+# GUI and LX (.EXE/.DLL) pipeline are still AArch64-specific. QEMU_RISCV
+# is that same RV64 kernel on QEMU's riscv64 "virt" machine, for running
+# and debugging the RISC-V port without a board (make run).
+if(TARGET_PLATFORM STREQUAL "QEMU" OR TARGET_PLATFORM STREQUAL "RPI3")
+    set(TARGET_ARCH "aarch64")
+elseif(TARGET_PLATFORM STREQUAL "BBB")
+    set(TARGET_ARCH "arm")
+elseif(TARGET_PLATFORM STREQUAL "BEAGLEV_AHEAD" OR TARGET_PLATFORM STREQUAL "QEMU_RISCV")
+    set(TARGET_ARCH "riscv64")
+else()
+    message(FATAL_ERROR "Unknown TARGET_PLATFORM '${TARGET_PLATFORM}' (expected QEMU, RPI3, BBB, BEAGLEV_AHEAD or QEMU_RISCV)")
+endif()
 
 # ── Compiler Selection ─────────────────────────────────────────────────────
 set(USE_KCC OFF CACHE BOOL "Use KCC (Kayte C Compiler) instead of clang")
+if(USE_KCC AND NOT TARGET_ARCH STREQUAL "aarch64")
+    message(FATAL_ERROR "USE_KCC only supports AArch64 platforms (QEMU, RPI3)")
+endif()
 
 # ── Tell CMake this is a bare-metal target (suppresses host OS linker flags) ──
 set(CMAKE_SYSTEM_NAME Generic)
-set(CMAKE_SYSTEM_PROCESSOR aarch64)
+set(CMAKE_SYSTEM_PROCESSOR ${TARGET_ARCH})
 
 # Prevent CMake from testing the cross-compiler with a host-style link
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
@@ -32,6 +53,20 @@ else()
 endif()
 
 message(STATUS "Host platform: ${HOST_PLATFORM}")
+
+# ── Toolchain compiler family ────────────────────────────────────────────────
+# CMAKE_C_COMPILER_ID reflects whichever compiler ended up configured: clang
+# by default, or GNU when a GCC-based cross-toolchain was supplied via
+# -DCMAKE_TOOLCHAIN_FILE=cmake/arm64-baremetal-toolchain.cmake (which sets
+# CMAKE_C_COMPILER to aarch64-*-gcc before this project() call runs). Several
+# flags/tools below (clang's -target, LLVM's ar/ranlib/nm/lld) apply only to
+# the clang path and are skipped for a GCC-based toolchain.
+if(CMAKE_C_COMPILER_ID STREQUAL "Clang")
+    set(USING_CLANG_TOOLCHAIN TRUE)
+else()
+    set(USING_CLANG_TOOLCHAIN FALSE)
+    message(STATUS "Detected ${CMAKE_C_COMPILER_ID} toolchain: ${CMAKE_C_COMPILER}")
+endif()
 
 # ── KCC (Kayte C Compiler) Integration ──────────────────────────────────────
 if(USE_KCC)
@@ -164,6 +199,93 @@ if(TARGET_PLATFORM STREQUAL "RPI3")
     message(STATUS "═══════════════════════════════════════════════════════════")
     message(STATUS "")
 
+elseif(TARGET_PLATFORM STREQUAL "BBB")
+    # BeagleBone Black (TI AM335x, ARM Cortex-A8). U-Boot's `bootz` hands
+    # over in SVC mode with the MMU and caches off (see kernel/src/bbb_boot.S);
+    # 0x82000000 is the stock BeagleBone ${loadaddr}, clear of U-Boot, which
+    # relocates itself to the top of the 512 MB of DDR at 0x80000000.
+    set(PLATFORM_DEFINES
+            -DPLATFORM_BBB
+            -DUART_BASE=0x44E09000
+            -DUART_REG_SHIFT=2
+            -DSD_HOST_AM335X_MMCHS          # microSD: MMCHS0, 96 MHz functional clock
+            -DSD_BASE=0x48060000
+            -DSD_BASE_CLK_HZ=96000000
+    )
+    set(KERNEL_LOAD_ADDR "0x82000000")
+    set(HEAP_SIZE "32 MB")
+    set(PLATFORM_NAME "BeagleBone Black")
+    set(KERNEL_IMAGE "os2warp-bbb.img")
+
+    message(STATUS "")
+    message(STATUS "═══════════════════════════════════════════════════════════")
+    message(STATUS "Target Platform: BeagleBone Black (AM335x, ARMv7-A)")
+    message(STATUS "═══════════════════════════════════════════════════════════")
+    message(STATUS "  UART Base:     0x44E09000 (UART0, 16550)")
+    message(STATUS "  Load Address:  ${KERNEL_LOAD_ADDR}")
+    message(STATUS "  Heap Size:     ${HEAP_SIZE}")
+    message(STATUS "  Output:        ${KERNEL_IMAGE} (boot with U-Boot bootz)")
+    message(STATUS "═══════════════════════════════════════════════════════════")
+    message(STATUS "")
+
+elseif(TARGET_PLATFORM STREQUAL "BEAGLEV_AHEAD")
+    # BeagleV-Ahead (T-Head TH1520, 4x XuanTie C910 RV64GC). DDR starts at
+    # 0x0 with OpenSBI in the first 2 MB; U-Boot's `booti` enters the
+    # kernel in S-mode at DDR base + the image header's text_offset
+    # (0x200000, same slot as Linux - see kernel/src/beaglev_boot.S).
+    set(PLATFORM_DEFINES
+            -DPLATFORM_BEAGLEV_AHEAD
+            -DUART_BASE=0xFFE7014000
+            -DUART_REG_SHIFT=2
+            -DSD_BASE=0xFFE7090000          # microSD: SDIO0 (DWC MSHC), 198 MHz
+            -DSD_BASE_CLK_HZ=198000000
+    )
+    set(KERNEL_LOAD_ADDR "0x00200000")
+    set(HEAP_SIZE "32 MB")
+    set(PLATFORM_NAME "BeagleV-Ahead")
+    set(KERNEL_IMAGE "os2warp-beaglev-ahead.img")
+
+    message(STATUS "")
+    message(STATUS "═══════════════════════════════════════════════════════════")
+    message(STATUS "Target Platform: BeagleV-Ahead (TH1520, RV64GC)")
+    message(STATUS "═══════════════════════════════════════════════════════════")
+    message(STATUS "  UART Base:     0xFFE7014000 (UART0, DW 16550)")
+    message(STATUS "  Load Address:  ${KERNEL_LOAD_ADDR}")
+    message(STATUS "  Heap Size:     ${HEAP_SIZE}")
+    message(STATUS "  Output:        ${KERNEL_IMAGE} (boot with U-Boot booti)")
+    message(STATUS "═══════════════════════════════════════════════════════════")
+    message(STATUS "")
+
+elseif(TARGET_PLATFORM STREQUAL "QEMU_RISCV")
+    # QEMU riscv64 "virt": the BeagleV-Ahead kernel on emulated hardware.
+    # OpenSBI (-bios default) enters S-mode at DRAM base (0x80000000) + the
+    # image header's 2 MB text_offset, like booti does on the board. The
+    # console is virt's ns16550a (byte-spaced registers); the SD card sits
+    # behind a PCI sdhci-pci controller whose BAR0 kernel/src/qemu_pci.c
+    # assigns to SD_BASE, inside virt's PCI MMIO window.
+    set(PLATFORM_DEFINES
+            -DPLATFORM_QEMU_RISCV
+            -DUART_BASE=0x10000000
+            -DUART_REG_SHIFT=0
+            -DSD_BASE=0x40000000
+            -DSD_BASE_CLK_HZ=52000000
+    )
+    set(KERNEL_LOAD_ADDR "0x80200000")
+    set(HEAP_SIZE "32 MB")
+    set(PLATFORM_NAME "QEMU RISC-V virt")
+    set(KERNEL_IMAGE "os2warp-qemu-riscv.img")
+
+    message(STATUS "")
+    message(STATUS "═══════════════════════════════════════════════════════════")
+    message(STATUS "Target Platform: QEMU riscv64 virt (RV64)")
+    message(STATUS "═══════════════════════════════════════════════════════════")
+    message(STATUS "  UART Base:     0x10000000 (ns16550a)")
+    message(STATUS "  Load Address:  ${KERNEL_LOAD_ADDR}")
+    message(STATUS "  Heap Size:     ${HEAP_SIZE}")
+    message(STATUS "  Output:        ${KERNEL_IMAGE} (make run)")
+    message(STATUS "═══════════════════════════════════════════════════════════")
+    message(STATUS "")
+
 else()
     # QEMU virt machine Configuration (default)
     set(PLATFORM_DEFINES
@@ -231,56 +353,124 @@ find_program(CMAKE_OBJCOPY
 )
 message(STATUS "objcopy: ${CMAKE_OBJCOPY}")
 
-# ── llvm-nm + python3 (for computing LX entry-point offsets) ──────────────────
-find_program(LLVM_NM_EXECUTABLE
-        NAMES llvm-nm llvm-nm-17 llvm-nm-16 llvm-nm-15
-        PATHS /opt/homebrew/opt/llvm/bin /usr/local/opt/llvm/bin /usr/bin /usr/local/bin
-        REQUIRED
-)
+# ── nm + python3 (for computing LX entry-point offsets) ───────────────────────
+if(USING_CLANG_TOOLCHAIN)
+    find_program(LLVM_NM_EXECUTABLE
+            NAMES llvm-nm llvm-nm-17 llvm-nm-16 llvm-nm-15
+            PATHS /opt/homebrew/opt/llvm/bin /usr/local/opt/llvm/bin /usr/bin /usr/local/bin
+            REQUIRED
+    )
+else()
+    # Use the GCC cross-toolchain's own nm (matching CMAKE_C_COMPILER's
+    # directory/prefix, e.g. aarch64-none-elf-gcc -> aarch64-none-elf-nm)
+    # rather than llvm-nm, which may not be installed at all.
+    get_filename_component(TOOLCHAIN_BIN_DIR ${CMAKE_C_COMPILER} DIRECTORY)
+    get_filename_component(TOOLCHAIN_CC_NAME ${CMAKE_C_COMPILER} NAME)
+    string(REGEX REPLACE "gcc$" "nm" TOOLCHAIN_NM_NAME "${TOOLCHAIN_CC_NAME}")
+    find_program(LLVM_NM_EXECUTABLE
+            NAMES ${TOOLCHAIN_NM_NAME} nm
+            PATHS ${TOOLCHAIN_BIN_DIR}
+            REQUIRED
+    )
+endif()
 find_program(Python3_EXECUTABLE NAMES python3 REQUIRED)
-message(STATUS "llvm-nm: ${LLVM_NM_EXECUTABLE}")
+message(STATUS "nm: ${LLVM_NM_EXECUTABLE}")
 message(STATUS "python3: ${Python3_EXECUTABLE}")
 
-# ── Explicitly set ar/ranlib (system ar/ranlib only understand Mach-O and
-#    silently produce broken archives out of ELF .o files, which then drop
-#    symbols at final link time). CMAKE_AR/CMAKE_RANLIB are pre-populated by
-#    CMake's own compiler-ABI detection during project(), so a plain
-#    find_program() is a no-op here — it must be forced. ────────────────────
-find_program(LLVM_AR_EXECUTABLE
-        NAMES llvm-ar llvm-ar-17 llvm-ar-16 llvm-ar-15
-        PATHS /opt/homebrew/opt/llvm/bin /usr/local/opt/llvm/bin /usr/bin /usr/local/bin
-        REQUIRED
-)
-find_program(LLVM_RANLIB_EXECUTABLE
-        NAMES llvm-ranlib llvm-ranlib-17 llvm-ranlib-16 llvm-ranlib-15
-        PATHS /opt/homebrew/opt/llvm/bin /usr/local/opt/llvm/bin /usr/bin /usr/local/bin
-        REQUIRED
-)
-set(CMAKE_AR ${LLVM_AR_EXECUTABLE} CACHE FILEPATH "archiver" FORCE)
-set(CMAKE_RANLIB ${LLVM_RANLIB_EXECUTABLE} CACHE FILEPATH "ranlib" FORCE)
-# project()'s compiler-ABI detection already created CMAKE_AR/CMAKE_RANLIB as normal
-# (non-cache) variables; the CACHE FORCE above updates the cache entry but does not
-# clear that shadow, so plain ${CMAKE_AR} reads here and in every add_subdirectory()
-# below would still resolve to the old system ar/ranlib. Set the normal variable too.
-set(CMAKE_AR "${LLVM_AR_EXECUTABLE}")
-set(CMAKE_RANLIB "${LLVM_RANLIB_EXECUTABLE}")
+if(USING_CLANG_TOOLCHAIN)
+    # Explicitly set ar/ranlib (system ar/ranlib only understand Mach-O and
+    # silently produce broken archives out of ELF .o files, which then drop
+    # symbols at final link time). CMAKE_AR/CMAKE_RANLIB are pre-populated by
+    # CMake's own compiler-ABI detection during project(), so a plain
+    # find_program() is a no-op here — it must be forced. ────────────────────
+    find_program(LLVM_AR_EXECUTABLE
+            NAMES llvm-ar llvm-ar-17 llvm-ar-16 llvm-ar-15
+            PATHS /opt/homebrew/opt/llvm/bin /usr/local/opt/llvm/bin /usr/bin /usr/local/bin
+            REQUIRED
+    )
+    find_program(LLVM_RANLIB_EXECUTABLE
+            NAMES llvm-ranlib llvm-ranlib-17 llvm-ranlib-16 llvm-ranlib-15
+            PATHS /opt/homebrew/opt/llvm/bin /usr/local/opt/llvm/bin /usr/bin /usr/local/bin
+            REQUIRED
+    )
+    set(CMAKE_AR ${LLVM_AR_EXECUTABLE} CACHE FILEPATH "archiver" FORCE)
+    set(CMAKE_RANLIB ${LLVM_RANLIB_EXECUTABLE} CACHE FILEPATH "ranlib" FORCE)
+    # project()'s compiler-ABI detection already created CMAKE_AR/CMAKE_RANLIB as normal
+    # (non-cache) variables; the CACHE FORCE above updates the cache entry but does not
+    # clear that shadow, so plain ${CMAKE_AR} reads here and in every add_subdirectory()
+    # below would still resolve to the old system ar/ranlib. Set the normal variable too.
+    set(CMAKE_AR "${LLVM_AR_EXECUTABLE}")
+    set(CMAKE_RANLIB "${LLVM_RANLIB_EXECUTABLE}")
+else()
+    # A GCC cross-toolchain's own ar/ranlib (matching its compiler prefix) is
+    # already ELF-aware and correctly auto-detected by CMake's compiler-ABI
+    # detection during project() above - no override needed.
+endif()
 message(STATUS "ar: ${CMAKE_AR}")
 message(STATUS "ranlib: ${CMAKE_RANLIB}")
 
+# ── Per-architecture target triple and CPU flags ─────────────────────────────
+if(TARGET_ARCH STREQUAL "arm")
+    # Cortex-A8 has neither a hardware divider nor (with bootz's MMU-off
+    # handoff) any memory type that allows unaligned access. Soft-float
+    # avoids having to enable VFP/NEON in bbb_boot.S before C code runs.
+    set(ARCH_TRIPLE armv7a-none-eabi)
+    set(ARCH_CPU_FLAGS
+            -mcpu=cortex-a8
+            -marm
+            -mfloat-abi=soft
+            -mno-unaligned-access
+            -fno-unwind-tables
+            -fno-asynchronous-unwind-tables
+    )
+elseif(TARGET_ARCH STREQUAL "riscv64")
+    # No F/D: sstatus.FS stays Off, so the kernel never touches FP state.
+    # -mno-relax: beaglev_boot.S doesn't set up gp for linker relaxation.
+    set(ARCH_TRIPLE riscv64-unknown-elf)
+    set(ARCH_CPU_FLAGS
+            -march=rv64imac_zicsr_zifencei
+            -mabi=lp64
+            -mcmodel=medany
+            -mno-relax
+    )
+else()
+    set(ARCH_TRIPLE aarch64-none-elf)
+    set(ARCH_CPU_FLAGS
+            -mcpu=cortex-a72
+            -mstrict-align
+    )
+endif()
+
 # ── Cross-compiler flags ──────────────────────────────────────────────────────
-set(ARCH_FLAGS
-        -target aarch64-none-elf
-        -mcpu=cortex-a72
-        -mstrict-align
-        -ffreestanding
-        -fno-builtin
-        -fstack-protector-strong
-        -fno-pie
-        -fno-pic
-        -nostdlib
-        -nostdinc
-        ${PLATFORM_DEFINES}
-)
+if(USING_CLANG_TOOLCHAIN)
+    set(ARCH_FLAGS
+            -target ${ARCH_TRIPLE}
+            ${ARCH_CPU_FLAGS}
+            -ffreestanding
+            -fno-builtin
+            -fstack-protector-strong
+            -fno-pie
+            -fno-pic
+            -nostdlib
+            -nostdinc
+            ${PLATFORM_DEFINES}
+    )
+else()
+    # A GCC cross-toolchain's compiler binary is already architecture-specific
+    # (aarch64-none-elf-gcc), unlike clang which is retargeted per invocation
+    # via -target - so no -target flag here.
+    set(ARCH_FLAGS
+            ${ARCH_CPU_FLAGS}
+            -ffreestanding
+            -fno-builtin
+            -fstack-protector-strong
+            -fno-pie
+            -fno-pic
+            -nostdlib
+            -nostdinc
+            ${PLATFORM_DEFINES}
+    )
+endif()
 
 set(WARN_FLAGS
         -Wall -Wextra -Wpedantic
@@ -290,11 +480,31 @@ set(WARN_FLAGS
 set(OPT_FLAGS -O2 -g)
 
 add_compile_options(${ARCH_FLAGS} ${WARN_FLAGS} ${OPT_FLAGS})
-# -fuse-ld=lld: the freestanding aarch64-none-elf target needs a linker that
-# understands GNU linker scripts (-T). macOS's default cc/ld64 driver rejects
-# -T/-Bstatic/-EL outright, so force LLVM's lld (works with both Apple clang
-# and Homebrew clang, and with system clang/lld on Linux).
-add_link_options(${ARCH_FLAGS} -nostdlib -fuse-ld=lld)
+if(USING_CLANG_TOOLCHAIN)
+    # -fuse-ld=lld: the freestanding aarch64-none-elf target needs a linker that
+    # understands GNU linker scripts (-T). macOS's default cc/ld64 driver rejects
+    # -T/-Bstatic/-EL outright, so force LLVM's lld (works with both Apple clang
+    # and Homebrew clang, and with system clang/lld on Linux).
+    add_link_options(${ARCH_FLAGS} -nostdlib -fuse-ld=lld)
+else()
+    # The GCC cross-toolchain's own linker already understands -T GNU linker
+    # scripts; no -fuse-ld override needed.
+    add_link_options(${ARCH_FLAGS} -nostdlib)
+endif()
+
+# Clang-only pieces of a few standalone compile/link invocations further
+# below (the LX toolchain, CMD.EXE) that don't go through ARCH_FLAGS/
+# add_link_options: -target retargets clang per-invocation, and -fuse-ld=lld
+# forces LLVM's linker - neither applies to a GCC cross-toolchain (its
+# compiler binary is already architecture-specific, and it ships its own
+# linker), same reasoning as above.
+if(USING_CLANG_TOOLCHAIN)
+    set(LX_TARGET_FLAGS -target aarch64-none-elf)
+    set(LX_LINKER_FLAGS -fuse-ld=lld)
+else()
+    set(LX_TARGET_FLAGS "")
+    set(LX_LINKER_FLAGS "")
+endif()
 
 # ── Include dirs shared across sub-projects ───────────────────────────────────
 include_directories(
@@ -305,16 +515,35 @@ include_directories(
 # ── Sub-projects ──────────────────────────────────────────────────────────────
 add_subdirectory(bootloader)
 add_subdirectory(kernel)
-add_subdirectory(rexx)
-add_subdirectory(os2api)
-add_subdirectory(dos)
-# Add filesystems subdirectory
-add_subdirectory(fs)
+if(TARGET_ARCH STREQUAL "aarch64")
+    # DOS commands, REXX and the filesystem drivers are only linked into
+    # the AArch64 kernel so far (see kernel/CMakeLists.txt).
+    add_subdirectory(rexx)
+    add_subdirectory(os2api)
+    add_subdirectory(dos)
+    # Add filesystems subdirectory
+    add_subdirectory(fs)
+else()
+    # The BeagleBone Black and BeagleV-Ahead kernels link the OS/2 API
+    # (DosOpen, DosRead, KernVMAlloc, ...) on top of the VFS, with no
+    # filesystem mounted yet.
+    add_subdirectory(os2api)
+endif()
+# Kayte host tool (FreePascal) - a build-machine tool, not freestanding code
+add_subdirectory(kayte)
 
 # Make kernel depend on KCC if using KCC
 if(USE_KCC)
     add_dependencies(os2warp_kernel kcc_compiler)
 endif()
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Begin AArch64-only section: the LX tools, the KCC/LX app pipeline,
+# DOSCALLS.DLL, CMD.EXE and KAYTEVM.EXE. LX images here carry ARM64 code
+# and are loaded by the AArch64 kernel's LX loader, so none of this is
+# built for BBB or BEAGLEV_AHEAD. Ends at "End AArch64-only section" below.
+# ═════════════════════════════════════════════════════════════════════════════
+if(TARGET_ARCH STREQUAL "aarch64")
 
 # ── LX Tools (Host-Native Build) ──────────────────────────────────────────────
 # The lx tools must be built with the host compiler, not cross-compiled.
@@ -376,7 +605,17 @@ endif()
 # just under the KCC block below) since the CMD.EXE target also needs it.
 set(LX_APP_LD ${CMAKE_SOURCE_DIR}/lx/lx_app.ld)
 set(LX_LOAD_BASE_HEX 0x48000000)
+
+# DLLs link at their own fixed address (lx/lx_dll.ld), distinct from
+# LX_APP_LD's LX_LOAD_BASE - an EXE that embeds and loads a DLL at
+# runtime (kernel/src/lx_dll_loader.c) is itself already resident at
+# LX_LOAD_BASE, and this project's flat, no-MMU address space can't have
+# two images share an address. Must match LX_DLL_LOAD_BASE in
+# kernel/include/lx_dll_loader.h.
+set(LX_DLL_LD ${CMAKE_SOURCE_DIR}/lx/lx_dll.ld)
+set(LX_DLL_LOAD_BASE_HEX 0x4A000000)
 set(LX_ENTRY_OFFSET_SCRIPT ${CMAKE_SOURCE_DIR}/lx/lx_entry_offset.py)
+set(LX_EXPORT_OFFSETS_SCRIPT ${CMAKE_SOURCE_DIR}/lx/lx_export_offsets.py)
 
 # ── KCC Host Tool + LX Application Toolchain ──────────────────────────────────
 # Independent of USE_KCC (which would replace clang as the KERNEL's own
@@ -430,17 +669,25 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tools/kcc/CMakeLists.txt)
         set(OUT_DIR ${CMAKE_CURRENT_BINARY_DIR})
         set(ASM_FILE ${OUT_DIR}/${NAME}.s)
         set(ELF_FILE ${OUT_DIR}/${NAME}.elf)
-        set(BIN_FILE ${OUT_DIR}/${NAME}.bin)
+        set(CODE_BIN_FILE ${OUT_DIR}/${NAME}.code.bin)
+        set(DATA_BIN_FILE ${OUT_DIR}/${NAME}.data.bin)
         set(EXE_FILE ${OUT_DIR}/${NAME}.EXE)
 
         add_custom_command(
                 OUTPUT ${EXE_FILE}
                 COMMAND ${KCC_BINARY} --bare-metal -S ${SOURCE_ABS} -o ${OUT_DIR}/${NAME}
-                COMMAND ${CMAKE_C_COMPILER} -target aarch64-none-elf -mcpu=cortex-a72
-                        -nostdlib -fuse-ld=lld -T ${LX_APP_LD}
+                COMMAND ${CMAKE_C_COMPILER} ${LX_TARGET_FLAGS} -mcpu=cortex-a72
+                        -nostdlib ${LX_LINKER_FLAGS} -T ${LX_APP_LD}
                         -o ${ELF_FILE} ${ASM_FILE}
-                COMMAND ${CMAKE_OBJCOPY} -O binary ${ELF_FILE} ${BIN_FILE}
-                COMMAND bash -c "\"${MAKEEXE}\" \"${BIN_FILE}\" \"${EXE_FILE}\" $(\"${Python3_EXECUTABLE}\" \"${LX_ENTRY_OFFSET_SCRIPT}\" \"${ELF_FILE}\" main ${LX_LOAD_BASE_HEX} \"${LLVM_NM_EXECUTABLE}\")"
+                # Extract code (.text+.rodata) and data (.data+.bss) as
+                # separate binaries, not one combined blob - lx_app.ld pads
+                # a gap between them up to the fixed 2MB W^X split point
+                # (LX_CODE_REGION_SIZE), which a single `objcopy -O binary`
+                # over the whole address range would otherwise store as
+                # literal zero bytes.
+                COMMAND ${CMAKE_OBJCOPY} -O binary --only-section=.text --only-section=.rodata ${ELF_FILE} ${CODE_BIN_FILE}
+                COMMAND ${CMAKE_OBJCOPY} -O binary --only-section=.data --only-section=.bss ${ELF_FILE} ${DATA_BIN_FILE}
+                COMMAND bash -c "\"${MAKEEXE}\" \"${CODE_BIN_FILE}\" \"${DATA_BIN_FILE}\" \"${EXE_FILE}\" $(\"${Python3_EXECUTABLE}\" \"${LX_ENTRY_OFFSET_SCRIPT}\" \"${ELF_FILE}\" main ${LX_LOAD_BASE_HEX} \"${LLVM_NM_EXECUTABLE}\")"
                 DEPENDS ${SOURCE_ABS} ${LX_APP_LD} kcc_host_tool lx_host_tools
                 WORKING_DIRECTORY ${OUT_DIR}
                 COMMENT "Building LX executable ${NAME}.EXE (KCC -> LX) from ${SOURCE}"
@@ -451,28 +698,40 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/tools/kcc/CMakeLists.txt)
     endfunction()
 
     # add_lx_library(name source.c EXPORTS export1 export2 ...)
-    # Same pipeline, wrapped as name.DLL via makedll with the given exports.
-    # NOTE: lx_create_dll() (lx/lxbuilder.c) assigns each export a placeholder
-    # offset (index*16), not its real address, so exports aren't actually
-    # callable by ordinal yet - only add_lx_executable's single entry point
-    # is wired up to the kernel's loader today.
+    # Same pipeline, wrapped as name.DLL via makedll, with each export's
+    # real offset within the linked ELF looked up via lx_export_offsets.py
+    # (same idea as add_lx_executable's entry-offset lookup, just for
+    # however many named exports the caller wants). lx_builder_write()
+    # (lx/lxbuilder.c) now actually serializes a real LX entry table and
+    # resident names table from these, so the exports genuinely exist on
+    # disk - the kernel loader still doesn't do DLL import resolution
+    # though (see kernel/include/lx_loader.h), so nothing can dynamically
+    # call into them yet.
     function(add_lx_library NAME SOURCE)
         cmake_parse_arguments(LXLIB "" "" "EXPORTS" ${ARGN})
+        # CMake lists interpolate with ';' - inside the bash -c "..." string
+        # below, literal semicolons would be parsed as shell statement
+        # separators (splitting one command into many, each failing), not
+        # as word breaks. Join with spaces first so it reads as ordinary
+        # shell arguments.
+        list(JOIN LXLIB_EXPORTS " " LXLIB_EXPORTS)
         get_filename_component(SOURCE_ABS ${SOURCE} ABSOLUTE)
         set(OUT_DIR ${CMAKE_CURRENT_BINARY_DIR})
         set(ASM_FILE ${OUT_DIR}/${NAME}.s)
         set(ELF_FILE ${OUT_DIR}/${NAME}.elf)
-        set(BIN_FILE ${OUT_DIR}/${NAME}.bin)
+        set(CODE_BIN_FILE ${OUT_DIR}/${NAME}.code.bin)
+        set(DATA_BIN_FILE ${OUT_DIR}/${NAME}.data.bin)
         set(DLL_FILE ${OUT_DIR}/${NAME}.DLL)
 
         add_custom_command(
                 OUTPUT ${DLL_FILE}
                 COMMAND ${KCC_BINARY} --bare-metal -S ${SOURCE_ABS} -o ${OUT_DIR}/${NAME}
-                COMMAND ${CMAKE_C_COMPILER} -target aarch64-none-elf -mcpu=cortex-a72
-                        -nostdlib -fuse-ld=lld -T ${LX_APP_LD}
+                COMMAND ${CMAKE_C_COMPILER} ${LX_TARGET_FLAGS} -mcpu=cortex-a72
+                        -nostdlib ${LX_LINKER_FLAGS} -T ${LX_APP_LD}
                         -o ${ELF_FILE} ${ASM_FILE}
-                COMMAND ${CMAKE_OBJCOPY} -O binary ${ELF_FILE} ${BIN_FILE}
-                COMMAND ${MAKEDLL} ${BIN_FILE} ${DLL_FILE} ${NAME} ${LXLIB_EXPORTS}
+                COMMAND ${CMAKE_OBJCOPY} -O binary --only-section=.text --only-section=.rodata ${ELF_FILE} ${CODE_BIN_FILE}
+                COMMAND ${CMAKE_OBJCOPY} -O binary --only-section=.data --only-section=.bss ${ELF_FILE} ${DATA_BIN_FILE}
+                COMMAND bash -c "\"${MAKEDLL}\" \"${CODE_BIN_FILE}\" \"${DATA_BIN_FILE}\" \"${DLL_FILE}\" ${NAME} $(\"${Python3_EXECUTABLE}\" \"${LX_EXPORT_OFFSETS_SCRIPT}\" \"${ELF_FILE}\" ${LX_LOAD_BASE_HEX} ${LXLIB_EXPORTS} -- \"${LLVM_NM_EXECUTABLE}\")"
                 DEPENDS ${SOURCE_ABS} ${LX_APP_LD} kcc_host_tool lx_host_tools
                 WORKING_DIRECTORY ${OUT_DIR}
                 COMMENT "Building LX library ${NAME}.DLL (KCC -> LX) from ${SOURCE}"
@@ -527,6 +786,139 @@ if(TARGET HELLO_lxexe)
     target_compile_definitions(os2warp_kernel PRIVATE LX_HAS_TEST_PAYLOAD=1)
 endif()
 
+# ── LX DLL generator ─────────────────────────────────────────────────────────
+# add_lx_dll(name SOURCES src1.c src2.c ... EXPORTS export1 export2 ...)
+#
+# Real-toolchain counterpart to add_lx_library() above (which goes through
+# the immature KCC pipeline): for genuine production C code - built with
+# this project's own aarch64-none-elf clang/lld cross-toolchain, linked at
+# LX_DLL_LOAD_BASE (lx/lx_dll.ld) rather than an EXE's LX_LOAD_BASE, since
+# an EXE that loads this DLL at runtime is itself already resident there -
+# then wrapped as a real OS/2 LX .DLL via makedll, with each export's
+# actual offset in the linked ELF looked up by lx_export_offsets.py (same
+# idea as the EXE targets' entry-offset lookup, just for however many
+# named exports the caller wants).
+#
+# lx_builder_write() (lx/lxbuilder.c) actually serializes a real LX entry
+# table and resident names table from these exports, and
+# kernel/src/lx_dll_loader.c can load a DLL built this way and resolve its
+# exports by name at runtime (see os2api/os2_api_import.c for a caller
+# doing exactly that with DOSCALLS.DLL below) - previously (see git
+# history on lx_builder_add_export/lx_create_dll) the export data was
+# captured in memory but never written to the file at all, and there was
+# no loader for the DLL side regardless.
+function(add_lx_dll NAME)
+    cmake_parse_arguments(LXDLL "" "" "SOURCES;EXPORTS" ${ARGN})
+    # CMake lists interpolate with ';' - inside the bash -c "..." string
+    # below, literal semicolons would be parsed as shell statement
+    # separators (splitting one command into many, each failing), not as
+    # word breaks. Join with spaces first so it reads as ordinary shell
+    # arguments.
+    list(JOIN LXDLL_EXPORTS " " LXDLL_EXPORTS)
+    set(OUT_DIR ${CMAKE_CURRENT_BINARY_DIR})
+    set(ELF_FILE ${OUT_DIR}/${NAME}.elf)
+    set(CODE_BIN_FILE ${OUT_DIR}/${NAME}.code.bin)
+    set(DATA_BIN_FILE ${OUT_DIR}/${NAME}.data.bin)
+    set(DLL_FILE ${OUT_DIR}/${NAME}.DLL)
+
+    add_custom_command(
+            OUTPUT ${DLL_FILE}
+            COMMAND ${CMAKE_C_COMPILER} ${ARCH_FLAGS}
+            -fno-stack-protector
+            -I${CMAKE_CURRENT_SOURCE_DIR}/kernel/include
+            -I${CMAKE_CURRENT_SOURCE_DIR}/fs/ext4
+            -I${CMAKE_CURRENT_SOURCE_DIR}/fs/btrfs
+            -I${CMAKE_CURRENT_SOURCE_DIR}/os2api
+            -I${CMAKE_CURRENT_SOURCE_DIR}/dos
+            ${LX_LINKER_FLAGS} -T ${LX_DLL_LD}
+            -o ${ELF_FILE}
+            ${LXDLL_SOURCES}
+            # Extract code (.text+.rodata) and data (.data+.bss) as
+            # separate binaries, not one combined blob - lx_dll.ld pads a
+            # gap between them up to the fixed 2MB W^X split point
+            # (LX_DLL_CODE_REGION_SIZE), which a single `objcopy -O binary`
+            # over the whole address range would otherwise store as
+            # literal zero bytes.
+            COMMAND ${CMAKE_OBJCOPY} -O binary --only-section=.text --only-section=.rodata ${ELF_FILE} ${CODE_BIN_FILE}
+            COMMAND ${CMAKE_OBJCOPY} -O binary --only-section=.data --only-section=.bss ${ELF_FILE} ${DATA_BIN_FILE}
+            COMMAND bash -c "\"${MAKEDLL}\" \"${CODE_BIN_FILE}\" \"${DATA_BIN_FILE}\" \"${DLL_FILE}\" ${NAME} $(\"${Python3_EXECUTABLE}\" \"${LX_EXPORT_OFFSETS_SCRIPT}\" \"${ELF_FILE}\" ${LX_DLL_LOAD_BASE_HEX} ${LXDLL_EXPORTS} -- \"${LLVM_NM_EXECUTABLE}\")"
+            DEPENDS ${LXDLL_SOURCES} ${LX_DLL_LD}
+            WORKING_DIRECTORY ${OUT_DIR}
+            COMMENT "Building LX DLL ${NAME}.DLL"
+            VERBATIM
+    )
+    add_custom_target(${NAME}_lxdll ALL DEPENDS ${DLL_FILE})
+    add_dependencies(${NAME}_lxdll lx_host_tools)
+endfunction()
+
+# ── DOSCALLS.DLL ─────────────────────────────────────────────────────────────
+# The os2api/ DOS-call bridge (DosOpen, DosRead, KernVMAlloc, ...),
+# generated as a real OS/2 LX DLL via add_lx_dll() above, exporting the
+# full public API declared in os2api/os2_api.h. It needs its own copy of
+# the VFS/blkdev/ext4/btrfs stack it bridges onto (self-contained, same
+# reasoning as CMD.EXE's own private copy - see cmd_main.c's header
+# comment) and initializes it lazily, on whichever Dos* call touches
+# storage first (see os2_api_ensure_init() in os2_api.c) - real OS/2
+# programs never had to initialize DOSCALLS.DLL themselves either.
+set(DOSCALLS_DLL_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/os2api/os2_api.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/vfs.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/blkdev.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/gpt.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/fat32.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/string.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/kprintf.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/kio.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/uart.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/mem.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/fs/ext4/ext4.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/fs/ext4/ext4_write.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/fs/btrfs/btrfs.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/fs/btrfs/btrfs_write.c
+)
+
+add_lx_dll(DOSCALLS
+        SOURCES ${DOSCALLS_DLL_SOURCES}
+        EXPORTS
+        DosOpen DosClose DosRead DosWrite DosChgFilePtr
+        DosFindFirst DosFindNext DosFindClose
+        DosQueryPathInfo DosDelete DosMove DosCreateDir DosDeleteDir
+        DosSetCurrentDir DosQueryCurrentDir DosResolvePath
+        vfs_to_os2_error os2_to_vfs_attrs vfs_to_os2_attrs
+        KernThunkStackTo16 KernThunkStackTo32 KernThunkStackTo64
+        KernSerialize16BitDD KernUnSerialize16BitDD
+        KernCopyIn KernCopyOut
+        KernVMAlloc KernVMFree KernVMLock KernVMUnlock
+        KernLinToPageList KernVMSetMem KernSelToFlat KernDynamicAPI
+        KernRASSysTrace
+)
+
+# ── DOSCALLS.DLL embedding ───────────────────────────────────────────────────
+# CMD.EXE and KAYTEVM.EXE below don't statically link os2_api.c anymore -
+# instead they embed a build-time copy of DOSCALLS.DLL (this .incbin
+# pattern mirrors "Embed HELLO.EXE..." further down for the kernel's own
+# LX-loader self-test) and load it via kernel/src/lx_dll_loader.c at
+# startup (os2api/os2_api_import.c), resolving DosOpen/DosRead/... by
+# name against its real exports - see os2api/os2_api_import.h.
+set(DOSCALLS_DLL_PATH ${CMAKE_CURRENT_BINARY_DIR}/DOSCALLS.DLL)
+set(DOSCALLS_EMBED_S ${CMAKE_CURRENT_BINARY_DIR}/doscalls_embed.S)
+set(DOSCALLS_EMBED_TEMPLATE ${CMAKE_CURRENT_BINARY_DIR}/doscalls_embed.configured.S)
+configure_file(${CMAKE_SOURCE_DIR}/os2api/doscalls_embed.S.in ${DOSCALLS_EMBED_TEMPLATE} @ONLY)
+
+# configure_file() only substitutes @DOSCALLS_DLL_PATH@ once, at configure
+# time - it doesn't track DOSCALLS.DLL's actual byte content, so it alone
+# can't make the .incbin'd payload staleness-tracked (same issue/fix as
+# lx_test_payload.S below). A real add_custom_command OUTPUT, depending on
+# DOSCALLS_DLL_PATH, gives a genuine dependency edge: rebuilding
+# DOSCALLS.DLL re-copies this file, which cascades into reassembling and
+# relinking CMD.EXE/KAYTEVM.EXE.
+add_custom_command(
+        OUTPUT ${DOSCALLS_EMBED_S}
+        COMMAND ${CMAKE_COMMAND} -E copy ${DOSCALLS_EMBED_TEMPLATE} ${DOSCALLS_EMBED_S}
+        DEPENDS ${DOSCALLS_EMBED_TEMPLATE} ${DOSCALLS_DLL_PATH}
+        COMMENT "Refreshing doscalls_embed.S (tracks DOSCALLS.DLL)"
+)
+
 # ── CMD.EXE (standalone DOS command interpreter) ──────────────────────────────
 # Same dos_shell_dispatch() the in-kernel shell uses (kernel/src/main.c),
 # built as its own flat freestanding ELF with this project's normal
@@ -537,48 +929,134 @@ endif()
 set(CMD_EXE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/dos/cmd_main.c
         ${CMAKE_CURRENT_SOURCE_DIR}/dos/dos_commands.c
-        ${CMAKE_CURRENT_SOURCE_DIR}/os2api/os2_api.c
-        ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/vfs.c
-        ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/blkdev.c
-        ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/gpt.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/os2api/os2_api_import.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/lx_dll_loader.c
         ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/string.c
         ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/kprintf.c
         ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/kio.c
         ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/uart.c
-        ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/mem.c
-        ${CMAKE_CURRENT_SOURCE_DIR}/fs/ext4/ext4.c
-        ${CMAKE_CURRENT_SOURCE_DIR}/fs/btrfs/btrfs.c
-        ${CMAKE_CURRENT_SOURCE_DIR}/fs/btrfs/btrfs_write.c
+        ${DOSCALLS_EMBED_S}
 )
 
 set(CMD_EXE_ELF ${CMAKE_CURRENT_BINARY_DIR}/CMD.elf)
-set(CMD_EXE_BIN ${CMAKE_CURRENT_BINARY_DIR}/CMD.bin)
+set(CMD_EXE_CODE_BIN ${CMAKE_CURRENT_BINARY_DIR}/CMD.code.bin)
+set(CMD_EXE_DATA_BIN ${CMAKE_CURRENT_BINARY_DIR}/CMD.data.bin)
 set(CMD_EXE_FILE ${CMAKE_CURRENT_BINARY_DIR}/CMD.EXE)
 
 add_custom_command(
         OUTPUT ${CMD_EXE_FILE}
         COMMAND ${CMAKE_C_COMPILER} ${ARCH_FLAGS}
         -fno-stack-protector
+        -DOS2_API_USE_IMPORT_TABLE
         -I${CMAKE_CURRENT_SOURCE_DIR}/kernel/include
         -I${CMAKE_CURRENT_SOURCE_DIR}/fs/ext4
         -I${CMAKE_CURRENT_SOURCE_DIR}/fs/btrfs
         -I${CMAKE_CURRENT_SOURCE_DIR}/os2api
         -I${CMAKE_CURRENT_SOURCE_DIR}/dos
-        -fuse-ld=lld -T ${LX_APP_LD}
+        ${LX_LINKER_FLAGS} -T ${LX_APP_LD}
         -o ${CMD_EXE_ELF}
         ${CMD_EXE_SOURCES}
-        COMMAND ${CMAKE_OBJCOPY} -O binary ${CMD_EXE_ELF} ${CMD_EXE_BIN}
-        COMMAND bash -c "\"${MAKEEXE}\" \"${CMD_EXE_BIN}\" \"${CMD_EXE_FILE}\" $(\"${Python3_EXECUTABLE}\" \"${LX_ENTRY_OFFSET_SCRIPT}\" \"${CMD_EXE_ELF}\" main ${LX_LOAD_BASE_HEX} \"${LLVM_NM_EXECUTABLE}\")"
+        COMMAND ${CMAKE_OBJCOPY} -O binary --only-section=.text --only-section=.rodata ${CMD_EXE_ELF} ${CMD_EXE_CODE_BIN}
+        COMMAND ${CMAKE_OBJCOPY} -O binary --only-section=.data --only-section=.bss ${CMD_EXE_ELF} ${CMD_EXE_DATA_BIN}
+        COMMAND bash -c "\"${MAKEEXE}\" \"${CMD_EXE_CODE_BIN}\" \"${CMD_EXE_DATA_BIN}\" \"${CMD_EXE_FILE}\" $(\"${Python3_EXECUTABLE}\" \"${LX_ENTRY_OFFSET_SCRIPT}\" \"${CMD_EXE_ELF}\" main ${LX_LOAD_BASE_HEX} \"${LLVM_NM_EXECUTABLE}\")"
         DEPENDS ${CMD_EXE_SOURCES} ${LX_APP_LD}
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
         COMMENT "Building standalone CMD.EXE (OS/2 LX) from dos/ command set"
         VERBATIM
 )
 add_custom_target(cmd_exe ALL DEPENDS ${CMD_EXE_FILE})
-add_dependencies(cmd_exe lx_host_tools)
+add_dependencies(cmd_exe lx_host_tools DOSCALLS_lxdll)
+
+# ── KAYTEVM.EXE (Kayte bytecode interpreter) ────────────────────────────────
+# kayte/kaytevm_main.c executes .bytecode files produced by the kayte host
+# tool (kayte --compile, built above by kayte/CMakeLists.txt) - see that
+# file's header comment for the on-disk format and opcode set. Built the
+# same way as CMD.EXE just above: this project's own freestanding
+# aarch64-none-elf clang/lld cross-toolchain, linked at the LX app base
+# address, wrapped as a genuine OS/2 LX KAYTEVM.EXE via makeexe.
+set(KAYTEVM_EXE_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/kayte/kaytevm_main.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/dos/dos_commands.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/os2api/os2_api_import.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/lx_dll_loader.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/string.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/kprintf.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/kio.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/uart.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/mem.c
+        ${DOSCALLS_EMBED_S}
+)
+
+set(KAYTEVM_EXE_ELF ${CMAKE_CURRENT_BINARY_DIR}/KAYTEVM.elf)
+set(KAYTEVM_EXE_CODE_BIN ${CMAKE_CURRENT_BINARY_DIR}/KAYTEVM.code.bin)
+set(KAYTEVM_EXE_DATA_BIN ${CMAKE_CURRENT_BINARY_DIR}/KAYTEVM.data.bin)
+set(KAYTEVM_EXE_FILE ${CMAKE_CURRENT_BINARY_DIR}/KAYTEVM.EXE)
+
+add_custom_command(
+        OUTPUT ${KAYTEVM_EXE_FILE}
+        COMMAND ${CMAKE_C_COMPILER} ${ARCH_FLAGS}
+        -fno-stack-protector
+        -DOS2_API_USE_IMPORT_TABLE
+        -I${CMAKE_CURRENT_SOURCE_DIR}/kernel/include
+        -I${CMAKE_CURRENT_SOURCE_DIR}/fs/ext4
+        -I${CMAKE_CURRENT_SOURCE_DIR}/fs/btrfs
+        -I${CMAKE_CURRENT_SOURCE_DIR}/os2api
+        -I${CMAKE_CURRENT_SOURCE_DIR}/dos
+        ${LX_LINKER_FLAGS} -T ${LX_APP_LD}
+        -o ${KAYTEVM_EXE_ELF}
+        ${KAYTEVM_EXE_SOURCES}
+        COMMAND ${CMAKE_OBJCOPY} -O binary --only-section=.text --only-section=.rodata ${KAYTEVM_EXE_ELF} ${KAYTEVM_EXE_CODE_BIN}
+        COMMAND ${CMAKE_OBJCOPY} -O binary --only-section=.data --only-section=.bss ${KAYTEVM_EXE_ELF} ${KAYTEVM_EXE_DATA_BIN}
+        COMMAND bash -c "\"${MAKEEXE}\" \"${KAYTEVM_EXE_CODE_BIN}\" \"${KAYTEVM_EXE_DATA_BIN}\" \"${KAYTEVM_EXE_FILE}\" $(\"${Python3_EXECUTABLE}\" \"${LX_ENTRY_OFFSET_SCRIPT}\" \"${KAYTEVM_EXE_ELF}\" main ${LX_LOAD_BASE_HEX} \"${LLVM_NM_EXECUTABLE}\")"
+        DEPENDS ${KAYTEVM_EXE_SOURCES} ${LX_APP_LD}
+        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+        COMMENT "Building standalone KAYTEVM.EXE (OS/2 LX) - Kayte bytecode interpreter"
+        VERBATIM
+)
+add_custom_target(kaytevm_exe ALL DEPENDS ${KAYTEVM_EXE_FILE})
+add_dependencies(kaytevm_exe lx_host_tools DOSCALLS_lxdll)
+
+endif()
+# ═════════════════════════════════════════════════════════════════════════════
+# End AArch64-only section
+# ═════════════════════════════════════════════════════════════════════════════
 
 # ── Final kernel image ────────────────────────────────────────────────────────
-if(TARGET_PLATFORM STREQUAL "RPI3")
+if(TARGET_ARCH STREQUAL "arm" OR TARGET_ARCH STREQUAL "riscv64")
+    # BeagleBone Black / BeagleV-Ahead: a raw image carrying a Linux-style
+    # boot header (zImage for bootz, RISC-V Image for booti - see
+    # bbb_boot.S / beaglev_boot.S), plus a uEnv.txt that loads and boots it
+    # from the SD card's first (FAT) partition.
+    add_custom_target(${KERNEL_IMAGE} ALL
+            COMMAND ${CMAKE_OBJCOPY} -O binary
+            $<TARGET_FILE:os2warp_kernel>
+            ${CMAKE_BINARY_DIR}/${KERNEL_IMAGE}
+            DEPENDS os2warp_kernel
+            COMMENT "Building ${KERNEL_IMAGE} for ${PLATFORM_NAME}"
+    )
+
+    add_custom_target(kernel-image DEPENDS ${KERNEL_IMAGE})
+
+    if(TARGET_PLATFORM STREQUAL "QEMU_RISCV")
+        install(FILES ${CMAKE_BINARY_DIR}/${KERNEL_IMAGE}
+                DESTINATION .
+                PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
+        )
+    else()
+        if(TARGET_PLATFORM STREQUAL "BBB")
+            set(UENV_TEMPLATE ${CMAKE_SOURCE_DIR}/bootloader/bbb_uEnv.txt.in)
+        else()
+            set(UENV_TEMPLATE ${CMAKE_SOURCE_DIR}/bootloader/beaglev_ahead_uEnv.txt.in)
+        endif()
+        configure_file(${UENV_TEMPLATE} ${CMAKE_BINARY_DIR}/uEnv.txt @ONLY)
+
+        install(FILES ${CMAKE_BINARY_DIR}/${KERNEL_IMAGE} ${CMAKE_BINARY_DIR}/uEnv.txt
+                DESTINATION .
+                PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
+        )
+    endif()
+
+elseif(TARGET_PLATFORM STREQUAL "RPI3")
     # Raspberry Pi: kernel8.img
     add_custom_target(kernel8.img ALL
             COMMAND ${CMAKE_OBJCOPY} -O binary
@@ -702,7 +1180,10 @@ if(TARGET_PLATFORM STREQUAL "QEMU")
     message(STATUS "Acceleration: ${QEMU_ACCEL}")
 
     if(QEMU_EXECUTABLE)
-        # Run kernel directly (NO UEFI - Fast boot)
+        # Run kernel directly (NO UEFI - Fast boot), with the real BOOT
+        # (FAT) + C: (btrfs/ext4) test disk injected at blkdev.c's
+        # PRELOADED_DISK_ADDR (see run-testdisk below) - without it disk0
+        # is a zeroed RAM window and no BOOT/C:/CONFIG.SYS is found.
         add_custom_target(run
                 COMMAND ${QEMU_EXECUTABLE}
                 -machine virt,gic-version=3
@@ -711,11 +1192,33 @@ if(TARGET_PLATFORM STREQUAL "QEMU")
                 -m 2G
                 -smp 4
                 -kernel ${CMAKE_BINARY_DIR}/os2warp.img
+                -device loader,file=${CMAKE_BINARY_DIR}/testdisk.img,addr=0x44000000,force-raw=on
                 -serial mon:stdio
                 -display none
                 -nographic
-                DEPENDS os2warp.img
-                COMMENT "Running OS/2 kernel in QEMU"
+                DEPENDS os2warp.img mktestdisk
+                COMMENT "Running OS/2 kernel in QEMU with the real test disk"
+        )
+
+        # Same as run, but with EL2 present (virtualization=on), so the
+        # kernel's hypervisor (kernel/src/hyp.c) is usable - type VM TEST.
+        # Always TCG: HVF can't give a guest EL2 on this machine class, and
+        # cortex-a72 keeps EL2 plain ARMv8.0 (no VHE) like real hardware
+        # this is aimed at.
+        add_custom_target(run-vm
+                COMMAND ${QEMU_EXECUTABLE}
+                -machine virt,gic-version=3,virtualization=on
+                -cpu cortex-a72
+                -accel tcg
+                -m 2G
+                -smp 1
+                -kernel ${CMAKE_BINARY_DIR}/os2warp.img
+                -device loader,file=${CMAKE_BINARY_DIR}/testdisk.img,addr=0x44000000,force-raw=on
+                -serial mon:stdio
+                -display none
+                -nographic
+                DEPENDS os2warp.img mktestdisk
+                COMMENT "Running OS/2 kernel in QEMU with EL2 (type VM TEST to boot the hello guest)"
         )
 
         # Run with a real display (Cocoa window on macOS), a ramfb device
@@ -727,6 +1230,11 @@ if(TARGET_PLATFORM STREQUAL "QEMU")
         # the "virt" machine defaults virtio-mmio to legacy (v1) transport,
         # which kernel/src/gui/virtio_input.c (correctly) doesn't speak.
         # See kernel/src/gui/ramfb.c and kernel/src/gui/virtio_input.c.
+        #
+        # Also injects the real BOOT (FAT) + C: (btrfs/ext4) test disk at
+        # blkdev.c's PRELOADED_DISK_ADDR (see run-testdisk below) so the
+        # GUI session mounts a real filesystem instead of failing with
+        # "Bad superblock magic" against the zeroed ramdisk window.
         add_custom_target(run-gui
                 COMMAND ${QEMU_EXECUTABLE}
                 -machine virt,gic-version=3
@@ -736,14 +1244,15 @@ if(TARGET_PLATFORM STREQUAL "QEMU")
                 -smp 4
                 -global virtio-mmio.force-legacy=false
                 -kernel ${CMAKE_BINARY_DIR}/os2warp.img
+                -device loader,file=${CMAKE_BINARY_DIR}/testdisk.img,addr=0x44000000,force-raw=on
                 -device virtio-gpu-device
                 -device ramfb
                 -device virtio-keyboard-device
                 -device virtio-tablet-device
                 -serial mon:stdio
                 -display cocoa
-                DEPENDS os2warp.img
-                COMMENT "Running OS/2 kernel in QEMU with a real display (type GUI; Cmd+Escape switches workplaces, mouse is live)"
+                DEPENDS os2warp.img mktestdisk
+                COMMENT "Running OS/2 kernel in QEMU with a real display and real test disk (type GUI; Cmd+Escape switches workplaces, mouse is live)"
         )
 
         # Run kernel directly with disk image
@@ -764,20 +1273,32 @@ if(TARGET_PLATFORM STREQUAL "QEMU")
                 COMMENT "Running OS/2 kernel with disk image"
         )
 
-        # Build the small real ext4 test disk (scripts/mktestdisk.sh) —
+        # Partition 2 (C:, mounted at /) filesystem for the test disk -
+        # BOOT is always FAT16.
+        set(TESTDISK_C_FS "btrfs" CACHE STRING "Test disk C: filesystem (btrfs or ext4)")
+        set_property(CACHE TESTDISK_C_FS PROPERTY STRINGS btrfs ext4)
+
+        # Build the small real test disk (scripts/mktestdisk.sh) —
         # needed because blkdev.c has no real VirtIO block driver yet, only
         # a fixed-physical-address "preloaded disk" window that QEMU's
         # -device loader can inject a real image into (see run-testdisk).
         add_custom_target(mktestdisk
-                COMMAND ${CMAKE_SOURCE_DIR}/scripts/mktestdisk.sh ${CMAKE_BINARY_DIR}/testdisk.img
+                COMMAND ${CMAKE_COMMAND} -E env C_FS=${TESTDISK_C_FS}
+                        ${CMAKE_SOURCE_DIR}/scripts/mktestdisk.sh ${CMAKE_BINARY_DIR}/testdisk.img
                 WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-                COMMENT "Building small ext4 test disk (CMD.EXE/HELLO.EXE/README.TXT)"
+                COMMENT "Building GPT test disk: BOOT (FAT16) + C: (${TESTDISK_C_FS})"
         )
         if(TARGET cmd_exe)
             add_dependencies(mktestdisk cmd_exe)
         endif()
         if(TARGET HELLO_lxexe)
             add_dependencies(mktestdisk HELLO_lxexe)
+        endif()
+        if(TARGET kaytevm_exe)
+            add_dependencies(mktestdisk kaytevm_exe)
+        endif()
+        if(TARGET kayte_host_tool)
+            add_dependencies(mktestdisk kayte_host_tool)
         endif()
 
         # Run with the test disk injected at blkdev.c's preloaded address —
@@ -898,6 +1419,90 @@ if(TARGET_PLATFORM STREQUAL "QEMU")
 
 endif() # End QEMU-only section
 
+# ── QEMU RISC-V Targets (only for QEMU_RISCV platform) ────────────────────────
+if(TARGET_PLATFORM STREQUAL "QEMU_RISCV")
+    find_program(QEMU_RISCV_EXECUTABLE
+            NAMES qemu-system-riscv64
+            PATHS /usr/bin /usr/local/bin /opt/homebrew/bin /opt/local/bin
+    )
+    if(NOT QEMU_RISCV_EXECUTABLE)
+        message(WARNING "qemu-system-riscv64 not found - 'make run' will not work")
+        if(HOST_PLATFORM STREQUAL "macOS")
+            message(STATUS "Install with: brew install qemu")
+        else()
+            message(STATUS "Install with: sudo apt install qemu-system-misc (Ubuntu/Debian)")
+        endif()
+    endif()
+
+    # A small MBR test card (scripts/mksdcard.py): a FAT32 boot partition
+    # (C:) with CONFIG.SYS, README.TXT and a subdirectory, plus an ext4
+    # partition when mke2fs is available. Only built when missing, so files
+    # the kernel writes to it survive between runs (delete it to reset).
+    set(SDCARD_IMAGE ${CMAKE_BINARY_DIR}/sdcard.img)
+    find_program(MKE2FS_EXECUTABLE
+            NAMES mke2fs mkfs.ext4
+            PATHS /opt/homebrew/opt/e2fsprogs/sbin /usr/local/opt/e2fsprogs/sbin /sbin /usr/sbin
+    )
+    if(MKE2FS_EXECUTABLE)
+        set(MKSDCARD_EXT4_ARGS --mke2fs ${MKE2FS_EXECUTABLE})
+    else()
+        set(MKSDCARD_EXT4_ARGS "")
+        message(STATUS "mke2fs not found - the QEMU_RISCV test SD card gets a FAT32 partition only")
+    endif()
+    add_custom_command(
+            OUTPUT ${SDCARD_IMAGE}
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/mksdcard.py
+                    ${MKSDCARD_EXT4_ARGS} ${SDCARD_IMAGE}
+            DEPENDS ${CMAKE_SOURCE_DIR}/scripts/mksdcard.py
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            COMMENT "Building QEMU RISC-V test SD card (sdcard.img)"
+    )
+    add_custom_target(mksdcard DEPENDS ${SDCARD_IMAGE})
+
+    if(QEMU_RISCV_EXECUTABLE)
+        set(QEMU_RISCV_ARGS
+                -machine virt
+                -smp 4
+                -m 512M
+                -bios default
+                -kernel ${CMAKE_BINARY_DIR}/${KERNEL_IMAGE}
+                -device sdhci-pci
+                -nographic
+                -serial mon:stdio
+        )
+        set(QEMU_RISCV_SD_ARGS
+                -drive if=none,id=sd0,file=${SDCARD_IMAGE},format=raw
+                -device sd-card,drive=sd0
+        )
+
+        # Boot with the test SD card - DIR/TYPE/CD then work on real files.
+        # Ctrl-A X quits QEMU.
+        add_custom_target(run
+                COMMAND ${QEMU_RISCV_EXECUTABLE} ${QEMU_RISCV_ARGS} ${QEMU_RISCV_SD_ARGS}
+                DEPENDS ${KERNEL_IMAGE} ${SDCARD_IMAGE}
+                USES_TERMINAL
+                COMMENT "Running OS/2 kernel in QEMU riscv64 virt with the test SD card (Ctrl-A X quits)"
+        )
+
+        # Same, with an empty SD slot.
+        add_custom_target(run-nocard
+                COMMAND ${QEMU_RISCV_EXECUTABLE} ${QEMU_RISCV_ARGS}
+                DEPENDS ${KERNEL_IMAGE}
+                USES_TERMINAL
+                COMMENT "Running OS/2 kernel in QEMU riscv64 virt without an SD card"
+        )
+
+        # Paused at reset, waiting for GDB/LLDB on :1234, e.g.
+        #   lldb build-qemu-riscv/kernel/os2warp_kernel -o 'gdb-remote 1234'
+        add_custom_target(debug
+                COMMAND ${QEMU_RISCV_EXECUTABLE} ${QEMU_RISCV_ARGS} ${QEMU_RISCV_SD_ARGS} -s -S
+                DEPENDS ${KERNEL_IMAGE} ${SDCARD_IMAGE}
+                USES_TERMINAL
+                COMMENT "Debug mode - waiting for GDB/LLDB on :1234"
+        )
+    endif()
+endif()
+
 # ── Raspberry Pi Targets (only for RPI3 platform) ─────────────────────────────
 if(TARGET_PLATFORM STREQUAL "RPI3")
     # SD card preparation script
@@ -938,8 +1543,10 @@ message(STATUS "Platform:        ${PLATFORM_NAME}")
 message(STATUS "Host:            ${HOST_PLATFORM}")
 if(USE_KCC)
     message(STATUS "Compiler:        KCC (Kayte C Compiler) for aarch64")
+elseif(USING_CLANG_TOOLCHAIN)
+    message(STATUS "Compiler:        clang -target ${ARCH_TRIPLE}")
 else()
-    message(STATUS "Compiler:        clang -target aarch64-none-elf")
+    message(STATUS "Compiler:        ${CMAKE_C_COMPILER_ID} (${CMAKE_C_COMPILER})")
 endif()
 message(STATUS "Load Address:    ${KERNEL_LOAD_ADDR}")
 message(STATUS "Heap Size:       ${HEAP_SIZE}")
@@ -957,9 +1564,13 @@ if(TARGET_PLATFORM STREQUAL "QEMU")
     if(USE_KCC)
         message(STATUS "  Currently using: KCC")
         message(STATUS "  Switch to clang: cmake -DUSE_KCC=OFF ..")
-    else()
+    elseif(USING_CLANG_TOOLCHAIN)
         message(STATUS "  Currently using: clang (default)")
         message(STATUS "  Switch to KCC:   cmake -DUSE_KCC=ON ..")
+        message(STATUS "  Switch to GCC:   cmake -DCMAKE_TOOLCHAIN_FILE=cmake/arm64-baremetal-toolchain.cmake ..")
+    else()
+        message(STATUS "  Currently using: ${CMAKE_C_COMPILER_ID} (${CMAKE_C_COMPILER})")
+        message(STATUS "  Switch to clang: cmake --fresh -B ${CMAKE_BINARY_DIR} ..")
     endif()
 
     message(STATUS "")
@@ -975,6 +1586,22 @@ elseif(TARGET_PLATFORM STREQUAL "RPI3")
     message(STATUS "")
     message(STATUS "To switch to QEMU:")
     message(STATUS "  cmake -DTARGET_PLATFORM=QEMU ..")
+elseif(TARGET_PLATFORM STREQUAL "QEMU_RISCV")
+    message(STATUS "")
+    message(STATUS "QEMU RISC-V targets available:")
+    message(STATUS "  make run        - Run in QEMU with the test SD card (Ctrl-A X quits)")
+    message(STATUS "  make run-nocard - Run with an empty SD slot")
+    message(STATUS "  make debug      - Debug mode (GDB :1234)")
+    message(STATUS "  make mksdcard   - (Re)build sdcard.img if missing")
+    message(STATUS "")
+    message(STATUS "To switch platform: cmake -DTARGET_PLATFORM=QEMU|RPI3|BBB|BEAGLEV_AHEAD|QEMU_RISCV ..")
+else()
+    message(STATUS "")
+    message(STATUS "${PLATFORM_NAME} targets available:")
+    message(STATUS "  make            - Build ${KERNEL_IMAGE} and uEnv.txt")
+    message(STATUS "")
+    message(STATUS "Copy both to the SD card's first (FAT) partition.")
+    message(STATUS "To switch platform: cmake -DTARGET_PLATFORM=QEMU|RPI3|BBB|BEAGLEV_AHEAD|QEMU_RISCV ..")
 endif()
 
 message(STATUS "═══════════════════════════════════════════════════════════")

@@ -29,6 +29,12 @@ int blkdev_register(blkdev_t *dev)
     return 0;
 }
 
+blkdev_t *blkdev_get_by_index(int index)
+{
+    if (index < 0 || index >= blkdev_count) return NULL;
+    return blkdevs[index];
+}
+
 blkdev_t *blkdev_get_by_name(const char *name)
 {
     for (int i = 0; i < blkdev_count; i++) {

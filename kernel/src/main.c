@@ -5,6 +5,7 @@
 #include "ifs_loader.h"
 #include "../../fs/ext4/ext4.h"
 #include "../../fs/btrfs/btrfs.h"
+#include "fat32.h"
 #include "basic.h"
 #include "gui/framebuffer.h"
 #include "gui/wayland.h"
@@ -13,6 +14,9 @@
 #include "lx_loader.h"
 #include "ai.h"
 #include "string.h"
+#include "unixroot.h"
+#include "kprintf.h"
+#include "hyp.h"
 
 
 /* Memory heap configuration */
@@ -285,6 +289,7 @@ static void cmd_help(void)
     uart_puts("  BASIC     - Start BASIC interpreter\r\n");
     uart_puts("  AI        - On-box assistant (AI STATUS/STATS/TIP/HELP)\r\n");
     uart_puts("  DEBUG     - DEBUG.COM-style memory monitor (type ? inside it)\r\n");
+    uart_puts("  VM        - EL2 hypervisor (VM STATUS, VM TEST runs a hello guest)\r\n");
     uart_puts("  EXIT      - Exit to idle loop\r\n");
     uart_puts("  HELP      - Display this help\r\n");
     uart_puts("\r\n");
@@ -405,6 +410,11 @@ static void execute_command(char *cmdline)
     else if (my_strcmp(argv[0], "GUI") == 0) {
         cmd_gui();
     }
+    else if (my_strcmp(argv[0], "VM") == 0) {
+        if (argc > 1)
+            str_toupper(argv[1]);
+        cmd_vm(argc, argv);
+    }
     else {
         uart_puts("\r\nBad command or file name: ");
         uart_puts(argv[0]);
@@ -490,6 +500,11 @@ void kernel_main(void)
 
     scheduler_init();
     uart_puts("[SCHED]  Scheduler    : initialized\r\n");
+
+    if (hyp_init() == 0)
+        uart_puts("[HYP]    EL2 hypervisor : ready (type VM TEST)\r\n");
+    else if (hyp_boot_el == 2)
+        uart_puts("[HYP]    EL2 hypervisor : bring-up FAILED\r\n");
     uart_puts("DEBUG: After scheduler_init\r\n");  // ← Add these
 
     uart_puts("[IPC]    Semaphores   : stub\r\n");
@@ -515,6 +530,13 @@ void kernel_main(void)
         uart_puts("[IFS]    ERROR: Failed to register ext4 driver\r\n");
     }
 
+    uart_puts("[IFS]    Registering FAT driver...\r\n");
+    if (ifs_register_builtin("FAT", fat32_init, &vfs_fat32_fs) == 0) {
+        uart_puts("[IFS]    FAT driver registered successfully\r\n");
+    } else {
+        uart_puts("[IFS]    ERROR: Failed to register FAT driver\r\n");
+    }
+
     uart_puts("[IFS]    Registering btrfs driver...\r\n");
     if (ifs_register_builtin("BTRFS", btrfs_init, btrfs_get_fs()) == 0) {
         uart_puts("[IFS]    btrfs driver registered successfully\r\n");
@@ -522,12 +544,64 @@ void kernel_main(void)
         uart_puts("[IFS]    ERROR: Failed to register btrfs driver\r\n");
     }
 
-    /* TODO: Load CONFIG.SYS from ramdisk or boot partition */
-    /* For now, manually initialize both with default parameters; each
-     * looks for its own block device and no-ops if it isn't present. */
+    /* For now, manually initialize all three with default parameters; each
+     * looks for its own block device and no-ops if it isn't present. FAT
+     * takes the "BOOT" partition (/BOOT); ext4 and btrfs both try "C" (/)
+     * and only the one whose superblock matches mounts it. */
     uart_puts("[IFS]    Loading drivers with default parameters...\r\n");
+    fat32_init(NULL);
     ext4_init("/CACHE:1024");
     btrfs_init(NULL);
+
+    /* ── CONFIG.SYS / UNIXROOT ────────────────────────────────────────────
+     * Root is now mounted at "/" (see ext4_init/btrfs_init above - that
+     * mount IS drive C:, per unixroot.h). Load CONFIG.SYS from it if
+     * present, so "SET UNIXROOT=..." / "SET USER=..." there can steer the
+     * Unix-style directory tree unixroot_create_tree() lays down. */
+    {
+        extern void *mem_alloc(size_t size);
+        extern void mem_free(void *ptr);
+
+        uart_puts("[CFG]    Loading CONFIG.SYS...\r\n");
+
+        vfs_stat_t cfg_st;
+        /* ext4/btrfs names are case-sensitive; try the OS/2 spelling first */
+        static const char *const cfg_paths[] = {
+            "/CONFIG.SYS", "/config.sys", "/etc/config.sys", NULL
+        };
+        const char *cfg_path = NULL;
+        for (int i = 0; cfg_paths[i]; i++) {
+            if (vfs_stat(cfg_paths[i], &cfg_st) == VFS_OK) {
+                cfg_path = cfg_paths[i];
+                break;
+            }
+        }
+
+        char *cfg_text = NULL;
+        if (cfg_path && cfg_st.size > 0 && cfg_st.size < 65536) {
+            int cfg_fd = vfs_open(cfg_path, O_RDONLY);
+            if (cfg_fd >= 0) {
+                cfg_text = (char *)mem_alloc(cfg_st.size + 1);
+                if (cfg_text) {
+                    int n = vfs_read(cfg_fd, cfg_text, cfg_st.size);
+                    cfg_text[(n > 0) ? (uint32_t)n : 0u] = '\0';
+                }
+                vfs_close(cfg_fd);
+            }
+        }
+
+        if (cfg_text) {
+            kprintf("[CFG]    CONFIG.SYS loaded from %s\n", cfg_path);
+        } else {
+            kprintf("[CFG]    CONFIG.SYS not found; using UNIXROOT defaults\n");
+        }
+
+        unixroot_configure(cfg_text);
+        kprintf("[UNIXROOT] Drive: %s\n", unixroot_drive());
+        unixroot_create_tree();
+
+        if (cfg_text) mem_free(cfg_text);
+    }
 
     uart_puts("\r\n[KERNEL] Boot complete.\r\n");
     uart_puts("[VFS]    Filesystem ready for mounting\r\n");

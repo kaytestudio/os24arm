@@ -1,9 +1,9 @@
 var searchData=
 [
-  ['card_20preparation_0',['SD Card Preparation',['../index.html#autotoc_md15',1,'']]],
-  ['commands_1',['Commands',['../index.html#autotoc_md24',1,'6. Shell Commands'],['../index.html#autotoc_md53',1,'Quick Commands']]],
-  ['comparison_2',['Platform Comparison',['../index.html#autotoc_md35',1,'']]],
-  ['connection_3',['Serial Console Connection',['../index.html#autotoc_md16',1,'']]],
-  ['console_20connection_4',['Serial Console Connection',['../index.html#autotoc_md16',1,'']]],
-  ['contributing_5',['13. Contributing',['../index.html#autotoc_md59',1,'']]]
+  ['card_0',['SD card',['../index.html#autotoc_md14',1,'']]],
+  ['cmd_20exe_20and_20the_20lx_20loader_1',['8. CMD.EXE and the LX loader',['../index.html#autotoc_md27',1,'']]],
+  ['commands_2',['Commands',['../index.html#autotoc_md23',1,'']]],
+  ['comparison_3',['Platform comparison',['../index.html#autotoc_md39',1,'']]],
+  ['console_4',['Serial console',['../index.html#autotoc_md15',1,'']]],
+  ['contributing_5',['14. Contributing',['../index.html#autotoc_md44',1,'']]]
 ];

@@ -1,23 +1,4 @@
 var searchData=
 [
-  ['parse_5fadd_0',['parse_add',['../basic_8c.html#a5b4413c546fce4dc6a16e88e45228052',1,'basic.c']]],
-  ['parse_5fand_1',['parse_and',['../basic_8c.html#aee3b3b905c4ad284e4f27fe349f6c841',1,'basic.c']]],
-  ['parse_5fargs_2',['parse_args',['../shell_8c.html#aeef42fab757484dec2d5a7e01688b0d0',1,'shell.c']]],
-  ['parse_5fexpr_3',['parse_expr',['../basic_8c.html#ac3fde625530d45f02e65a6bd50da107f',1,'basic.c']]],
-  ['parse_5fnot_4',['parse_not',['../basic_8c.html#a8336edfcfa905cda38feda9c04032fa5',1,'basic.c']]],
-  ['parse_5for_5',['parse_or',['../basic_8c.html#aa140126b66bedcd3d8abdbbf9d9cf69f',1,'basic.c']]],
-  ['parse_5fpower_6',['parse_power',['../basic_8c.html#a03dafd4173a7c66602f1554172995086',1,'basic.c']]],
-  ['parse_5fprimary_7',['parse_primary',['../basic_8c.html#a6fc00366f0489eedcec9f7e2c62d3d88',1,'basic.c']]],
-  ['parse_5frel_8',['parse_rel',['../basic_8c.html#acf66edb4cfe5d09949cda9044876728b',1,'basic.c']]],
-  ['parse_5fstr_5fexpr_9',['parse_str_expr',['../basic_8c.html#aa50472885b3a3fc09a9629e896727de3',1,'basic.c']]],
-  ['parse_5fterm_10',['parse_term',['../basic_8c.html#a04720a0fadabbb58f3f90960ae604d58',1,'basic.c']]],
-  ['parse_5fxor_11',['parse_xor',['../basic_8c.html#a93583eaea8d30aaec4c397797e235930',1,'basic.c']]],
-  ['path_5fsplit_12',['path_split',['../fat32_8c.html#a58e500fa80a430bf85dca1067fec8a30',1,'fat32.c']]],
-  ['print_5fbanner_13',['print_banner',['../basic_8c.html#aa426a8be646bd381a914fef6ca0c9c4b',1,'print_banner(void):&#160;basic.c'],['../main_8c.html#aa426a8be646bd381a914fef6ca0c9c4b',1,'print_banner(void):&#160;main.c'],['../rpi__main_8c.html#aa426a8be646bd381a914fef6ca0c9c4b',1,'print_banner(void):&#160;rpi_main.c']]],
-  ['print_5fuint_14',['print_uint',['../kio_8c.html#a12911800b00b40ba65f67902646a3cef',1,'kio.c']]],
-  ['put_5fle16_15',['put_le16',['../fat32_8c.html#a834c76ebbbabe710f259414cec425e9e',1,'fat32.c']]],
-  ['put_5fle32_16',['put_le32',['../fat32_8c.html#afecdc706c0a2bd8edeed6e72583dd3db',1,'fat32.c']]],
-  ['putc_5fout_17',['putc_out',['../cli_8c.html#a4adb40d8519e9c8c23fb038491f7ee02',1,'cli.c']]],
-  ['putn_5fout_18',['putn_out',['../cli_8c.html#ab07d5d85dcd0c0c23ba7c875f584aecc',1,'cli.c']]],
-  ['puts_5fout_19',['puts_out',['../cli_8c.html#ac63084cf974e4a9ae0e4956e997dbb23',1,'cli.c']]]
+  ['os2_5fto_5fvfs_5fattrs_0',['os2_to_vfs_attrs',['../os2__api_8c.html#a230b85dc0b972309265837bc3d06e515',1,'os2_to_vfs_attrs(uint16_t os2_attrs):&#160;os2_api.c'],['../os2__api_8h.html#a230b85dc0b972309265837bc3d06e515',1,'os2_to_vfs_attrs(uint16_t os2_attrs):&#160;os2_api.c']]]
 ];

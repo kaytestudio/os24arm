@@ -44,6 +44,7 @@ struct blkdev {
 #define BLKDEV_READONLY   (1 << 0)
 #define BLKDEV_REMOVABLE  (1 << 1)
 #define BLKDEV_PARTITION  (1 << 2)
+#define BLKDEV_BOOT       (1 << 3)   /* MBR "active" partition (boot flag 0x80) */
 
 /* ── Block device management ────────────────────────────────────────────── */
 
@@ -61,6 +62,12 @@ int blkdev_register(blkdev_t *dev);
  * Get block device by name
  */
 blkdev_t *blkdev_get_by_name(const char *name);
+
+/**
+ * Get the index'th registered block device (registration order), or NULL
+ * past the end - for walking every device, e.g. a disk's partitions
+ */
+blkdev_t *blkdev_get_by_index(int index);
 
 /**
  * List all registered block devices (to kprintf)

@@ -1,4 +1,4 @@
 var searchData=
 [
-  ['6_20shell_20commands_0',['6. Shell Commands',['../index.html#autotoc_md24',1,'']]]
+  ['6_20the_20shell_0',['6. The shell',['../index.html#autotoc_md19',1,'']]]
 ];

@@ -12,9 +12,22 @@ typedef __builtin_va_list va_list;
 #define va_arg(ap, type)   __builtin_va_arg(ap, type)
 #define va_end(ap)         __builtin_va_end(ap)
 
-/* Helper to print a number */
+static void put_spaces(int n)
+{
+    while (n-- > 0)
+        uart_putc(' ');
+}
+
+/* Helper to print a number. A negative pad left-justifies it in -pad
+ * columns (the '-' flag), always with spaces. */
 static void print_num(unsigned long num, int base, int pad, char pad_char)
 {
+    int left = pad < 0;
+    if (left)
+        pad = -pad;
+    if (pad > 31)
+        pad = 31;
+
     char buf[32];
     int i = 0;
 
@@ -28,8 +41,10 @@ static void print_num(unsigned long num, int base, int pad, char pad_char)
         }
     }
 
+    int digits = i;
+
     /* Add padding */
-    while (i < pad) {
+    while (!left && i < pad) {
         buf[i++] = pad_char;
     }
 
@@ -37,6 +52,9 @@ static void print_num(unsigned long num, int base, int pad, char pad_char)
     while (i > 0) {
         uart_putc(buf[--i]);
     }
+
+    if (left)
+        put_spaces(pad - digits);
 }
 
 /* Simple printf implementation */
@@ -51,7 +69,12 @@ void kprintf(const char *fmt, ...)
 
             /* Handle padding */
             int pad = 0;
+            int left = 0;
             char pad_char = ' ';
+            if (*fmt == '-') {
+                left = 1;
+                fmt++;
+            }
             if (*fmt == '0') {
                 pad_char = '0';
                 fmt++;
@@ -59,6 +82,10 @@ void kprintf(const char *fmt, ...)
             while (*fmt >= '0' && *fmt <= '9') {
                 pad = pad * 10 + (*fmt - '0');
                 fmt++;
+            }
+            if (left) {
+                pad = -pad;      /* print_num's left-justify convention */
+                pad_char = ' ';  /* "%-05d" pads with spaces, as in C */
             }
 
             switch (*fmt) {
@@ -91,11 +118,17 @@ void kprintf(const char *fmt, ...)
                 }
                 case 's': {
                     const char *s = va_arg(args, const char*);
-                    if (s) {
-                        uart_puts(s);
-                    } else {
-                        uart_puts("(null)");
-                    }
+                    if (!s)
+                        s = "(null)";
+                    int len = 0;
+                    while (s[len])
+                        len++;
+                    int width = pad < 0 ? -pad : pad;
+                    if (pad > 0)
+                        put_spaces(width - len);
+                    uart_puts(s);
+                    if (pad < 0)
+                        put_spaces(width - len);
                     break;
                 }
                 case 'c': {

@@ -261,7 +261,7 @@ void ifs_list_drivers(void)
         for (int i = 0; i < ifs_count; i++) {
             kprintf("  [%d] %-12s", i + 1, ifs_drivers[i].name);
             if (ifs_drivers[i].module_base) {
-                kprintf(" (dynamic @ 0x%p)", ifs_drivers[i].module_base);
+                kprintf(" (dynamic @ %p)", ifs_drivers[i].module_base);
             } else {
                 kprintf(" (built-in)");
             }

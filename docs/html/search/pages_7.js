@@ -1,4 +1,4 @@
 var searchData=
 [
-  ['8_20architecture_0',['8. Architecture',['../index.html#autotoc_md34',1,'']]]
+  ['8_20cmd_20exe_20and_20the_20lx_20loader_0',['8. CMD.EXE and the LX loader',['../index.html#autotoc_md27',1,'']]]
 ];

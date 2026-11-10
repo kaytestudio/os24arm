@@ -8,9 +8,10 @@ var blkdev_8h =
     [ "blkdev_t", "blkdev_8h.html#adb1946b42c16b77620ad2cac2b6de547", null ],
     [ "blkdev_write_fn", "blkdev_8h.html#a0274b865736865b3b156cc1d4410fc9b", null ],
     [ "blk_bytes", "blkdev_8h.html#abcb846fd8b58d8413ab09dc53408d0fd", null ],
-    [ "blk_get", "blkdev_8h.html#afd8dcb679fdd179dbf146fc37e65271a", null ],
     [ "blk_init", "blkdev_8h.html#af0434f6be3048a8c44e588eef74384b7", null ],
     [ "blk_read", "blkdev_8h.html#ac7c9546f735b099794703ec9f66c2bc7", null ],
-    [ "blk_register", "blkdev_8h.html#ae551dd98c149541c294dfa0214d22b58", null ],
-    [ "blk_write", "blkdev_8h.html#a45277858ed63cc774c2a987ab7d6a593", null ]
+    [ "blk_write", "blkdev_8h.html#a45277858ed63cc774c2a987ab7d6a593", null ],
+    [ "blkdev_get_by_name", "blkdev_8h.html#a67260ac6d674a1eb0865a2b3f070b8b2", null ],
+    [ "blkdev_list", "blkdev_8h.html#a8b0bec61d978f21585578fe1edeb42da", null ],
+    [ "blkdev_register", "blkdev_8h.html#aeaf44ead532a86059e7c48c70c167c8c", null ]
 ];

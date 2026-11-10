@@ -20,6 +20,21 @@ SECTIONS
 
     .rodata : ALIGN(8) { *(.rodata*) }
 
+    /* Pad up to the next 2MB boundary before .data - kernel/src/mmu.c
+     * gives .text/.rodata (the level-2 block(s) up to here) RX permissions
+     * and .data/.bss/heap/stack (from here on) RW+NX; a level-2 block
+     * covers 2MB and can't have split permissions within itself, so the
+     * boundary between the two must land on one. Fails loudly rather than
+     * silently mis-map if .text+.rodata ever outgrow the block(s) below
+     * this padding assumes. */
+    . = ALIGN(0x200000);
+    /* Bare ASSERT(...) as a standalone statement here confuses lld's
+     * linker-script parser (it stops recognizing the .data section that
+     * follows) - the "assign to `.`" expression form works with both
+     * lld and GNU ld. */
+    . = ASSERT((. - 0x40080000) <= 0x200000,
+               "kernel .text+.rodata exceeds the 2MB W^X code region (kernel/linker.ld / kernel/src/mmu.c)");
+
     .data   : ALIGN(8) { *(.data*)   }
 
     . = ALIGN(16);

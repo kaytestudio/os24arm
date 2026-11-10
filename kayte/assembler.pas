@@ -26,7 +26,12 @@ type
     procedure DefineLabel(const ALabel: string);
     // Emits a single instruction with its operands.
     procedure Emit(AOpCode: TByteCodeOp; const AOperands: array of Integer);
+    // Returns the program being built, without transferring ownership - for
+    // mid-parse use (e.g. Op_Variable/Op_StringLiteral registering a name
+    // while parsing is still in progress).
+    function PeekProgram: TByteCodeProgram;
     // Returns the finalized bytecode program (transfers ownership to caller).
+    // Call only once, after parsing is complete - see PeekProgram above.
     function GetProgram: TByteCodeProgram;
     // Validates the bytecode before emitting it
     function ValidateBytecode: Boolean;
@@ -92,6 +97,11 @@ begin
   // Write back to the program
   FProgram.Instructions := TempInstructions;
   FCurrentInstructionIndex := CurrentLength + 1;
+end;
+
+function TAssembler.PeekProgram: TByteCodeProgram;
+begin
+  Result := FProgram;
 end;
 
 function TAssembler.GetProgram: TByteCodeProgram;

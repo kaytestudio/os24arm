@@ -19,6 +19,7 @@ var basic_8c =
     [ "ansi_color", "basic_8c.html#a13de380a24fad4f6db21fa25f71b20b9", null ],
     [ "ansi_locate", "basic_8c.html#a70e462143a07662c5fa3b8f190c9f8ae", null ],
     [ "ansi_reset", "basic_8c.html#a65865d1c11562083ec959d0ef0cca1f9", null ],
+    [ "basic_getline", "basic_8c.html#a7e07349493bf9ee3801bf8a81dc07550", null ],
     [ "basic_run", "basic_8c.html#a5341980a99847eb0deee7b31823b6ab0", null ],
     [ "bputc", "basic_8c.html#a19520cf1439cf4f3edc9cc19cbd76cb6", null ],
     [ "bputi", "basic_8c.html#a81b6f57175e3fdf5f37c84951385d2f2", null ],

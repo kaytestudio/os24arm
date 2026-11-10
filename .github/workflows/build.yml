@@ -1,0 +1,97 @@
+name: Build os24arm
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  qemu-image-and-iso:
+    name: QEMU kernel image + dd-able ISO
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang-17
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: ci/scripts/install-deps-linux.sh
+
+      - name: Build os2warp.img and os2warp-arm64.iso
+        run: ci/scripts/build-qemu.sh build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: os24arm-qemu
+          path: |
+            build/os2warp.img
+            build/os2warp-arm64.iso
+          if-no-files-found: error
+
+  rpi3-image:
+    name: Raspberry Pi 3+ kernel image
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang-17
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: ci/scripts/install-deps-linux.sh
+
+      - name: Build kernel8.img
+        run: ci/scripts/build-rpi.sh build-rpi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: os24arm-rpi3
+          path: build-rpi/kernel8.img
+          if-no-files-found: error
+
+  beagle-images:
+    name: ${{ matrix.name }} kernel image
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: BeagleBone Black
+            platform: BBB
+            build_dir: build-bbb
+            image: os2warp-bbb.img
+            artifact: os24arm-bbb
+            files: |
+              build-bbb/os2warp-bbb.img
+              build-bbb/uEnv.txt
+          - name: BeagleV-Ahead
+            platform: BEAGLEV_AHEAD
+            build_dir: build-beaglev-ahead
+            image: os2warp-beaglev-ahead.img
+            artifact: os24arm-beaglev-ahead
+            files: |
+              build-beaglev-ahead/os2warp-beaglev-ahead.img
+              build-beaglev-ahead/uEnv.txt
+          - name: QEMU RISC-V
+            platform: QEMU_RISCV
+            build_dir: build-qemu-riscv
+            image: os2warp-qemu-riscv.img
+            artifact: os24arm-qemu-riscv
+            files: |
+              build-qemu-riscv/os2warp-qemu-riscv.img
+    env:
+      CC: clang-17
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: ci/scripts/install-deps-linux.sh
+
+      - name: Build ${{ matrix.image }}
+        run: ci/scripts/build-beagle.sh ${{ matrix.platform }} ${{ matrix.build_dir }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.files }}
+          if-no-files-found: error

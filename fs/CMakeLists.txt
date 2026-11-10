@@ -10,6 +10,9 @@ add_subdirectory(ext4)
 # btrfs filesystem
 add_subdirectory(btrfs)
 
+# f2fs filesystem
+add_subdirectory(f2fs)
+
 # FAT32 filesystem (if you want to move it here)
 # add_subdirectory(fat32)
 
@@ -29,6 +32,7 @@ add_library(filesystems INTERFACE)
 target_link_libraries(filesystems INTERFACE
         ext4
         btrfs
+        f2fs
         # fat32
         # hpfs
         # ntfs
@@ -38,5 +42,6 @@ target_link_libraries(filesystems INTERFACE
 message(STATUS "Filesystem drivers configured:")
 message(STATUS "  - ext4")
 message(STATUS "  - btrfs")
+message(STATUS "  - f2fs")
 # message(STATUS "  - fat32")
 # message(STATUS "  - hpfs")

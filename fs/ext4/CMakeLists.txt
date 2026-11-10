@@ -3,11 +3,13 @@
 # ext4 driver sources
 set(EXT4_SOURCES
         ext4.c
+        ext4_write.c
 )
 
 # ext4 driver headers
 set(EXT4_HEADERS
         ext4.h
+        ext4_internal.h
 )
 
 # Create ext4 driver library

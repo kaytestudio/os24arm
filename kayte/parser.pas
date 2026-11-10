@@ -60,6 +60,7 @@ type
     // Bytecode helper functions
     function Op_Variable(const VarName: string): Integer;
     function Op_StringLiteral(const Literal: string): Integer;
+    function Op_IntegerLiteral(const Value: Int64): Integer;
 
   public
     constructor Create(ALexer: TLexer);
@@ -187,7 +188,10 @@ begin
         'MSGBOX':
           MsgBoxStatement;
         'LET':
-          AssignmentStatement;
+          begin
+            Advance; // Consume LET
+            AssignmentStatement;
+          end;
         'SET':
           begin
             WriteLn('DEBUG: SET statement for object assignment');
@@ -342,14 +346,22 @@ end;
 // Helper functions for bytecode operand encoding
 function TParser.Op_Variable(const VarName: string): Integer;
 begin
-  // Add or get variable from the program's variable table
-  Result := FAssembler.GetProgram.AddVariable(VarName);
+  // Add or get variable from the program's variable table. Uses PeekProgram
+  // (not GetProgram), which would transfer ownership out of the assembler
+  // and leave it with a nil FProgram for the rest of parsing.
+  Result := FAssembler.PeekProgram.AddVariable(VarName);
 end;
 
 function TParser.Op_StringLiteral(const Literal: string): Integer;
 begin
   // Add string literal to the program's constant pool
-  Result := FAssembler.GetProgram.AddStringConstant(Literal);
+  Result := FAssembler.PeekProgram.AddStringConstant(Literal);
+end;
+
+function TParser.Op_IntegerLiteral(const Value: Int64): Integer;
+begin
+  // Add integer literal to the program's constant pool
+  Result := FAssembler.PeekProgram.AddIntegerConstant(Value);
 end;
 
 //----------------------------------------------------------------------
@@ -381,6 +393,10 @@ begin
   Match(tkKeyword); // Consume IF
   WriteLn('DEBUG: IfStatement - Parsing condition');
   Expression; // Parse the condition
+  // TODO: branching (ELSE/END IF, jump-on-false) isn't implemented yet -
+  // the condition is evaluated (so it's validated and any side effects
+  // like variable loads still occur) but its value is unused for now.
+  FAssembler.Emit(BC_POP, []);
 
   // Expect THEN
   if Check(tkKeyword) and (AnsiUpperCase(FCurrentToken.Lexeme) = 'THEN') then
@@ -519,11 +535,15 @@ end;
 procedure TParser.MsgBoxStatement;
 begin
   Match(tkKeyword);
+  // TODO: no MSGBOX runtime call is emitted yet - arguments are evaluated
+  // (validated, side effects preserved) then discarded.
   Expression;
+  FAssembler.Emit(BC_POP, []);
   while Check(tkComma) do
   begin
     Advance;
     Expression;
+    FAssembler.Emit(BC_POP, []);
   end;
 end;
 
@@ -536,11 +556,15 @@ begin
     Advance;
     if not Check(tkParenthesisClose) then
     begin
+      // TODO: no argument-passing convention exists yet for CALL - each
+      // argument is evaluated then discarded.
       Expression;
+      FAssembler.Emit(BC_POP, []);
       while Check(tkComma) do
       begin
         Advance;
         Expression;
+        FAssembler.Emit(BC_POP, []);
       end;
     end;
     Match(tkParenthesisClose);
@@ -569,7 +593,10 @@ begin
   WriteLn('DEBUG: WhileStatement - Current token: ', FCurrentToken.Lexeme);
 
   Match(tkKeyword); // Consume WHILE
+  // TODO: loop branching (jump-on-false back edge) isn't implemented yet -
+  // the condition is evaluated then discarded.
   Expression;
+  FAssembler.Emit(BC_POP, []);
   Match(tkEndOfLine);
 
   WriteLn('DEBUG: WhileStatement - Entering body loop');
@@ -641,14 +668,19 @@ begin
   Match(tkKeyword); // Consume FOR
   Match(tkIdentifier); // Loop variable
   Match(tkOperator); // =
+  // TODO: loop codegen (counter init/compare/increment) isn't implemented
+  // yet - start/end/step are each evaluated then discarded.
   Expression; // Start value
+  FAssembler.Emit(BC_POP, []);
   Match(tkKeyword); // TO
   Expression; // End value
+  FAssembler.Emit(BC_POP, []);
 
   if Check(tkKeyword) and (AnsiUpperCase(FCurrentToken.Lexeme) = 'STEP') then
   begin
     Advance;
     Expression; // Step value
+    FAssembler.Emit(BC_POP, []);
   end;
 
   Match(tkEndOfLine);
@@ -1291,6 +1323,10 @@ begin
     Advance;
     RightHandSide := Comparison;
     Node := TBinaryOpNode.Create(OperatorToken.Lexeme, Node, RightHandSide);
+    if OperatorToken.Lexeme = '=' then
+      FAssembler.Emit(BC_EQ, [])
+    else
+      FAssembler.Emit(BC_NEQ, []);
   end;
   Result := Node;
 end;
@@ -1308,6 +1344,16 @@ begin
     Advance;
     RightHandSide := Term;
     Node := TBinaryOpNode.Create(OperatorToken.Lexeme, Node, RightHandSide);
+    if OperatorToken.Lexeme = '>' then
+      FAssembler.Emit(BC_GT, [])
+    else if OperatorToken.Lexeme = '<' then
+      FAssembler.Emit(BC_LT, [])
+    else if OperatorToken.Lexeme = '>=' then
+      FAssembler.Emit(BC_GE, [])
+    else if OperatorToken.Lexeme = '<=' then
+      FAssembler.Emit(BC_LE, [])
+    else // IS
+      FAssembler.Emit(BC_EQ, []);
   end;
   Result := Node;
 end;
@@ -1325,6 +1371,11 @@ begin
     Advance;
     RightHandSide := Factor;
     Node := TBinaryOpNode.Create(OperatorToken.Lexeme, Node, RightHandSide);
+    if OperatorToken.Lexeme = '-' then
+      FAssembler.Emit(BC_SUB, [])
+    else // '+' or '&' (string concat) - the VM's BC_ADD concatenates
+         // whenever either operand is a string.
+      FAssembler.Emit(BC_ADD, []);
   end;
   Result := Node;
 end;
@@ -1342,6 +1393,10 @@ begin
     Advance;
     RightHandSide := Unary;
     Node := TBinaryOpNode.Create(OperatorToken.Lexeme, Node, RightHandSide);
+    if OperatorToken.Lexeme = '*' then
+      FAssembler.Emit(BC_MUL, [])
+    else
+      FAssembler.Emit(BC_DIV, []);
   end;
   Result := Node;
 end;
@@ -1357,8 +1412,17 @@ begin
   begin
     OperatorToken := FCurrentToken;
     Advance;
-    RightHandSide := Unary;
+    // Explicit parens are required here: a bare `Unary` inside Unary's own
+    // body resolves to the Result pseudo-variable (classic Pascal
+    // function-name-as-result-alias), not a recursive call - so without
+    // them this silently assigns RightHandSide := nil (Result's value at
+    // this point) and never actually parses/consumes the operand.
+    RightHandSide := Unary();
     Result := TUnaryOpNode.Create(OperatorToken.Lexeme, RightHandSide);
+    if OperatorToken.Lexeme = '-' then
+      FAssembler.Emit(BC_NEG, [])
+    else
+      FAssembler.Emit(BC_NOT, []);
   end
   else
   begin
@@ -1373,15 +1437,37 @@ var
 begin
   Token := FCurrentToken;
   case Token.TokenType of
-    tkIntegerLiteral, tkStringLiteral, tkBooleanLiteral, tkIdentifier:
+    tkIntegerLiteral:
       begin
         Advance;
+        FAssembler.Emit(BC_LOAD_INT, [Op_IntegerLiteral(StrToInt64(Token.Lexeme))]);
+        Result := TLiteralNode.Create(Token.Lexeme, Token.TokenType);
+      end;
+    tkStringLiteral:
+      begin
+        Advance;
+        FAssembler.Emit(BC_LOAD_STRING, [Op_StringLiteral(Token.Lexeme)]);
+        Result := TLiteralNode.Create(Token.Lexeme, Token.TokenType);
+      end;
+    tkBooleanLiteral:
+      begin
+        Advance;
+        if AnsiUpperCase(Token.Lexeme) = 'TRUE' then
+          FAssembler.Emit(BC_LOAD_INT, [Op_IntegerLiteral(1)])
+        else
+          FAssembler.Emit(BC_LOAD_INT, [Op_IntegerLiteral(0)]);
+        Result := TLiteralNode.Create(Token.Lexeme, Token.TokenType);
+      end;
+    tkIdentifier:
+      begin
+        Advance;
+        FAssembler.Emit(BC_LOAD_VAR, [Op_Variable(Token.Lexeme)]);
         Result := TLiteralNode.Create(Token.Lexeme, Token.TokenType);
       end;
     tkParenthesisOpen:
       begin
         Advance; // Consume '('
-        Result := Expression;
+        Result := Expression; // already emits its own code
         Match(tkParenthesisClose); // Consume ')'
       end;
     tkKeyword:
@@ -1399,7 +1485,9 @@ begin
           WriteLn('DEBUG: Instantiating class: ', ClsName);
           Advance; // Consume class name
 
-          // Handle optional constructor parameters
+          // Handle optional constructor parameters. There's no object
+          // system in the bytecode VM yet, so each argument is evaluated
+          // (for side effects / syntax validation) then discarded.
           if Check(tkParenthesisOpen) then
           begin
             Advance; // Consume '('
@@ -1408,16 +1496,21 @@ begin
             if not Check(tkParenthesisClose) then
             begin
               Expression;
+              FAssembler.Emit(BC_POP, []);
               while Check(tkComma) do
               begin
                 Advance; // Consume comma
                 Expression;
+                FAssembler.Emit(BC_POP, []);
               end;
             end;
 
             Match(tkParenthesisClose); // Consume ')'
           end;
 
+          // No object system yet - push a placeholder so the enclosing
+          // expression still gets exactly one value.
+          FAssembler.Emit(BC_LOAD_STRING, [Op_StringLiteral('<object:' + ClsName + '>')]);
           Result := TLiteralNode.Create('NEW ' + ClsName, tkKeyword);
         end
         else

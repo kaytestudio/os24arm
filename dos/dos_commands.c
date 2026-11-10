@@ -9,7 +9,20 @@
  */
 
 #include "dos.h"
+/* Shared between two very different builds (see the big comment on
+ * dos_shell_dispatch() in dos.h): the in-kernel shell / dos static
+ * library (dos/CMakeLists.txt) links the real os2api static library
+ * directly, so DosOpen/DosRead/... are plain functions (os2_api.h) -
+ * but the standalone CMD.EXE/KAYTEVM.EXE builds (top-level
+ * CMakeLists.txt) resolve them at runtime from an embedded DOSCALLS.DLL
+ * instead, as function *pointer* variables of the same names
+ * (os2_api_import.h) - see that header's comment. Those builds define
+ * OS2_API_USE_IMPORT_TABLE to select it here. */
+#ifdef OS2_API_USE_IMPORT_TABLE
+#include "os2_api_import.h"
+#else
 #include "os2_api.h"
+#endif
 #include "uart.h"
 #include "kprintf.h"
 #include "string.h"

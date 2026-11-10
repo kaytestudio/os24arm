@@ -1,24 +1,10 @@
 var searchData=
 [
-  ['vfs_5fclose_0',['vfs_close',['../vfs_8c.html#a60d1dba40888b0dadfbb4f0a30e1cb89',1,'vfs_close(int fd):&#160;vfs.c'],['../vfs_8h.html#a60d1dba40888b0dadfbb4f0a30e1cb89',1,'vfs_close(int fd):&#160;vfs.c']]],
-  ['vfs_5fclosedir_1',['vfs_closedir',['../vfs_8c.html#ad1e7d5214e0298e9ea2cb7e685a10d06',1,'vfs_closedir(int dfd):&#160;vfs.c'],['../vfs_8h.html#ad1e7d5214e0298e9ea2cb7e685a10d06',1,'vfs_closedir(int dfd):&#160;vfs.c']]],
-  ['vfs_5finit_2',['vfs_init',['../vfs_8c.html#ad89e2e37c12feb399081c34cc98f49ae',1,'vfs_init(void):&#160;vfs.c'],['../vfs_8h.html#ad89e2e37c12feb399081c34cc98f49ae',1,'vfs_init(void):&#160;vfs.c']]],
-  ['vfs_5fmkdir_3',['vfs_mkdir',['../vfs_8c.html#a8e9df865707f5b3de7bfea837e49bf5f',1,'vfs_mkdir(const char *path):&#160;vfs.c'],['../vfs_8h.html#a8e9df865707f5b3de7bfea837e49bf5f',1,'vfs_mkdir(const char *path):&#160;vfs.c']]],
-  ['vfs_5fmount_4',['vfs_mount',['../vfs_8c.html#a2e656c865975faef7552b5bcafbb3c90',1,'vfs_mount(const char *mountpoint, vfs_fs_t *fs, void *fs_priv):&#160;vfs.c'],['../vfs_8h.html#a2e656c865975faef7552b5bcafbb3c90',1,'vfs_mount(const char *mountpoint, vfs_fs_t *fs, void *fs_priv):&#160;vfs.c']]],
-  ['vfs_5fopen_5',['vfs_open',['../vfs_8c.html#a93b935a22c4247c8902c6eb1ea9bfe2a',1,'vfs_open(const char *path, int flags):&#160;vfs.c'],['../vfs_8h.html#a93b935a22c4247c8902c6eb1ea9bfe2a',1,'vfs_open(const char *path, int flags):&#160;vfs.c']]],
-  ['vfs_5fopendir_6',['vfs_opendir',['../vfs_8c.html#a28c1e2245996aa90b5560b6a70d88582',1,'vfs_opendir(const char *path):&#160;vfs.c'],['../vfs_8h.html#a28c1e2245996aa90b5560b6a70d88582',1,'vfs_opendir(const char *path):&#160;vfs.c']]],
-  ['vfs_5fread_7',['vfs_read',['../vfs_8c.html#a200efda6a42c98eb4fa005162eb6b344',1,'vfs_read(int fd, void *buf, uint32_t len):&#160;vfs.c'],['../vfs_8h.html#a200efda6a42c98eb4fa005162eb6b344',1,'vfs_read(int fd, void *buf, uint32_t len):&#160;vfs.c']]],
-  ['vfs_5freaddir_8',['vfs_readdir',['../vfs_8c.html#a26a172c47fe5be9c2e7cbaa3739d1ccb',1,'vfs_readdir(int dfd, vfs_dirent_t *ent):&#160;vfs.c'],['../vfs_8h.html#a26a172c47fe5be9c2e7cbaa3739d1ccb',1,'vfs_readdir(int dfd, vfs_dirent_t *ent):&#160;vfs.c']]],
-  ['vfs_5frename_9',['vfs_rename',['../vfs_8c.html#aa7429c3c52e8658e2253ed835c4de188',1,'vfs_rename(const char *old, const char *nw):&#160;vfs.c'],['../vfs_8h.html#aa7429c3c52e8658e2253ed835c4de188',1,'vfs_rename(const char *old, const char *nw):&#160;vfs.c']]],
-  ['vfs_5fseek_10',['vfs_seek',['../vfs_8c.html#a6bc353541ff4e90008e7960dc32178ef',1,'vfs_seek(int fd, int32_t offset, int whence):&#160;vfs.c'],['../vfs_8h.html#a6bc353541ff4e90008e7960dc32178ef',1,'vfs_seek(int fd, int32_t offset, int whence):&#160;vfs.c']]],
-  ['vfs_5fstat_11',['vfs_stat',['../vfs_8c.html#aec39c5a90842ff8b32b502c900198c92',1,'vfs_stat(const char *path, vfs_stat_t *st):&#160;vfs.c'],['../vfs_8h.html#aec39c5a90842ff8b32b502c900198c92',1,'vfs_stat(const char *path, vfs_stat_t *st):&#160;vfs.c']]],
-  ['vfs_5fto_5fos2_5fattrs_12',['vfs_to_os2_attrs',['../os2__api_8h.html#a8e94bda39031f5eab3f52855fbb7faa9',1,'os2_api.h']]],
-  ['vfs_5fto_5fos2_5ferror_13',['vfs_to_os2_error',['../os2__api_8h.html#af073f0345963056d1ff44f919c0e5a96',1,'os2_api.h']]],
-  ['vfs_5funlink_14',['vfs_unlink',['../vfs_8c.html#a7101805f3efc3366b40acfe30a079982',1,'vfs_unlink(const char *path):&#160;vfs.c'],['../vfs_8h.html#a7101805f3efc3366b40acfe30a079982',1,'vfs_unlink(const char *path):&#160;vfs.c']]],
-  ['vfs_5funmount_15',['vfs_unmount',['../vfs_8c.html#adb8c5616b2612e30dfed6b810e58f196',1,'vfs_unmount(const char *mountpoint):&#160;vfs.c'],['../vfs_8h.html#adb8c5616b2612e30dfed6b810e58f196',1,'vfs_unmount(const char *mountpoint):&#160;vfs.c']]],
-  ['vfs_5fwrite_16',['vfs_write',['../vfs_8c.html#a136e50e74abfb3bbeb9570eb8a0096c2',1,'vfs_write(int fd, const void *buf, uint32_t len):&#160;vfs.c'],['../vfs_8h.html#a136e50e74abfb3bbeb9570eb8a0096c2',1,'vfs_write(int fd, const void *buf, uint32_t len):&#160;vfs.c']]],
-  ['virtio_5fblk_5fcapacity_17',['virtio_blk_capacity',['../virtio__blk_8h.html#a9c03d2b170c280ba0e516c5be5ff7d34',1,'virtio_blk.h']]],
-  ['virtio_5fblk_5finit_18',['virtio_blk_init',['../blkdev_8c.html#a655d7e43d7f4ed5d941a439949cf0db4',1,'virtio_blk_init(void):&#160;blkdev.c'],['../virtio__blk_8h.html#a655d7e43d7f4ed5d941a439949cf0db4',1,'virtio_blk_init(void):&#160;blkdev.c']]],
-  ['virtio_5fblk_5fread_19',['virtio_blk_read',['../blkdev_8c.html#af9fcd7aca59fdf83e7a6a8a2a7ebc58a',1,'virtio_blk_read(blkdev_t *dev, int64_t lba, uint32_t count, void *buf):&#160;blkdev.c'],['../virtio__blk_8h.html#a35901a1eaf58b5804e8db2072681316a',1,'virtio_blk_read(blkdev_t *dev, uint64_t sector, uint32_t count, void *buf):&#160;virtio_blk.h']]],
-  ['virtio_5fblk_5fwrite_20',['virtio_blk_write',['../blkdev_8c.html#acb76a3bcca66f8af6df069c3c2905f81',1,'virtio_blk_write(blkdev_t *dev, int64_t lba, uint32_t count, const void *buf):&#160;blkdev.c'],['../virtio__blk_8h.html#aa83d3169a90c386e761147c0b57fa853',1,'virtio_blk_write(blkdev_t *dev, uint64_t sector, uint32_t count, const void *buf):&#160;virtio_blk.h']]]
+  ['terminal_5fclear_0',['terminal_clear',['../terminal_8h.html#a77d0d5631036f69c00f97736446e862c',1,'terminal.h']]],
+  ['terminal_5fnewline_1',['terminal_newline',['../terminal_8h.html#a649d623f0fac88618c05b38b3625d69f',1,'terminal.h']]],
+  ['terminal_5fputchar_2',['terminal_putchar',['../terminal_8h.html#a793e201f940befc3766c775b0825b7d4',1,'terminal.h']]],
+  ['terminal_5fwritehex_3',['terminal_writehex',['../terminal_8h.html#ab4e529e80693690b0ab3071ca6ebb94c',1,'terminal.h']]],
+  ['terminal_5fwritenum_4',['terminal_writenum',['../terminal_8h.html#ab5f21895a8dfc97dbc05dddf105c5312',1,'terminal.h']]],
+  ['terminal_5fwritestring_5',['terminal_writestring',['../terminal_8h.html#a4f18d2f5ee22fa608604d7044f11e431',1,'terminal.h']]],
+  ['tracked_5fcount_5ffor_6',['tracked_count_for',['../ai_8c.html#a07657c110b56efd1fde27874dcc31cf6',1,'ai.c']]]
 ];

@@ -12,8 +12,19 @@
 #include "vfs.h"
 
 /* ── Define uint64_t if not available ───────────────────────────────────── */
-#ifndef uint64_t
-typedef unsigned long uint64_t;
+/* Guards on UINT64_MAX (a macro, so actually visible to the preprocessor -
+ * unlike a bare `#ifndef uint64_t`, which can never detect an existing
+ * typedef and would always fire) rather than assuming freestanding. Never
+ * fires on the ARM64 cross build (-nostdinc, no real <stdint.h> ever
+ * pulled in); on a host build with the real <stdint.h> already in scope
+ * (e.g. fs/ext4/tests/host_harness.c) it correctly skips, avoiding a
+ * typedef-redefinition error against the platform's real uint64_t. */
+#ifndef UINT64_MAX
+/* The compiler's own 64-bit type: unsigned long on AArch64/RV64, but
+ * unsigned long long on 32-bit ARM (BeagleBone Black), where a plain
+ * unsigned long is only 32 bits and would truncate every 64-bit ext4
+ * field (block numbers, file sizes). */
+typedef __UINT64_TYPE__ uint64_t;
 #endif
 
 /* ── ext4 Magic Numbers ──────────────────────────────────────────────────── */
@@ -30,6 +41,12 @@ typedef unsigned long uint64_t;
 #define EXT4_FEATURE_INCOMPAT_EXTENTS   0x0040
 #define EXT4_FEATURE_INCOMPAT_64BIT     0x0080
 #define EXT4_FEATURE_INCOMPAT_FLEX_BG   0x0200
+#define EXT4_FEATURE_INCOMPAT_META_BG   0x0010
+
+/* Write support is refused (falls back to read-only) when any of these are
+ * set - see ext4_write_init_allocators() in ext4_write.c for why. */
+#define EXT4_FEATURE_RO_COMPAT_GDT_CSUM      0x0010  /* a.k.a. "uninit_bg" */
+#define EXT4_FEATURE_RO_COMPAT_METADATA_CSUM 0x0400
 
 /* ── ext4 Inode Flags ────────────────────────────────────────────────────── */
 
@@ -55,6 +72,21 @@ typedef unsigned long uint64_t;
 #define EXT4_DIND_BLOCK      13
 #define EXT4_TIND_BLOCK      14
 #define EXT4_N_BLOCKS        15
+
+/* ── ext4 Inode Mode Bits ────────────────────────────────────────────────── */
+
+#define EXT4_S_IFMT    0xF000u
+#define EXT4_S_IFREG   0x8000u
+#define EXT4_S_IFDIR   0x4000u
+#define EXT4_DEFM_DIR  0x01EDu   /* 0755 */
+#define EXT4_DEFM_REG  0x01A4u   /* 0644 */
+
+/* ── ext4 Directory Entry Sizing ─────────────────────────────────────────── */
+
+/* Fixed on-disk dirent header is 8 bytes (inode:4 + rec_len:2 + name_len:1 +
+ * file_type:1); name follows, not NUL-terminated, padded to a 4-byte
+ * boundary. */
+#define EXT4_DIR_REC_LEN(name_len)  ((8u + (uint32_t)(name_len) + 3u) & ~3u)
 
 /* ── ext4 Superblock ─────────────────────────────────────────────────────── */
 
@@ -233,9 +265,15 @@ typedef struct {
     uint32_t           blocks_per_group;
     uint32_t           group_count;
     uint32_t           desc_per_block;
+    uint32_t           desc_size;      /* bytes per group descriptor (32 or 64) */
     uint8_t           *block_buffer;   /* one fs block, general I/O scratch */
     uint8_t           *extent_buffer;  /* one fs block, extent/indirect-block scratch */
+    uint8_t           *bitmap_buffer;  /* one fs block, block/inode bitmap I/O scratch -
+                                         * kept separate from the above two so bitmap
+                                         * I/O never aliases directory/extent scratch
+                                         * across nested write-engine calls */
     ext4_group_desc_t *group_desc;
+    int                writable;       /* set by ext4_write_init_allocators() */
 } ext4_mount_t;
 
 /* ── ext4 File Handle ────────────────────────────────────────────────────── */

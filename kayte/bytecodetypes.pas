@@ -9,6 +9,9 @@ uses
 
 type
   // Bytecode operation codes
+  // NOTE: append-only - ordinal values are the on-disk opcode encoding
+  // (see cli.pas TBytecodeGenerator / kayte/kaytevm_main.c), so existing
+  // entries must never be reordered or removed.
   TByteCodeOp = (
     BC_NOP,           // No operation
     BC_HALT,          // Stop execution
@@ -17,7 +20,7 @@ type
     BC_LOAD_VAR,      // Load variable value
     BC_STORE_VAR,     // Store variable value
     BC_ASSIGN,        // Assignment operation
-    BC_ADD,           // Addition
+    BC_ADD,           // Addition (or string concatenation)
     BC_SUB,           // Subtraction
     BC_MUL,           // Multiplication
     BC_DIV,           // Division
@@ -26,7 +29,16 @@ type
     BC_JUMP,          // Unconditional jump
     BC_JUMP_IF_FALSE, // Conditional jump
     BC_CALL,          // Call subroutine
-    BC_RETURN         // Return from subroutine
+    BC_RETURN,        // Return from subroutine
+    BC_POP,           // Discard top of stack
+    BC_NEG,           // Unary negation
+    BC_NOT,           // Logical NOT
+    BC_EQ,            // =
+    BC_NEQ,           // <>
+    BC_GT,            // >
+    BC_GE,            // >=
+    BC_LT,            // <
+    BC_LE             // <=
   );
 
   // Bytecode instruction structure
@@ -68,6 +80,9 @@ type
 
     // Add a string constant and return its index
     function AddStringConstant(const Literal: string): Integer;
+
+    // Add an integer literal and return its index
+    function AddIntegerConstant(const Value: Int64): Integer;
 
     // File I/O
     procedure SaveToFile(const FileName: string);
@@ -145,6 +160,16 @@ begin
   // Also add to StringConstants for consistency
   if FStringConstants.IndexOf(Literal) < 0 then
     FStringConstants.Add(Literal);
+end;
+
+function TByteCodeProgram.AddIntegerConstant(const Value: Int64): Integer;
+var
+  Len: Integer;
+begin
+  Len := Length(FIntegerLiterals);
+  SetLength(FIntegerLiterals, Len + 1);
+  FIntegerLiterals[Len] := Value;
+  Result := Len;
 end;
 
 procedure TByteCodeProgram.SaveToFile(const FileName: string);

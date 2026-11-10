@@ -1,0 +1,7 @@
+print "Hello from Kayte, running inside OS/2 Warp ARM64!"
+let x = 2 + 3 * 4
+print x
+let s = "Ka" & "yte"
+print s
+let flag = x > 10
+print flag

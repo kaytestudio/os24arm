@@ -26,12 +26,13 @@ var NAVTREE =
 [
   [ "OS/2 Warp 4.52 ARM64", "index.html", [
     [ "OS/2 Warp 4.52 for ARM64 (QEMU / Raspberry Pi 3+)", "index.html", "index" ],
+    [ "Topics", "topics.html", "topics" ],
     [ "Data Structures", "annotated.html", [
       [ "Data Structures", "annotated.html", "annotated_dup" ],
       [ "Data Structure Index", "classes.html", null ],
       [ "Data Fields", "functions.html", [
-        [ "All", "functions.html", null ],
-        [ "Variables", "functions_vars.html", null ]
+        [ "All", "functions.html", "functions_dup" ],
+        [ "Variables", "functions_vars.html", "functions_vars" ]
       ] ]
     ] ],
     [ "Files", "files.html", [
@@ -41,6 +42,8 @@ var NAVTREE =
         [ "Functions", "globals_func.html", "globals_func" ],
         [ "Variables", "globals_vars.html", null ],
         [ "Typedefs", "globals_type.html", null ],
+        [ "Enumerations", "globals_enum.html", null ],
+        [ "Enumerator", "globals_eval.html", null ],
         [ "Macros", "globals_defs.html", "globals_defs" ]
       ] ]
     ] ]
@@ -49,14 +52,17 @@ var NAVTREE =
 
 var NAVTREEINDEX =
 [
-"annotated.html",
-"cli__fs_8h.html#a4b3b889061bb7c4e7392c5e81004cf2d",
-"kernel_8c.html#a1b45302695680930829cac31d65e41e1",
-"os2__api_8h.html#a230b85dc0b972309265837bc3d06e515",
-"structfat32__file__t.html#a782a1cbee0f96a6b5a3eab7a43e99711",
-"virtio__blk_8h.html#a7637ed5da80f9d2166131e3bb3ae21e2"
+"ai_8c.html",
+"cli__fs_8c.html#a8f3c5e7bbec7ebe3109e79010481ad21",
+"functions_vars_w.html",
+"kio_8h.html#a04f20578a2cc3cc68fc9ec1c8748efa2",
+"os2__api_8h.html#a48a8e997a28a58ae00c3c488639a0eab",
+"structKEEVMPageList.html",
+"structramfb__cfg__t.html#ac41ce0847d1d4050f469c7116effa621",
+"vfs_8h.html#a1751407399326bb95b0cc3d15a61fe26",
+"wayland_8c.html#a9c70ad99467ec028e4725164d7ecd997"
 ];
 
-var SYNCONMSG = 'click to disable panel synchronization';
-var SYNCOFFMSG = 'click to enable panel synchronization';
-var LISTOFALLMEMBERS = 'List of all members';
+const SYNCONMSG = 'click to disable panel synchronization';
+const SYNCOFFMSG = 'click to enable panel synchronization';
+const LISTOFALLMEMBERS = 'List of all members';

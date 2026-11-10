@@ -1,13 +1,19 @@
 var searchData=
 [
-  ['name_0',['name',['../structbconst__t.html#a8e19d01fa2d4643854b027b900fd4b53',1,'bconst_t::name'],['../structblkdev.html#a534ff259eca6ea4733995156e59c18b7',1,'blkdev::name'],['../structfat32__dirent__t.html#a3877ed62185a0b234e41bb767c9a5b0f',1,'fat32_dirent_t::name'],['../structFILEFINDBUF.html#aea81ccdc80c3d439e57c5211b7f3a733',1,'FILEFINDBUF::name'],['../structvfs__fs.html#ae8265479ff3e5a4bd20f34a5f54d43bb',1,'vfs_fs::name'],['../structvfs__dirent.html#a7c7b9a9290f623313e5ea6ea7286d0f0',1,'vfs_dirent::name'],['../structvfs__stat.html#a7e931e5e1efa7ca396bf2e80dd2ce073',1,'vfs_stat::name'],['../structgpt__partition__t.html#af30eb1bfc78c4df1780f5b939397fd38',1,'gpt_partition_t::name']]],
+  ['name_0',['name',['../structknown__cmd__t.html#a70725dbd2b6dc937ce885dd7dca55bcc',1,'known_cmd_t::name'],['../structtracked__cmd__t.html#a10014b16206fde82ea1df87695e15bf3',1,'tracked_cmd_t::name'],['../structbconst__t.html#a8e19d01fa2d4643854b027b900fd4b53',1,'bconst_t::name'],['../structgpt__entry__t.html#a1f01bfb57710dc01222d21f08d7d785b',1,'gpt_entry_t::name'],['../structfw__cfg__file__t.html#a1def559da40b5b243329013e40398525',1,'fw_cfg_file_t::name'],['../structblkdev.html#a534ff259eca6ea4733995156e59c18b7',1,'blkdev::name'],['../structfat32__dirent__t.html#a3877ed62185a0b234e41bb767c9a5b0f',1,'fat32_dirent_t::name'],['../structifs__driver__t.html#a834c30dc093b96f1e145f594bf8d4ccd',1,'ifs_driver_t::name'],['../structvfs__fs.html#ae8265479ff3e5a4bd20f34a5f54d43bb',1,'vfs_fs::name'],['../structvfs__dirent.html#a7c7b9a9290f623313e5ea6ea7286d0f0',1,'vfs_dirent::name'],['../structvfs__stat.html#a7e931e5e1efa7ca396bf2e80dd2ce073',1,'vfs_stat::name'],['../structgpt__partition__t.html#af30eb1bfc78c4df1780f5b939397fd38',1,'gpt_partition_t::name'],['../structFILEFINDBUF.html#aea81ccdc80c3d439e57c5211b7f3a733',1,'FILEFINDBUF::name']]],
   ['name1_1',['name1',['../structfat32__lfn__t.html#a82195d8e784473deba4112a7f280ef6c',1,'fat32_lfn_t']]],
   ['name2_2',['name2',['../structfat32__lfn__t.html#a8bc4cb06bb3bd6e05020d864eb9d3f85',1,'fat32_lfn_t']]],
   ['name3_3',['name3',['../structfat32__lfn__t.html#ad3826eedc0a5b5adb32cd32f8d1ba16e',1,'fat32_lfn_t']]],
   ['name_5flen_4',['name_len',['../structFILEFINDBUF.html#a189e1b021ef442ae488545518a01d00e',1,'FILEFINDBUF']]],
-  ['next_5',['next',['../structblock__hdr.html#ac0119f5c92e2a1693caf497171864504',1,'block_hdr']]],
-  ['nt_5fres_6',['nt_res',['../structfat32__dirent__t.html#a9d405bc1ad3a7099178d404e770c1b35',1,'fat32_dirent_t']]],
-  ['num_7',['num',['../structbline__t.html#a238146e7c374961459bccaba410b0615',1,'bline_t']]],
-  ['num_5fpartitions_8',['num_partitions',['../structgpt__header__t.html#a9118a53a8b32b2fb697cadbb032fe895',1,'gpt_header_t']]],
-  ['num_5fsectors_9',['num_sectors',['../structramdisk__priv__t.html#aeb0d7c268d3bcf0ec02e149129fb5f93',1,'ramdisk_priv_t::num_sectors'],['../structvirtio__blk__priv__t.html#a2bdffcc39d38a5a90d989531715fb886',1,'virtio_blk_priv_t::num_sectors'],['../structblkdev.html#a88474cb747163cd887c1e8e2be9e2e93',1,'blkdev::num_sectors']]]
+  ['next_5',['next',['../structvring__desc__t.html#a4f70fa6ffa671e2dc410a6a42b69fb35',1,'vring_desc_t::next'],['../structblock__hdr.html#ac0119f5c92e2a1693caf497171864504',1,'block_hdr::next'],['../structwl__surface.html#ae549c9aab9d33aca87dacd2eeb7a5e33',1,'wl_surface::next']]],
+  ['next_5fgeneric_5ftip_6',['next_generic_tip',['../ai_8c.html#a1b09a5c628d0c749623a5c5bb27b57a4',1,'ai.c']]],
+  ['nonresident_5fnames_5fchecksum_7',['nonresident_names_checksum',['../structlx__header__t.html#a700b333ac49705cdee3fc17a2a325fb4',1,'lx_header_t']]],
+  ['nonresident_5fnames_5flength_8',['nonresident_names_length',['../structlx__header__t.html#a8962270719c3e04b4bf5dff16a2ea9ed',1,'lx_header_t']]],
+  ['nonresident_5fnames_5foffset_9',['nonresident_names_offset',['../structlx__header__t.html#ad713791f24a68ec28855e02fb7b8e6ca',1,'lx_header_t']]],
+  ['nr_5fentries_10',['nr_entries',['../structvirtio__gpu__resource__attach__backing__1__t.html#af9153e34342904e1724ceffee701c4b5',1,'virtio_gpu_resource_attach_backing_1_t']]],
+  ['nt_5fres_11',['nt_res',['../structfat32__dirent__t.html#a9d405bc1ad3a7099178d404e770c1b35',1,'fat32_dirent_t']]],
+  ['num_12',['num',['../structbline__t.html#a238146e7c374961459bccaba410b0615',1,'bline_t']]],
+  ['num_5fpartition_5fentries_13',['num_partition_entries',['../structgpt__header__t.html#a98ef55b2481994c55bbb64afae270708',1,'gpt_header_t']]],
+  ['num_5fpartitions_14',['num_partitions',['../structgpt__header__t.html#a9118a53a8b32b2fb697cadbb032fe895',1,'gpt_header_t']]],
+  ['num_5fsectors_15',['num_sectors',['../structramdisk__priv__t.html#aeb0d7c268d3bcf0ec02e149129fb5f93',1,'ramdisk_priv_t::num_sectors'],['../structvirtio__blk__priv__t.html#a2bdffcc39d38a5a90d989531715fb886',1,'virtio_blk_priv_t::num_sectors'],['../structblkdev.html#a88474cb747163cd887c1e8e2be9e2e93',1,'blkdev::num_sectors']]]
 ];

@@ -60,6 +60,9 @@ REM Temporary directory
 SET TEMP=C:\TEMP
 SET TMP=C:\TEMP
 
+REM Unix root path
+SET UNIXROOT=C:
+
 REM ───────────────────────────────────────────────────────────────────
 REM  DEVICE DRIVERS (ARM64)
 REM ───────────────────────────────────────────────────────────────────

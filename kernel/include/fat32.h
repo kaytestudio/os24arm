@@ -93,9 +93,13 @@ typedef struct __attribute__((packed)) {
 /* Mount private data */
 typedef struct {
     blkdev_t *dev;
+    uint32_t  fat_bits;          /* 16 or 32 (FAT12 is rejected)             */
     uint32_t  fat_start_lba;     /* LBA of FAT table 0       */
     uint32_t  data_start_lba;    /* LBA of cluster 2         */
-    uint32_t  root_cluster;
+    uint32_t  root_cluster;      /* FAT32: root dir's first cluster; FAT16: 0,
+                                  * meaning the fixed root region below       */
+    uint32_t  root_dir_lba;      /* FAT16 only: fixed root directory region   */
+    uint32_t  root_entry_count;  /* FAT16 only: entries in that region        */
     uint32_t  sectors_per_cluster;
     uint32_t  bytes_per_cluster;
     uint32_t  total_clusters;
@@ -126,7 +130,13 @@ typedef struct {
     uint32_t  entry_idx;       /* next entry index to read  */
 } fat32_dir_t;
 
-/* Mount a FAT32 volume */
+/* Mount a FAT16 or FAT32 volume (type chosen by cluster count) */
 int fat32_mount_init(fat32_mount_t *m, blkdev_t *dev);
+
+/* VFS driver - vfs_mount() it with a fat32_mount_t whose ->dev is set. */
+extern vfs_fs_t vfs_fat32_fs;
+
+/* Mount the GPT "BOOT" partition (FAT16/FAT32) at "/BOOT", if present. */
+int fat32_init(const char *params);
 
 #endif /* FAT32_H */

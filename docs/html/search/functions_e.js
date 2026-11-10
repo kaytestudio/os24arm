@@ -1,4 +1,5 @@
 var searchData=
 [
-  ['os2_5fto_5fvfs_5fattrs_0',['os2_to_vfs_attrs',['../os2__api_8h.html#a230b85dc0b972309265837bc3d06e515',1,'os2_api.h']]]
+  ['name_5fmatch_0',['name_match',['../fat32_8c.html#a5385bd0ab0ea4f8c0787065ced5bf97a',1,'fat32.c']]],
+  ['next_5ftip_1',['next_tip',['../ai_8c.html#a1b2abb4f2823752b56fb36487482497b',1,'ai.c']]]
 ];

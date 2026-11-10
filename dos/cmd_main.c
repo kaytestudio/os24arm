@@ -7,39 +7,28 @@
  * program and wrapped as a genuine OS/2 LX CMD.EXE (see the CMD_EXE build
  * target in the top-level CMakeLists.txt).
  *
- * It calls the exact same os2api/VFS stack as the in-kernel shell -
+ * It calls the exact same os2api DOS-call bridge as the in-kernel shell -
  * everything here runs in the same flat, unprotected address space as the
  * kernel (there is no process isolation or syscall boundary in this
  * project), so this is the real command-interpreter logic, not a demo.
  *
  * The kernel's built-in LX loader (kernel/src/lx_loader.c, RUN CMD.EXE)
- * can now load and jump into this binary directly, but CMD.EXE links its
- * own private copies of vfs.c/blkdev.c/ext4.c/btrfs.c (for self-
- * containment - see the CMD_EXE_SOURCES build target) with their own
- * separate static state, entirely disconnected from whatever the kernel
- * already mounted. So main() below re-runs the same vfs_init/blk_init/
- * ext4_init/btrfs_init sequence kernel_main() does (kernel/src/main.c) -
- * both discover the same real, physical block device, so this is not
- * wasted work, just redone in CMD.EXE's own address space.
+ * can now load and jump into this binary directly. Unlike a plain in-
+ * process function call, DosOpen/DosRead/... here are resolved through
+ * DOSCALLS.DLL - a real OS/2 LX DLL (see add_lx_dll(DOSCALLS ...) in the
+ * top-level CMakeLists.txt) that CMD.EXE embeds a build-time copy of
+ * (os2api/doscalls_embed.S.in) and loads via the kernel's built-in DLL
+ * loader (kernel/src/lx_dll_loader.c) - see os2api/os2_api_import.h/.c.
+ * The DLL owns its own private vfs.c/blkdev.c/ext4.c/btrfs.c state
+ * (entirely disconnected from whatever the kernel or another program
+ * already mounted) and mounts it lazily, on whichever Dos* call touches
+ * storage first.
  */
 
 #include "dos.h"
+#include "os2_api_import.h"
 #include "uart.h"
-#include "vfs.h"
-#include "blkdev.h"
-#include "ext4.h"
-#include "btrfs.h"
 #include "string.h"
-
-extern void mem_init(uintptr_t start, size_t size);
-
-/* Private heap for CMD.EXE's own mem_alloc() (used by vfs_mount/ext4/btrfs)
- * - separate from the kernel's own heap, and placed just past the loader's
- * LX_LOAD_BASE/LX_LOAD_MAX_SIZE window (kernel/include/lx_loader.h:
- * 0x48000000 + 16MB = 0x49000000) so it can't collide with CMD.EXE's own
- * loaded code or the preloaded test disk at 0x44000000. */
-#define CMD_HEAP_START  0x49000000UL
-#define CMD_HEAP_SIZE   (4u * 1024u * 1024u)
 
 #define CMD_LINE_MAX 256
 
@@ -71,13 +60,16 @@ int main(void)
 {
     char buffer[CMD_LINE_MAX];
 
-    /* Mount the same real block device the kernel already found, in
-     * CMD.EXE's own private VFS state (see the comment above main()). */
-    mem_init(CMD_HEAP_START, CMD_HEAP_SIZE);
-    vfs_init();
-    blk_init();
-    ext4_init("/CACHE:1024");
-    btrfs_init(NULL);
+    /* Resolves DosOpen/DosRead/... against the embedded DOSCALLS.DLL
+     * (see os2api/os2_api_import.h) - it mounts its own storage lazily,
+     * on whichever Dos* call touches it first, so there's nothing else
+     * to initialize here (this used to mount CMD.EXE's own private
+     * vfs_init/blk_init/ext4_init/btrfs_init state directly; that now
+     * happens inside the DLL instead). */
+    if (os2_api_import_init() != 0) {
+        uart_puts("\r\nOS/2 Warp ARM64 - CMD.EXE: failed to load DOSCALLS.DLL\r\n");
+        return 1;
+    }
 
     uart_puts("\r\nOS/2 Warp ARM64 - CMD.EXE\r\n");
     uart_puts("Type a DOS command (DIR, TYPE, COPY, DEL, REN, MD, RD, CD, VOL, ATTRIB, CHKDSK, FORMAT)\r\n");

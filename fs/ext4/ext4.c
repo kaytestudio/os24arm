@@ -1,15 +1,22 @@
 /**
- * @file ext4.c
- * @brief ext4 Filesystem Driver (read-only)
+re * @file ext4.c
+ * @brief ext4 Filesystem Driver - mount, read, and directory/inode helpers
  *
  * Supports: superblock/group-descriptor parsing, path resolution, directory
  * listing, and file reads via both extent trees (the modern, default inode
- * layout) and classic direct/indirect block pointers. No write support -
- * allocating blocks/inodes and updating bitmaps/checksums correctly is a
- * much larger undertaking than read support, so writes report VFS_ERR_ROFS.
+ * layout) and classic direct/indirect block pointers.
+ *
+ * Write support (mkdir/create/write/truncate/unlink/rename) lives in
+ * ext4_write.c, sharing this file's mount state and a few helpers via
+ * ext4_internal.h - see that file's header comment for what it does and
+ * does not maintain. Whether a given mounted image is actually writable
+ * (ext4_mnt->writable) is decided once, at mount time, by
+ * ext4_write_init_allocators(); every write entry point below falls back to
+ * VFS_ERR_ROFS when it isn't.
  */
 
 #include "ext4.h"
+#include "ext4_internal.h"
 #include "string.h"
 #include "terminal.h"
 #include "uart.h"
@@ -17,10 +24,6 @@
 
 /* Configuration */
 static uint32_t cache_size_kb = 1024;
-
-/* Inode mode bits (not defined in ext4.h) */
-#define EXT4_S_IFMT_MASK   0xF000u
-#define EXT4_S_IFDIR_VAL   0x4000u
 
 /* Forward declarations */
 static int ext4_mount_impl(vfs_mount_t *mnt);
@@ -55,9 +58,6 @@ static vfs_fs_t ext4_fs_ops = {
     .rename   = ext4_rename,
 };
 
-extern void* mem_alloc(size_t size);
-extern void mem_free(void* ptr);
-
 /* Index-node entry for extent-tree interior nodes (not exposed in ext4.h,
  * since it's an implementation detail of extent traversal). */
 typedef struct {
@@ -77,14 +77,14 @@ static int ext4_read_block_raw(blkdev_t *dev, uint32_t block_size, uint64_t bloc
     return blk_read(dev, sector, sectors_per_block, buf);
 }
 
-static int ext4_read_block(ext4_mount_t *mnt, uint64_t block_num, void *buf)
+int ext4_read_block(ext4_mount_t *mnt, uint64_t block_num, void *buf)
 {
     return ext4_read_block_raw((blkdev_t *)mnt->dev, mnt->block_size, block_num, buf);
 }
 
 /* ── Inode I/O ───────────────────────────────────────────────────────────── */
 
-static int ext4_read_inode(ext4_mount_t *mnt, uint32_t ino, ext4_inode_t *out)
+int ext4_read_inode(ext4_mount_t *mnt, uint32_t ino, ext4_inode_t *out)
 {
     if (ino == 0) return VFS_ERR_INVAL;
 
@@ -204,7 +204,7 @@ static int ext4_classic_lookup(ext4_mount_t *mnt, ext4_inode_t *inode, uint32_t 
     return VFS_OK;
 }
 
-static int ext4_map_block(ext4_mount_t *mnt, ext4_inode_t *inode, uint32_t logical_block, uint64_t *out_phys)
+int ext4_map_block(ext4_mount_t *mnt, ext4_inode_t *inode, uint32_t logical_block, uint64_t *out_phys)
 {
     if (inode->i_flags & EXT4_EXTENTS_FL) {
         return ext4_extent_lookup(mnt, inode, logical_block, out_phys);
@@ -214,7 +214,7 @@ static int ext4_map_block(ext4_mount_t *mnt, ext4_inode_t *inode, uint32_t logic
 
 /* Read one filesystem block's worth of an inode's data (by logical block
  * index) into buf. Holes read as zero. */
-static int ext4_get_file_block(ext4_mount_t *mnt, ext4_inode_t *inode, uint32_t logical_block, uint8_t *buf)
+int ext4_get_file_block(ext4_mount_t *mnt, ext4_inode_t *inode, uint32_t logical_block, uint8_t *buf)
 {
     uint64_t phys = 0;
     int r = ext4_map_block(mnt, inode, logical_block, &phys);
@@ -226,7 +226,7 @@ static int ext4_get_file_block(ext4_mount_t *mnt, ext4_inode_t *inode, uint32_t 
     return (ext4_read_block(mnt, phys, buf) == 0) ? VFS_OK : VFS_ERR_IO;
 }
 
-static uint64_t ext4_inode_size(const ext4_inode_t *inode)
+uint64_t ext4_inode_size(const ext4_inode_t *inode)
 {
     return ((uint64_t)inode->i_size_high << 32) | inode->i_size_lo;
 }
@@ -265,7 +265,7 @@ static int ext4_inode_pread(ext4_mount_t *mnt, ext4_inode_t *inode, uint64_t off
 
 /* ── Directory lookup / iteration ───────────────────────────────────────── */
 
-static uint32_t ext4_dir_lookup(ext4_mount_t *mnt, ext4_inode_t *dir_inode, const char *name, int name_len)
+uint32_t ext4_dir_lookup(ext4_mount_t *mnt, ext4_inode_t *dir_inode, const char *name, int name_len)
 {
     uint64_t file_size = ext4_inode_size(dir_inode);
     uint32_t num_blocks = (uint32_t)((file_size + mnt->block_size - 1) / mnt->block_size);
@@ -289,7 +289,7 @@ static uint32_t ext4_dir_lookup(ext4_mount_t *mnt, ext4_inode_t *dir_inode, cons
 
 /* ── Path resolution ─────────────────────────────────────────────────────── */
 
-static int ext4_resolve_path(ext4_mount_t *mnt, const char *path, uint32_t *out_ino, ext4_inode_t *out_inode)
+int ext4_resolve_path(ext4_mount_t *mnt, const char *path, uint32_t *out_ino, ext4_inode_t *out_inode)
 {
     uint32_t cur_ino = EXT4_ROOT_INO;
     ext4_inode_t cur_inode;
@@ -304,7 +304,7 @@ static int ext4_resolve_path(ext4_mount_t *mnt, const char *path, uint32_t *out_
         int len = (int)(p - start);
 
         if (len > 0) {
-            if ((cur_inode.i_mode & EXT4_S_IFMT_MASK) != EXT4_S_IFDIR_VAL) return VFS_ERR_NOTDIR;
+            if ((cur_inode.i_mode & EXT4_S_IFMT) != EXT4_S_IFDIR) return VFS_ERR_NOTDIR;
             if (len > EXT4_NAME_LEN) return VFS_ERR_NOTFOUND;
 
             uint32_t next_ino = ext4_dir_lookup(mnt, &cur_inode, start, len);
@@ -374,13 +374,16 @@ static int ext4_mount_impl(vfs_mount_t *mnt)
     ext4_mnt->blocks_per_group = blocks_per_group;
     ext4_mnt->group_count = group_count;
     ext4_mnt->desc_per_block = block_size / desc_size;
+    ext4_mnt->desc_size = desc_size;
 
     ext4_mnt->block_buffer = (uint8_t *)mem_alloc(block_size);
     ext4_mnt->extent_buffer = (uint8_t *)mem_alloc(block_size);
+    ext4_mnt->bitmap_buffer = (uint8_t *)mem_alloc(block_size);
     ext4_mnt->group_desc = (ext4_group_desc_t *)mem_alloc((size_t)group_count * sizeof(ext4_group_desc_t));
-    if (!ext4_mnt->block_buffer || !ext4_mnt->extent_buffer || !ext4_mnt->group_desc) {
+    if (!ext4_mnt->block_buffer || !ext4_mnt->extent_buffer || !ext4_mnt->bitmap_buffer || !ext4_mnt->group_desc) {
         if (ext4_mnt->block_buffer) mem_free(ext4_mnt->block_buffer);
         if (ext4_mnt->extent_buffer) mem_free(ext4_mnt->extent_buffer);
+        if (ext4_mnt->bitmap_buffer) mem_free(ext4_mnt->bitmap_buffer);
         if (ext4_mnt->group_desc) mem_free(ext4_mnt->group_desc);
         mem_free(ext4_mnt);
         return VFS_ERR_NOSPACE;
@@ -397,6 +400,7 @@ static int ext4_mount_impl(vfs_mount_t *mnt)
             terminal_writestring("[EXT4] ERROR: Failed to read group descriptors\n");
             mem_free(ext4_mnt->block_buffer);
             mem_free(ext4_mnt->extent_buffer);
+            mem_free(ext4_mnt->bitmap_buffer);
             mem_free(ext4_mnt->group_desc);
             mem_free(ext4_mnt);
             return VFS_ERR_IO;
@@ -407,8 +411,14 @@ static int ext4_mount_impl(vfs_mount_t *mnt)
 
     mnt->priv = ext4_mnt;
 
-    kprintf("[EXT4] Mounted: %u KB blocks, %u groups, %u inodes\n",
-            block_size / 1024, group_count, ext4_mnt->sb.s_inodes_count);
+    /* Bootstrap the write engine (fs/ext4/ext4_write.c) - sets
+     * ext4_mnt->writable, falling back to read-only when the on-disk
+     * feature flags are outside what it knows how to write to safely. */
+    ext4_write_init_allocators(ext4_mnt);
+
+    kprintf("[EXT4] Mounted: %u KB blocks, %u groups, %u inodes, %s\n",
+            block_size / 1024, group_count, ext4_mnt->sb.s_inodes_count,
+            ext4_mnt->writable ? "read/write" : "read-only");
     return VFS_OK;
 }
 
@@ -420,6 +430,7 @@ static int ext4_unmount_impl(vfs_mount_t *mnt)
 
     if (ext4_mnt->group_desc) mem_free(ext4_mnt->group_desc);
     if (ext4_mnt->extent_buffer) mem_free(ext4_mnt->extent_buffer);
+    if (ext4_mnt->bitmap_buffer) mem_free(ext4_mnt->bitmap_buffer);
     if (ext4_mnt->block_buffer) mem_free(ext4_mnt->block_buffer);
     mem_free(ext4_mnt);
 
@@ -434,18 +445,26 @@ static int ext4_open(vfs_mount_t *mnt, const char *path, int flags, void **fpriv
 {
     ext4_mount_t *ext4_mnt = (ext4_mount_t *)mnt->priv;
 
-    /* Checked before path resolution: a write/create open can never
-     * succeed on this read-only driver, existing target or not, so it
+    /* Write/create opens hand off to the write engine (ext4_write.c).
+     * Checked before path resolution: a filesystem this driver decided not
+     * to write to (ext4_mnt->writable == 0 - see ext4_write_init_allocators)
      * should report "read-only" rather than a misleading "not found" for
      * the common case of creating a brand new file. */
-    if (flags & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC)) return VFS_ERR_ROFS;
+    if (flags & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC)) {
+        if (!ext4_mnt->writable) return VFS_ERR_ROFS;
+        ext4_file_t *f = NULL;
+        int r = ext4_write_open(ext4_mnt, path, flags, &f);
+        if (r != VFS_OK) return r;
+        *fpriv = f;
+        return VFS_OK;
+    }
 
     uint32_t ino;
     ext4_inode_t inode;
     int r = ext4_resolve_path(ext4_mnt, path, &ino, &inode);
     if (r != VFS_OK) return r;
 
-    if ((inode.i_mode & EXT4_S_IFMT_MASK) == EXT4_S_IFDIR_VAL) return VFS_ERR_ISDIR;
+    if ((inode.i_mode & EXT4_S_IFMT) == EXT4_S_IFDIR) return VFS_ERR_ISDIR;
 
     ext4_file_t *f = (ext4_file_t *)mem_alloc(sizeof(ext4_file_t));
     if (!f) return VFS_ERR_NOSPACE;
@@ -483,9 +502,10 @@ static int ext4_read(vfs_mount_t *mnt, void *fpriv, void *buf, uint32_t len, uin
 
 static int ext4_write(vfs_mount_t *mnt, void *fpriv, const void *buf, uint32_t len, uint32_t *actual)
 {
-    (void)mnt; (void)fpriv; (void)buf; (void)len;
-    *actual = 0;
-    return VFS_ERR_ROFS;
+    (void)mnt;
+    ext4_file_t *f = (ext4_file_t *)fpriv;
+    if (!f) { *actual = 0; return VFS_ERR_BADFD; }
+    return ext4_write_data(f, buf, len, actual);
 }
 
 /* ── Directory operations ────────────────────────────────────────────────── */
@@ -498,7 +518,7 @@ static int ext4_opendir(vfs_mount_t *mnt, const char *path, void **dpriv)
     ext4_inode_t inode;
     int r = ext4_resolve_path(ext4_mnt, path, &ino, &inode);
     if (r != VFS_OK) return r;
-    if ((inode.i_mode & EXT4_S_IFMT_MASK) != EXT4_S_IFDIR_VAL) return VFS_ERR_NOTDIR;
+    if ((inode.i_mode & EXT4_S_IFMT) != EXT4_S_IFDIR) return VFS_ERR_NOTDIR;
 
     ext4_file_t *file = (ext4_file_t *)mem_alloc(sizeof(ext4_file_t));
     if (!file) return VFS_ERR_NOSPACE;
@@ -591,26 +611,29 @@ static int ext4_stat(vfs_mount_t *mnt, const char *path, vfs_stat_t *st)
 
     uint64_t size = ext4_inode_size(&inode);
     st->size = (size > 0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)size;
-    st->attrs = ((inode.i_mode & EXT4_S_IFMT_MASK) == EXT4_S_IFDIR_VAL) ? VFS_ATTR_DIR : 0;
+    st->attrs = ((inode.i_mode & EXT4_S_IFMT) == EXT4_S_IFDIR) ? VFS_ATTR_DIR : 0;
     return VFS_OK;
 }
 
 static int ext4_unlink(vfs_mount_t *mnt, const char *path)
 {
-    (void)mnt; (void)path;
-    return VFS_ERR_ROFS;
+    ext4_mount_t *ext4_mnt = (ext4_mount_t *)mnt->priv;
+    if (!ext4_mnt->writable) return VFS_ERR_ROFS;
+    return ext4_do_unlink(ext4_mnt, path);
 }
 
 static int ext4_mkdir(vfs_mount_t *mnt, const char *path)
 {
-    (void)mnt; (void)path;
-    return VFS_ERR_ROFS;
+    ext4_mount_t *ext4_mnt = (ext4_mount_t *)mnt->priv;
+    if (!ext4_mnt->writable) return VFS_ERR_ROFS;
+    return ext4_do_mkdir(ext4_mnt, path);
 }
 
 static int ext4_rename(vfs_mount_t *mnt, const char *old, const char *nw)
 {
-    (void)mnt; (void)old; (void)nw;
-    return VFS_ERR_ROFS;
+    ext4_mount_t *ext4_mnt = (ext4_mount_t *)mnt->priv;
+    if (!ext4_mnt->writable) return VFS_ERR_ROFS;
+    return ext4_do_rename(ext4_mnt, old, nw);
 }
 
 /* ── Driver init / VFS wiring ────────────────────────────────────────────── */
@@ -641,6 +664,20 @@ static void parse_cache_option(const char *params)
     if (val > 0) cache_size_kb = val;
 }
 
+/* Returns nonzero if dev carries an ext2/3/4 superblock magic. */
+static int ext4_probe(blkdev_t *dev)
+{
+    if (dev->sector_size == 0) return 0;
+
+    uint8_t sb_raw[1024];
+    int64_t sb_sector = EXT4_SUPER_OFFSET / dev->sector_size;
+    uint32_t sb_sectors = 1024 / dev->sector_size;
+    if (sb_sectors < 1) sb_sectors = 1;
+    if (blk_read(dev, sb_sector, sb_sectors, sb_raw) != 0) return 0;
+
+    return ((ext4_superblock_t *)sb_raw)->s_magic == EXT4_SUPER_MAGIC;
+}
+
 int ext4_init(const char *params)
 {
     uart_puts("DEBUG: Entering ext4_init\r\n");
@@ -650,19 +687,28 @@ int ext4_init(const char *params)
         parse_cache_option(params);
     }
 
-    /* A GPT-partitioned disk (see gpt.c) puts ext4 on the "BOOT" partition
-     * (a safety/recovery area - btrfs owns "C", the main "/" drive; see
-     * btrfs_init()) - mounted at "/BOOT" in that case. Falling back to the
-     * raw "disk0" device (mounted at "/" instead) keeps flat, unpartitioned
-     * ext4-only test images working exactly as before. */
-    blkdev_t *dev = blkdev_get_by_name("BOOT");
-    const char *mount_point = "/BOOT";
-    if (!dev) {
+    /* A GPT-partitioned disk (see gpt.c) has a FAT "BOOT" partition
+     * (mounted at "/BOOT" by fat32_init()) and the main "/" drive on
+     * partition "C", which may be ext4 or btrfs: try it here as ext4 -
+     * the superblock magic check in the mount rejects a btrfs "C", which
+     * btrfs_init() then mounts instead. Only without a "C" partition does
+     * this fall back to the raw "disk0" device, so flat, unpartitioned
+     * ext4-only test images keep working exactly as before. */
+    blkdev_t *dev = blkdev_get_by_name("C");
+    const char *mount_point = "/";
+    if (!dev && !blkdev_get_by_name("BOOT")) {
         dev = blkdev_get_by_name("disk0");
-        mount_point = "/";
     }
     if (!dev) {
         kprintf("[EXT4] No block device found; not mounting\n");
+        uart_puts("DEBUG: ext4_init complete\r\n");
+        return 0;
+    }
+
+    /* "C" may legitimately be btrfs - probe the magic first so that case
+     * is a quiet skip rather than a "Bad superblock magic" error. */
+    if (!ext4_probe(dev)) {
+        kprintf("[EXT4] %s is not ext4; not mounting\n", dev->name);
         uart_puts("DEBUG: ext4_init complete\r\n");
         return 0;
     }

@@ -26,18 +26,26 @@ extern void uart_puts(const char *s);
  * runs (see kernel_main()) - must never be exactly 0, since an overflow
  * that happens to zero-fill past the canary would otherwise look
  * "unchanged" against a zero guard. */
-uintptr_t __stack_chk_guard = 0xA5A5A5A5DEADBEEFULL;
+#define STACK_CHK_GUARD_DEFAULT ((uintptr_t)0xA5A5A5A5DEADBEEFULL)
+
+uintptr_t __stack_chk_guard = STACK_CHK_GUARD_DEFAULT;
 
 /* Called once, early in kernel_main(), to fold in something better than
  * a fixed constant - not a real CSPRNG (no entropy source this early in
- * boot), just the free-running virtual counter, but enough that two
- * boots don't share an identical, guessable canary. */
+ * boot), just a free-running counter, but enough that two boots don't
+ * share an identical, guessable canary. */
 void stack_protector_reseed(void)
 {
-    uintptr_t counter;
+    uintptr_t counter = 0;
+#if defined(__aarch64__)
     __asm__ volatile("mrs %0, cntvct_el0" : "=r"(counter));
+#elif defined(__riscv)
+    __asm__ volatile("rdtime %0" : "=r"(counter));
+#endif
+    /* ARMv7 (Cortex-A8) has no generic timer, and its PMU cycle counter
+     * is off until something enables it - keep the compile-time default. */
     __stack_chk_guard ^= counter;
-    if (__stack_chk_guard == 0) __stack_chk_guard = 0xA5A5A5A5DEADBEEFULL;
+    if (__stack_chk_guard == 0) __stack_chk_guard = STACK_CHK_GUARD_DEFAULT;
 }
 
 __attribute__((noreturn))

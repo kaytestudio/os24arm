@@ -1,0 +1,5 @@
+build/
+build-*/
+docs/
+.DS_Store
+external/binutils/

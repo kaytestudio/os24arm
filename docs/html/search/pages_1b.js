@@ -1,5 +1,4 @@
 var searchData=
 [
-  ['variables_0',['Variables',['../index.html#autotoc_md32',1,'']]],
-  ['virt_1',['QEMU virt',['../index.html#autotoc_md37',1,'']]]
+  ['ubuntu_20debian_0',['Ubuntu / Debian',['../index.html#autotoc_md4',1,'']]]
 ];

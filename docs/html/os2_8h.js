@@ -28,7 +28,6 @@ var os2_8h =
     [ "UCHAR", "os2_8h.html#ab7656c5fc571bef60f5a184a54dacf62", null ],
     [ "uint16_t", "os2_8h.html#a273cf69d639a59973b6019625df33e30", null ],
     [ "uint32_t", "os2_8h.html#a435d1572bf3f880d55459d9805097f62", null ],
-    [ "uint64_t", "os2_8h.html#aa232ecf786a74ce5363c36c10798d2b1", null ],
     [ "uint8_t", "os2_8h.html#aba7bc1797add20fe3efdf37ced1182c5", null ],
     [ "ULONG", "os2_8h.html#ac35fa651076b85bda3f7fe75d4d593f9", null ],
     [ "USHORT", "os2_8h.html#a72a13171ddfb14744979719e43067c2d", null ],

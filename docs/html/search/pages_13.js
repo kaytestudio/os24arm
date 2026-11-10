@@ -1,4 +1,4 @@
 var searchData=
 [
-  ['numeric_20functions_0',['Numeric functions',['../index.html#autotoc_md30',1,'']]]
+  ['macos_20for_20building_0',['macOS (for building)',['../index.html#autotoc_md3',1,'']]]
 ];

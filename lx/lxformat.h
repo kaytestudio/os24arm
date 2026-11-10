@@ -78,6 +78,17 @@
 #define LXPAGE_ZEROED         0x03  /* Zero-filled page */
 #define LXPAGE_RANGE          0x04  /* Range of pages */
 
+/* ── LX Entry Table Bundle Types ─────────────────────────────────────────── */
+
+#define LXENTRY_TYPE_UNUSED   0x00  /* Empty bundle (skips ordinals) */
+#define LXENTRY_TYPE_16BIT    0x01  /* 16-bit offset entry */
+#define LXENTRY_TYPE_CALLGATE 0x02  /* 286 call gate entry */
+#define LXENTRY_TYPE_32BIT    0x03  /* 32-bit offset entry (what this project's toolchain emits) */
+#define LXENTRY_TYPE_FORWARDER 0x04 /* Forwarder to another module's export */
+
+#define LXENTRY_FLAG_EXPORTED 0x01  /* Entry is exported */
+#define LXENTRY_FLAG_SHARED   0x02  /* Shared data entry */
+
 /* ══════════════════════════════════════════════════════════════════════════
    LX HEADER STRUCTURE
    ══════════════════════════════════════════════════════════════════════════ */
@@ -242,13 +253,24 @@ int lx_builder_add_fixup(LXBuilder *builder, uint32_t source_object,
 /* Write LX file */
 int lx_builder_write(LXBuilder *builder, const char *filename);
 
-/* Utility: Create simple executable */
-int lx_create_exe(const char *filename, const void *code, uint32_t code_size,
+/* Utility: Create an executable from two separate objects - code
+ * (.text+.rodata, mapped RX) and data (.data+.bss, mapped RW+NX) - rather
+ * than one flat RWX blob, so the kernel's loader (kernel/src/lx_loader.c)
+ * and MMU setup (kernel/src/mmu.c) can enforce W^X between them. */
+int lx_create_exe(const char *filename,
+                  const void *code, uint32_t code_size,
+                  const void *data, uint32_t data_size,
                   uint32_t entry_offset, uint32_t stack_size);
 
-/* Utility: Create simple DLL */
+/* Utility: Create a DLL from two separate objects, same reasoning as
+ * lx_create_exe above. offsets[i] is the real byte offset of exports[i]
+ * within `code` (e.g. from an nm lookup against the linked ELF) - callers
+ * must supply real addresses, not placeholders, since these become the
+ * entry table's actual on-disk offsets. */
 int lx_create_dll(const char *filename, const char *dll_name,
                   const void *code, uint32_t code_size,
-                  const char **exports, uint32_t export_count);
+                  const void *data, uint32_t data_size,
+                  const char **exports, const uint32_t *offsets,
+                  uint32_t export_count);
 
 #endif /* LXFORMAT_H */

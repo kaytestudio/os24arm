@@ -74,16 +74,21 @@ procedure TLexer.Advance;
 begin
   if FEOF then Exit;
 
+  // Deliberately does NOT roll over to the next line here: token-scanning
+  // loops elsewhere (identifiers, strings, comments, ...) call Advance
+  // repeatedly with a "while CurrentChar looks like part of this token"
+  // condition, and CurrentChar already reports #0 once FCurrentCharIndex
+  // reaches the end of FCurrentLine - that's what stops those loops. If
+  // Advance itself jumped to the next line's first character instead, a
+  // token ending at end-of-line (e.g. an identifier) would silently keep
+  // consuming characters from the START of the NEXT line (there's no
+  // newline character in FCurrentLine to act as a separator, since
+  // FSourceCode splits source into one string per line) - e.g. "x" at
+  // the end of one line and "let" at the start of the next would lex as
+  // a single identifier "xlet". The actual line transition happens only
+  // in GetNextToken's "Handle End of Line" check below, which runs at
+  // the start of a fresh token, never mid-scan.
   Inc(FCurrentCharIndex);
-  if FCurrentCharIndex >= Length(FCurrentLine) then
-  begin
-    Inc(FCurrentLineIndex);
-    FCurrentCharIndex := 0;
-    if FCurrentLineIndex < FSourceCode.Count then
-      FCurrentLine := FSourceCode[FCurrentLineIndex]
-    else
-      FEOF := True;
-  end;
 end;
 
 function TLexer.CurrentChar: Char;
@@ -218,9 +223,16 @@ begin
   // Handle End of Line
   if (FCurrentCharIndex >= Length(FCurrentLine)) and (FCurrentLineIndex < FSourceCode.Count) then
   begin
-    Advance; // Move to the next line
     Result.TokenType := tkEndOfLine;
     Result.Lexeme := '';
+    // Move to the next line (Advance no longer does this itself - see
+    // its comment - so the transition happens here instead).
+    Inc(FCurrentLineIndex);
+    FCurrentCharIndex := 0;
+    if FCurrentLineIndex < FSourceCode.Count then
+      FCurrentLine := FSourceCode[FCurrentLineIndex]
+    else
+      FEOF := True;
     Exit;
   end;
 
@@ -288,7 +300,7 @@ begin
   // Handle String Literals
   if CurrentChar = '"' then
   begin
-    LexemeBuilder := '"';
+    LexemeBuilder := '';
     Advance; // Consume the opening quote
     while (CurrentChar <> '"') and (CurrentChar <> #0) and (FCurrentCharIndex < Length(FCurrentLine)) do
     begin
@@ -297,9 +309,9 @@ begin
     end;
     if CurrentChar = '"' then
     begin
-      LexemeBuilder := LexemeBuilder + '"';
       Advance; // Consume the closing quote
       Result.TokenType := tkStringLiteral;
+      // Lexeme is the string's content, without the surrounding quotes.
       Result.Lexeme := LexemeBuilder;
       Exit;
     end

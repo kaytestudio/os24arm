@@ -1,26 +1,4 @@
 var searchData=
 [
-  ['katoi_0',['katoi',['../kio_8c.html#af1fe23e9dba8f86d544492ec6b6b3297',1,'katoi(const char *s):&#160;kio.c'],['../kio_8h.html#a0f14320299ae98a5c0c12e657128df1b',1,'katoi(const char *s):&#160;kio.c']]],
-  ['kbd_5fgetc_1',['kbd_getc',['../keyboard_8c.html#aaa9f517cb9f31db68dafe9a8d1079768',1,'kbd_getc(void):&#160;keyboard.c'],['../keyboard_8h.html#aaa9f517cb9f31db68dafe9a8d1079768',1,'kbd_getc(void):&#160;keyboard.c']]],
-  ['kbd_5fgetc_5fnb_2',['kbd_getc_nb',['../keyboard_8c.html#a825b9b530dc6c2869b1ea9a4e109db50',1,'kbd_getc_nb(void):&#160;keyboard.c'],['../keyboard_8h.html#a825b9b530dc6c2869b1ea9a4e109db50',1,'kbd_getc_nb(void):&#160;keyboard.c']]],
-  ['kbd_5finit_3',['kbd_init',['../keyboard_8c.html#a2d4a794658f2ee47f466766d89c6e8e8',1,'kbd_init(void):&#160;keyboard.c'],['../keyboard_8h.html#a2d4a794658f2ee47f466766d89c6e8e8',1,'kbd_init(void):&#160;keyboard.c']]],
-  ['kbd_5fready_4',['kbd_ready',['../keyboard_8c.html#a6444478b723f5d3bf92e74fd73d43e43',1,'kbd_ready(void):&#160;keyboard.c'],['../keyboard_8h.html#a6444478b723f5d3bf92e74fd73d43e43',1,'kbd_ready(void):&#160;keyboard.c']]],
-  ['kernel_5fmain_5',['kernel_main',['../kernel_8c.html#a6b8fb674fb359f6ae53dc9c4fb7fc6be',1,'kernel_main(void):&#160;kernel.c'],['../main_8c.html#a6b8fb674fb359f6ae53dc9c4fb7fc6be',1,'kernel_main(void):&#160;main.c'],['../rpi__main_8c.html#a6b8fb674fb359f6ae53dc9c4fb7fc6be',1,'kernel_main(void):&#160;rpi_main.c']]],
-  ['kernel_5fshell_6',['kernel_shell',['../main_8c.html#ad824d46749176b1743b525ed6ed7fef5',1,'kernel_shell(void):&#160;main.c'],['../rpi__main_8c.html#ad824d46749176b1743b525ed6ed7fef5',1,'kernel_shell(void):&#160;rpi_main.c']]],
-  ['kfree_7',['kfree',['../memory_8c.html#a069f85a5001d71bc44d8be6532a4e432',1,'memory.c']]],
-  ['kgets_8',['kgets',['../kio_8c.html#a04f20578a2cc3cc68fc9ec1c8748efa2',1,'kgets(char *buf, size_t len):&#160;kio.c'],['../kio_8h.html#a04f20578a2cc3cc68fc9ec1c8748efa2',1,'kgets(char *buf, size_t len):&#160;kio.c']]],
-  ['kmalloc_9',['kmalloc',['../memory_8c.html#a87d8585002a620e687d68b38ab387a0e',1,'memory.c']]],
-  ['kmemcpy_10',['kmemcpy',['../cli_8c.html#a3b0b90ec007d705e63ce436406a8595d',1,'kmemcpy(char *d, const char *s, int n):&#160;cli.c'],['../kio_8c.html#a60721850c93e4497895273cb581cb996',1,'kmemcpy(void *dst, const void *src, size_t n):&#160;kio.c'],['../kio_8h.html#a60721850c93e4497895273cb581cb996',1,'kmemcpy(void *dst, const void *src, size_t n):&#160;kio.c']]],
-  ['kmemset_11',['kmemset',['../kio_8c.html#ab238056f3856eae39008ac231594bcb1',1,'kmemset(void *dst, int c, size_t n):&#160;kio.c'],['../kio_8h.html#ab238056f3856eae39008ac231594bcb1',1,'kmemset(void *dst, int c, size_t n):&#160;kio.c']]],
-  ['kprintf_12',['kprintf',['../kio_8c.html#a199a1f701f4cc4fd1c3ff7903a102d7a',1,'kprintf(const char *fmt,...):&#160;kio.c'],['../kio_8h.html#a199a1f701f4cc4fd1c3ff7903a102d7a',1,'kprintf(const char *fmt,...):&#160;kio.c']]],
-  ['kputc_13',['kputc',['../console_8c.html#a28dfb037d64e8ddb8e2d7cdda1f8a746',1,'console.c']]],
-  ['kputs_14',['kputs',['../console_8c.html#a48fac3b476fb0dcc12387c0ce1ac4018',1,'console.c']]],
-  ['kstrchr_15',['kstrchr',['../kio_8c.html#a635bbfeccb3cf6adef15726a9e2fdcc2',1,'kstrchr(const char *s, int c):&#160;kio.c'],['../kio_8h.html#a635bbfeccb3cf6adef15726a9e2fdcc2',1,'kstrchr(const char *s, int c):&#160;kio.c']]],
-  ['kstrcmp_16',['kstrcmp',['../cli_8c.html#a5da3074ade089664ec17855aaf3e73fd',1,'kstrcmp(const char *a, const char *b):&#160;cli.c'],['../kio_8c.html#ac76d947802db6f4391f575d987f48b06',1,'kstrcmp(const char *a, const char *b):&#160;kio.c'],['../kio_8h.html#ac76d947802db6f4391f575d987f48b06',1,'kstrcmp(const char *a, const char *b):&#160;kio.c']]],
-  ['kstrcpy_17',['kstrcpy',['../kio_8c.html#a864c88d82a5c0cb213765ccf4b61ce93',1,'kstrcpy(char *dst, const char *src):&#160;kio.c'],['../kio_8h.html#a864c88d82a5c0cb213765ccf4b61ce93',1,'kstrcpy(char *dst, const char *src):&#160;kio.c']]],
-  ['kstrlen_18',['kstrlen',['../cli_8c.html#ac8b632cae1152d1aec31539febc10bae',1,'kstrlen(const char *s):&#160;cli.c'],['../kio_8c.html#a6bec7daeb3e8e27e1aec947fcb9d05ee',1,'kstrlen(const char *s):&#160;kio.c'],['../kio_8h.html#a6bec7daeb3e8e27e1aec947fcb9d05ee',1,'kstrlen(const char *s):&#160;kio.c']]],
-  ['kstrncmp_19',['kstrncmp',['../cli_8c.html#ac72ad8b2c7b77b71c5d2ef0d32ba7611',1,'kstrncmp(const char *a, const char *b, int n):&#160;cli.c'],['../kio_8c.html#a2e6b7ac7e1b2ebf59faf179534d27a38',1,'kstrncmp(const char *a, const char *b, size_t n):&#160;kio.c'],['../kio_8h.html#a2e6b7ac7e1b2ebf59faf179534d27a38',1,'kstrncmp(const char *a, const char *b, size_t n):&#160;kio.c']]],
-  ['kstrncpy_20',['kstrncpy',['../kio_8c.html#a928767eb3d6af2e725d8be0b32bd4582',1,'kstrncpy(char *dst, const char *src, size_t n):&#160;kio.c'],['../kio_8h.html#a928767eb3d6af2e725d8be0b32bd4582',1,'kstrncpy(char *dst, const char *src, size_t n):&#160;kio.c']]],
-  ['kw_21',['kw',['../basic_8c.html#ae4361cfc97e6825ebc951a2aa03963b6',1,'basic.c']]],
-  ['kw_5fany_22',['kw_any',['../basic_8c.html#aec35a47949bf26672e6362cd50b0fead',1,'basic.c']]]
+  ['jump_5fto_0',['jump_to',['../basic_8c.html#aea920e098de542b2b9e3961943284523',1,'basic.c']]]
 ];

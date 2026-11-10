@@ -1,19 +1,9 @@
 var searchData=
 [
-  ['uart0_0',['UART0',['../console_8c.html#a0508661f121639ffdee7de2353a0def2',1,'console.c']]],
-  ['uart0_5fbase_1',['UART0_BASE',['../rpi__main_8c.html#a7a07348b4332ff6b88abf6092347deba',1,'rpi_main.c']]],
-  ['uart0_5fcr_2',['UART0_CR',['../rpi__main_8c.html#a35837699c967eb00a86c8b23722986ae',1,'rpi_main.c']]],
-  ['uart0_5fdr_3',['UART0_DR',['../rpi__main_8c.html#a4bd8785a1ac7d8be53153ec3e2f5afa4',1,'rpi_main.c']]],
-  ['uart0_5ffbrd_4',['UART0_FBRD',['../rpi__main_8c.html#a67a0db9e9e19efd76dff62e1d8d1a85b',1,'rpi_main.c']]],
-  ['uart0_5ffr_5',['UART0_FR',['../rpi__main_8c.html#a8838537812346e09a66edf94c0c9ffe9',1,'rpi_main.c']]],
-  ['uart0_5fibrd_6',['UART0_IBRD',['../rpi__main_8c.html#acad7a12bd2fd52142e84b6789b8b20ec',1,'rpi_main.c']]],
-  ['uart0_5ficr_7',['UART0_ICR',['../rpi__main_8c.html#aef295b4cdf946f8f3650730affc62715',1,'rpi_main.c']]],
-  ['uart0_5fimsc_8',['UART0_IMSC',['../rpi__main_8c.html#a7b6a0c6364685a63b8d9ca71286310b7',1,'rpi_main.c']]],
-  ['uart0_5flcrh_9',['UART0_LCRH',['../rpi__main_8c.html#ac4cc0d28286e1e9d556fd21570a9d092',1,'rpi_main.c']]],
-  ['uart_5fbase_10',['UART_BASE',['../keyboard_8c.html#aa501d94aad5260161a3f0b89ec827e92',1,'UART_BASE:&#160;keyboard.c'],['../main_8c.html#aa501d94aad5260161a3f0b89ec827e92',1,'UART_BASE:&#160;main.c'],['../uart_8c.html#aa501d94aad5260161a3f0b89ec827e92',1,'UART_BASE:&#160;uart.c']]],
-  ['uart_5fdr_11',['UART_DR',['../keyboard_8c.html#aeecfbcfb2237b106811fbaa70a0f16bb',1,'UART_DR:&#160;keyboard.c'],['../main_8c.html#aeecfbcfb2237b106811fbaa70a0f16bb',1,'UART_DR:&#160;main.c'],['../uart_8c.html#aeecfbcfb2237b106811fbaa70a0f16bb',1,'UART_DR:&#160;uart.c']]],
-  ['uart_5ffr_12',['UART_FR',['../keyboard_8c.html#a6fb2c8bd5d9982f95334a59729c83cf1',1,'UART_FR:&#160;keyboard.c'],['../main_8c.html#a6fb2c8bd5d9982f95334a59729c83cf1',1,'UART_FR:&#160;main.c'],['../uart_8c.html#a6fb2c8bd5d9982f95334a59729c83cf1',1,'UART_FR:&#160;uart.c']]],
-  ['uart_5ffr_5frxfe_13',['UART_FR_RXFE',['../keyboard_8c.html#a9ba067e6425a6c5b5aca79874c549364',1,'UART_FR_RXFE:&#160;keyboard.c'],['../main_8c.html#a9ba067e6425a6c5b5aca79874c549364',1,'UART_FR_RXFE:&#160;main.c'],['../rpi__main_8c.html#a9ba067e6425a6c5b5aca79874c549364',1,'UART_FR_RXFE:&#160;rpi_main.c'],['../uart_8c.html#a9ba067e6425a6c5b5aca79874c549364',1,'UART_FR_RXFE:&#160;uart.c']]],
-  ['uart_5ffr_5ftxff_14',['UART_FR_TXFF',['../keyboard_8c.html#a2f6a08ae8a3005e737005cbd607081b1',1,'UART_FR_TXFF:&#160;keyboard.c'],['../main_8c.html#a2f6a08ae8a3005e737005cbd607081b1',1,'UART_FR_TXFF:&#160;main.c'],['../rpi__main_8c.html#a2f6a08ae8a3005e737005cbd607081b1',1,'UART_FR_TXFF:&#160;rpi_main.c'],['../uart_8c.html#a2f6a08ae8a3005e737005cbd607081b1',1,'UART_FR_TXFF:&#160;uart.c']]],
-  ['uart_5fimsc_15',['UART_IMSC',['../keyboard_8c.html#a394165743592a6a268578d932a6a0493',1,'keyboard.c']]]
+  ['o_5fappend_0',['O_APPEND',['../vfs_8h.html#ae036f789407d21f07b211552d67b3214',1,'O_APPEND:&#160;vfs.h'],['../os2__api_8h.html#ae036f789407d21f07b211552d67b3214',1,'O_APPEND:&#160;os2_api.h']]],
+  ['o_5fcreat_1',['O_CREAT',['../vfs_8h.html#a1cf6b1de1fffedaa1d26b189e9a8d2cc',1,'O_CREAT:&#160;vfs.h'],['../os2__api_8h.html#a1cf6b1de1fffedaa1d26b189e9a8d2cc',1,'O_CREAT:&#160;os2_api.h']]],
+  ['o_5frdonly_2',['O_RDONLY',['../vfs_8h.html#a7a68c9ffaac7dbcd652225dd7c06a54b',1,'O_RDONLY:&#160;vfs.h'],['../os2__api_8h.html#a7a68c9ffaac7dbcd652225dd7c06a54b',1,'O_RDONLY:&#160;os2_api.h']]],
+  ['o_5frdwr_3',['O_RDWR',['../vfs_8h.html#abb0586253488ee61072b73557eeb873b',1,'O_RDWR:&#160;vfs.h'],['../os2__api_8h.html#abb0586253488ee61072b73557eeb873b',1,'O_RDWR:&#160;os2_api.h']]],
+  ['o_5ftrunc_4',['O_TRUNC',['../vfs_8h.html#ad1d67e453fb3031f40f8cd3403773813',1,'O_TRUNC:&#160;vfs.h'],['../os2__api_8h.html#ad1d67e453fb3031f40f8cd3403773813',1,'O_TRUNC:&#160;os2_api.h']]],
+  ['o_5fwronly_5',['O_WRONLY',['../vfs_8h.html#a11b644a8526139c4cc1850dac1271ced',1,'O_WRONLY:&#160;vfs.h'],['../os2__api_8h.html#a11b644a8526139c4cc1850dac1271ced',1,'O_WRONLY:&#160;os2_api.h']]]
 ];
