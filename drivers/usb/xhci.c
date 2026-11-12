@@ -120,6 +120,7 @@ typedef struct {
 #define TRB_CYCLE          (1u << 0)
 #define TRB_TC             (1u << 1)
 #define TRB_ISP            (1u << 2)
+#define TRB_CH             (1u << 4)          /* chain to the next TRB */
 #define TRB_IOC            (1u << 5)
 #define TRB_IDT            (1u << 6)
 #define TRB_BSR            (1u << 9)          /* Address Device */
@@ -159,7 +160,7 @@ typedef struct {
 #define CC_SHORT_PACKET    13
 
 #define RING_TRBS          32                 /* last one is the link TRB */
-#define EVENT_TRBS         64
+#define EVENT_TRBS         256
 #define MAX_SLOTS          8
 #define MAX_PORTS          15
 #define MAX_SCRATCHPAD     8
@@ -173,7 +174,12 @@ typedef struct {
     trb_t   *trbs;
     uint32_t enq;
     uint32_t cycle;
+    uint32_t pending;         /* TRBs queued and not yet completed/dropped */
 } ring_t;
+
+/* Usable TRBs per ring: one is the link TRB, and one stays free so a full
+ * ring can never look empty. */
+#define RING_ROOM          (RING_TRBS - 2)
 
 typedef struct {
     u64      base;
@@ -201,11 +207,21 @@ typedef struct {
     uint32_t halted;          /* DCI bitmap, needs Reset Endpoint */
 } hdev_t;
 
+/* A data buffer may cross at most one 64 KB boundary (lengths are 16-bit),
+ * so a data stage / Normal TD is at most 2 TRBs. */
+#define MAX_SEGS           2
+
 typedef struct {
     int      used, done;
     USBRb    rb;              /* the caller's request (copied) */
     uint32_t slot, dci;
-    trb_t   *first, *data, *last;
+    ring_t  *ring;            /* NULL for root hub requests */
+    uint32_t ntrbs;           /* TRBs it holds on that ring */
+    int      control;         /* control TD: completes on the Status TRB */
+    trb_t   *first, *last;
+    uint32_t nseg;
+    trb_t   *seg[MAX_SEGS];   /* data TRBs, with their byte offset/length */
+    uint32_t seg_off[MAX_SEGS], seg_len[MAX_SEGS];
     uint32_t len, actual;
     int      short_seen;
     uint8_t  status;
@@ -233,6 +249,7 @@ static ring_t    cmd_ring;
 static uint32_t  ev_deq, ev_cycle;
 static volatile int cmd_got;
 static trb_t     cmd_ev;
+static const trb_t *cmd_wait;                 /* the command TRB being waited on */
 static hdev_t    hdevs[MAX_SLOTS];
 static uint8_t   addr2slot[128];
 static ring_t    ep_rings[MAX_EP_RINGS];
@@ -278,9 +295,10 @@ static volatile uint32_t *pci_cfg(uint32_t dev, uint32_t reg)
 static void ring_init(ring_t *r, trb_t *trbs)
 {
     usb_zero(trbs, RING_TRBS * sizeof(trb_t));
-    r->trbs  = trbs;
-    r->enq   = 0;
-    r->cycle = 1;
+    r->trbs    = trbs;
+    r->enq     = 0;
+    r->cycle   = 1;
+    r->pending = 0;
     trb_t *link = &trbs[RING_TRBS - 1];
     link->p0      = (uint32_t)dma(trbs);
     link->p1      = (uint32_t)(dma(trbs) >> 32);
@@ -308,6 +326,46 @@ static trb_t *ring_push(ring_t *r, u64 param, uint32_t status, uint32_t control)
 
 static u64 ring_deq_ptr(const ring_t *r) { return dma(&r->trbs[r->enq]) | r->cycle; }
 
+/* Split [buf, buf+len) at 64 KB boundaries (an xHCI TRB rule). */
+static uint32_t split_64k(u64 buf, uint32_t len, uint32_t *seglen)
+{
+    uint32_t n = 0;
+    while (len && n < MAX_SEGS) {
+        uint32_t room = 0x10000u - (uint32_t)(buf & 0xFFFF);
+        uint32_t k = len < room ? len : room;
+        seglen[n++] = k;
+        buf += k;
+        len -= k;
+    }
+    return len ? 0 : n;                               /* 0 = doesn't fit */
+}
+
+/* TD Size field: packets left after this TRB (xHCI 4.11.2.4), max 31. */
+static uint32_t td_size(uint32_t remaining, uint32_t mps)
+{
+    if (!mps) mps = 512;
+    uint32_t p = (remaining + mps - 1) / mps;
+    return (p > 31 ? 31 : p) << 17;
+}
+
+/* Queue a data buffer as chained TRBs; first_type is the first TRB's type
+ * (Data for a control data stage, Normal otherwise), later ones Normal. */
+static void push_data(xfer_t *x, ring_t *r, u64 buf, uint32_t len, uint32_t first_type,
+                      uint32_t flags, uint32_t last_flags, uint32_t mps)
+{
+    uint32_t seglen[MAX_SEGS], off = 0;
+    x->nseg = split_64k(buf, len, seglen);
+    for (uint32_t k = 0; k < x->nseg; k++) {
+        int last = k + 1 == x->nseg;
+        uint32_t ctl = TRB_TYPE(k ? TRB_NORMAL : first_type) | flags |
+                       (last ? last_flags : TRB_CH);
+        x->seg[k]     = ring_push(r, buf + off, seglen[k] |
+                                  (last ? 0 : td_size(len - off - seglen[k], mps)), ctl);
+        x->seg_off[k] = off;
+        x->seg_len[k] = seglen[k];
+        off += seglen[k];
+    }
+}
 static void doorbell(uint32_t slot, uint32_t target)
 {
     dma_barrier();
@@ -325,6 +383,16 @@ static int xfer_alloc(const USBRb *rb)
             return i;
         }
     return -1;
+}
+
+/* Free a request slot and give its TRBs back to the ring's budget. */
+static void xfer_free(int i)
+{
+    xfer_t *x = &xfers[i];
+    if (x->ring) x->ring->pending = x->ring->pending >= x->ntrbs
+                                    ? x->ring->pending - x->ntrbs : 0;
+    x->ring = 0;
+    x->used = 0;
 }
 
 static void xfer_complete(int i, uint8_t status)
@@ -355,7 +423,7 @@ static void xfer_drop(uint32_t slot, uint32_t dci_or_all)
     for (int i = 0; i < MAX_XFERS; i++)
         if (xfers[i].used && xfers[i].slot == slot &&
             (dci_or_all == 0xff || xfers[i].dci == dci_or_all))
-            xfers[i].used = 0;
+            xfer_free(i);
     /* Compact the completion queue around them. */
     uint8_t keep[MAX_XFERS + 1];
     uint32_t n = 0;
@@ -389,8 +457,13 @@ static void handle_event(const trb_t *ev)
 {
     uint32_t type = TRB_GET_TYPE(ev->control);
     if (type == TRB_EV_CMD_DONE) {
-        cmd_ev  = *ev;
-        cmd_got = 1;
+        /* Only the command being waited for: a late completion of one
+         * that timed out must not be taken for the next command's. */
+        const trb_t *t = (const trb_t *)(uintptr_t)(((u64)ev->p1 << 32) | ev->p0);
+        if (cmd_wait && t == cmd_wait) {
+            cmd_ev  = *ev;
+            cmd_got = 1;
+        }
         return;
     }
     if (type != TRB_EV_TRANSFER) return;              /* port changes: polled */
@@ -409,14 +482,20 @@ static void handle_event(const trb_t *ev)
             xfer_complete(i, cc_status(cc));
             return;
         }
-        if (t == x->data && x->data != x->last) {     /* short data stage */
-            x->actual = x->len - residual;
-            x->short_seen = 1;
+        for (uint32_t k = 0; k < x->nseg; k++) {      /* an event on a data TRB */
+            if (t != x->seg[k]) continue;
+            uint32_t bytes = x->seg_off[k] + x->seg_len[k] - residual;
+            if (x->control) {                         /* short data stage: the */
+                x->actual = bytes;                    /* Status TRB still runs */
+                x->short_seen = 1;
+            } else if (cc == CC_SHORT_PACKET || t == x->last) {
+                x->actual = bytes;                    /* short ends a Normal TD */
+                xfer_complete(i, 0);
+            }
             return;
         }
-        if (t == x->last) {
-            if (!x->short_seen)
-                x->actual = x->data == x->last ? x->len - residual : x->len;
+        if (t == x->last) {                           /* control Status TRB */
+            if (!x->short_seen) x->actual = x->len;
             xfer_complete(i, 0);
         }
         return;
@@ -426,17 +505,22 @@ static void handle_event(const trb_t *ev)
 static int command(u64 param, uint32_t control, trb_t *done)
 {
     trb_t ev;
-    cmd_got = 0;
-    ring_push(&cmd_ring, param, 0, control);
+    cmd_got  = 0;
+    cmd_wait = ring_push(&cmd_ring, param, 0, control);
     doorbell(0, 0);
     u64 end = usb_ticks() + usb_ms(500);
+    int r = -1;
     while (!cmd_got) {
         if (event_poll(&ev)) { handle_event(&ev); continue; }
-        if (rd32(op + OP_USBSTS) & USBSTS_HSE) return -1;
-        if (usb_ticks() >= end) return -1;
+        if (rd32(op + OP_USBSTS) & USBSTS_HSE) break;
+        if (usb_ticks() >= end) break;
     }
-    if (done) *done = cmd_ev;
-    return (int)(cmd_ev.status >> 24);
+    if (cmd_got) {
+        if (done) *done = cmd_ev;
+        r = (int)(cmd_ev.status >> 24);
+    }
+    cmd_wait = 0;
+    return r;
 }
 
 /* ── PCI ──────────────────────────────────────────────────────────────── */
@@ -818,13 +902,19 @@ static int set_ep0_mps(hdev_t *d, uint32_t mps)
     return 0;
 }
 
-/* After a STALL the endpoint is Halted: reset it and skip what's left of
- * the failed TD. */
+/* After a STALL the endpoint is Halted: reset it and move its dequeue
+ * pointer past everything queued. Requests that were queued behind the
+ * failed one would never run, so they complete now as stalled (their
+ * owners resubmit, as for any error) instead of hanging. */
 static void ep_recover(hdev_t *d, uint32_t dci)
 {
     ring_t *r = dci == 1 ? &d->ep0 : d->ep[dci];
     d->halted &= ~(1u << dci);
     if (!r) return;
+    for (int i = 0; i < MAX_XFERS; i++)
+        if (xfers[i].used && !xfers[i].done && xfers[i].slot == d->slot &&
+            xfers[i].dci == dci)
+            xfer_complete(i, USRB_STATUS_STALLED);
     command(0, TRB_TYPE(TRB_RESET_EP) | TRB_SLOT(d->slot) | TRB_EP(dci), 0);
     command(ring_deq_ptr(r), TRB_TYPE(TRB_SET_TR_DEQ) | TRB_SLOT(d->slot) |
             TRB_EP(dci), 0);
@@ -901,20 +991,28 @@ static uint16_t accio_control(int xi, hdev_t *d)
         return USB_IDC_IOFAILED;
     if (d->halted & (1u << 1)) ep_recover(d, 1);
 
-    x->slot = d->slot;
-    x->dci  = 1;
-    x->len  = len;
+    uint32_t seglen[MAX_SEGS];
+    uint32_t nseg = len ? split_64k(dma(rb->buffer2), len, seglen) : 0;
+    if (len && !nseg) return USB_IDC_PARMERR;
+    uint32_t need = 2 + nseg;                         /* setup, data..., status */
+    if (d->ep0.pending + need > RING_ROOM) return USB_IDC_NOBANDWIDTH;
+
+    x->slot    = d->slot;
+    x->dci     = 1;
+    x->len     = len;
+    x->control = 1;
+    x->ring    = &d->ep0;
+    x->ntrbs   = need;
+    d->ep0.pending += need;
     u64 setup = 0;
     for (int i = 7; i >= 0; i--) setup = (setup << 8) | s[i];
     x->first = ring_push(&d->ep0, setup, 8, TRB_TYPE(TRB_SETUP) | TRB_IDT |
                          (!len ? TRB_TRT_NONE : in ? TRB_TRT_IN : TRB_TRT_OUT));
-    x->data = 0;
     if (len)
-        x->data = ring_push(&d->ep0, dma(rb->buffer2), len, TRB_TYPE(TRB_DATA) |
-                            TRB_ISP | (in ? TRB_DIR_IN : 0));
+        push_data(x, &d->ep0, dma(rb->buffer2), len, TRB_DATA,
+                  TRB_ISP | (in ? TRB_DIR_IN : 0), 0, d->ep0_mps);
     x->last = ring_push(&d->ep0, 0, 0, TRB_TYPE(TRB_STATUS) | TRB_IOC |
                         (len && in ? 0 : TRB_DIR_IN));
-    if (!x->data) x->data = x->last;
     doorbell(d->slot, 1);
     return 0;
 }
@@ -962,12 +1060,27 @@ static uint16_t accio_pipe(int xi)
     if (!r && !(r = ep_configure(d, dci, rb))) return USB_IDC_IOFAILED;
     if (d->halted & (1u << dci)) ep_recover(d, dci);
 
-    x->slot = slot;
-    x->dci  = dci;
-    x->len  = rb->buffer1Length;
-    x->first = x->data = x->last =
-        ring_push(r, dma(rb->buffer1), rb->buffer1Length,
-                  TRB_TYPE(TRB_NORMAL) | TRB_ISP | TRB_IOC);
+    uint32_t len = rb->buffer1Length, seglen[MAX_SEGS];
+    uint32_t nseg = len ? split_64k(dma(rb->buffer1), len, seglen) : 1;
+    if (!nseg) return USB_IDC_PARMERR;
+    if (r->pending + nseg > RING_ROOM) return USB_IDC_NOBANDWIDTH;
+
+    x->slot  = slot;
+    x->dci   = dci;
+    x->len   = len;
+    x->ring  = r;
+    x->ntrbs = nseg;
+    r->pending += nseg;
+    if (len) {
+        push_data(x, r, dma(rb->buffer1), len, TRB_NORMAL, TRB_ISP, TRB_IOC,
+                  rb->maxPacketSize);
+    } else {                                          /* zero-length packet */
+        x->nseg = 1;
+        x->seg[0] = ring_push(r, 0, 0, TRB_TYPE(TRB_NORMAL) | TRB_IOC);
+        x->seg_off[0] = x->seg_len[0] = 0;
+    }
+    x->first = x->seg[0];
+    x->last  = x->seg[x->nseg - 1];
     doorbell(slot, dci);
     return 0;
 }
@@ -997,7 +1110,7 @@ static uint16_t accio(const USBRb *in_rb)
         uint32_t slot = rb->deviceAddress < 128 ? addr2slot[rb->deviceAddress] : 0;
         err = slot ? accio_control(xi, &hdevs[slot - 1]) : USB_IDC_ADDRINV;
     }
-    if (err) xfers[xi].used = 0;
+    if (err) xfer_free(xi);
     return err;
 }
 
@@ -1006,7 +1119,7 @@ static uint16_t cancel(const USBCancel *c)
 {
     if (!c || c->controllerId != ctrl_id) return USB_IDC_ADDRINV;
     if (rh_addressed && c->deviceAddress == rh_addr) {
-        if (rh_int >= 0) { xfers[rh_int].used = 0; rh_int = -1; }
+        if (rh_int >= 0) { xfer_free(rh_int); rh_int = -1; }
         return 0;
     }
     uint32_t slot = c->deviceAddress && c->deviceAddress < 128
@@ -1053,6 +1166,13 @@ static void process(void)
     trb_t ev;
     while (event_poll(&ev)) handle_event(&ev);
 
+    /* Stalled endpoints: recover now, so requests queued behind the
+     * failed one complete (as stalled) rather than wait for the next
+     * submission on that endpoint. */
+    for (uint32_t i = 0; i < MAX_SLOTS; i++)
+        for (uint32_t dci = 1; hdevs[i].slot && hdevs[i].halted && dci < 32; dci++)
+            if (hdevs[i].halted & (1u << dci)) ep_recover(&hdevs[i], dci);
+
     if (rh_int >= 0) {
         uint32_t bm = rh_bitmap();
         if (bm) {
@@ -1078,7 +1198,7 @@ static void process(void)
         else
             rb.buffer1Length = (uint16_t)xfers[i].actual;
         if (xfers[i].slot && !rb.status) snoop(&hdevs[xfers[i].slot - 1], &rb);
-        xfers[i].used = 0;
+        xfer_free(i);
         if (rb.usbIDC)
             usb_idc_call(rb.usbIDC, rb.category, USB_IDC_FUNCTION_PRCIRQ, &rb, 0);
     }

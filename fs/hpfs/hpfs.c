@@ -112,6 +112,17 @@ static int name_eq(const uint8_t *name, uint32_t len, const char *s, uint32_t sl
     return 1;
 }
 
+/* HPFS collation for ASCII names: upper-cased bytes, then length. */
+static int name_cmp(const char *s, uint32_t slen, const uint8_t *name, uint32_t len)
+{
+    uint32_t n = slen < len ? slen : len;
+    for (uint32_t i = 0; i < n; i++) {
+        uint8_t a = (uint8_t)upc(s[i]), b = (uint8_t)upc((char)name[i]);
+        if (a != b) return a < b ? -1 : 1;
+    }
+    return slen < len ? -1 : slen > len ? 1 : 0;
+}
+
 /* Seconds since 1970 -> DOS date/time (0 before 1980). */
 static void dos_datetime(uint32_t t, uint16_t *date, uint16_t *time)
 {
@@ -241,12 +252,78 @@ static void entry_info(const uint8_t *p, hpfs_info_t *out)
     out->name[n] = 0;
 }
 
-/* Path ("/A/B", relative to the mount) -> entry info. */
-static int resolve(hpfs_mount_t *m, const char *path, hpfs_info_t *out)
+/* Look `s` up by descending the dnode B-tree: 1 found, 0 not there,
+ * -1 if the tree is damaged (the caller then falls back to a full walk). */
+static int btree_find(hpfs_mount_t *m, uint32_t root, const char *s, uint32_t slen,
+                      hpfs_info_t *out)
 {
-    out->fnode = m->root_fnode;
+    uint32_t lsn = root;
+    for (int depth = 0; depth < MAX_DEPTH; depth++) {
+        const uint8_t *d = load_dnode(m, lsn);
+        if (!d) return -1;
+        uint32_t end = le32(d + 4), off = DNODE_HDR;
+        if (end > HPFS_DNODE_SIZE) end = HPFS_DNODE_SIZE;
+        uint32_t down = 0;
+        for (;;) {
+            if (off + DE_HDR + 1 > end) return -1;
+            const uint8_t *p = d + off;
+            uint32_t len = le16(p);
+            if (len < DE_HDR + 1 || off + len > end || DE_HDR + p[30] > len) return -1;
+            int has_down = (p[2] & DE_DOWN) && len >= DE_HDR + p[30] + 4u;
+            if (!(p[2] & DE_FIRST)) {
+                int c = (p[2] & DE_LAST) ? -1 : name_cmp(s, slen, p + 31, p[30]);
+                if (c == 0) { entry_info(p, out); return 1; }
+                if (c < 0) {                      /* belongs before this entry */
+                    if (!has_down) return 0;
+                    down = le32(p + len - 4);
+                    break;
+                }
+            }
+            if (p[2] & DE_LAST) return 0;
+            off += len;
+        }
+        lsn = down;
+    }
+    return -1;
+}
+
+static int ascii(const char *s, uint32_t n)
+{
+    for (uint32_t i = 0; i < n; i++) if ((uint8_t)s[i] >= 0x80) return 0;
+    return 1;
+}
+
+/* One path component in directory fnode `dir`. B-tree descent first; a
+ * full in-order walk if the tree is damaged or the name isn't ASCII (the
+ * volume's code page may order those differently). */
+static int lookup(hpfs_mount_t *m, uint32_t dir, const char *s, uint32_t slen,
+                  hpfs_info_t *out)
+{
+    uint32_t root = dir_root_dnode(m, dir);
+    if (!root) return VFS_EIO;
+    int r = btree_find(m, root, s, slen, out);
+    if (r == 1) return VFS_OK;
+    if (r == 0 && ascii(s, slen)) return VFS_ENOENT;
+
+    dwalk_t w;
+    walk_start(&w, root);
+    const uint8_t *p;
+    while ((p = walk_next(m, &w)) != 0)
+        if (name_eq(p + 31, p[30], s, slen)) { entry_info(p, out); return VFS_OK; }
+    return VFS_ENOENT;
+}
+
+static void dir_info(uint32_t fnode, hpfs_info_t *out)
+{
+    out->fnode = fnode;
     out->size = out->mtime = 0;
     out->attr = VFS_ATTR_DIR;
+}
+
+/* Path ("/A/B", relative to the mount; "." and ".." allowed) -> entry info. */
+static int resolve(hpfs_mount_t *m, const char *path, hpfs_info_t *out)
+{
+    dir_info(m->root_fnode, out);
     out->name[0] = '/'; out->name[1] = 0;
 
     const char *s = path;
@@ -255,21 +332,22 @@ static int resolve(hpfs_mount_t *m, const char *path, hpfs_info_t *out)
         if (!*s) return VFS_OK;
         const char *e = s;
         while (*e && *e != '/' && *e != '\\') e++;
+        uint32_t n = (uint32_t)(e - s);
         if (!(out->attr & VFS_ATTR_DIR)) return VFS_ENOTDIR;
 
-        uint32_t root = dir_root_dnode(m, out->fnode);
-        if (!root) return VFS_EIO;
-        dwalk_t w;
-        walk_start(&w, root);
-        const uint8_t *p;
-        int found = 0;
-        while ((p = walk_next(m, &w)) != 0)
-            if (name_eq(p + 31, p[30], s, (uint32_t)(e - s))) {
-                entry_info(p, out);
-                found = 1;
-                break;
+        if (n == 1 && s[0] == '.') {
+            /* stays in this directory */
+        } else if (n == 2 && s[0] == '.' && s[1] == '.') {
+            uint8_t fn[512];                      /* parent = fnode's "up" */
+            if (out->fnode != m->root_fnode) {
+                if (read_fnode(m, out->fnode, fn) != VFS_OK) return VFS_EIO;
+                dir_info(le32(fn + 28), out);
             }
-        if (!found) return VFS_ENOENT;
+            kstrncpy(out->name, "..", sizeof out->name);
+        } else {
+            int r = lookup(m, out->fnode, s, n, out);
+            if (r != VFS_OK) return r;
+        }
         s = e;
     }
 }
@@ -326,11 +404,17 @@ static int hpfs_mount_op(vfs_mount_t *mnt)
     uint32_t n = le32(sb + 16);
     if (n && n < m->n_sectors) m->n_sectors = n;
     m->root_fnode = le32(sb + 12);
-    for (int i = 0; i < 32; i++) {
-        char c = (char)sb[64 + i];
-        m->label[i] = (c >= 32 && c < 127) ? c : 0;
+    /* The volume label lives in the boot block's extended BPB (the
+     * superblock's volume_name field is unused). */
+    uint8_t bb[512];
+    m->label[0] = 0;
+    if (rd(m, 0, 1, bb) == 0 && bb[38] == 0x29) {
+        int n = 11;
+        while (n > 0 && (bb[43 + n - 1] == ' ' || !bb[43 + n - 1])) n--;
+        for (int i = 0; i < n; i++)
+            m->label[i] = (bb[43 + i] >= 32 && bb[43 + i] < 127) ? (char)bb[43 + i] : '?';
+        m->label[n] = 0;
     }
-    m->label[32] = 0;
     if (!dir_root_dnode(m, m->root_fnode)) return VFS_EIO;
     kprintf("[HPFS]   %s: HPFS v%u, %u sectors, root fnode %u%s%s\n", m->dev->name,
             sb[8], m->n_sectors, m->root_fnode, m->label[0] ? ", label " : "", m->label);
