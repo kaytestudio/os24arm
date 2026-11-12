@@ -4,9 +4,13 @@ mkhpfs.py - build an HPFS (OS/2 High Performance File System) volume image
 from a host directory, for testing fs/hpfs.
 
     scripts/mkhpfs.py OUT.img [--size 8M] [--from DIR] [--label NAME]
-                      [--fragment N]
+                      [--fragment N] [--mbr | --logical]
 
-The image is a bare HPFS volume (no partition table): boot block (BPB),
+By default the image is a bare HPFS volume (no partition table). --mbr
+wraps it in an MBR disk as a type 07h primary partition at sector 63 (the
+classic OS/2 layout, kernel name <disk>p1); --logical puts it in an
+extended partition as the second logical drive, after a small dummy one
+(<disk>p6), to exercise the EBR chain. The volume has: boot block (BPB),
 superblock (LSN 16), spareblock (LSN 17), free-space bitmaps (one 2 KB
 bitmap per 8 MB band, listed from the superblock), a directory band with
 its own bitmap, then fnodes, dnodes and file data.
@@ -281,7 +285,11 @@ def main():
     ap.add_argument('--from', dest='src')
     ap.add_argument('--label', default='OS2HPFS')
     ap.add_argument('--fragment', type=int, default=0)
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument('--mbr', action='store_true')
+    g.add_argument('--logical', action='store_true')
     a = ap.parse_args()
+    hidden = 63 if a.mbr else (63 + 63 + 2048 + 63) if a.logical else 0
 
     nsect = a.size // SECTOR
     if nsect < 2048:
@@ -308,7 +316,7 @@ def main():
     boot[0:3] = b'\xEB\x3C\x90'
     boot[3:11] = b'IBM 20.0'
     struct.pack_into('<HBHBHHBHHHII', boot, 11, SECTOR, 1, 0, 0, 0,
-                     0 if nsect > 0xFFFF else nsect, 0xF8, 0, 63, 255, 0,
+                     0 if nsect > 0xFFFF else nsect, 0xF8, 0, 63, 255, hidden,
                      nsect if nsect > 0xFFFF else 0)
     struct.pack_into('<BBBI', boot, 36, 0x80, 0, 0x29, 0x12345678)
     boot[43:54] = a.label.upper().encode()[:11].ljust(11)
@@ -345,9 +353,36 @@ def main():
             dbits[k // 8] |= 1 << (k % 8)
     v.put(dir_band_bitmap, dbits)
 
-    open(a.out, 'wb').write(v.img)
+    vol = bytes(v.img)
+    if a.mbr or a.logical:
+        def entry(status, ptype, start, count):
+            # CHS fields left at the "use LBA" values (FE FF FF)
+            return struct.pack('<B3sB3sII', status, b'\xfe\xff\xff', ptype,
+                               b'\xfe\xff\xff', start, count)
+        def table(*entries):
+            t = bytearray(SECTOR)
+            for i, e in enumerate(entries):
+                t[446 + 16 * i:446 + 16 * (i + 1)] = e
+            t[510:512] = b'\x55\xAA'
+            return bytes(t)
+        if a.mbr:
+            disk = table(entry(0x80, 0x07, 63, nsect)).ljust(63 * SECTOR, b'\0') + vol
+        else:
+            dummy = 2048                                  # 1 MB, unformatted
+            ext_len = 63 + dummy + 63 + nsect             # two EBRs + volumes
+            ebr1 = table(entry(0, 0x06, 63, dummy),       # logical 1 (p5)
+                         entry(0, 0x05, 63 + dummy, 63 + nsect))
+            ebr2 = table(entry(0, 0x07, 63, nsect))       # logical 2 (p6): HPFS
+            disk = (table(entry(0, 0x05, 63, ext_len)).ljust(63 * SECTOR, b'\0') +
+                    ebr1.ljust(63 * SECTOR, b'\0') + bytes(dummy * SECTOR) +
+                    ebr2.ljust(63 * SECTOR, b'\0') + vol)
+        assert len(disk) // SECTOR - nsect == hidden
+        open(a.out, 'wb').write(disk)
+    else:
+        open(a.out, 'wb').write(vol)
     print(f"mkhpfs: {a.out}: {nsect} sectors, root fnode {root}, "
-          f"{sum(v.used)} sectors used")
+          f"{sum(v.used)} sectors used"
+          + (f", in {'an MBR primary' if a.mbr else 'a logical'} partition at {hidden}" if hidden else ""))
 
 
 if __name__ == '__main__':

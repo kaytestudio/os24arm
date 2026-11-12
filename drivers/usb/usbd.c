@@ -95,6 +95,7 @@ typedef struct {
     uint16_t hub_mps;
     volatile int hub_change; /* status-change pipe fired */
     int      hub_armed;
+    int      hub_errors;     /* consecutive failed status-pipe reads */
     uint8_t  hub_bitmap[4] __attribute__((aligned(8)));
     DeviceInfo info;
 } usbd_dev_t;
@@ -681,8 +682,14 @@ static void own_completion(USBRb *rb)
     } else if (rb->requestData1 == RQ_HUB_INT && rb->requestData2 < MAX_DEVS) {
         usbd_dev_t *hub = &devs[rb->requestData2];
         hub->hub_armed = 0;
-        if (hub->used && hub->is_hub && rb->status == 0)
+        if (!hub->used || !hub->is_hub) return;
+        if (rb->status == 0) {
+            hub->hub_errors = 0;
             hub->hub_change = 1;
+        } else if (++hub->hub_errors == 8) {           /* don't spin on it */
+            V("[USBD]   hub %u: status pipe keeps failing (0x%02x), not polling it\n",
+              hub->addr, rb->status);
+        }
     }
 }
 
@@ -750,7 +757,7 @@ void usbd_daemon(void)
         usbd_dev_t *d = &devs[i];
         if (!d->used || !d->is_hub) continue;
         if (d->hub_change) hub_service(d);
-        else if (!d->hub_armed && d->nports) hub_arm(d);
+        else if (!d->hub_armed && d->nports && d->hub_errors < 8) hub_arm(d);
     }
     in_daemon = 0;
 }

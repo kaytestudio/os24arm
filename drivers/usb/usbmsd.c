@@ -32,6 +32,7 @@
 #include "kprintf.h"
 #include "blkdev.h"
 #include "gpt.h"
+#include "mbr.h"
 
 #define CBW_SIGNATURE   0x43425355u
 #define CSW_SIGNATURE   0x53425355u
@@ -338,6 +339,7 @@ static void bring_up(void)
             nm[6] = 0;
             if (++part == 9) break;
         }
+        if (!part) mbr_probe(&disk);                 /* usb0p1..4, p5+ logical */
     }
 }
 

@@ -12,6 +12,7 @@ set(KERNEL_SOURCES
         src/vfs.c
         src/blkdev.c
         src/gpt.c
+        src/mbr.c               # ← MBR + extended partitions (OS/2 disks, USB sticks)
         src/fat32.c             # ← FAT16/FAT32 (the GPT "BOOT" partition)
         src/string.c
         src/kprintf.c

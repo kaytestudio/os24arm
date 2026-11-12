@@ -6,6 +6,7 @@
 #include "kio.h"
 #include "uart.h"
 #include "gpt.h"
+#include "mbr.h"
 
 /* External functions (should be in your headers) */
 /* kmemcpy, kstrcmp, kstrcpy should be in kio.h */
@@ -192,6 +193,9 @@ void blk_init(void)
      * doesn't contain a valid GPT (e.g. a flat, unpartitioned test image),
      * leaving disk0 itself directly usable as before. */
     gpt_probe(blkdev_get_by_name("disk0"));
+    /* Or an MBR-partitioned image (e.g. an OS/2 disk with HPFS). A GPT
+     * disk's protective MBR is ignored by mbr_probe(). */
+    mbr_probe(blkdev_get_by_name("disk0"));
 
     uart_puts("DEBUG: blk_init complete\r\n");
 }

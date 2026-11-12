@@ -867,6 +867,7 @@ set(DOSCALLS_DLL_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/vfs.c
         ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/blkdev.c
         ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/gpt.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/mbr.c
         ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/fat32.c
         ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/string.c
         ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/kprintf.c
