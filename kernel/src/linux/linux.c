@@ -29,6 +29,13 @@
  * child execs or exits), execve, exit / exit_group (zombie until reaped,
  * SIGCHLD to the parent), wait4, getpid / getppid.
  *
+ * Threads: a process is a group_t (address space, open files, signal
+ * handlers, cwd) with one or more threads (proc_t: what's scheduled, with
+ * its own kernel stack, TLS pointer, signal mask and pending set).
+ * clone(CLONE_THREAD), futex, set_tid_address / CLONE_CHILD_CLEARTID
+ * (pthread_join), exit (a thread) vs exit_group; a fatal signal or execve
+ * takes the other threads with it.
+ *
  * Signals: rt_sigaction, rt_sigprocmask, kill / tkill / tgkill, handlers
  * run on the user stack with a Linux-layout rt_sigframe (siginfo +
  * ucontext with the FP/SIMD record) and return through rt_sigreturn
@@ -49,7 +56,7 @@
  * the kernel touches it (-EFAULT otherwise); a fault in a program kills
  * it (SIGSEGV / SIGILL; handlers for those aren't run).
  *
- * Not yet: threads (CLONE_THREAD, futex), preemption, datagram sockets,
+ * Not yet: datagram sockets, futexes shared between processes, /proc,
  * dynamic linking.
  */
 
@@ -86,7 +93,8 @@ extern int       usbmouse_poll(usbmouse_ev_t *ev) __attribute__((weak));
 #define MAX_FDS         64
 #define MAX_PHDRS       16
 #define PAGES           (MMU_USER_SIZE / PAGE)
-#define MAX_PROCS       16
+#define MAX_PROCS       48                     /* threads */
+#define MAX_GROUPS      16                     /* processes */
 #define KSTACK_PAGES    4
 #define MAX_FILES       160
 #define MAX_PIPES       32
@@ -164,7 +172,12 @@ extern int       usbmouse_poll(usbmouse_ev_t *ev) __attribute__((weak));
 #define CLONE_VM      0x00000100
 #define CLONE_VFORK   0x00004000
 #define CLONE_THREAD  0x00010000
+#define CLONE_SIGHAND 0x00000800
 #define CLONE_SETTLS  0x00080000
+#define CLONE_PARENT_SETTID  0x00100000
+#define CLONE_CHILD_CLEARTID 0x00200000
+#define CLONE_CHILD_SETTID   0x01000000
+#define ETIMEDOUT 110
 
 /* poll / epoll events */
 #define PIN     0x001
@@ -293,38 +306,58 @@ static epoll_t  epolls[MAX_EPOLLS];
 static memobj_t memobjs[MAX_MEMOBJS];
 static sock_t   socks[MAX_SOCKS];
 
-/* ── Processes ────────────────────────────────────────────────────────── */
-enum { P_FREE, P_RUN, P_SLEEP, P_ZOMBIE };
+/* ── Processes (thread groups) and threads ────────────────────────────── */
+/* A process is a group_t: what its threads share. A thread is a proc_t:
+ * what's scheduled. getpid() is the group's pid (its first thread's
+ * tid), gettid() the thread's own. */
+enum { P_FREE, P_RUN, P_SLEEP, P_DEAD };    /* P_DEAD: exited, kernel stack not freed yet */
+enum { G_FREE, G_LIVE, G_ZOMBIE };
 
 typedef struct {
     lx_u64 handler, flags, restorer, mask;
 } sigact_t;
 
-typedef struct proc {
+typedef struct group {
     int      state;
     int      pid, ppid;
     int      wstatus;          /* wait4 encoding, once a zombie */
-    void    *wchan;            /* what it sleeps on */
-    lx_u64   deadline;         /* wake by then (counter ticks), 0 = none */
+    int      nthreads;
+    int      exiting;          /* exit_group / fatal signal: every thread goes */
+    int      exec_kill;        /* execve: the other threads go */
+    int      exit_status;      /* wstatus, when the last thread is gone */
     mmu_as_t *as;
     int      as_borrowed;      /* vfork child using the parent's */
+    file_t  *fd[MAX_FDS];
+    __UINT64_TYPE__ cloexec;   /* bit per fd */
+    lx_u64   brk_start, brk_cur, mmap_next;
+    sigact_t sa[NSIG];
+    char     cwd[VFS_PATH_MAX];
+} group_t;
+
+typedef struct proc {
+    int      state;
+    int      pid;              /* thread id */
+    group_t *g;
+    void    *wchan;            /* what it sleeps on */
+    lx_u64   deadline;         /* wake by then (counter ticks), 0 = none */
     struct proc *vfork_parent; /* waiting until we exec or exit */
     lx_u64   kctx[13];         /* kernel context (cpu_switch) */
     lx_u64   tpidr;            /* EL0 thread pointer (musl TLS) */
     uint8_t *kstack;
     linux_tf_t *tf;            /* trap frame of the current syscall */
-    file_t  *fd[MAX_FDS];
-    __UINT64_TYPE__ cloexec;   /* bit per fd */
-    lx_u64   brk_start, brk_cur, mmap_next;
     lx_u64   sig_pending, sig_blocked;
     lx_u64   saved_mask;       /* ppoll / pselect / epoll_pwait / sigsuspend: */
     int      restore_mask;     /* mask to restore on the way out */
     int      sig_from[NSIG];   /* sender pid, for siginfo */
-    sigact_t sa[NSIG];
-    char     cwd[VFS_PATH_MAX];
+    lx_u64   clear_tid;        /* CLONE_CHILD_CLEARTID / set_tid_address */
+    mmu_as_t *futex_as;        /* futex wait: (address space, address), */
+    lx_u64   futex_addr;       /* 0 once woken */
+    uint32_t futex_bits;
 } proc_t;
 
 static proc_t  procs[MAX_PROCS];
+static group_t groups[MAX_GROUPS];
+static int     futexq;                 /* channel futex waiters sleep on */
 static proc_t *cur;                    /* NULL = the shell's context */
 static lx_u64  shell_ctx[13];
 static int     next_pid = 1;
@@ -342,7 +375,8 @@ static void switch_to(proc_t *next)
     if (prev == next) return;
     if (prev) __asm__ volatile("mrs %0, tpidr_el0" : "=r"(prev->tpidr));
     cur = next;
-    mmu_as_activate(next ? next->as : 0);
+    mmu_as_t *as = next ? next->g->as : 0;
+    if (mmu_as_current() != as) mmu_as_activate(as);         /* threads share one */
     if (next) __asm__ volatile("msr tpidr_el0, %0" :: "r"(next->tpidr));
     cpu_switch(prev ? prev->kctx : shell_ctx, next ? next->kctx : shell_ctx);
 }
@@ -405,12 +439,22 @@ static void wakeup(void *ch)
         }
 }
 
-static proc_t *proc_by_pid(int pid)
+static proc_t *thread_by_tid(int tid)
 {
     for (int i = 0; i < MAX_PROCS; i++)
-        if (procs[i].state != P_FREE && procs[i].pid == pid) return &procs[i];
+        if ((procs[i].state == P_RUN || procs[i].state == P_SLEEP) && procs[i].pid == tid)
+            return &procs[i];
     return 0;
 }
+
+static group_t *group_by_pid(int pid)
+{
+    for (int i = 0; i < MAX_GROUPS; i++)
+        if (groups[i].state != G_FREE && groups[i].pid == pid) return &groups[i];
+    return 0;
+}
+
+static int alive(const proc_t *p) { return p->state == P_RUN || p->state == P_SLEEP; }
 
 /* ── Signals ──────────────────────────────────────────────────────────── */
 static int sig_default_ignored(int sig)
@@ -419,13 +463,14 @@ static int sig_default_ignored(int sig)
            sig == SIGSTOP || sig == 20 || sig == 21 || sig == 22;         /* stops: ignored */
 }
 
+/* A signal for one thread (tkill, tgkill, faults). */
 static void send_sig(proc_t *p, int sig, int from)
 {
-    if (sig < 1 || sig > NSIG || p->state == P_FREE || p->state == P_ZOMBIE) return;
+    if (sig < 1 || sig > NSIG || !alive(p)) return;
     lx_u64 bit = SIGBIT(sig);
     if (sig != SIGKILL && sig != SIGSTOP) {
-        if (p->sa[sig - 1].handler == SIG_IGN) return;
-        if (!(p->sig_blocked & bit) && p->sa[sig - 1].handler == SIG_DFL &&
+        if (p->g->sa[sig - 1].handler == SIG_IGN) return;
+        if (!(p->sig_blocked & bit) && p->g->sa[sig - 1].handler == SIG_DFL &&
             sig_default_ignored(sig))
             return;
     }
@@ -436,6 +481,22 @@ static void send_sig(proc_t *p, int sig, int from)
     } else {
         wakeup(&pollq);                     /* signalfd readers */
     }
+}
+
+/* A signal for a process: a thread that doesn't block it takes it (the
+ * first one by preference); SIGKILL goes to all of them. */
+static void send_sig_group(group_t *g, int sig, int from)
+{
+    if (!g || g->state != G_LIVE) return;
+    proc_t *pick = 0, *any = 0;
+    for (int i = 0; i < MAX_PROCS; i++) {
+        proc_t *t = &procs[i];
+        if (!alive(t) || t->g != g) continue;
+        if (sig == SIGKILL) { send_sig(t, sig, from); continue; }
+        if (!any || t->pid == g->pid) any = t;
+        if (!(t->sig_blocked & SIGBIT(sig)) && (!pick || t->pid == g->pid)) pick = t;
+    }
+    if (sig != SIGKILL && (pick || any)) send_sig(pick ? pick : any, sig, from);
 }
 
 /* A signal that would interrupt a wait. */
@@ -570,11 +631,11 @@ static int user_path(int dirfd, lx_u64 up, char *out)
     char in[VFS_PATH_MAX];
     int r = copy_in_str(in, up, sizeof in);
     if (r) return r;
-    const char *base = cur->cwd;
+    const char *base = cur->g->cwd;
     if (in[0] != '/' && dirfd != AT_FDCWD) {
-        if (dirfd < 0 || dirfd >= MAX_FDS || !cur->fd[dirfd] || cur->fd[dirfd]->kind != F_DIR)
+        if (dirfd < 0 || dirfd >= MAX_FDS || !cur->g->fd[dirfd] || cur->g->fd[dirfd]->kind != F_DIR)
             return -EBADF;
-        base = cur->fd[dirfd]->path;
+        base = cur->g->fd[dirfd]->path;
     }
     return norm_path(base, in, out);
 }
@@ -605,7 +666,7 @@ static void con_write(const char *s, lx_u64 n)
 
 static void sig_all(int sig)
 {
-    for (int i = 0; i < MAX_PROCS; i++) send_sig(&procs[i], sig, 0);
+    for (int i = 0; i < MAX_GROUPS; i++) send_sig_group(&groups[i], sig, 0);
 }
 
 /* Cooked line input: echo, backspace, Enter -> '\n', Ctrl-D -> end of
@@ -782,10 +843,10 @@ static void file_put(file_t *f)
 static int fd_install(file_t *f, int cloexec, int min)
 {
     for (int i = min; i < MAX_FDS; i++)
-        if (!cur->fd[i]) {
-            cur->fd[i] = f;
-            if (cloexec) cur->cloexec |= 1ULL << i;
-            else cur->cloexec &= ~(1ULL << i);
+        if (!cur->g->fd[i]) {
+            cur->g->fd[i] = f;
+            if (cloexec) cur->g->cloexec |= 1ULL << i;
+            else cur->g->cloexec &= ~(1ULL << i);
             return i;
         }
     return -EMFILE;
@@ -799,13 +860,13 @@ static int fd_new(file_t *f, int cloexec)
     return fd;
 }
 
-static file_t *fd_get(lx_u64 fd) { return fd < MAX_FDS ? cur->fd[fd] : 0; }
+static file_t *fd_get(lx_u64 fd) { return fd < MAX_FDS ? cur->g->fd[fd] : 0; }
 
 static void fd_close(proc_t *p, int i)
 {
-    file_t *f = p->fd[i];
-    p->fd[i] = 0;
-    p->cloexec &= ~(1ULL << i);
+    file_t *f = p->g->fd[i];
+    p->g->fd[i] = 0;
+    p->g->cloexec &= ~(1ULL << i);
     file_put(f);
 }
 
@@ -917,8 +978,8 @@ static s64 fb_mmap(lx_u64 at, lx_u64 size, lx_u64 off, int prot)
     uint8_t *base = (uint8_t *)fb_front() + off;
     for (lx_u64 k = 0; k < size; k += PAGE) {
         void *frame = base + k;
-        if (mmu_as_map_shared(cur->as, at + k, &frame, 1, prot)) {
-            mmu_as_unmap(cur->as, at, k);
+        if (mmu_as_map_shared(cur->g->as, at + k, &frame, 1, prot)) {
+            mmu_as_unmap(cur->g->as, at, k);
             return -ENOMEM;
         }
     }
@@ -1092,15 +1153,15 @@ static lx_u64 page_up(lx_u64 a) { return (a + PAGE - 1) & ~(PAGE - 1); }
 
 static s64 sys_brk(lx_u64 want)
 {
-    if (want < cur->brk_start || want > BRK_LIMIT) return (s64)cur->brk_cur;
-    lx_u64 old = page_up(cur->brk_cur), new = page_up(want);
+    if (want < cur->g->brk_start || want > BRK_LIMIT) return (s64)cur->g->brk_cur;
+    lx_u64 old = page_up(cur->g->brk_cur), new = page_up(want);
     if (new > old) {
-        if (mmu_as_map(cur->as, old, new - old, MMU_PROT_READ | MMU_PROT_WRITE))
-            return (s64)cur->brk_cur;
+        if (mmu_as_map(cur->g->as, old, new - old, MMU_PROT_READ | MMU_PROT_WRITE))
+            return (s64)cur->g->brk_cur;
     } else if (new < old) {
-        mmu_as_unmap(cur->as, new, old - new);
+        mmu_as_unmap(cur->g->as, new, old - new);
     }
-    cur->brk_cur = want;
+    cur->g->brk_cur = want;
     return (s64)want;
 }
 
@@ -1126,13 +1187,13 @@ static s64 sys_mmap(lx_u64 addr, lx_u64 len, lx_u64 prot, lx_u64 flags, s64 fd, 
     lx_u64 size = page_up(len), at;
     if (flags & MAP_FIXED) {
         if ((addr & (PAGE - 1)) || addr < MMU_USER_BASE || addr + size > STACK_BOTTOM) return -EINVAL;
-        mmu_as_unmap(cur->as, addr, size);           /* fresh pages */
+        mmu_as_unmap(cur->g->as, addr, size);           /* fresh pages */
         at = addr;
     } else {
-        if (cur->mmap_next + size > MMAP_LIMIT || cur->mmap_next + size < cur->mmap_next)
+        if (cur->g->mmap_next + size > MMAP_LIMIT || cur->g->mmap_next + size < cur->g->mmap_next)
             return -ENOMEM;
-        at = cur->mmap_next;
-        cur->mmap_next += size;
+        at = cur->g->mmap_next;
+        cur->g->mmap_next += size;
     }
     /* Shared memory: memfd, or shared anonymous memory (shared with
      * children across fork). The mapping holds its own frame references. */
@@ -1147,34 +1208,34 @@ static s64 sys_mmap(lx_u64 addr, lx_u64 len, lx_u64 prot, lx_u64 flags, s64 fd, 
         m = f->mem;
     } else if (f && f->kind == F_FB) {
         s64 r = fb_mmap(at, size, off, p ? p : MMU_PROT_READ);
-        if (r >= 0 && !p) mmu_as_unmap(cur->as, at, size);
+        if (r >= 0 && !p) mmu_as_unmap(cur->g->as, at, size);
         return r;
     }
     if (m) {
         if (off + size > page_up(m->size)) { if (own) mem_put(m); return -EINVAL; }
-        int r = mmu_as_map_shared(cur->as, at, m->pages + off / PAGE, size / PAGE,
+        int r = mmu_as_map_shared(cur->g->as, at, m->pages + off / PAGE, size / PAGE,
                                   p ? p : MMU_PROT_READ);
         if (own) mem_put(m);
         if (r) return -ENOMEM;
-        if (!p) mmu_as_unmap(cur->as, at, size);
+        if (!p) mmu_as_unmap(cur->g->as, at, size);
         return (s64)at;
     }
     /* Private: fresh pages, with a copy of the file's contents. (A
      * read-only MAP_SHARED file mapping is the same thing, as long as
      * nobody writes the file meanwhile.) */
     if ((flags & MAP_SHARED) && (p & MMU_PROT_WRITE)) return -ENOSYS;   /* VFS files */
-    if (mmu_as_map(cur->as, at, size, MMU_PROT_READ | MMU_PROT_WRITE)) return -ENOMEM;
+    if (mmu_as_map(cur->g->as, at, size, MMU_PROT_READ | MMU_PROT_WRITE)) return -ENOMEM;
     if (f && f->kind == F_MEMFD) {
         lx_u64 pos = off;
         mem_rw(f->mem, &pos, (uint8_t *)(uintptr_t)at, len, 0);
     } else if (f) {
-        if (vfs_seek(f->vfd, (int32_t)off, SEEK_SET) < 0) { mmu_as_unmap(cur->as, at, size); return -EINVAL; }
+        if (vfs_seek(f->vfd, (int32_t)off, SEEK_SET) < 0) { mmu_as_unmap(cur->g->as, at, size); return -EINVAL; }
         int got = vfs_read(f->vfd, (void *)(uintptr_t)at, (uint32_t)len);
-        if (got < 0) { mmu_as_unmap(cur->as, at, size); return verr(got); }
+        if (got < 0) { mmu_as_unmap(cur->g->as, at, size); return verr(got); }
     }
     if (p != (MMU_PROT_READ | MMU_PROT_WRITE)) {
-        if (p) mmu_as_protect(cur->as, at, size, p);
-        else   mmu_as_unmap(cur->as, at, size);       /* PROT_NONE */
+        if (p) mmu_as_protect(cur->g->as, at, size, p);
+        else   mmu_as_unmap(cur->g->as, at, size);       /* PROT_NONE */
     }
     return (s64)at;
 }
@@ -1344,8 +1405,21 @@ static int exec_image(const char *path, const char *args, int argc, int envc,
 }
 
 /* ── Process lifecycle ────────────────────────────────────────────────── */
+/* Free the kernel stacks of threads that have exited (not the running one:
+ * it's still on its stack). */
+static void reap_dead(void)
+{
+    for (int i = 0; i < MAX_PROCS; i++)
+        if (procs[i].state == P_DEAD && &procs[i] != cur) {
+            if (procs[i].kstack) mmu_frames_free(procs[i].kstack, KSTACK_PAGES);
+            procs[i].kstack = 0;
+            procs[i].state = P_FREE;
+        }
+}
+
 static proc_t *proc_alloc(void)
 {
+    reap_dead();
     for (int i = 0; i < MAX_PROCS; i++)
         if (procs[i].state == P_FREE && !procs[i].kstack) {
             proc_t *p = &procs[i];
@@ -1355,6 +1429,25 @@ static proc_t *proc_alloc(void)
             return p;
         }
     return 0;
+}
+
+static group_t *group_alloc(void)
+{
+    for (int i = 0; i < MAX_GROUPS; i++)
+        if (groups[i].state == G_FREE) {
+            kmemset(&groups[i], 0, sizeof groups[i]);
+            groups[i].state = G_LIVE;
+            return &groups[i];
+        }
+    return 0;
+}
+
+/* A thread that never ran (clone failed half way). */
+static void proc_discard(proc_t *p)
+{
+    if (p->kstack) mmu_frames_free(p->kstack, KSTACK_PAGES);
+    p->kstack = 0;
+    p->state = P_FREE;
 }
 
 /* A trap frame at the top of p's kernel stack, and a kernel context that
@@ -1369,72 +1462,188 @@ static linux_tf_t *new_frame(proc_t *p)
     return tf;
 }
 
-static void reap(proc_t *p)
+/* Wake up to n futex waiters on (as, addr) whose bitset matches. */
+static int futex_wake(mmu_as_t *as, lx_u64 addr, int n, uint32_t bits)
 {
-    if (p->kstack) mmu_frames_free(p->kstack, KSTACK_PAGES);
-    p->kstack = 0;
-    p->state = P_FREE;
+    int woken = 0;
+    for (int i = 0; i < MAX_PROCS && woken < n; i++) {
+        proc_t *t = &procs[i];
+        if (t->state == P_SLEEP && t->wchan == &futexq && t->futex_as == as &&
+            t->futex_addr == addr && (t->futex_bits & bits)) {
+            t->futex_addr = 0;
+            t->state = P_RUN;
+            t->wchan = 0;
+            woken++;
+        }
+    }
+    return woken;
 }
 
-/* Terminate the current process; never returns. wstatus is wait4's
- * encoding: (code << 8), or the signal number. */
-static void do_exit(int wstatus)
+/* The last thread of a process is gone: files, memory, zombie, SIGCHLD. */
+static void group_finish(group_t *g)
+{
+    for (int i = 0; i < MAX_FDS; i++) if (g->fd[i]) fd_close(cur, i);
+    for (int i = 0; i < MAX_GROUPS; i++)               /* orphans go to pid 1 */
+        if (groups[i].state != G_FREE && groups[i].ppid == g->pid) groups[i].ppid = 1;
+    mmu_as_activate(0);
+    if (!g->as_borrowed) mmu_as_destroy(g->as);
+    g->as = 0;
+    g->wstatus = g->exit_status;
+    g->state = G_ZOMBIE;
+    group_t *parent = group_by_pid(g->ppid);
+    if (parent) {
+        send_sig_group(parent, SIGCHLD, g->pid);
+        wakeup(parent);                                /* wait4 */
+    }
+}
+
+/* The current thread ends; never returns. */
+static void thread_exit(void)
 {
     proc_t *p = cur;
-    for (int i = 0; i < MAX_FDS; i++) if (p->fd[i]) fd_close(p, i);
-    if (p->vfork_parent) { p->vfork_parent = 0; wakeup(p); }
-    for (int i = 0; i < MAX_PROCS; i++)                /* orphans go to pid 1 */
-        if (procs[i].state != P_FREE && procs[i].ppid == p->pid) procs[i].ppid = 1;
-    mmu_as_activate(0);
-    if (!p->as_borrowed) mmu_as_destroy(p->as);
-    p->as = 0;
-    p->wstatus = wstatus;
-    p->state = P_ZOMBIE;
-    proc_t *parent = proc_by_pid(p->ppid);
-    if (parent) {
-        send_sig(parent, SIGCHLD, p->pid);
-        wakeup(parent);
+    group_t *g = p->g;
+    if (p->clear_tid && g->as && uok(p->clear_tid, 4, 1)) {   /* pthread_join's futex */
+        *(int32_t *)(uintptr_t)p->clear_tid = 0;
+        futex_wake(g->as, p->clear_tid, 1, ~0u);
     }
-    schedule();                                        /* zombies don't run again */
+    if (p->vfork_parent) { p->vfork_parent = 0; wakeup(p); }
+    p->state = P_DEAD;
+    if (--g->nthreads == 0) group_finish(g);
+    else wakeup(g);                                    /* execve waits for the others */
+    schedule();                                        /* the dead don't run again */
     for (;;) { }
 }
 
-static s64 sys_clone(lx_u64 flags, lx_u64 newsp, lx_u64 tls)
+/* exit (one thread) with a status, which is the process's if it was the
+ * last one. */
+static void do_exit(int wstatus)
 {
-    if (flags & CLONE_THREAD) return -ENOSYS;          /* threads: later */
-    if ((flags & CLONE_VM) && !(flags & CLONE_VFORK)) return -ENOSYS;
+    if (!cur->g->exiting) cur->g->exit_status = wstatus;
+    thread_exit();
+}
+
+/* exit_group, or a fatal signal: the whole process goes. */
+static void do_exit_group(int wstatus)
+{
+    group_t *g = cur->g;
+    if (!g->exiting) {
+        g->exiting = 1;
+        g->exit_status = wstatus;
+        for (int i = 0; i < MAX_PROCS; i++)
+            if (alive(&procs[i]) && procs[i].g == g && &procs[i] != cur)
+                send_sig(&procs[i], SIGKILL, 0);
+    }
+    thread_exit();
+}
+
+static s64 sys_clone(lx_u64 flags, lx_u64 newsp, lx_u64 ptid, lx_u64 tls, lx_u64 ctid)
+{
+    if ((flags & CLONE_THREAD) && (!(flags & CLONE_VM) || !(flags & CLONE_SIGHAND))) return -EINVAL;
+    if ((flags & CLONE_VM) && !(flags & (CLONE_VFORK | CLONE_THREAD))) return -ENOSYS;
+    if ((flags & CLONE_PARENT_SETTID) && !uok(ptid, 4, 1)) return -EFAULT;
     proc_t *c = proc_alloc();
     if (!c) return -EAGAIN;
-    if (flags & CLONE_VM) {
-        c->as = cur->as;
-        c->as_borrowed = 1;
-    } else if (!(c->as = mmu_as_fork(cur->as))) {
-        reap(c);
-        return -ENOMEM;
+    group_t *g;
+    if (flags & CLONE_THREAD) {                        /* a thread of this process */
+        g = cur->g;
+    } else {                                           /* a new process */
+        if (!(g = group_alloc())) { proc_discard(c); return -EAGAIN; }
+        if (flags & CLONE_VM) {
+            g->as = cur->g->as;
+            g->as_borrowed = 1;
+        } else if (!(g->as = mmu_as_fork(cur->g->as))) {
+            g->state = G_FREE;
+            proc_discard(c);
+            return -ENOMEM;
+        }
+        g->pid = c->pid;
+        g->ppid = cur->g->pid;
+        for (int i = 0; i < MAX_FDS; i++)
+            if (cur->g->fd[i]) { g->fd[i] = cur->g->fd[i]; g->fd[i]->refs++; }
+        g->cloexec = cur->g->cloexec;
+        g->brk_start = cur->g->brk_start;
+        g->brk_cur = cur->g->brk_cur;
+        g->mmap_next = cur->g->mmap_next;
+        kmemcpy(g->sa, cur->g->sa, sizeof g->sa);
+        kstrncpy(g->cwd, cur->g->cwd, sizeof g->cwd);
     }
+    c->g = g;
+    g->nthreads++;
     linux_tf_t *tf = new_frame(c);
     kmemcpy(tf, cur->tf, sizeof *tf);
     tf->x[0] = 0;                                       /* child: clone returns 0 */
     if (newsp) tf->sp = newsp;
     __asm__ volatile("mrs %0, tpidr_el0" : "=r"(c->tpidr));
     if (flags & CLONE_SETTLS) c->tpidr = tls;
-    c->ppid = cur->pid;
-    for (int i = 0; i < MAX_FDS; i++)
-        if (cur->fd[i]) { c->fd[i] = cur->fd[i]; c->fd[i]->refs++; }
-    c->cloexec = cur->cloexec;
-    c->brk_start = cur->brk_start;
-    c->brk_cur = cur->brk_cur;
-    c->mmap_next = cur->mmap_next;
     c->sig_blocked = cur->sig_blocked;                 /* pending signals aren't inherited */
-    kmemcpy(c->sa, cur->sa, sizeof c->sa);
-    kstrncpy(c->cwd, cur->cwd, sizeof c->cwd);
-    c->state = P_RUN;
+    if (flags & CLONE_CHILD_CLEARTID) c->clear_tid = ctid;
     int pid = c->pid;
+    if (flags & CLONE_PARENT_SETTID) *(int32_t *)(uintptr_t)ptid = pid;
+    if ((flags & CLONE_CHILD_SETTID) && uok(ctid, 4, 1) && (flags & CLONE_VM))
+        *(int32_t *)(uintptr_t)ctid = pid;             /* (same memory: threads, vfork) */
+    c->state = P_RUN;
     if (flags & CLONE_VFORK) {                          /* until it execs or exits */
         c->vfork_parent = cur;
         while (c->vfork_parent) sleep_on(c);
     }
     return pid;
+}
+
+/* futex(uaddr, op, val, timeout | val2, uaddr2, val3). Private and shared
+ * futexes are both keyed by (address space, address): shared ones work
+ * between the threads of a process, not across processes. */
+static s64 sys_futex(lx_u64 uaddr, lx_u64 op, lx_u64 val, lx_u64 uts, lx_u64 uaddr2, lx_u64 val3)
+{
+    const int WAIT = 0, WAKE = 1, REQUEUE = 3, CMP_REQUEUE = 4, WAIT_BITSET = 9, WAKE_BITSET = 10;
+    int cmd = (int)(op & 127), realtime = (op & 256) != 0;
+    mmu_as_t *as = cur->g->as;
+    if (uaddr & 3) return -EINVAL;
+    if (!uok(uaddr, 4, 0)) return -EFAULT;
+    if (cmd == WAIT || cmd == WAIT_BITSET) {
+        uint32_t bits = cmd == WAIT_BITSET ? (uint32_t)val3 : ~0u;
+        if (!bits) return -EINVAL;
+        lx_u64 deadline = 0;
+        if (uts) {
+            s64 sec, ns;
+            int r = get_ts(uts, &sec, &ns);
+            if (r) return r;
+            deadline = cmd == WAIT ? ticks() + dur_ticks(sec, ns)          /* relative */
+                                   : clock_to_ticks(realtime ? 0 : 1, sec, ns);   /* absolute */
+            if (!deadline) deadline = 1;
+        }
+        if (*(volatile uint32_t *)(uintptr_t)uaddr != (uint32_t)val) return -EAGAIN;
+        cur->futex_as = as;
+        cur->futex_addr = uaddr;
+        cur->futex_bits = bits;
+        while (cur->futex_addr) {
+            if (sig_interrupt()) { cur->futex_addr = 0; return -EINTR; }
+            if (deadline && ticks() >= deadline) { cur->futex_addr = 0; return -ETIMEDOUT; }
+            sleep_until(&futexq, deadline);
+        }
+        return 0;
+    }
+    if (cmd == WAKE || cmd == WAKE_BITSET) {
+        uint32_t bits = cmd == WAKE_BITSET ? (uint32_t)val3 : ~0u;
+        if (!bits) return -EINVAL;
+        return futex_wake(as, uaddr, (int)(val > 0x7FFFFFFF ? 0x7FFFFFFF : val), bits);
+    }
+    if (cmd == REQUEUE || cmd == CMP_REQUEUE) {
+        if ((uaddr2 & 3) || !uok(uaddr2, 4, 0)) return -EFAULT;
+        if (cmd == CMP_REQUEUE && *(volatile uint32_t *)(uintptr_t)uaddr != (uint32_t)val3)
+            return -EAGAIN;
+        int woken = futex_wake(as, uaddr, (int)(val > 0x7FFFFFFF ? 0x7FFFFFFF : val), ~0u);
+        int moved = 0, max = (int)(uts > 0x7FFFFFFF ? 0x7FFFFFFF : uts);   /* val2 */
+        for (int i = 0; i < MAX_PROCS && moved < max; i++) {
+            proc_t *t = &procs[i];
+            if (t->state == P_SLEEP && t->wchan == &futexq && t->futex_as == as &&
+                t->futex_addr == uaddr) {
+                t->futex_addr = uaddr2;
+                moved++;
+            }
+        }
+        return cmd == CMP_REQUEUE ? woken + moved : woken;
+    }
+    return -ENOSYS;
 }
 
 /* Copy a NULL-terminated user array of strings into argbuf at *used. */
@@ -1463,24 +1672,36 @@ static s64 sys_execve(lx_u64 upath, lx_u64 uargv, lx_u64 uenvp)
     int argc, envc;
     if ((r = copy_in_argv(uargv, &used, &argc)) || (r = copy_in_argv(uenvp, &used, &envc)))
         return r;
-    mmu_as_t *as, *old = cur->as;
+    mmu_as_t *as, *old = cur->g->as;
     lx_u64 entry, sp, top;
     if ((r = exec_image(path, argbuf, argc, envc, &as, &entry, &sp, &top))) return r;
-    /* Point of no return: the new image replaces the old one. */
-    if (cur->as_borrowed) {
-        cur->as_borrowed = 0;
+    /* Point of no return: the new image replaces the old one, and this
+     * thread is the process's only one. */
+    group_t *g = cur->g;
+    if (g->nthreads > 1) {
+        mmu_as_activate(old);                           /* they still run in the old image */
+        g->exec_kill = 1;
+        for (int i = 0; i < MAX_PROCS; i++)
+            if (alive(&procs[i]) && procs[i].g == g && &procs[i] != cur) send_sig(&procs[i], SIGKILL, 0);
+        while (g->nthreads > 1) sleep_on(g);
+        g->exec_kill = 0;
+        cur->sig_pending &= ~SIGBIT(SIGKILL);
+    }
+    cur->clear_tid = 0;
+    if (cur->g->as_borrowed) {
+        cur->g->as_borrowed = 0;
         if (cur->vfork_parent) { cur->vfork_parent = 0; wakeup(cur); }
     } else {
         mmu_as_destroy(old);
     }
     mmu_as_activate(as);
-    cur->as = as;
-    cur->brk_start = cur->brk_cur = top;
-    cur->mmap_next = MMAP_BASE;
+    cur->g->as = as;
+    cur->g->brk_start = cur->g->brk_cur = top;
+    cur->g->mmap_next = MMAP_BASE;
     for (int i = 0; i < MAX_FDS; i++)
-        if ((cur->cloexec >> i) & 1) fd_close(cur, i);
+        if ((cur->g->cloexec >> i) & 1) fd_close(cur, i);
     for (int i = 0; i < NSIG; i++)                      /* handlers don't survive exec */
-        if (cur->sa[i].handler != SIG_IGN) kmemset(&cur->sa[i], 0, sizeof cur->sa[i]);
+        if (cur->g->sa[i].handler != SIG_IGN) kmemset(&cur->g->sa[i], 0, sizeof cur->g->sa[i]);
     linux_tf_t *tf = cur->tf;
     kmemset(tf, 0, sizeof *tf);
     tf->elr = entry;
@@ -1497,45 +1718,58 @@ static s64 sys_wait4(s64 pid, lx_u64 ustatus, lx_u64 options)
     if (ustatus && !uok(ustatus, 4, 1)) return -EFAULT;
     for (;;) {
         int any = 0;
-        for (int i = 0; i < MAX_PROCS; i++) {
-            proc_t *c = &procs[i];
-            if (c->state == P_FREE || c->ppid != cur->pid || c == cur) continue;
+        for (int i = 0; i < MAX_GROUPS; i++) {
+            group_t *c = &groups[i];
+            if (c->state == G_FREE || c->ppid != cur->g->pid || c == cur->g) continue;
             if (pid > 0 && c->pid != pid) continue;
             any = 1;
-            if (c->state == P_ZOMBIE) {
+            if (c->state == G_ZOMBIE) {
                 int cp = c->pid;
                 if (ustatus) *(int32_t *)(uintptr_t)ustatus = c->wstatus;
-                reap(c);
+                c->state = G_FREE;
+                reap_dead();
                 return cp;
             }
         }
         if (!any) return -ECHILD;
         if (options & WNOHANG) return 0;
         if (sig_interrupt()) return -EINTR;
-        sleep_on(cur);
+        sleep_on(cur->g);
     }
 }
 
+/* kill(pid > 0): that process; 0, -1: every process (one session); < -1:
+ * that process (no process groups yet). */
 static s64 sys_kill(s64 pid, lx_u64 sig)
 {
     if (sig > NSIG) return -EINVAL;
     int hits = 0;
-    for (int i = 0; i < MAX_PROCS; i++) {
-        proc_t *p = &procs[i];
-        if (p->state == P_FREE || p->state == P_ZOMBIE) continue;
-        if (pid > 0 && p->pid != pid) continue;     /* pid 0 / -1: everyone (one group) */
-        if (pid < -1 && p->pid != -pid) continue;
+    for (int i = 0; i < MAX_GROUPS; i++) {
+        group_t *g = &groups[i];
+        if (g->state != G_LIVE) continue;
+        if (pid > 0 && g->pid != pid) continue;
+        if (pid < -1 && g->pid != -pid) continue;
         hits++;
-        if (sig) send_sig(p, (int)sig, cur->pid);
+        if (sig) send_sig_group(g, (int)sig, cur->g->pid);
     }
     return hits ? 0 : -ESRCH;
+}
+
+/* tkill / tgkill: one thread (tgid < 0: any process). */
+static s64 sys_tgkill(s64 tgid, s64 tid, lx_u64 sig)
+{
+    if (sig > NSIG || tid <= 0) return -EINVAL;
+    proc_t *t = thread_by_tid((int)tid);
+    if (!t || (tgid > 0 && t->g->pid != tgid)) return -ESRCH;
+    if (sig) send_sig(t, (int)sig, cur->g->pid);
+    return 0;
 }
 
 static s64 sys_sigaction(lx_u64 sig, lx_u64 act, lx_u64 old, lx_u64 size)
 {
     if (sig < 1 || sig > NSIG || size != 8) return -EINVAL;
     if ((act && !uok(act, 32, 0)) || (old && !uok(old, 32, 1))) return -EFAULT;
-    sigact_t *sa = &cur->sa[sig - 1];
+    sigact_t *sa = &cur->g->sa[sig - 1];
     if (old) kmemcpy((void *)(uintptr_t)old, sa, sizeof *sa);
     if (act) {
         if (sig == SIGKILL || sig == SIGSTOP) return -EINVAL;
@@ -1628,7 +1862,7 @@ static int setup_frame(linux_tf_t *tf, int sig, const sigact_t *sa)
 static s64 sys_sigreturn(linux_tf_t *tf)
 {
     lx_u64 sp = tf->sp;
-    if (!uok(sp, SF_SIZE, 0)) { do_exit(SIGSEGV); return 0; }
+    if (!uok(sp, SF_SIZE, 0)) { do_exit_group(SIGSEGV); return 0; }
     const uint8_t *uc = (const uint8_t *)(uintptr_t)(sp + SF_UC), *mc = uc + UC_MCONTEXT;
     for (int i = 0; i < 31; i++) tf->x[i] = ((const lx_u64 *)(mc + MC_REGS))[i];
     tf->sp = *(const lx_u64 *)(mc + MC_SP);
@@ -1653,17 +1887,18 @@ static int deliver_signal(linux_tf_t *tf)
         if (!ready) return 0;
         int sig = __builtin_ctzll(ready) + 1;
         cur->sig_pending &= ~SIGBIT(sig);
-        sigact_t *sa = &cur->sa[sig - 1];
+        sigact_t *sa = &cur->g->sa[sig - 1];
         if (sig == SIGKILL || sig == SIGSTOP || sa->handler == SIG_DFL) {
             if (sig != SIGKILL && sig_default_ignored(sig)) continue;
-            do_exit(sig);
+            if (cur->g->exiting || cur->g->exec_kill) thread_exit();   /* the process is going */
+            do_exit_group(sig);
         }
         if (sa->handler == SIG_IGN) continue;
         sigact_t act = *sa;
         if (sa->flags & SA_RESETHAND) kmemset(sa, 0, sizeof *sa);
         if (setup_frame(tf, sig, &act)) {
             kprintf("[LINUX]  pid %d: no room on the stack for a signal frame - killed\n", cur->pid);
-            do_exit(SIGSEGV);
+            do_exit_group(SIGSEGV);
         }
         return 1;
     }
@@ -1722,7 +1957,7 @@ static s64 pipe_write(file_t *f, const uint8_t *buf, lx_u64 n, int nonblock)
     while (k < n) {
         if (!p->readers) {
             if (k) return (s64)k;
-            send_sig(cur, SIGPIPE, cur->pid);
+            send_sig(cur, SIGPIPE, cur->g->pid);
             return -EPIPE;
         }
         if (p->count == PIPE_SIZE) {
@@ -1816,7 +2051,7 @@ static s64 sys_signalfd4(s64 fd, lx_u64 umask, lx_u64 size, lx_u64 flags)
         return fd;
     }
     s64 r = new_simple_fd(F_SIGNALFD, flags);
-    if (r >= 0) cur->fd[r]->sigmask = mask;
+    if (r >= 0) cur->g->fd[r]->sigmask = mask;
     return r;
 }
 
@@ -1828,7 +2063,7 @@ static sock_t *sock_new(void)
             kmemset(&socks[i], 0, sizeof socks[i]);
             if (!(socks[i].buf = mmu_frames_alloc(SOCK_BUF_PAGES))) return 0;
             socks[i].used = 1;
-            socks[i].own_pid = cur ? cur->pid : 0;
+            socks[i].own_pid = cur ? cur->g->pid : 0;
             return &socks[i];
         }
     return 0;
@@ -1892,7 +2127,7 @@ static s64 sys_socketpair(lx_u64 domain, lx_u64 type, lx_u64 proto, lx_u64 usv)
     if (!b) { if (a) sock_free(a); return -ENFILE; }
     a->state = b->state = S_CONN;
     a->peer = b; b->peer = a;
-    a->cred_pid = b->cred_pid = cur->pid;
+    a->cred_pid = b->cred_pid = cur->g->pid;
     file_t *fa = sock_file(a, type), *fb = fa ? sock_file(b, type) : 0;
     if (!fb) {
         if (fa) file_free(fa);
@@ -1937,7 +2172,7 @@ static int sun_name(lx_u64 uaddr, lx_u64 len, char *name, uint32_t *nlen)
     while (k < pl && p[k]) { tmp[k] = p[k]; k++; }
     tmp[k] = 0;
     char abs[VFS_PATH_MAX];
-    if (norm_path(cur->cwd, tmp, abs) || kstrlen(abs) >= 108) return -EINVAL;
+    if (norm_path(cur->g->cwd, tmp, abs) || kstrlen(abs) >= 108) return -EINVAL;
     *nlen = (uint32_t)kstrlen(abs);
     kmemcpy(name, abs, *nlen);
     return 0;
@@ -2002,11 +2237,11 @@ static s64 sys_connect(lx_u64 fd, lx_u64 uaddr, lx_u64 len)
     sock_t *srv = sock_new();
     if (!srv) return -ENFILE;
     srv->state = S_PENDING;
-    srv->own_pid = proc_by_pid(l->own_pid) ? l->own_pid : 0;
+    srv->own_pid = group_by_pid(l->own_pid) ? l->own_pid : 0;
     kmemcpy(srv->name, l->name, l->namelen);
     srv->namelen = l->namelen;
     srv->peer = s; s->peer = srv;
-    srv->cred_pid = cur->pid;
+    srv->cred_pid = cur->g->pid;
     s->cred_pid = l->own_pid;
     s->state = S_CONN;
     l->backlog[l->nbacklog++] = srv;
@@ -2026,7 +2261,7 @@ static s64 sys_accept4(lx_u64 fd, lx_u64 uaddr, lx_u64 ulen, lx_u64 flags)
         if (lf->flags & L_O_NONBLOCK) return -EAGAIN;
         if (sig_interrupt()) return -EINTR;
         sleep_on(l);
-        if (!l->used || cur->fd[fd] != lf) return -EBADF;
+        if (!l->used || cur->g->fd[fd] != lf) return -EBADF;
     }
     sock_t *s = l->backlog[0];
     file_t *f = sock_file(s, flags);
@@ -2036,8 +2271,8 @@ static s64 sys_accept4(lx_u64 fd, lx_u64 uaddr, lx_u64 ulen, lx_u64 flags)
     for (int i = 1; i < l->nbacklog; i++) l->backlog[i - 1] = l->backlog[i];
     l->nbacklog--;
     s->state = S_CONN;
-    s->own_pid = cur->pid;
-    if (s->peer) s->peer->cred_pid = cur->pid;
+    s->own_pid = cur->g->pid;
+    if (s->peer) s->peer->cred_pid = cur->g->pid;
     if (uaddr) {
         uint32_t room = *(uint32_t *)(uintptr_t)ulen;
         if (room >= 2) *(uint16_t *)(uintptr_t)uaddr = 1;
@@ -2122,7 +2357,7 @@ static s64 sock_send(file_t *f, const uint8_t *buf, lx_u64 n, file_t **fds, int 
         sock_t *p = s->peer;
         if (!p || s->shut_wr) {
             if (k) return (s64)k;
-            if (!(flags & MSG_NOSIGNAL)) send_sig(cur, SIGPIPE, cur->pid);
+            if (!(flags & MSG_NOSIGNAL)) send_sig(cur, SIGPIPE, cur->g->pid);
             return -EPIPE;
         }
         lx_u64 room = SOCK_BUF - (p->wr - p->rd);
@@ -2566,7 +2801,7 @@ static s64 sys_epoll_pwait(lx_u64 epfd, lx_u64 uev, lx_u64 max, s64 timeout_ms, 
         if (deadline && ticks() >= deadline) { ret = 0; break; }
         if (sig_interrupt()) { ret = -EINTR; break; }
         sleep_until(&pollq, wake);
-        if (cur->fd[epfd] != e) { ret = -EBADF; break; }
+        if (cur->g->fd[epfd] != e) { ret = -EBADF; break; }
     }
     return ret;
 }
@@ -3001,8 +3236,8 @@ static s64 sys_ioctl(lx_u64 fd, lx_u64 req, lx_u64 arg)
         if (*(int32_t *)(uintptr_t)arg) f->flags |= L_O_NONBLOCK; else f->flags &= ~L_O_NONBLOCK;
         return 0;
     }
-    if (req == 0x5451) { cur->cloexec |= 1ULL << fd; return 0; }    /* FIOCLEX */
-    if (req == 0x5450) { cur->cloexec &= ~(1ULL << fd); return 0; } /* FIONCLEX */
+    if (req == 0x5451) { cur->g->cloexec |= 1ULL << fd; return 0; }    /* FIOCLEX */
+    if (req == 0x5450) { cur->g->cloexec &= ~(1ULL << fd); return 0; } /* FIONCLEX */
     if (req == 0x541B) {                               /* FIONREAD */
         if (!uok(arg, 4, 1)) return -EFAULT;
         int32_t v = 0;
@@ -3043,10 +3278,10 @@ static s64 sys_dup3(lx_u64 old, lx_u64 new, lx_u64 flags, int is_dup3)
     if (new >= MAX_FDS || new == old) return -EINVAL;
     if (flags & ~L_O_CLOEXEC) return -EINVAL;
     f->refs++;                                         /* before closing new: old may == f */
-    if (cur->fd[new]) fd_close(cur, (int)new);
-    cur->fd[new] = f;
-    if (flags & L_O_CLOEXEC) cur->cloexec |= 1ULL << new;
-    else cur->cloexec &= ~(1ULL << new);
+    if (cur->g->fd[new]) fd_close(cur, (int)new);
+    cur->g->fd[new] = f;
+    if (flags & L_O_CLOEXEC) cur->g->cloexec |= 1ULL << new;
+    else cur->g->cloexec &= ~(1ULL << new);
     return (s64)new;
 }
 
@@ -3061,9 +3296,9 @@ static s64 sys_fcntl(lx_u64 fd, lx_u64 cmd, lx_u64 arg)
         if (n >= 0) f->refs++;
         return n;
     }
-    case 1: return (cur->cloexec >> fd) & 1;           /* F_GETFD */
+    case 1: return (cur->g->cloexec >> fd) & 1;           /* F_GETFD */
     case 2:                                            /* F_SETFD */
-        if (arg & 1) cur->cloexec |= 1ULL << fd; else cur->cloexec &= ~(1ULL << fd);
+        if (arg & 1) cur->g->cloexec |= 1ULL << fd; else cur->g->cloexec &= ~(1ULL << fd);
         return 0;
     case 3: return f->flags & (L_O_ACCMODE | L_O_APPEND | L_O_NONBLOCK);   /* F_GETFL */
     case 4: f->flags = (int)((f->flags & ~L_O_NONBLOCK) | (arg & L_O_NONBLOCK)); return 0;
@@ -3138,15 +3373,15 @@ static s64 linux_syscall(linux_tf_t *tf)
     lx_u64 a0 = tf->x[0], a1 = tf->x[1], a2 = tf->x[2], a3 = tf->x[3], a4 = tf->x[4], a5 = tf->x[5];
     switch (tf->x[8]) {
     case 17: {                                          /* getcwd */
-        lx_u64 n = kstrlen(cur->cwd) + 1;
+        lx_u64 n = kstrlen(cur->g->cwd) + 1;
         if (a1 < n) return -ERANGE;
         if (!uok(a0, n, 1)) return -EFAULT;
-        kmemcpy((void *)(uintptr_t)a0, cur->cwd, n);
+        kmemcpy((void *)(uintptr_t)a0, cur->g->cwd, n);
         return (s64)n;
     }
     case 19: {                                          /* eventfd2 */
         s64 r = new_simple_fd(F_EVENTFD, a1);
-        if (r >= 0) { cur->fd[r]->count = (uint32_t)a0; cur->fd[r]->semaphore = (a1 & 1) != 0; }
+        if (r >= 0) { cur->g->fd[r]->count = (uint32_t)a0; cur->g->fd[r]->semaphore = (a1 & 1) != 0; }
         return r;
     }
     case 20: return sys_epoll_create1(a0);
@@ -3231,14 +3466,14 @@ static s64 linux_syscall(linux_tf_t *tf)
             if (vfs_stat(p, &vs) != VFS_OK) return -ENOENT;
             if (!(vs.attrs & VFS_ATTR_DIR)) return -ENOTDIR;
         }
-        kstrncpy(cur->cwd, p, sizeof cur->cwd);
+        kstrncpy(cur->g->cwd, p, sizeof cur->g->cwd);
         return 0;
     }
     case 50: {                                          /* fchdir */
         file_t *f = fd_get(a0);
         if (!f) return -EBADF;
         if (f->kind != F_DIR) return -ENOTDIR;
-        kstrncpy(cur->cwd, f->path, sizeof cur->cwd);
+        kstrncpy(cur->g->cwd, f->path, sizeof cur->g->cwd);
         return 0;
     }
     case 52: case 53: case 54: case 55: return 0;       /* fchmod(at), fchownat, fchown */
@@ -3267,15 +3502,22 @@ static s64 linux_syscall(linux_tf_t *tf)
     case 85: {                                          /* timerfd_create */
         if (a0 != 0 && a0 != 1 && a0 != 7 && a0 != 8 && a0 != 9) return -EINVAL;
         s64 r = new_simple_fd(F_TIMERFD, a1);
-        if (r >= 0) cur->fd[r]->clock = (int)a0;
+        if (r >= 0) cur->g->fd[r]->clock = (int)a0;
         return r;
     }
     case 86: return sys_timerfd_settime(a0, a1, a2, a3);
     case 87: return sys_timerfd_gettime(a0, a1);
     case 88: return 0;                                  /* utimensat */
-    case 93: case 94: do_exit((int)((a0 & 0xFF) << 8)); return 0;   /* exit, exit_group */
-    case 96: return cur->pid;                           /* set_tid_address -> tid */
-    case 98: return -ENOSYS;                            /* futex: no threads yet */
+    case 93: do_exit((int)((a0 & 0xFF) << 8)); return 0;          /* exit: this thread */
+    case 94: do_exit_group((int)((a0 & 0xFF) << 8)); return 0;    /* exit_group */
+    case 96: cur->clear_tid = a0; return cur->pid;      /* set_tid_address -> tid */
+    case 98: return sys_futex(a0, a1, a2, a3, a4, a5);
+    case 123: {                                         /* sched_getaffinity: one CPU */
+        if (a1 < 8) return -EINVAL;
+        if (!uok(a2, 8, 1)) return -EFAULT;
+        *(lx_u64 *)(uintptr_t)a2 = 1;
+        return 8;
+    }
     case 99: return 0;                                  /* set_robust_list */
     case 101: return sys_nanosleep(a0, a1);
     case 113: return sys_clock_gettime(a0, a1);
@@ -3290,8 +3532,8 @@ static s64 linux_syscall(linux_tf_t *tf)
     case 115: return sys_clock_nanosleep(a0, a1, a2, a3);
     case 124: yield(); return 0;                        /* sched_yield */
     case 129: return sys_kill((s64)a0, a1);             /* kill */
-    case 130: return sys_kill((s64)a0, a1);             /* tkill (tid == pid) */
-    case 131: return sys_kill((s64)a1, a2);             /* tgkill */
+    case 130: return sys_tgkill(-1, (s64)a0, a1);       /* tkill */
+    case 131: return sys_tgkill((s64)a0, (s64)a1, a2);  /* tgkill */
     case 132: return 0;                                 /* sigaltstack: handlers use the normal stack */
     case 133: {                                         /* rt_sigsuspend */
         if (!a0) return -EFAULT;
@@ -3310,7 +3552,7 @@ static s64 linux_syscall(linux_tf_t *tf)
     case 139: return sys_sigreturn(tf);
     case 140: case 141: return 0;                       /* setpriority, getpriority */
     case 153: return 0;                                 /* times */
-    case 154: case 155: case 157: return a0 ? 0 : cur->pid;   /* setpgid, getpgid, setsid */
+    case 154: case 155: case 157: return a0 ? 0 : cur->g->pid;   /* setpgid, getpgid, setsid */
     case 156: return 0;                                 /* getsid */
     case 160: return sys_uname(a0);
     case 165: {                                         /* getrusage: zeros */
@@ -3330,8 +3572,8 @@ static s64 linux_syscall(linux_tf_t *tf)
         }
         return 0;
     }
-    case 172: return cur->pid;                          /* getpid */
-    case 173: return cur->ppid;                         /* getppid */
+    case 172: return cur->g->pid;                       /* getpid */
+    case 173: return cur->g->ppid;                         /* getppid */
     case 178: return cur->pid;                          /* gettid */
     case 174: case 175: case 176: case 177: return 0;  /* getuid, geteuid, getgid, getegid */
     case 198: return sys_socket(a0, a1, a2);
@@ -3370,36 +3612,45 @@ static s64 linux_syscall(linux_tf_t *tf)
     case 214: return sys_brk(a0);
     case 215:                                           /* munmap */
         if ((a0 & (PAGE - 1)) || a0 < MMU_USER_BASE || a0 + a1 > STACK_BOTTOM) return -EINVAL;
-        mmu_as_unmap(cur->as, a0, a1);
+        mmu_as_unmap(cur->g->as, a0, a1);
         return 0;
     case 216: {                                         /* mremap */
         lx_u64 old = page_up(a1), new = page_up(a2);
         if ((a0 & (PAGE - 1)) || !new || a0 < MMAP_BASE || a0 + old > MMAP_LIMIT ||
             !mmu_user_mapped(a0, old, MMU_PROT_READ | MMU_PROT_WRITE))
             return -EINVAL;
-        if (new <= old) { mmu_as_unmap(cur->as, a0 + new, old - new); return (s64)a0; }
-        if (a0 + old == cur->mmap_next && a0 + new <= MMAP_LIMIT) {     /* grow in place */
-            if (mmu_as_map(cur->as, a0 + old, new - old, MMU_PROT_READ | MMU_PROT_WRITE))
+        if (new <= old) { mmu_as_unmap(cur->g->as, a0 + new, old - new); return (s64)a0; }
+        if (a0 + old == cur->g->mmap_next && a0 + new <= MMAP_LIMIT) {     /* grow in place */
+            if (mmu_as_map(cur->g->as, a0 + old, new - old, MMU_PROT_READ | MMU_PROT_WRITE))
                 return -ENOMEM;
-            cur->mmap_next = a0 + new;
+            cur->g->mmap_next = a0 + new;
             return (s64)a0;
         }
         if (!(a3 & 1)) return -ENOMEM;                  /* MREMAP_MAYMOVE */
         s64 at = sys_mmap(0, new, 3, 0x22, -1, 0);      /* RW, private anonymous */
         if (at < 0) return at;
         kmemcpy((void *)(uintptr_t)at, (void *)(uintptr_t)a0, old);
-        mmu_as_unmap(cur->as, a0, old);
+        mmu_as_unmap(cur->g->as, a0, old);
         return at;
     }
-    case 220: return sys_clone(a0, a1, a3);             /* clone(flags, sp, ptid, tls, ctid) */
+    case 220: return sys_clone(a0, a1, a2, a3, a4);     /* clone(flags, sp, ptid, tls, ctid) */
     case 221: return sys_execve(a0, a1, a2);
     case 222: return sys_mmap(a0, a1, a2, a3, (s64)a4, a5);
     case 226: {                                         /* mprotect */
-        if ((a0 & (PAGE - 1)) || a0 < MMU_USER_BASE || a0 + a1 > USER_TOP) return -EINVAL;
-        if (!mmu_user_mapped(a0, a1, MMU_PROT_READ)) return -ENOMEM;
+        if ((a0 & (PAGE - 1)) || a0 < MMU_USER_BASE || a0 + a1 > USER_TOP || a0 + a1 < a0)
+            return -EINVAL;
         int p = prot_bits(a2);
         if ((p & MMU_PROT_WRITE) && (p & MMU_PROT_EXEC)) return -EPERM;   /* W^X */
-        if (p) mmu_as_protect(cur->as, a0, a1, p);
+        if (!p) return 0;                                /* PROT_NONE: left as it is */
+        /* PROT_NONE anonymous memory isn't mapped here (mmap leaves it out):
+         * making it accessible brings in zeroed pages - what it held. musl
+         * reserves thread stacks that way, then mprotects them. */
+        for (lx_u64 a = a0; a < a0 + page_up(a1); a += PAGE)
+            if (!mmu_user_mapped(a, 1, MMU_PROT_READ)) {
+                if (a < MMAP_BASE || a >= MMAP_LIMIT) return -ENOMEM;
+                if (mmu_as_map(cur->g->as, a, PAGE, MMU_PROT_READ | MMU_PROT_WRITE)) return -ENOMEM;
+            }
+        mmu_as_protect(cur->g->as, a0, a1, p);
         return 0;
     }
     case 227: case 228: case 229: case 233: return 0;  /* msync, mlock, munlock, madvise */
@@ -3481,10 +3732,10 @@ void linux_el0_trap(linux_tf_t *tf)
              * handler runs at all (the signal was ignored after all). */
             lx_u64 ready = cur->sig_pending & ~(cur->sig_blocked & ~UNBLOCKABLE);
             int sig = ready ? __builtin_ctzll(ready) + 1 : 0;
-            int restart = !sig || (cur->sa[sig - 1].handler > SIG_IGN &&
-                                   (cur->sa[sig - 1].flags & SA_RESTART));
-            if (sig && (cur->sa[sig - 1].handler == SIG_IGN ||
-                        (cur->sa[sig - 1].handler == SIG_DFL && sig_default_ignored(sig))))
+            int restart = !sig || (cur->g->sa[sig - 1].handler > SIG_IGN &&
+                                   (cur->g->sa[sig - 1].flags & SA_RESTART));
+            if (sig && (cur->g->sa[sig - 1].handler == SIG_IGN ||
+                        (cur->g->sa[sig - 1].handler == SIG_DFL && sig_default_ignored(sig))))
                 restart = 1;
             if (restart && nr != 101 && nr != 115 && nr != 133 && nr != 73 && nr != 22 &&
                 nr != 72 && nr != 441) {               /* sleeps and waits report EINTR */
@@ -3502,7 +3753,7 @@ void linux_el0_trap(linux_tf_t *tf)
     kprintf("[LINUX]  pid %d: %s at pc 0x%x, address 0x%x (ESR 0x%x) - killed (%s)\n",
             cur->pid, what, (unsigned)(tf->elr & 0xFFFFFFFF), (unsigned)(far & 0xFFFFFFFF),
             (unsigned)esr, ec == 0x00 ? "SIGILL" : "SIGSEGV");
-    do_exit(ec == 0x00 ? SIGILL : SIGSEGV);
+    do_exit_group(ec == 0x00 ? SIGILL : SIGSEGV);
 }
 
 /* ── Entry from the shell ─────────────────────────────────────────────── */
@@ -3531,27 +3782,36 @@ int linux_run(const char *path, int argc, char **argv)
     uint32_t free0 = mmu_frames_free_count();
     frames_kept = 0;
     proc_t *init = proc_alloc();
-    if (!init) { kprintf("[LINUX]  out of memory\n"); return -1; }
+    group_t *ig = init ? group_alloc() : 0;
+    if (!ig) {
+        if (init) proc_discard(init);
+        kprintf("[LINUX]  out of memory\n");
+        return -1;
+    }
+    init->g = ig;
+    ig->pid = init->pid;
+    ig->nthreads = 1;
     mmu_as_t *as;
     lx_u64 entry, sp, top;
     int r = exec_image(path, argbuf, argc, envc, &as, &entry, &sp, &top);
     mmu_as_activate(0);
     if (r) {
         kprintf("[LINUX]  %s: can't run (errno %d)\n", path, -r);
-        reap(init);
+        proc_discard(init);
+        ig->state = G_FREE;
         next_pid = 1;
         return -1;
     }
-    init->as = as;
-    init->ppid = 0;
-    init->brk_start = init->brk_cur = top;
-    init->mmap_next = MMAP_BASE;
-    kstrncpy(init->cwd, "/", sizeof init->cwd);
+    init->g->as = as;
+    init->g->ppid = 0;
+    init->g->brk_start = init->g->brk_cur = top;
+    init->g->mmap_next = MMAP_BASE;
+    kstrncpy(init->g->cwd, "/", sizeof init->g->cwd);
     for (int i = 0; i < 3; i++) {
         file_t *f = file_new(F_CONSOLE);
         if (!f) break;
         f->flags = i ? 1 : 0;
-        init->fd[i] = f;
+        init->g->fd[i] = f;
     }
     linux_tf_t *tf = new_frame(init);
     kmemset(tf, 0, sizeof *tf);
@@ -3565,7 +3825,7 @@ int linux_run(const char *path, int argc, char **argv)
     /* The shell's context is the idle loop: run whatever is runnable
      * until the first process has exited. */
     for (;;) {
-        if (init->state == P_ZOMBIE) break;
+        if (ig->state == G_ZOMBIE) break;
         proc_t *p = pick_runnable(0);
         if (p) { switch_to(p); continue; }
         int timed = 0;
@@ -3581,7 +3841,7 @@ int linux_run(const char *path, int argc, char **argv)
             if (procs[i].state == P_SLEEP) send_sig(&procs[i], SIGKILL, 0);
     }
     tick_stop();
-    int status = init->wstatus;
+    int status = ig->wstatus;
     /* Whatever is left: kill it, let it exit, reap everything. */
     for (int i = 0; i < MAX_PROCS; i++)
         if (procs[i].state == P_RUN || procs[i].state == P_SLEEP) {
@@ -3589,7 +3849,9 @@ int linux_run(const char *path, int argc, char **argv)
             procs[i].state = P_RUN;
         }
     for (proc_t *p; (p = pick_runnable(0)) != 0; ) switch_to(p);
-    for (int i = 0; i < MAX_PROCS; i++) if (procs[i].state == P_ZOMBIE) reap(&procs[i]);
+    for (int i = 0; i < MAX_GROUPS; i++) groups[i].state = G_FREE;   /* zombies nobody reaped */
+    cur = 0;
+    reap_dead();
     mmu_as_activate(0);
     next_pid = 1;
     for (int i = 0; i < MAX_FILES; i++)

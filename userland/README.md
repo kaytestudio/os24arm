@@ -43,10 +43,18 @@ platform-specific are new code.
    per-process `tpidr_el0`. Preemptive scheduling: the EL1 physical timer
    (PPI 30, GICv3) interrupts EL0 every 10 ms and the next runnable
    process gets the CPU (the kernel itself runs with interrupts masked);
-   waits can have deadlines. Still to do: threads (`CLONE_THREAD`, futex).
+   waits can have deadlines. Threads: a process is a thread group
+   (shared address space, fds, signal handlers, cwd); `clone` with
+   `CLONE_THREAD` (`SETTLS`, `PARENT_SETTID`, `CHILD_SETTID`,
+   `CHILD_CLEARTID`), `set_tid_address`, `futex` (`WAIT`, `WAKE`,
+   `REQUEUE`, `CMP_REQUEUE`, `*_BITSET`, timeouts; keyed by address space,
+   so not across processes), `gettid`/`tgkill`, `exit` (one thread) vs
+   `exit_group`, fatal signals and `execve` ending the other threads,
+   process-directed signals delivered to a thread that doesn't block them.
    Tests: `procs` (fork/wait, pipes, posix_spawn, execve, kill), `cat`
    (console input, Ctrl-D, Ctrl-C), `preempt` (children spinning without
-   system calls don't starve the parent).
+   system calls don't starve the parent), `threads` (pthreads: mutexes,
+   condition variables, TLS, join, exit/execve/signals with threads).
 3. **Event and IPC primitives** *(done)*.
    Signals: `rt_sigaction` handlers run on the user stack with a
    Linux-layout `rt_sigframe` (siginfo, ucontext, FP/SIMD record) and
@@ -107,8 +115,7 @@ platform-specific are new code.
    its status). Try it: `scripts/run-vm.sh --wayland`, `MOUNT usb0p1 \h`,
    then `RUNELF \h\cage /h/wlclient` or `RUNELF \h\tinywl -s
    /h/wlclient`. Next: xkeyboard-config and cursor themes on a volume,
-   real Wayland applications (e.g. foot, which needs fontconfig/freetype),
-   threads. The in-kernel compositor (`kernel/src/gui/wayland.c`, `GUI`)
+   real Wayland applications (e.g. foot, which needs fontconfig/freetype). The in-kernel compositor (`kernel/src/gui/wayland.c`, `GUI`)
    stays as the fallback console GUI.
 
 ## Building the toolchain pieces
