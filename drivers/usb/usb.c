@@ -4,12 +4,13 @@
 #include "xhci.h"
 #include "usbkbd.h"
 #include "usbmouse.h"
+#include "usbmsd.h"
 #include "usb_util.h"
 #include "kprintf.h"
 
-enum { DRV_USBD, DRV_XHCD, DRV_KBD, DRV_MOUSE, DRV_COUNT };
+enum { DRV_USBD, DRV_XHCD, DRV_KBD, DRV_MOUSE, DRV_MSD, DRV_COUNT };
 
-static const char *const drv_names[] = { "USBD.SYS", "USBXHCD.SYS", "USBKBD.SYS", "USBMOUSE.SYS" };
+static const char *const drv_names[] = { "USBD.SYS", "USBXHCD.SYS", "USBKBD.SYS", "USBMOUSE.SYS", "USBMSD.ADD" };
 
 typedef struct {
     int drv;
@@ -69,6 +70,10 @@ static void run(const entry_t *en, int phase)
         if (phase == 0) usbmouse_devinit(en->verbose);
         else            usbmouse_init_complete();
         break;
+    case DRV_MSD:
+        if (phase == 0) usbmsd_basedevinit(en->verbose);
+        else            usbmsd_init_complete();
+        break;
     }
 }
 
@@ -82,6 +87,7 @@ void usb_init(const char *cfg)
         en[n++] = (entry_t){ DRV_USBD, 1, 0 };
         en[n++] = (entry_t){ DRV_KBD,  0, 0 };
         en[n++] = (entry_t){ DRV_MOUSE, 0, 0 };
+        en[n++] = (entry_t){ DRV_MSD,  1, 0 };
     } else {
         for (const char *l = cfg; *l && n < MAX_ENTRIES; ) {
             while (*l == ' ' || *l == '\t') l++;

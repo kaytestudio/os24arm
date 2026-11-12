@@ -243,6 +243,11 @@ int  usbd_loaded(void);
  * port changes (attach/detach). Call it from idle loops. */
 void usbd_daemon(void);
 
+/* Poll the host controllers once (deliver completions) without the rest
+ * of the daemon. For class drivers doing synchronous I/O (e.g. block
+ * reads); safe to call from inside a completion callback. */
+void usbd_pump(void);
+
 void usbd_list(void);                         /* shell: USB command */
 void usbd_summary(void);                      /* one-line boot summary */
 

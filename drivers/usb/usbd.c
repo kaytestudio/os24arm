@@ -695,6 +695,8 @@ void usbd_init_complete(void)
 
 int usbd_loaded(void) { return loaded; }
 
+void usbd_pump(void) { if (loaded) pump(); }
+
 void usbd_daemon(void)
 {
     if (!loaded || in_daemon) return;
