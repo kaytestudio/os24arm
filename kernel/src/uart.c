@@ -1,11 +1,11 @@
 #include "uart.h"
-/* In the kernel the USB keyboard (drivers/usb/xhci.c) feeds the same
+/* In the kernel the USB keyboard (drivers/usb/usbkbd.c) feeds the same
  * console input. LX apps/DLLs compile this file too, without USB. */
-#ifdef HAVE_XHCI
-#include "xhci.h"
+#ifdef HAVE_USB
+#include "usbkbd.h"
 #else
-static inline int xhci_kbd_ready(void) { return 0; }
-static inline int xhci_kbd_getc(void)  { return -1; }
+static inline int usbkbd_ready(void) { return 0; }
+static inline int usbkbd_getc(void)  { return -1; }
 #endif
 
 #define UART_BASE   0x09000000UL
@@ -34,7 +34,7 @@ char uart_getc(void)
     for (;;) {
         if (!(UART_FR & UART_FR_RXFE))
             return (char)(UART_DR & 0xFF);
-        int c = xhci_kbd_getc();
+        int c = usbkbd_getc();
         if (c >= 0)
             return (char)c;
     }
@@ -42,7 +42,7 @@ char uart_getc(void)
 
 int uart_ready(void)
 {
-    return !(UART_FR & UART_FR_RXFE) || xhci_kbd_ready();
+    return !(UART_FR & UART_FR_RXFE) || usbkbd_ready();
 }
 
 static void uart_puthex64(unsigned long val)

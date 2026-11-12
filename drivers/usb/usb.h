@@ -1,21 +1,22 @@
-/* drivers/usb/usb.h - USB driver interface (stub) */
+/* drivers/usb/usb.h - USB stack loader (CONFIG.SYS driven) */
 #ifndef DRIVERS_USB_H
 #define DRIVERS_USB_H
 
-#include "types.h"   /* kernel/include: APIRET, PVOID, ULONG, NO_ERROR */
-
-#ifndef ERROR_NOT_SUPPORTED
-#define ERROR_NOT_SUPPORTED     50
-#endif
-#ifndef ERROR_INVALID_PARAMETER
-#define ERROR_INVALID_PARAMETER 87
-#endif
-
 /*
- * Read up to `length` bytes from the USB device into `buffer`.
- * On return *bytes_read holds the number of bytes copied.
- * Stub: no host controller support yet, always ERROR_NOT_SUPPORTED.
+ * Load the USB stack the way OS/2 loads its drivers from CONFIG.SYS:
+ *
+ *   BASEDEV=USBXHCD.SYS [/V]           xHCI host controller driver
+ *   BASEDEV=USBD.SYS [/V]              USB root layer (the daemon)
+ *   DEVICE=[path\]USBKBD.SYS [/V]      HID keyboard class driver
+ *
+ * BASEDEV drivers get BASEDEVINIT in file order, then DEVICE drivers get
+ * DEVINIT, then every driver gets INITIALIZATION COMPLETE in file order
+ * (where late registration is retried and USBD enumerates). /V makes a
+ * driver report what it found; without it drivers are silent.
+ *
+ * cfg_text is CONFIG.SYS's contents, or NULL when there is none, in
+ * which case all three drivers load without /V.
  */
-APIRET usb_reader(PVOID buffer, ULONG length, PULONG bytes_read);
+void usb_init(const char *cfg_text);
 
 #endif /* DRIVERS_USB_H */

@@ -17,7 +17,8 @@
 #include "unixroot.h"
 #include "kprintf.h"
 #include "hyp.h"
-#include "xhci.h"
+#include "usb.h"
+#include "usbd.h"
 
 
 /* Memory heap configuration */
@@ -282,6 +283,7 @@ static void cmd_help(void)
     uart_puts("  DOSKEY    - Enable command history/macros (arrows, F7/F8/F9,\r\n");
     uart_puts("              /HISTORY, /MACROS, name=text)\r\n");
     uart_puts("  MEM       - Display memory information\r\n");
+    uart_puts("  USB       - List USB devices (USBD)\r\n");
     uart_puts("  IFS       - List loaded filesystem drivers\r\n");
     uart_puts("  RUN       - Load and run an OS/2 LX .EXE (e.g. RUN CMD.EXE)\r\n");
 #ifdef LX_HAS_TEST_PAYLOAD
@@ -387,6 +389,9 @@ static void execute_command(char *cmdline)
          * COPY, DEL/ERASE, REN/RENAME, MD/MKDIR, RD/RMDIR, CD/CHDIR, VOL,
          * ATTRIB, CHKDSK, FORMAT) */
     }
+    else if (my_strcmp(argv[0], "USB") == 0) {
+        usbd_list();
+    }
     else if (my_strcmp(argv[0], "MEM") == 0) {
         cmd_mem();
     }
@@ -447,6 +452,7 @@ static void print_banner(void)
  * reading a key, so it isn't stuck behind a keystroke while idle. */
 static void kernel_shell_idle(void)
 {
+    usbd_daemon();          /* USB: completions, hot-plug */
     if (vinput_poll_workplace_hotkey()) {
         wl_compositor_cycle_workplace();
     }
@@ -518,9 +524,6 @@ void kernel_main(void)
     uart_puts("[BLK]    Initializing block devices...\r\n");
     blk_init();
 
-    uart_puts("[USB]    Probing xHCI controller...\r\n");
-    if (xhci_init(NULL) == -1)
-        uart_puts("[USB]    No xHCI controller (QEMU: -device qemu-xhci)\r\n");
 
     /* ── IFS Loader Integration ─────────────────────────────────────────── */
     uart_puts("[IFS]    Initializing IFS loader...\r\n");
@@ -603,6 +606,9 @@ void kernel_main(void)
         unixroot_configure(cfg_text);
         kprintf("[UNIXROOT] Drive: %s\n", unixroot_drive());
         unixroot_create_tree();
+
+        /* USB stack: BASEDEV=/DEVICE= lines (defaults without CONFIG.SYS) */
+        usb_init(cfg_text);
 
         if (cfg_text) mem_free(cfg_text);
     }

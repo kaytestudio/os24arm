@@ -1,6 +1,6 @@
-# drivers/usb/CMakeLists.txt - USB drivers (xHCI host controller)
+# drivers/usb/CMakeLists.txt - OS/2-style USB stack: USBD + USBXHCD + USBKBD
 
-add_library(usb STATIC usb.c xhci.c)
+add_library(usb STATIC usb.c usbd.c xhci.c usbkbd.c)
 
 target_include_directories(usb PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}
@@ -13,4 +13,4 @@ target_compile_options(usb PRIVATE
         -Werror=implicit-function-declaration
 )
 
-message(STATUS "USB driver (xHCI) configured")
+message(STATUS "USB stack (USBD, USBXHCD, USBKBD) configured")

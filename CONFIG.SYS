@@ -83,6 +83,13 @@ BASEDEV=VIRTIO_NET.SYS
 REM RAM disk driver
 BASEDEV=VDISK.SYS 4096
 
+REM USB stack (drivers/usb): xHCI host controller, USBD root layer
+REM (enumeration + hot-plug daemon), HID keyboard class driver.
+REM /V = verbose: each driver reports what it found.
+BASEDEV=USBXHCD.SYS /V
+BASEDEV=USBD.SYS /V
+DEVICE=C:\OS2\BOOT\USBKBD.SYS /V
+
 REM Console and keyboard drivers
 DEVICE=C:\OS2\MDOS\VEMM.SYS
 DEVICE=C:\OS2\MDOS\VMOUSE.SYS
