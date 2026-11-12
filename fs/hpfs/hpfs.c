@@ -100,10 +100,30 @@ static uint32_t le32(const uint8_t *p)
            ((uint32_t)p[3] << 24);
 }
 
+/* Read sectors, honouring the hotfix map: a sector HPFS found bad was
+ * copied to a spare, and every read of it must go to the spare instead
+ * (as Linux's hpfs_search_hotfix_map does for metadata and data alike). */
 static int rd(hpfs_mount_t *m, uint32_t lsn, uint32_t count, void *buf)
 {
     if (lsn >= m->n_sectors || count > m->n_sectors - lsn) return -1;
-    return blk_read(m->dev, lsn, count, buf);
+    uint8_t *out = buf;
+    while (count) {
+        uint32_t run = count, to = 0;
+        for (uint32_t i = 0; i < m->n_hotfix; i++) {
+            uint32_t f = m->hotfix_from[i];
+            if (f == lsn) { run = 1; to = m->hotfix_to[i]; break; }
+            if (f > lsn && f - lsn < run) run = f - lsn;   /* stop before it */
+        }
+        if (to) {
+            if (to >= m->n_sectors || blk_read(m->dev, to, 1, out) != 0) return -1;
+        } else if (blk_read(m->dev, lsn, run, out) != 0) {
+            return -1;
+        }
+        out += run * 512;
+        lsn += run;
+        count -= run;
+    }
+    return 0;
 }
 
 /* Upper case as HPFS does it: ASCII letters, and 80h..FFh through the
@@ -383,8 +403,9 @@ static int map_sector(hpfs_mount_t *m, const uint8_t *fnode, uint32_t fsec,
             for (; i < n; i++)
                 if (fsec < le32(nodes + 8 * i)) break;
             if (i == n) return -1;
-            if (rd(m, le32(nodes + 8 * i + 4), 1, node) != 0 ||
-                le32(node) != ANODE_MAGIC)
+            uint32_t a = le32(nodes + 8 * i + 4);
+            if (rd(m, a, 1, node) != 0 || le32(node) != ANODE_MAGIC ||
+                le32(node + 4) != a)                  /* anode's own LSN */
                 return -1;
             bt = node + 12;
             cap_leaf = 40;
@@ -426,6 +447,32 @@ static void load_codepage(hpfs_mount_t *m)
     m->codepage = num ? num : 1;
 }
 
+/* Spareblock (LSN 17, layout as Linux hpfs.h): +8 flags (bit 0 dirty),
+ * +12 hotfix map (4 sectors: n_spares "from" LSNs, then n_spares "to"),
+ * +16 hotfixes used, +20 spares. Returns the dirty flag, -1 if absent. */
+static int load_spareblock(hpfs_mount_t *m)
+{
+    uint8_t b[512];
+    m->n_hotfix = 0;
+    if (blk_read(m->dev, 17, 1, b) != 0 || le32(b) != SP_MAGIC0 || le32(b + 4) != SP_MAGIC1)
+        return -1;
+    uint32_t map = le32(b + 12), used = le32(b + 16), spares = le32(b + 20);
+    if (used && map && spares <= 256 && used <= spares) {
+        static uint8_t hm[2048];
+        if (map < m->n_sectors - 4 && blk_read(m->dev, map, 4, hm) == 0) {
+            for (uint32_t i = 0; i < used; i++) {
+                m->hotfix_from[i] = le32(hm + 4 * i);
+                m->hotfix_to[i]   = le32(hm + 4 * (spares + i));
+            }
+            m->n_hotfix = used;
+        }
+    } else if (used) {
+        kprintf("[HPFS]   %s: invalid hotfix counts (%u of %u), ignored\n",
+                m->dev->name, used, spares);
+    }
+    return b[8] & 1;
+}
+
 /* ── VFS operations ───────────────────────────────────────────────────── */
 static int hpfs_mount_op(vfs_mount_t *mnt)
 {
@@ -435,11 +482,14 @@ static int hpfs_mount_op(vfs_mount_t *mnt)
     m->n_sectors = (uint32_t)(m->dev->num_sectors > 0xFFFFFFFFLL ? 0xFFFFFFFFu
                                                                  : m->dev->num_sectors);
     m->dnode_lsn = 0;
+    m->n_hotfix  = 0;
+    m->bad_dnode = 0;
     if (rd(m, SB_LSN, 1, sb) != 0) return VFS_EIO;
     if (le32(sb) != SB_MAGIC0 || le32(sb + 4) != SB_MAGIC1) return VFS_EINVAL;
     uint32_t n = le32(sb + 16);
     if (n && n < m->n_sectors) m->n_sectors = n;
     m->root_fnode = le32(sb + 12);
+    int dirty = load_spareblock(m);                  /* before any other read */
     /* The volume label lives in the boot block's extended BPB (the
      * superblock's volume_name field is unused). */
     uint8_t bb[512];
@@ -466,6 +516,11 @@ static int hpfs_mount_op(vfs_mount_t *mnt)
     }
     kprintf("[HPFS]   %s: HPFS v%u, %u sectors, root fnode %u%s%s, %s\n", m->dev->name,
             sb[8], m->n_sectors, m->root_fnode, m->label[0] ? ", label " : "", m->label, cp);
+    if (m->n_hotfix)
+        kprintf("[HPFS]   %s: %u bad sector(s) hotfixed to spares\n", m->dev->name, m->n_hotfix);
+    if (dirty == 1)
+        kprintf("[HPFS]   %s: volume was not shut down cleanly - run CHKDSK on OS/2\n",
+                m->dev->name);
     return VFS_OK;
 }
 

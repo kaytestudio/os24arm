@@ -19,6 +19,8 @@ typedef struct {
     uint32_t  bad_dnode;                /* last damage reported (once each) */
     uint8_t   upcase[128];              /* code page: upper case of 80h..FFh */
     uint16_t  codepage;                 /* its number, 0 = none (ASCII only) */
+    uint32_t  n_hotfix;                 /* bad sectors remapped to spares */
+    uint32_t  hotfix_from[256], hotfix_to[256];
 } hpfs_mount_t;
 
 extern vfs_fs_t vfs_hpfs_fs;

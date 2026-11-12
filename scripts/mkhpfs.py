@@ -155,6 +155,7 @@ class Builder:
     def __init__(self, vol, stamp):
         self.v = vol
         self.stamp = stamp
+        self.biggest = (0, [])                     # (size, extents) for --hotfix
 
     # ── files ──────────────────────────────────────────────────────────
     def write_data(self, data):
@@ -196,6 +197,8 @@ class Builder:
         data = open(path, 'rb').read()
         f = self.v.alloc(1)
         ext = self.write_data(data)
+        if len(data) > self.biggest[0]:
+            self.biggest = (len(data), ext)
         self.v.put(f, fnode(name, parent, len(data), self.file_btree(ext, f), False))
         return f, len(data), ATTR_ARCHIVE
 
@@ -312,6 +315,10 @@ def main():
     ap.add_argument('--from', dest='src')
     ap.add_argument('--label', default='OS2HPFS')
     ap.add_argument('--fragment', type=int, default=0)
+    ap.add_argument('--hotfix', action='store_true',
+                    help='simulate a bad sector: move one data sector of the biggest file '
+                         'to a spare, fill the original with garbage, record the hotfix')
+    ap.add_argument('--dirty', action='store_true', help='mark the volume not cleanly shut down')
     g = ap.add_mutually_exclusive_group()
     g.add_argument('--mbr', action='store_true')
     g.add_argument('--logical', action='store_true')
@@ -376,6 +383,27 @@ def main():
     sp = bytearray(SECTOR)
     struct.pack_into('<II', sp, 0, SP_MAGIC[0], SP_MAGIC[1])
     struct.pack_into('<II', sp, 32, cpdir, 1)          # code_page_dir, n_code_pages
+    # Hotfix list (4 sectors: n_spares "from" LSNs, then n_spares "to") and
+    # its spares; spareblock +12 map, +16 used, +20 spares (Linux hpfs.h).
+    n_spares = 4
+    hotmap, spares = v.alloc(4), v.alloc(n_spares)
+    hm = bytearray(4 * SECTOR)
+    used = 0
+    if a.hotfix:
+        if not b.biggest[1]:
+            sys.exit("mkhpfs: --hotfix needs at least one non-empty file")
+        e = b.biggest[1][0]
+        bad = e[2] + min(1, e[1] - 1)                  # a sector inside its data
+        v.img[spares * SECTOR:(spares + 1) * SECTOR] = v.img[bad * SECTOR:(bad + 1) * SECTOR]
+        v.img[bad * SECTOR:(bad + 1) * SECTOR] = b'\xEE' * SECTOR   # "unreadable"
+        struct.pack_into('<I', hm, 0, bad)
+        struct.pack_into('<I', hm, 4 * n_spares, spares)
+        used = 1
+        print(f"mkhpfs: hotfix: sector {bad} -> spare {spares}")
+    v.put(hotmap, hm)
+    struct.pack_into('<III', sp, 12, hotmap, used, n_spares)
+    if a.dirty:
+        sp[8] |= 1
     v.put(17, sp)
 
     # Free-space bitmaps: bit set = free.
