@@ -16,6 +16,7 @@ typedef struct {
     char      label[33];
     uint8_t   dnode[HPFS_DNODE_SIZE];   /* one-dnode cache */
     uint32_t  dnode_lsn;                /* which dnode is cached, 0 = none */
+    uint32_t  bad_dnode;                /* last damage reported (once each) */
 } hpfs_mount_t;
 
 extern vfs_fs_t vfs_hpfs_fs;

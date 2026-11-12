@@ -17,7 +17,7 @@ typedef struct {
     int basedev;
     int verbose;
 } entry_t;
-
+ 
 #define MAX_ENTRIES 8
 
 static char up(char c) { return (c >= 'a' && c <= 'z') ? (char)(c - 32) : c; }

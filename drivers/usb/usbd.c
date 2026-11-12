@@ -99,11 +99,21 @@ typedef struct {
     DeviceInfo info;
 } usbd_dev_t;
 
+/* Completion slots for USBD's synchronous requests. They are static and
+ * generation-tagged (requestData2 = slot | generation << 8), so a
+ * completion arriving after its request timed out - CANCEL can't reach a
+ * device still at address 0 - is recognised and ignored instead of
+ * writing into a stack frame that no longer exists. */
+#define SYNC_SLOTS 8
 typedef struct {
     volatile int done;
+    int          busy;
+    uint32_t     gen;
     uint8_t      status;
     uint16_t     actual;
 } sync_t;
+static sync_t   syncs[SYNC_SLOTS];
+static uint32_t sync_gen;
 
 static int        loaded, verbose, started, in_daemon;
 static hcd_t      hcds[MAX_HCDS];
@@ -113,6 +123,7 @@ static cls_t      classes[MAX_CLASSES];
 static int        nclasses;
 static usbd_dev_t devs[MAX_DEVS];
 static uint8_t    xbuf[MAX_CONFIG_LENGTH] __attribute__((aligned(64)));
+static uint8_t    sbuf[64] __attribute__((aligned(64)));  /* small replies */
 
 #define V(...) do { if (verbose) kprintf(__VA_ARGS__); } while (0)
 
@@ -215,8 +226,24 @@ static int control_at(usbd_dev_t *d, uint8_t addr, uint8_t type, uint8_t req,
                       uint16_t value, uint16_t index, void *data, uint16_t len,
                       uint16_t *actual)
 {
-    uint8_t setup[8];
-    sync_t s = { 0, 0, 0 };
+    /* The controller DMAs into `data`, possibly late (see sync_t), so it
+     * must be static: xbuf itself, or bounced through sbuf. */
+    void *dma = data;
+    if (data && data != xbuf) {
+        if (len > sizeof sbuf) return -1;
+        dma = sbuf;
+        if (!(type & 0x80)) usb_copy(sbuf, data, len);
+    }
+    int si = -1;
+    for (int i = 0; i < SYNC_SLOTS; i++)
+        if (!syncs[i].busy) { si = i; break; }
+    if (si < 0) return -1;
+    sync_t *s = &syncs[si];
+    s->busy = 1;
+    s->done = 0;
+    s->gen  = ++sync_gen & 0xFFFFFF;
+
+    uint8_t setup[8];                                 /* copied by the HCD */
     USBRb rb;
     usb_zero(&rb, sizeof rb);
     usb_setup(setup, type, req, value, index, len);
@@ -225,29 +252,32 @@ static int control_at(usbd_dev_t *d, uint8_t addr, uint8_t type, uint8_t req,
     rb.flags         = USRB_FLAGS_TTYPE_SETUP;
     rb.buffer1       = setup;
     rb.buffer1Length = 8;
-    rb.buffer2       = data;
+    rb.buffer2       = dma;
     rb.buffer2Length = len;
     rb.maxPacketSize = d->mps0;
     rb.usbIDC        = usbd_idc;
     rb.category      = USB_IDC_CATEGORY_USBD;
     rb.requestData1  = RQ_SYNC;
-    rb.requestData2  = (uintptr_t)&s;
+    rb.requestData2  = (uintptr_t)si | ((uintptr_t)s->gen << 8);
     rb.maxErrorCount = 3;
     fill_routing(&rb, d);
 
-    if (hcd_call(d->ctrl, USB_IDC_FUNCTION_ACCIO, &rb) & STERR) return -1;
-    u64 end = usb_ticks() + usb_ms(1000);
-    while (!s.done) {
-        pump();
-        if (usb_ticks() >= end) {
-            /* Don't let a late completion write into this stack frame. */
-            USBCancel c = { d->ctrl, addr, 0 };
+    int ok = -1;
+    if (!(hcd_call(d->ctrl, USB_IDC_FUNCTION_ACCIO, &rb) & STERR)) {
+        u64 end = usb_ticks() + usb_ms(1000);
+        while (!s->done && usb_ticks() < end) pump();
+        if (!s->done) {
+            USBCancel c = { d->ctrl, addr, 0 };       /* best effort */
             hcd_call(d->ctrl, USB_IDC_FUNCTION_CANCEL, &c);
-            return -1;
+        } else {
+            if (actual) *actual = s->actual;
+            ok = s->status == 0 ? 0 : -1;
+            if (ok == 0 && dma == sbuf && (type & 0x80))
+                usb_copy(data, sbuf, s->actual < len ? s->actual : len);
         }
     }
-    if (actual) *actual = s.actual;
-    return s.status == 0 ? 0 : -1;
+    s->busy = 0;                    /* a late completion now fails the gen check */
+    return ok;
 }
 
 static int control(usbd_dev_t *d, uint8_t type, uint8_t req, uint16_t value,
@@ -471,6 +501,17 @@ static void port_detach(usbd_dev_t *hub, uint8_t port)
 static void hub_service(usbd_dev_t *hub)
 {
     hub->hub_change = 0;
+    if (hub->hub_bitmap[0] & 1) {                     /* the hub itself */
+        uint8_t *b = sbuf;
+        if (control(hub, 0xA0, REQ_GET_STATUS, 0, 0, b, 4) == 0) {
+            uint16_t ch = (uint16_t)(b[2] | (b[3] << 8));
+            if (ch & 1) control(hub, 0x20, REQ_CLEAR_FEATURE, 0, 0, 0, 0); /* C_HUB_LOCAL_POWER */
+            if (ch & 2) {                                                  /* C_HUB_OVER_CURRENT */
+                control(hub, 0x20, REQ_CLEAR_FEATURE, 1, 0, 0, 0);
+                V("[USBD]   hub %u: over-current\n", hub->addr);
+            }
+        }
+    }
     for (uint8_t p = 1; p <= hub->nports; p++) {
         if (!(hub->hub_bitmap[p / 8] & (1u << (p % 8)))) continue;
         uint16_t st, ch;
@@ -630,10 +671,13 @@ static uint16_t do_reset_port(USBDetach *p)
 static void own_completion(USBRb *rb)
 {
     if (rb->requestData1 == RQ_SYNC) {
-        sync_t *s = (sync_t *)rb->requestData2;
-        s->status = rb->status;
-        s->actual = rb->buffer2Length;
-        s->done   = 1;
+        uint32_t si = (uint32_t)(rb->requestData2 & 0xFF);
+        uint32_t gen = (uint32_t)(rb->requestData2 >> 8);
+        if (si >= SYNC_SLOTS || !syncs[si].busy || syncs[si].gen != gen)
+            return;                                   /* stale: timed out */
+        syncs[si].status = rb->status;
+        syncs[si].actual = rb->buffer2Length;
+        syncs[si].done   = 1;
     } else if (rb->requestData1 == RQ_HUB_INT && rb->requestData2 < MAX_DEVS) {
         usbd_dev_t *hub = &devs[rb->requestData2];
         hub->hub_armed = 0;

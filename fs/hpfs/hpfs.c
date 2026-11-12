@@ -70,6 +70,7 @@ typedef struct {
     uint16_t off[MAX_DEPTH];
     uint8_t  descended[MAX_DEPTH];
     uint32_t steps;
+    int      warned;
 } dwalk_t;
 
 typedef struct {
@@ -146,6 +147,7 @@ static uint32_t dir_root_dnode(hpfs_mount_t *m, uint32_t fnode_lsn)
 {
     uint8_t fn[512];
     if (read_fnode(m, fnode_lsn, fn) != VFS_OK || !(fn[55] & 1)) return 0;
+    if ((fn[56] & BP_INTERNAL) || fn[61] < 1) return 0;   /* leaf, 1 extent */
     return le32(fn + 72);                       /* external[0].disk_secno */
 }
 
@@ -167,26 +169,39 @@ static void walk_start(dwalk_t *w, uint32_t root)
     w->off[0] = DNODE_HDR;
     w->descended[0] = 0;
     w->steps = 0;
+    w->warned = 0;
 }
 
 /* Next directory entry (".." and end markers skipped), pointing into the
- * mount's dnode cache - valid until the next dnode load. NULL at the end
- * or on a damaged structure. */
+ * mount's dnode cache - valid until the next dnode load. NULL at the end.
+ * A damaged dnode below the root is reported once and its subtree
+ * skipped, so the rest of the directory still lists; a damaged root
+ * dnode (or a loop) ends the walk. */
 static const uint8_t *walk_next(hpfs_mount_t *m, dwalk_t *w)
 {
     while (w->depth >= 0) {
-        if (++w->steps > MAX_STEPS) { w->depth = -1; return 0; }
         int t = w->depth;
+        if (++w->steps > MAX_STEPS) goto damaged;
         const uint8_t *d = load_dnode(m, w->lsn[t]);
-        uint32_t off = w->off[t];
-        if (!d || off < DNODE_HDR || off + DE_HDR + 1 > HPFS_DNODE_SIZE) break;
+        if (!d) goto damaged;
+        /* Entries end at first_free, not at the end of the 2 KB block. */
+        uint32_t end = le32(d + 4), off = w->off[t];
+        if (end > HPFS_DNODE_SIZE) end = HPFS_DNODE_SIZE;
+        if (off < DNODE_HDR || off + DE_HDR + 1 > end) goto damaged;
         const uint8_t *p = d + off;
         uint32_t len = le16(p);
-        if (len < DE_HDR + 1 || off + len > HPFS_DNODE_SIZE || DE_HDR + p[30] > len) break;
+        if (len < DE_HDR + 1 || off + len > end || DE_HDR + p[30] > len) goto damaged;
 
         if ((p[2] & DE_DOWN) && !w->descended[t]) {
-            if (t + 1 >= MAX_DEPTH || len < DE_HDR + 1 + 4) break;
+            /* the down pointer is the entry's last 4 bytes, after the name */
+            if (len < DE_HDR + p[30] + 4u) goto damaged;
             w->descended[t] = 1;
+            if (t + 1 >= MAX_DEPTH) {            /* too deep: skip subtree */
+                if (!w->warned++)
+                    kprintf("[HPFS]   %s: directory tree too deep (dnode %u), "
+                            "some entries skipped\n", m->dev->name, w->lsn[t]);
+                continue;                       /* emits this entry next */
+            }
             w->depth = t + 1;
             w->lsn[t + 1] = le32(p + len - 4);
             w->off[t + 1] = DNODE_HDR;
@@ -201,6 +216,15 @@ static const uint8_t *walk_next(hpfs_mount_t *m, dwalk_t *w)
         w->descended[t] = 0;
         if (p[2] & DE_FIRST) continue;          /* ".." */
         return p;
+
+    damaged:
+        if (!w->warned++ && m->bad_dnode != w->lsn[t]) {
+            m->bad_dnode = w->lsn[t];            /* every lookup walks it again */
+            kprintf("[HPFS]   %s: damaged directory (dnode %u), some entries skipped\n",
+                    m->dev->name, w->lsn[t]);
+        }
+        if (w->steps > MAX_STEPS || t == 0) break;
+        w->depth = t - 1;                       /* back to the parent's entry */
     }
     w->depth = -1;
     return 0;
@@ -453,6 +477,7 @@ static int hpfs_readdir(vfs_mount_t *mnt, void *dpriv, vfs_dirent_t *ent)
 {
     (void)mnt;
     hpfs_dir_t *d = dpriv;
+    if (!d || !d->m) return VFS_ENOENT;
     const uint8_t *p = walk_next(d->m, &d->w);
     if (!p) return VFS_ENOENT;
     hpfs_info_t info;

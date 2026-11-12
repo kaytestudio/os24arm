@@ -247,6 +247,9 @@ static int       rh_int = -1;                 /* pending status-change xfer */
 
 #define V(...) do { if (verbose) kprintf(__VA_ARGS__); } while (0)
 
+static void    free_slot(hdev_t *d);
+static hdev_t *find_default(uint32_t hub_slot, uint32_t port);
+
 /* ── Helpers ──────────────────────────────────────────────────────────── */
 static inline uint32_t rd32(uintptr_t a) { return *(volatile uint32_t *)a; }
 static inline void wr32(uintptr_t a, uint32_t v) { *(volatile uint32_t *)a = v; }
@@ -613,6 +616,10 @@ static uint32_t rh_bitmap(void)
         uint32_t v = portsc(p);
         if (v & (PORTSC_PLC | PORTSC_CEC))            /* not reported: ack */
             portsc_set(p, v & (PORTSC_PLC | PORTSC_CEC));
+        if ((v & PORTSC_CSC) && !(v & PORTSC_CCS)) {  /* unplugged: drop any */
+            hdev_t *d = find_default(0, p);           /* half-enumerated slot */
+            if (d) free_slot(d);
+        }
         if (v & PORTSC_CHANGES) bm |= 1u << p;
     }
     return bm;
@@ -690,6 +697,12 @@ static uint8_t *dctx(const hdev_t *d) { return dev_ctx[d->slot - 1]; }
 
 static void free_slot(hdev_t *d)
 {
+    /* Devices still at address 0 behind this hub are USBD-invisible: free
+     * them with it (USBD cancels the addressed ones itself, first). */
+    for (uint32_t i = 0; i < MAX_SLOTS; i++)
+        if (hdevs[i].slot && !hdevs[i].addr && hdevs[i].hub_slot == d->slot &&
+            &hdevs[i] != d)
+            free_slot(&hdevs[i]);
     for (uint32_t i = 0; i < 32; i++)
         if (d->ep[i]) ep_ring_used[d->ep[i] - ep_rings] = 0;
     xfer_drop(d->slot, 0xff);

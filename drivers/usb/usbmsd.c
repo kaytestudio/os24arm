@@ -49,11 +49,16 @@
 
 enum { RQ_SETCONF = 1, RQ_SYNC };
 
+/* One request at a time, completed into a static, generation-tagged
+ * slot (requestData2 = generation) so a completion that arrives after
+ * its request timed out is ignored rather than written anywhere. */
 typedef struct {
     volatile int done;
+    uint32_t     gen;
     uint8_t      status;
     uint16_t     actual;
 } sync_t;
+static sync_t sync;
 
 static int      verbose, registered, active, present;
 static uint16_t ctrl;
@@ -87,18 +92,20 @@ static int wait_sync(sync_t *s)
 static int submit_sync(USBRb *rb, sync_t *s)
 {
     s->done = 0;
+    s->gen++;
     rb->controllerId  = ctrl;
     rb->deviceAddress = addr;
     rb->usbIDC        = usbmsd_idc;
     rb->category      = USB_IDC_CATEGORY_CLASS;
     rb->requestData1  = RQ_SYNC;
-    rb->requestData2  = (uintptr_t)s;
+    rb->requestData2  = s->gen;
     if (usb_idc_call(usbd_idc, USB_IDC_CATEGORY_USBD, USB_IDC_FUNCTION_ACCIO,
                      rb, 0) & STERR)
         return -1;
     if (wait_sync(s) != 0) {
         USBCancel c = { ctrl, addr, rb->endPointId };
         usb_idc_call(usbd_idc, USB_IDC_CATEGORY_USBD, USB_IDC_FUNCTION_CANCEL, &c, 0);
+        s->gen++;                                    /* orphan any late completion */
         return -1;
     }
     return 0;
@@ -107,7 +114,7 @@ static int submit_sync(USBRb *rb, sync_t *s)
 /* Bulk transfer on `ep` (IN if in). Returns bytes moved, -2 on STALL, -1 error. */
 static int bulk(int in, void *buf, uint16_t len)
 {
-    sync_t s;
+    sync_t *s = &sync;
     USBRb rb;
     usb_zero(&rb, sizeof rb);
     rb.endPointId    = in ? ep_in : ep_out;
@@ -116,22 +123,22 @@ static int bulk(int in, void *buf, uint16_t len)
     rb.buffer1       = buf;
     rb.buffer1Length = len;
     rb.maxPacketSize = in ? mps_in : mps_out;
-    if (submit_sync(&rb, &s) != 0) return -1;
-    if (s.status & USRB_STATUS_STALLED) return -2;
-    return s.status ? -1 : s.actual;
+    if (submit_sync(&rb, s) != 0) return -1;
+    if (s->status & USRB_STATUS_STALLED) return -2;
+    return s->status ? -1 : s->actual;
 }
 
 static int control_nodata(uint8_t type, uint8_t req, uint16_t value, uint16_t index)
 {
-    sync_t s;
+    sync_t *s = &sync;
     USBRb rb;
     usb_zero(&rb, sizeof rb);
     usb_setup(setup_req, type, req, value, index, 0);
     rb.flags         = USRB_FLAGS_TTYPE_SETUP;
     rb.buffer1       = setup_req;
     rb.buffer1Length = 8;
-    if (submit_sync(&rb, &s) != 0) return -1;
-    return s.status ? -1 : 0;
+    if (submit_sync(&rb, s) != 0) return -1;
+    return s->status ? -1 : 0;
 }
 
 static void clear_halt(uint8_t ep_addr)
@@ -400,7 +407,8 @@ static void usbmsd_idc(RP_GENIOCTL *rp)
         case USB_IDC_FUNCTION_PRCIRQ: {
             USBRb *rb = rp->ParmPacket;
             if (rb->requestData1 == RQ_SYNC) {
-                sync_t *s = (sync_t *)rb->requestData2;
+                sync_t *s = &sync;
+                if (rb->requestData2 != s->gen || s->done) break;   /* stale */
                 s->status = rb->status;
                 s->actual = (rb->flags & USRB_FLAGS_TTYPE_MASK) == USRB_FLAGS_TTYPE_SETUP
                             ? rb->buffer2Length : rb->buffer1Length;

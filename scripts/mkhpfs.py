@@ -183,39 +183,57 @@ class Builder:
             struct.pack_into('<I', e, length - 4, down)
         return bytes(e)
 
-    def build_dnodes(self, entries, up, root):
-        """entries: list of (name, flags, attr, fnode, size) already sorted.
-        Returns the LSN of the (sub)tree's dnode. Bottom-up: split into
-        leaves, promote one separator per boundary into the parent."""
-        cap = DNODE_SIZE - DNODE_HDR - 36             # room for "last" + down
-        def size(e): return (31 + len(e[0] if isinstance(e[0], bytes) else e[0].encode('latin-1')) + 3) & ~3
-        total = sum(size(e) for e in entries)
-        if total <= cap:
-            return self.write_dnode(entries, [None] * len(entries), None, up, root)
+    # A dnode tree node: items = [(entry, child-or-None)], tail = the child
+    # hanging off the "last" entry. A child holds the names before its item.
+    @staticmethod
+    def _esize(e, child):
+        nb = e[0] if isinstance(e[0], bytes) else e[0].encode('latin-1')
+        return ((31 + len(nb) + 3) & ~3) + (4 if child is not None else 0)
 
-        # Leaves of roughly equal fill, each followed by a separator entry.
-        leaves, seps, cur, used = [], [], [], 0
+    def _tree(self, items, tail):
+        """Bottom-up B-tree of any depth: if the items don't fit one dnode,
+        split them into groups, promote one item per boundary, and build
+        the level above from the promoted items."""
+        cap = DNODE_SIZE - DNODE_HDR - 36             # room for "last" + down
+        if sum(self._esize(e, c) for e, c in items) <= cap:
+            return (items, tail)
         target = cap * 3 // 4
-        for e in entries:
-            if cur and used + size(e) > target:
-                leaves.append(cur)
+        groups, promoted, cur, used = [], [], [], 0
+        for e, c in items:
+            sz = self._esize(e, c)
+            if cur and used + sz > target:
+                groups.append(cur)
+                promoted.append((e, c))               # its child closes the group
                 cur, used = [], 0
-                seps.append(e)                       # promoted, not in a leaf
                 continue
-            cur.append(e)
-            used += size(e)
-        if not cur:                                  # last entry became a separator
-            leaves[-1].append(seps.pop())
-        else:
-            leaves.append(cur)
-        # Allocate this node first so children can point up at it.
-        me = self.v.alloc_dnode()
-        downs = [self.build_dnodes(l, me, False) for l in leaves]
-        # Separators keep the down pointer to the leaf before them; the
-        # final leaf hangs off the "last" entry.
-        if sum(size(s) + 4 for s in seps) > cap:
-            sys.exit("mkhpfs: directory too large for a 2-level dnode tree")
-        return self.write_dnode(seps, downs[:-1], downs[-1], up, root, me)
+            cur.append((e, c))
+            used += sz
+        if cur:
+            groups.append(cur)
+            last_tail = tail
+        else:                                         # ended on a promotion
+            e, c = promoted.pop()
+            groups[-1].append((e, c))
+            last_tail = tail
+        children = []
+        for i, g in enumerate(groups):
+            gtail = promoted[i][1] if i < len(promoted) else last_tail
+            children.append(self._tree(g, gtail))
+        parent_items = [(promoted[i][0], children[i]) for i in range(len(promoted))]
+        return self._tree(parent_items, children[-1])
+
+    def _write_tree(self, node, up, root):
+        items, tail = node
+        lsn = self.v.alloc_dnode()
+        downs = [self._write_tree(c, lsn, False) if c is not None else None
+                 for _, c in items]
+        last = self._write_tree(tail, lsn, False) if tail is not None else None
+        return self.write_dnode([e for e, _ in items], downs, last, up, root, lsn)
+
+    def build_dnodes(self, entries, up, root):
+        """entries: (name, flags, attr, fnode, size), sorted. Returns the
+        root dnode's LSN."""
+        return self._write_tree(self._tree([(e, None) for e in entries], None), up, root)
 
     def write_dnode(self, entries, downs, last_down, up, root, lsn=None):
         if lsn is None:
