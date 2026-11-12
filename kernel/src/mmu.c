@@ -119,6 +119,71 @@ static uint64_t mmu_l2_ram[MMU_L2_ENTRIES];
 #define MMU_ATTRS_NORMAL_RX (MMU_DESC_BLOCK | MMU_ATTRINDX(MAIR_IDX_NORMAL) | \
                              MMU_DESC_AF | MMU_DESC_SH_INNER)
 
+/* ── User window: level-3 tables, 4KB pages (see mmu.h) ─────────────────── */
+#define MMU_PAGE          4096UL
+#define MMU_DESC_PAGE     (3UL << 0)          /* level 3: [1:0] = 0b11 page */
+#define MMU_AP_EL0_RW     (1UL << 6)          /* AP[2:1] = 01: EL1+EL0 read/write */
+#define MMU_AP_RO_ALL     (3UL << 6)          /* AP[2:1] = 11: EL1+EL0 read-only */
+#define MMU_USER_L3S      (MMU_USER_SIZE / MMU_BLOCK_2MB)
+__attribute__((aligned(4096)))
+static uint64_t mmu_user_l3[MMU_USER_L3S][512];
+
+static void mmu_tlb_flush(void)
+{
+    __asm__ volatile("dsb ishst\n\ttlbi vmalle1\n\tdsb ish\n\tisb" ::: "memory");
+}
+
+static uint64_t *user_pte(unsigned long va)
+{
+    if (va < MMU_USER_BASE || va >= MMU_USER_BASE + MMU_USER_SIZE) return 0;
+    unsigned long off = va - MMU_USER_BASE;
+    return &mmu_user_l3[off / MMU_BLOCK_2MB][(off % MMU_BLOCK_2MB) / MMU_PAGE];
+}
+
+int mmu_user_map(unsigned long va, unsigned long len, int prot)
+{
+    unsigned long start = va & ~(MMU_PAGE - 1), end = (va + len + MMU_PAGE - 1) & ~(MMU_PAGE - 1);
+    if (start < MMU_USER_BASE || end > MMU_USER_BASE + MMU_USER_SIZE || end < start) return -1;
+    uint64_t attrs = MMU_DESC_PAGE | MMU_ATTRINDX(MAIR_IDX_NORMAL) | MMU_DESC_AF |
+                     MMU_DESC_SH_INNER | MMU_DESC_PXN;     /* never executable at EL1 */
+    if (prot & MMU_PROT_WRITE)      attrs |= MMU_AP_EL0_RW | MMU_DESC_UXN;  /* W^X */
+    else                            attrs |= MMU_AP_RO_ALL |
+                                             ((prot & MMU_PROT_EXEC) ? 0 : MMU_DESC_UXN);
+    for (unsigned long a = start; a < end; a += MMU_PAGE)
+        *user_pte(a) = a | attrs;                          /* identity: PA == VA */
+    mmu_tlb_flush();
+    return 0;
+}
+
+void mmu_user_unmap(unsigned long va, unsigned long len)
+{
+    unsigned long start = va & ~(MMU_PAGE - 1), end = (va + len + MMU_PAGE - 1) & ~(MMU_PAGE - 1);
+    for (unsigned long a = start; a < end; a += MMU_PAGE) {
+        uint64_t *p = user_pte(a);
+        if (p) *p = 0;
+    }
+    mmu_tlb_flush();
+}
+
+void mmu_user_clear(void)
+{
+    for (unsigned long i = 0; i < MMU_USER_L3S; i++)
+        for (int j = 0; j < 512; j++) mmu_user_l3[i][j] = 0;
+    mmu_tlb_flush();
+}
+
+int mmu_user_mapped(unsigned long va, unsigned long len, int prot)
+{
+    if (!len) return 1;
+    if (va + len < va) return 0;
+    for (unsigned long a = va & ~(MMU_PAGE - 1); a < va + len; a += MMU_PAGE) {
+        uint64_t *p = user_pte(a);
+        if (!p || !(*p & 1)) return 0;
+        if ((prot & MMU_PROT_WRITE) && (*p & (3UL << 6)) != MMU_AP_EL0_RW) return 0;
+    }
+    return 1;
+}
+
 /* Marks 2MB-aligned [start, end) within mmu_l2_ram as RX, overwriting the
  * RW+NX default. start/end must both be 2MB-aligned and within
  * [MMU_L2_BASE, MMU_L2_BASE + 1GB) - true for every region below by
@@ -150,6 +215,13 @@ void mmu_init(void)
 
     /* DOSCALLS.DLL code - lx/lx_dll.ld pads/ASSERTs the same way. */
     mmu_mark_rx(LX_DLL_LOAD_BASE, LX_DLL_LOAD_BASE + LX_DLL_CODE_REGION_SIZE);
+
+    /* User window: level-3 tables, all pages unmapped to start with. */
+    for (unsigned long i = 0; i < MMU_USER_L3S; i++) {
+        for (int j = 0; j < 512; j++) mmu_user_l3[i][j] = 0;
+        mmu_l2_ram[(MMU_USER_BASE - MMU_L2_BASE) / MMU_BLOCK_2MB + i] =
+            (uint64_t)(uintptr_t)mmu_user_l3[i] | MMU_DESC_TABLE;
+    }
 
     /* L1 */
     for (int i = 0; i < MMU_L1_ENTRIES; i++)

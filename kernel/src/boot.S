@@ -164,9 +164,9 @@ vector_table:
     .balign 128
     b       serror_exception_spx
 
-    /* Lower EL using AArch64 */
+    /* Lower EL using AArch64 - the Linux-ABI user mode (src/linux/el0.S) */
     .balign 128
-    b       hang
+    b       el0_sync_entry
     .balign 128
     b       hang
     .balign 128

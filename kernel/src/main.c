@@ -7,6 +7,7 @@
 #include "../../fs/btrfs/btrfs.h"
 #include "fat32.h"
 #include "hpfs.h"
+#include "linux_abi.h"
 #include "kio.h"
 #include "basic.h"
 #include "gui/framebuffer.h"
@@ -287,6 +288,7 @@ static void cmd_help(void)
     uart_puts("              /HISTORY, /MACROS, name=text)\r\n");
     uart_puts("  MEM       - Display memory information\r\n");
     uart_puts("  USB       - List USB devices (USBD)\r\n");
+    uart_puts("  RUNELF    - RUNELF \\path\\prog [args]: run a static Linux AArch64 program\r\n");
     uart_puts("  MOUNT     - MOUNT dev \\DIR: mount an HPFS/FAT volume (e.g. usb0p1)\r\n");
     uart_puts("  UMOUNT    - UMOUNT \\DIR: unmount it\r\n");
     uart_puts("  IFS       - List loaded filesystem drivers\r\n");
@@ -539,6 +541,19 @@ static void execute_command(char *cmdline)
     }
     else if (my_strcmp(argv[0], "USB") == 0) {
         usbd_list();
+    }
+    else if (my_strcmp(argv[0], "RUNELF") == 0) {
+        /* RUNELF \path\prog [args]: a static AArch64 Linux program */
+        if (argc < 2) { kprintf("\nUsage: RUNELF \\path\\program [arguments]\n"); return; }
+        char path[VFS_PATH_MAX];
+        int n = 0;
+        if (argv[1][0] != '\\' && argv[1][0] != '/') path[n++] = '/';
+        for (const char *c = argv[1]; *c && n < VFS_PATH_MAX - 1; c++) path[n++] = *c == '\\' ? '/' : *c;
+        path[n] = 0;
+        argv[1] = path;
+        kprintf("\n");
+        int st = linux_run(path, argc - 1, argv + 1);
+        if (st >= 0) kprintf("[LINUX]  %s exited with status %d\n", path, st);
     }
     else if (my_strcmp(argv[0], "MOUNT") == 0) {
         cmd_mount(argc, argv);
