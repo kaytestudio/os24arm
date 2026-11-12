@@ -89,6 +89,19 @@ int gicv3_available(void)
     return gic_ready;
 }
 
+void gicv3_ppi_setup(unsigned int intid, int enable)
+{
+    if (!gic_ready && gicv3_init() != 0)
+        return;
+    if (intid >= 32)
+        return;
+    if (enable) {
+        *reg32(GICR_SGI_BASE + GICR_IGROUPR0) |= 1u << intid;           /* Group 1 -> IRQ */
+        ((volatile uint8_t *)(uintptr_t)(GICR_SGI_BASE + GICR_IPRIORITYR))[intid] = 0x80;
+    }
+    *reg32(GICR_SGI_BASE + (enable ? GICR_ISENABLER0 : GICR_ICENABLER0)) = 1u << intid;
+}
+
 void gicv3_ppi_enable(unsigned int intid, int enable)
 {
     if (!gic_ready || intid >= 32)

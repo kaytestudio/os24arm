@@ -64,9 +64,8 @@ cpu_switch:
 el0_start:
     b       el0_restore
 
-/* Synchronous exception from EL0 (vector table: lower EL, AArch64). */
-    .global el0_sync_entry
-el0_sync_entry:
+/* Build the trap frame on the EL1 stack (sp -> it). */
+    .macro save_frame
     sub     sp, sp, #TF_SIZE
     stp     x0, x1, [sp, #0]
     stp     x2, x3, [sp, #16]
@@ -111,9 +110,25 @@ el0_sync_entry:
     add     x9, sp, #784
     stp     x10, x11, [x9]
 
+    .endm
+
+/* Synchronous exception from EL0 (vector table: lower EL, AArch64). */
+    .global el0_sync_entry
+el0_sync_entry:
+    save_frame
     align_check 1
     mov     x0, sp
     bl      linux_el0_trap
+    b       el0_restore
+
+/* IRQ from EL0 (lower EL, AArch64): the scheduler tick (linux.c). The
+ * kernel itself runs with IRQs masked, so they only arrive here. */
+    .global el0_irq_entry
+el0_irq_entry:
+    save_frame
+    align_check 1
+    mov     x0, sp
+    bl      linux_el0_irq
 el0_restore:                            /* sp = trap frame */
     align_check 0
 

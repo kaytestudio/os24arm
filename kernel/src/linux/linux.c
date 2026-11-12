@@ -14,12 +14,14 @@
  *     0x62000000  mmap area, growing up             (to 0x63800000)
  *     0x63800000  stack, 8 MB, growing down         (to 0x64000000)
  *
- * Scheduling is cooperative for now: a process runs until it blocks (pipe,
- * socket, poll, wait4, console input, sleep) or yields; then the next
- * runnable one runs, round robin. Blocking waits can have a deadline
- * (timeouts, timers, sleeps); with nothing runnable the shell's context
- * runs the idle loop in linux_run() until a deadline passes. Preemption
- * from the timer interrupt is a later step.
+ * Scheduling: a process runs until it blocks (pipe, socket, poll, wait4,
+ * console input, sleep), yields, or its time slice ends - the EL1
+ * physical timer interrupts EL0 every SLICE_MS (the kernel itself always
+ * runs with interrupts masked, so the tick only ever arrives from EL0) -
+ * and then the next runnable one runs, round robin. Blocking waits can
+ * have a deadline (timeouts, timers, sleeps); with nothing runnable the
+ * shell's context runs the idle loop in linux_run() until a deadline
+ * passes.
  *
  * Processes: clone (fork: the address space is copied, MAP_SHARED pages
  * are shared; CLONE_VM | CLONE_VFORK, as musl's posix_spawn uses it: the
@@ -58,6 +60,7 @@
 #include "kio.h"
 #include "uart.h"
 #include "kprintf.h"
+#include "gicv3.h"
 
 extern void cpu_switch(lx_u64 *save, const lx_u64 *load);
 extern void el0_start(void);
@@ -1481,7 +1484,7 @@ static s64 sys_execve(lx_u64 upath, lx_u64 uargv, lx_u64 uenvp)
     kmemset(tf, 0, sizeof *tf);
     tf->elr = entry;
     tf->sp = sp;
-    tf->spsr = 0x3c0;                                   /* EL0t */
+    tf->spsr = 0;                                       /* EL0t, interrupts on */
     cur->tpidr = 0;
     __asm__ volatile("msr tpidr_el0, xzr");
     return 0;                                           /* -> x0 of the new program */
@@ -3422,6 +3425,42 @@ static s64 linux_syscall(linux_tf_t *tf)
     }
 }
 
+/* ── Scheduler tick ───────────────────────────────────────────────────── */
+#define SLICE_MS 10
+
+static void tick_arm(void)
+{
+    lx_u64 t = freq() * SLICE_MS / 1000;
+    __asm__ volatile("msr cntp_tval_el0, %0\n\tmsr cntp_ctl_el0, %1\n\tisb" :: "r"(t), "r"(1UL));
+}
+
+static void tick_start(void)
+{
+    gicv3_ppi_setup(GICV3_PPI_PHYS_TIMER, 1);
+    tick_arm();
+}
+
+static void tick_stop(void)
+{
+    __asm__ volatile("msr cntp_ctl_el0, %0\n\tisb" :: "r"(0UL));
+    gicv3_ppi_setup(GICV3_PPI_PHYS_TIMER, 0);
+}
+
+/* IRQ taken from EL0 (el0_irq_entry). */
+void linux_el0_irq(linux_tf_t *tf)
+{
+    cur->tf = tf;
+    lx_u64 intid;
+    __asm__ volatile("mrs %0, S3_0_C12_C12_0" : "=r"(intid));      /* ICC_IAR1_EL1 */
+    intid &= 0xFFFFFF;
+    if (intid >= 1020) return;                                     /* spurious */
+    if (intid == GICV3_PPI_PHYS_TIMER) tick_arm();                 /* (nothing else is routed) */
+    __asm__ volatile("msr S3_0_C12_C12_1, %0\n\tisb" :: "r"(intid)); /* ICC_EOIR1_EL1 */
+    if (usbd_daemon) usbd_daemon();
+    schedule();                                                    /* time's up: next one */
+    deliver_signal(cur->tf);
+}
+
 void linux_el0_trap(linux_tf_t *tf)
 {
     lx_u64 esr, far;
@@ -3514,9 +3553,10 @@ int linux_run(const char *path, int argc, char **argv)
     kmemset(tf, 0, sizeof *tf);
     tf->elr = entry;
     tf->sp = sp;
-    tf->spsr = 0x3c0;                                   /* EL0t */
+    tf->spsr = 0;                                       /* EL0t, interrupts on */
     init->state = P_RUN;
     con_have = con_pos = con_eol = con_eof = 0;
+    tick_start();
 
     /* The shell's context is the idle loop: run whatever is runnable
      * until the first process has exited. */
@@ -3536,6 +3576,7 @@ int linux_run(const char *path, int argc, char **argv)
         for (int i = 0; i < MAX_PROCS; i++)
             if (procs[i].state == P_SLEEP) send_sig(&procs[i], SIGKILL, 0);
     }
+    tick_stop();
     int status = init->wstatus;
     /* Whatever is left: kill it, let it exit, reap everything. */
     for (int i = 0; i < MAX_PROCS; i++)

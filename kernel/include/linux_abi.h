@@ -25,7 +25,8 @@ typedef struct {
  */
 int linux_run(const char *path, int argc, char **argv);
 
-/* Called from el0_sync_entry. */
+/* Called from el0_sync_entry / el0_irq_entry. */
 void linux_el0_trap(linux_tf_t *tf);
+void linux_el0_irq(linux_tf_t *tf);
 
 #endif /* LINUX_ABI_H */

@@ -33,18 +33,20 @@ platform-specific are new code.
    `mmap`, file I/O through the VFS, console I/O. One program at a time,
    in a fixed user window of the identity map. Shell: `RUNELF path args`.
    Test: musl-built programs (hello, malloc, file read, clock).
-2. **Processes** *(done, except preemption)*.
+2. **Processes** *(done)*.
    Per-process address spaces (page frames from a pool at
    0x64000000-0x80000000, TTBR0 switch), per-process kernel stacks, up to
    16 processes. `clone` as `fork` (address space copied, `MAP_SHARED`
    pages shared) and as `CLONE_VM|CLONE_VFORK` (musl's `posix_spawn`),
    `execve`, `exit` / zombies / `wait4`, `getpid`/`getppid`, shared
    open-file objects (fork and `dup` share offsets), close-on-exec,
-   per-process `tpidr_el0`. Scheduling is cooperative (switch on block or
-   `sched_yield`); waits can have deadlines. Still to do: preemption from
-   the timer interrupt, threads (`CLONE_THREAD`, futex).
+   per-process `tpidr_el0`. Preemptive scheduling: the EL1 physical timer
+   (PPI 30, GICv3) interrupts EL0 every 10 ms and the next runnable
+   process gets the CPU (the kernel itself runs with interrupts masked);
+   waits can have deadlines. Still to do: threads (`CLONE_THREAD`, futex).
    Tests: `procs` (fork/wait, pipes, posix_spawn, execve, kill), `cat`
-   (console input, Ctrl-D, Ctrl-C).
+   (console input, Ctrl-D, Ctrl-C), `preempt` (children spinning without
+   system calls don't starve the parent).
 3. **Event and IPC primitives** *(done)*.
    Signals: `rt_sigaction` handlers run on the user stack with a
    Linux-layout `rt_sigframe` (siginfo, ucontext, FP/SIMD record) and
@@ -101,8 +103,7 @@ platform-specific are new code.
    the virtio-gpu display, keyboard and pointer input reach it, Alt+Esc
    quits. Try it: `scripts/run-vm.sh --wayland`, then `MOUNT usb0p1 \h`
    and `RUNELF \h\tinywl -s /h/wlclient`. Next: a real compositor (e.g.
-   `cage`, `labwc`), xkeyboard-config and cursor themes on a volume,
-   preemptive scheduling. The in-kernel compositor (`kernel/src/gui/
+   `cage`, `labwc`), xkeyboard-config and cursor themes on a volume. The in-kernel compositor (`kernel/src/gui/
    wayland.c`, `GUI`) stays as the fallback console GUI.
 
 ## Building the toolchain pieces

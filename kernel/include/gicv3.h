@@ -20,10 +20,14 @@
 
 #define GICV3_PPI_HYP_TIMER   26
 #define GICV3_PPI_VIRT_TIMER  27
+#define GICV3_PPI_PHYS_TIMER  30   /* EL1 physical timer: the Linux-ABI scheduler tick */
 
 /* Returns 0 on success, <0 if there's no GICv3 at the virt address. */
 int  gicv3_init(void);
 int  gicv3_available(void);
 void gicv3_ppi_enable(unsigned int intid, int enable);
+/* Route a PPI to this CPU as a Group 1 IRQ and enable or disable it,
+ * bringing the GIC up first if nobody has (used outside the hypervisor). */
+void gicv3_ppi_setup(unsigned int intid, int enable);
 
 #endif /* GICV3_H */

@@ -168,7 +168,7 @@ vector_table:
     .balign 128
     b       el0_sync_entry
     .balign 128
-    b       hang
+    b       el0_irq_entry
     .balign 128
     b       hang
     .balign 128
