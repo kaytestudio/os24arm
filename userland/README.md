@@ -61,10 +61,18 @@ platform-specific are new code.
    `XDG_RUNTIME_DIR=/tmp`), `flock` always succeeds (one user). Not done:
    datagram/seqpacket sockets, `/proc`.
    Tests: `ipc` (all of the above), `fsops` (directory ops on a volume).
-4. **Libraries.** Cross-build libffi, libwayland (server + client +
-   `wayland-scanner` host tool), pixman, libxkbcommon (with a compiled-in
-   keymap; no X11 data files at runtime), against the musl sysroot.
-   Test: `wayland-server` + a `wl_shm` client exchanging buffers.
+4. **Libraries** *(done)*. `userland/build-libs.sh` cross-builds, as
+   static libraries in the musl sysroot: Linux UAPI headers (sabotage's
+   sanitized 4.19 kernel-headers), libffi 3.5.2, libwayland 1.24.0
+   (server, client, cursor, egl), pixman 0.46.4, libxkbcommon 1.11.0 (no
+   X11, no registry; keymaps from strings until an xkeyboard-config tree
+   is installed), plus a host `wayland-scanner` (with a host expat).
+   Test: `wltest` - a `wl_display` with `wl_shm` and a minimal
+   `wl_compositor`, a client in a forked process that connects through
+   `/tmp/wayland-0`, attaches a memfd-backed ARGB buffer and gets it
+   released; the server reads it with `wl_shm_buffer`, composites it with
+   pixman and checks every pixel; xkbcommon compiles and serialises a
+   keymap. Passes with no unimplemented system calls.
 5. **wlroots backend for this machine.** A wlroots backend (in the
    spirit of its `headless` backend) whose output is the kernel's
    framebuffer (virtio-gpu / ramfb, exposed to userspace as a mappable
@@ -80,5 +88,25 @@ platform-specific are new code.
 
 `userland/build-musl.sh` downloads musl (pinned version and SHA-256),
 builds it with the same Homebrew clang as the kernel, and installs a
-sysroot to `build/userland/sysroot`. `userland/tests/` holds the test
-programs, built with `userland/build-tests.sh`.
+sysroot to `build/userland/sysroot`, with compiler-rt's builtins.
+
+`userland/build-libs.sh` adds the libraries above to that sysroot and
+writes the cross toolchain everything else uses:
+
+- `build/userland/toolchain/aarch64-linux-musl-cc` - clang with the
+  sysroot; links static `ET_EXEC` binaries at 0x60000000, as the kernel's
+  loader wants them (`CC=` for autotools, `[binaries] c` for meson)
+- `build/userland/toolchain/cross.meson` - `meson setup --cross-file`
+  (static libraries, `pkg_config_libdir` in the sysroot); add
+  `-Dbuild.pkg_config_path=build/userland/host/lib/pkgconfig` so that
+  build-machine tools (`wayland-scanner`) are found
+
+Needs Homebrew `llvm`, `lld`, `meson`, `ninja`, `pkg-config`, `cmake`,
+`bison`.
+
+`userland/tests/` holds the test programs, built with
+`userland/build-tests.sh` into `build/userland/tests/`; a test with a
+` * pkg: ...` line in its header comment is linked against those
+libraries. Copy them to a volume and run them from the shell with
+`RUNELF \h\name` (e.g. an HPFS stick made with `scripts/mkhpfs.py
+--from`, then `MOUNT usb0p1 \h`).
