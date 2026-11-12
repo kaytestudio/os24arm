@@ -19,6 +19,7 @@
 #include "hyp.h"
 #include "usb.h"
 #include "usbd.h"
+#include "usbmouse.h"
 
 
 /* Memory heap configuration */
@@ -450,9 +451,44 @@ static void print_banner(void)
  * gui/virtio_input.h) cycles workplaces regardless of what's happening
  * on the shell; dos_read_line() calls this whenever it's not blocked
  * reading a key, so it isn't stuck behind a keystroke while idle. */
+/* USB mouse / tablet (drivers/usb/usbmouse.c) -> compositor pointer. */
+static bool usb_pointer_poll(void)
+{
+    static int px, py;
+    static unsigned pbuttons;
+    usbmouse_event_t ev;
+    bool changed = false;
+
+    while (usbmouse_poll(&ev)) {
+        int w = fb_get_width(), h = fb_get_height();
+        if (w <= 0 || h <= 0) continue;
+        if (ev.absolute) {
+            px = (int)((long)ev.x * (w - 1) / USBMOUSE_ABS_MAX);
+            py = (int)((long)ev.y * (h - 1) / USBMOUSE_ABS_MAX);
+        } else {
+            px += ev.dx;
+            py += ev.dy;
+        }
+        if (px < 0) px = 0;
+        if (py < 0) py = 0;
+        if (px >= w) px = w - 1;
+        if (py >= h) py = h - 1;
+        wl_seat_pointer_motion(px, py);
+        for (int b = 0; b < 2; b++)               /* compositor: left, right */
+            if ((ev.buttons ^ pbuttons) & (1u << b))
+                wl_seat_pointer_button(px, py, b, (ev.buttons >> b) & 1);
+        pbuttons = ev.buttons;
+        changed = true;
+    }
+    return changed;
+}
+
 static void kernel_shell_idle(void)
 {
     usbd_daemon();          /* USB: completions, hot-plug */
+    if (usb_pointer_poll()) {
+        wl_compositor_flush();
+    }
     if (vinput_poll_workplace_hotkey()) {
         wl_compositor_cycle_workplace();
     }

@@ -8,6 +8,7 @@
  *   BASEDEV=USBXHCD.SYS [/V]           xHCI host controller driver
  *   BASEDEV=USBD.SYS [/V]              USB root layer (the daemon)
  *   DEVICE=[path\]USBKBD.SYS [/V]      HID keyboard class driver
+ *   DEVICE=[path\]USBMOUSE.SYS [/V]    HID mouse / tablet class driver
  *
  * BASEDEV drivers get BASEDEVINIT in file order, then DEVICE drivers get
  * DEVINIT, then every driver gets INITIALIZATION COMPLETE in file order
@@ -15,7 +16,7 @@
  * driver report what it found; without it drivers are silent.
  *
  * cfg_text is CONFIG.SYS's contents, or NULL when there is none, in
- * which case all three drivers load without /V.
+ * which case all four drivers load without /V.
  */
 void usb_init(const char *cfg_text);
 

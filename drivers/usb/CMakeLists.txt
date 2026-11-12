@@ -1,6 +1,6 @@
-# drivers/usb/CMakeLists.txt - OS/2-style USB stack: USBD + USBXHCD + USBKBD
+# drivers/usb/CMakeLists.txt - OS/2-style USB stack: USBD + USBXHCD + USBKBD + USBMOUSE
 
-add_library(usb STATIC usb.c usbd.c xhci.c usbkbd.c)
+add_library(usb STATIC usb.c usbd.c xhci.c usbkbd.c usbmouse.c)
 
 target_include_directories(usb PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}

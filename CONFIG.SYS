@@ -84,11 +84,13 @@ REM RAM disk driver
 BASEDEV=VDISK.SYS 4096
 
 REM USB stack (drivers/usb): xHCI host controller, USBD root layer
-REM (enumeration + hot-plug daemon), HID keyboard class driver.
+REM (enumeration + hot-plug daemon), HID keyboard and mouse/tablet
+REM class drivers.
 REM /V = verbose: each driver reports what it found.
 BASEDEV=USBXHCD.SYS /V
 BASEDEV=USBD.SYS /V
 DEVICE=C:\OS2\BOOT\USBKBD.SYS /V
+DEVICE=C:\OS2\BOOT\USBMOUSE.SYS /V
 
 REM Console and keyboard drivers
 DEVICE=C:\OS2\MDOS\VEMM.SYS
