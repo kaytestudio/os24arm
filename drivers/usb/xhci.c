@@ -183,7 +183,16 @@ typedef struct {
 
 typedef struct {
     uint32_t slot;            /* 0 = unused */
-    uint32_t port;
+    uint32_t port;            /* root hub port it is (ultimately) behind */
+    uint32_t hub_slot;        /* parent hub's slot, 0 = root hub */
+    uint32_t hub_port;        /* port on the parent hub */
+    uint32_t route;           /* xHCI route string */
+    uint32_t depth;           /* hubs between it and the root hub */
+    uint32_t tt_slot;         /* LS/FS behind a HS hub: that hub's slot */
+    uint32_t tt_port;         /* ... and the port on it */
+    uint32_t is_hub;          /* snooped from its device descriptor */
+    uint32_t hub_mtt;         /* multi-TT high-speed hub */
+    uint32_t hub_nports;      /* snooped from its hub descriptor */
     uint32_t speed;           /* XSPEED_* */
     uint32_t addr;            /* USBD's address, 0 = still default */
     uint32_t ep0_mps;
@@ -226,7 +235,6 @@ static volatile int cmd_got;
 static trb_t     cmd_ev;
 static hdev_t    hdevs[MAX_SLOTS];
 static uint8_t   addr2slot[128];
-static uint8_t   port_default[MAX_PORTS + 1]; /* slot in Default state */
 static ring_t    ep_rings[MAX_EP_RINGS];
 static uint8_t   ep_ring_used[MAX_EP_RINGS];
 static xfer_t    xfers[MAX_XFERS];
@@ -489,7 +497,6 @@ static int hc_start(void)
     /* Forget all software state from before the reset. */
     usb_zero(hdevs, sizeof hdevs);
     usb_zero(addr2slot, sizeof addr2slot);
-    usb_zero(port_default, sizeof port_default);
     usb_zero(ep_ring_used, sizeof ep_ring_used);
     usb_zero(xfers, sizeof xfers);
     cq_h = cq_t = 0;
@@ -689,8 +696,6 @@ static void free_slot(hdev_t *d)
     command(0, TRB_TYPE(TRB_DISABLE_SLOT) | TRB_SLOT(d->slot), 0);
     dcbaa[d->slot] = 0;
     if (d->addr) addr2slot[d->addr] = 0;
-    if (d->port <= MAX_PORTS && port_default[d->port] == d->slot)
-        port_default[d->port] = 0;
     usb_zero(d, sizeof *d);
 }
 
@@ -708,20 +713,55 @@ static int address_device(hdev_t *d, int bsr)
 {
     usb_zero(in_ctx, sizeof in_ctx);
     ictx(0)[1] = (1u << 0) | (1u << 1);
-    ictx(1)[0] = (d->speed << 20) | (1u << 27);
-    ictx(1)[1] = d->port << 16;
+    ictx(1)[0] = d->route | (d->speed << 20) | (1u << 27);
+    ictx(1)[1] = d->port << 16;                       /* root hub port */
+    ictx(1)[2] = d->tt_slot | (d->tt_port << 8);
     fill_ep0_ctx(d);
     dma_barrier();
     return command(dma(in_ctx), TRB_TYPE(TRB_ADDRESS_DEV) | TRB_SLOT(d->slot) |
                    (bsr ? TRB_BSR : 0), 0) == CC_SUCCESS ? 0 : -1;
 }
 
-/* New slot in the Default state for the device on a root port. */
-static hdev_t *default_device(uint32_t port, uint32_t mps)
+/* The not-yet-addressed device on port `port` of hub `hub_slot` (0 = the
+ * root hub), if there is one. */
+static hdev_t *find_default(uint32_t hub_slot, uint32_t port)
 {
-    if (port < 1 || port > max_ports || !(portsc(port) & PORTSC_PED)) return 0;
-    if (port_default[port])                           /* stale: start over */
-        free_slot(&hdevs[port_default[port] - 1]);
+    for (uint32_t i = 0; i < MAX_SLOTS; i++)
+        if (hdevs[i].slot && !hdevs[i].addr &&
+            hdevs[i].hub_slot == hub_slot && hdevs[i].hub_port == port)
+            return &hdevs[i];
+    return 0;
+}
+
+/* New slot in the Default state for the device on a hub port. Behind an
+ * external hub the speed comes from USBD (USBRb flags, i.e. the hub's
+ * port status) and the route string / TT from the hub's own slot. */
+static hdev_t *default_device(uint32_t hub_slot, uint32_t port, const USBRb *rb)
+{
+    uint32_t speed, root_port, route = 0, depth = 0, tt_slot = 0, tt_port = 0;
+    if (!hub_slot) {
+        if (port < 1 || port > max_ports || !(portsc(port) & PORTSC_PED)) return 0;
+        speed = PORTSC_SPEED(portsc(port));
+        root_port = port;
+    } else {
+        const hdev_t *hub = &hdevs[hub_slot - 1];
+        if (!hub->slot || !hub->is_hub || hub->depth >= 4 || port < 1 || port > 15)
+            return 0;
+        speed = (rb->flags & USRB_FLAGS_DET_LOWSPEED)  ? XSPEED_LOW  :
+                (rb->flags & USRB_FLAGS_DET_HIGHSPEED) ? XSPEED_HIGH : XSPEED_FULL;
+        root_port = hub->port;
+        depth     = hub->depth + 1;
+        route     = hub->route | (port << (4 * hub->depth));
+        if (hub->speed == XSPEED_HIGH && (speed == XSPEED_LOW || speed == XSPEED_FULL)) {
+            tt_slot = hub->slot;                       /* this hub's TT */
+            tt_port = port;
+        } else {
+            tt_slot = hub->tt_slot;                    /* inherited */
+            tt_port = hub->tt_port;
+        }
+    }
+    hdev_t *old = find_default(hub_slot, port);
+    if (old) free_slot(old);                          /* stale: start over */
 
     trb_t done;
     if (command(0, TRB_TYPE(TRB_ENABLE_SLOT), &done) != CC_SUCCESS) return 0;
@@ -730,10 +770,16 @@ static hdev_t *default_device(uint32_t port, uint32_t mps)
 
     hdev_t *d = &hdevs[slot - 1];
     usb_zero(d, sizeof *d);
-    d->slot    = slot;
-    d->port    = port;
-    d->speed   = PORTSC_SPEED(portsc(port));
-    d->ep0_mps = mps ? mps : 8;
+    d->slot     = slot;
+    d->port     = root_port;
+    d->hub_slot = hub_slot;
+    d->hub_port = port;
+    d->route    = route;
+    d->depth    = depth;
+    d->tt_slot  = tt_slot;
+    d->tt_port  = tt_port;
+    d->speed    = speed;
+    d->ep0_mps  = rb->maxPacketSize ? rb->maxPacketSize : 8;
     ring_init(&d->ep0, ep0_trbs[slot - 1]);
     usb_zero(dctx(d), sizeof dev_ctx[0]);
     dcbaa[slot] = dma(dctx(d));
@@ -742,7 +788,6 @@ static hdev_t *default_device(uint32_t port, uint32_t mps)
         free_slot(d);
         return 0;
     }
-    port_default[port] = (uint8_t)slot;
     return d;
 }
 
@@ -806,6 +851,11 @@ static ring_t *ep_configure(hdev_t *d, uint32_t dci, const USBRb *rb)
     uint32_t entries = (ictx(1)[0] >> 27) & 0x1F;
     if (dci > entries) entries = dci;
     ictx(1)[0] = (ictx(1)[0] & 0x07FFFFFFu) | (entries << 27);
+    if (d->is_hub) {                                  /* Hub, MTT, NumPorts */
+        ictx(1)[0] |= 1u << 26;
+        if (d->hub_mtt && d->speed == XSPEED_HIGH) ictx(1)[0] |= 1u << 25;
+        ictx(1)[1] = (ictx(1)[1] & 0x00FFFFFFu) | (d->hub_nports << 24);
+    }
 
     uint32_t type = in ? (intr ? 7 : 6) : (intr ? 3 : 2);
     uint32_t *ep = ictx(1 + dci);
@@ -856,16 +906,19 @@ static uint16_t accio_control(int xi, hdev_t *d)
     return 0;
 }
 
-/* Control request to address 0: the device on a root port, not yet
- * addressed (external hubs are not supported). */
+/* Control request to address 0: the not-yet-addressed device on hub
+ * HubAddr's port PortNumb (USBD fills both in). */
 static uint16_t accio_default(int xi)
 {
     USBRb *rb = &xfers[xi].rb;
     const uint8_t *s = rb->buffer1;
-    uint32_t port = rb->PortNumb;
-    if (!rh_addressed || rb->HubAddr != rh_addr || port < 1 || port > max_ports)
-        return USB_IDC_ADDRINV;
-    hdev_t *d = port_default[port] ? &hdevs[port_default[port] - 1] : 0;
+    uint32_t port = rb->PortNumb, hub_slot = 0;
+    if (!rh_addressed) return USB_IDC_ADDRINV;
+    if (rb->HubAddr != rh_addr) {
+        hub_slot = rb->HubAddr < 128 ? addr2slot[rb->HubAddr] : 0;
+        if (!hub_slot) return USB_IDC_ADDRINV;
+    }
+    hdev_t *d = find_default(hub_slot, port);
 
     if (REQ_IS(s, 0x00, 5)) {                         /* SET_ADDRESS */
         uint32_t a = s[2] & 0x7F;
@@ -873,13 +926,12 @@ static uint16_t accio_default(int xi)
             return USB_IDC_IOFAILED;
         d->addr = a;
         addr2slot[a] = (uint8_t)d->slot;
-        port_default[port] = 0;
         xfer_complete(xi, 0);
         return 0;
     }
     /* GET_DESCRIPTOR(Device) starts every enumeration: fresh slot. */
     if (!d || (REQ_IS(s, 0x80, 6) && s[3] == 1))
-        d = default_device(port, rb->maxPacketSize);
+        d = default_device(hub_slot, port, rb);
     return d ? accio_control(xi, d) : USB_IDC_IOFAILED;
 }
 
@@ -966,6 +1018,22 @@ static uint16_t cancel(const USBCancel *c)
 }
 
 /* ── PRCIRQ: poll, then notify ────────────────────────────────────────── */
+/* The slot context must say whether a device is a hub (and how many
+ * ports, multi-TT or not) - nothing in the IDC tells the HCD, so it reads
+ * that off the descriptors USBD fetches during enumeration. */
+static void snoop(hdev_t *d, const USBRb *rb)
+{
+    if ((rb->flags & USRB_FLAGS_TTYPE_MASK) != USRB_FLAGS_TTYPE_SETUP) return;
+    const uint8_t *s = rb->buffer1, *b = rb->buffer2;
+    if (!s || !b) return;
+    if (REQ_IS(s, 0x80, 6) && s[3] == 1 && rb->buffer2Length >= 7) {
+        d->is_hub  = b[4] == 9;
+        d->hub_mtt = b[6] == 2;
+    } else if (REQ_IS(s, 0xA0, 6) && s[3] == 0x29 && rb->buffer2Length >= 3) {
+        d->hub_nports = b[2];
+    }
+}
+
 static void process(void)
 {
     if (!running) return;
@@ -996,6 +1064,7 @@ static void process(void)
             rb.buffer2Length = (uint16_t)xfers[i].actual;
         else
             rb.buffer1Length = (uint16_t)xfers[i].actual;
+        if (xfers[i].slot && !rb.status) snoop(&hdevs[xfers[i].slot - 1], &rb);
         xfers[i].used = 0;
         if (rb.usbIDC)
             usb_idc_call(rb.usbIDC, rb.category, USB_IDC_FUNCTION_PRCIRQ, &rb, 0);

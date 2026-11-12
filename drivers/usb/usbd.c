@@ -18,8 +18,8 @@
  * enumeration requests are synchronous: they pump the HCDs until their
  * completion arrives.
  *
- * Only hubs USBD handles itself are the HCDs' root hubs; an external hub
- * is enumerated and reported but its ports are not served yet.
+ * Hubs - the HCDs' software root hubs and external hubs alike - are
+ * handled here with the same hub-class requests.
  */
 
 #include "usbd.h"
@@ -393,11 +393,6 @@ static void dev_offer(usbd_dev_t *d)
 
 static void port_attach(usbd_dev_t *hub, uint8_t port)
 {
-    if (hub->parent >= 0) {
-        V("[USBD]   hub %u port %u: devices behind external hubs not supported yet\n",
-          hub->addr, port);
-        return;
-    }
     if (port_feature(hub, port, 1, PORT_RESET)) return;
     uint16_t st = 0, ch = 0;
     u64 end = usb_ticks() + usb_ms(500);
@@ -408,13 +403,13 @@ static void port_attach(usbd_dev_t *hub, uint8_t port)
     port_feature(hub, port, 0, C_PORT_RESET);
     if (ch & PC_ENABLE) port_feature(hub, port, 0, C_PORT_ENABLE);
     if (!(st & PS_ENABLE)) {
-        V("[USBD]   port %u: reset failed\n", port);
+        V("[USBD]   hub %u port %u: reset failed\n", hub->addr, port);
         return;
     }
     usb_delay_ms(10);                                 /* reset recovery */
 
     usbd_dev_t *d = dev_alloc();
-    if (!d) { V("[USBD]   port %u: device table full\n", port); return; }
+    if (!d) { V("[USBD]   hub %u port %u: device table full\n", hub->addr, port); return; }
     d->ctrl   = hub->ctrl;
     d->parent = (int8_t)dev_index(hub);
     d->port   = port;
@@ -423,20 +418,20 @@ static void port_attach(usbd_dev_t *hub, uint8_t port)
                 (st & PS_LOW_SPEED)   ? USB_SPEED_LOW   : USB_SPEED_FULL;
 
     if (dev_setup(d) != 0) {
-        V("[USBD]   port %u: enumeration failed\n", port);
+        V("[USBD]   hub %u port %u: enumeration failed\n", hub->addr, port);
         dev_detach(d);
         return;
     }
     const DeviceDescriptor *dd = &d->info.descriptor;
     if (d->is_hub) {
-        V("[USBD]   port %u: %s-speed hub %04x:%04x, address %u\n", port,
+        V("[USBD]   hub %u port %u: %s-speed hub %04x:%04x, address %u\n", hub->addr, port,
           speed_name(d->speed), dd->idVendor, dd->idProduct, d->addr);
         hub_start(d);
         return;
     }
     dev_offer(d);
-    V("[USBD]   port %u: %s-speed device %04x:%04x class %02x, address %u, %s\n",
-      port, speed_name(d->speed), dd->idVendor, dd->idProduct,
+    V("[USBD]   hub %u port %u: %s-speed device %04x:%04x class %02x, address %u, %s\n",
+      hub->addr, port, speed_name(d->speed), dd->idVendor, dd->idProduct,
       dd->bDeviceClass, d->addr,
       d->owner >= 0 ? "claimed" : "no driver");
 }
@@ -465,7 +460,7 @@ static void port_detach(usbd_dev_t *hub, uint8_t port)
 {
     for (int i = 0; i < MAX_DEVS; i++)
         if (devs[i].used && devs[i].parent == dev_index(hub) && devs[i].port == port) {
-            V("[USBD]   port %u: device %04x:%04x (address %u) detached\n", port,
+            V("[USBD]   hub %u port %u: device %04x:%04x (address %u) detached\n", hub->addr, port,
               devs[i].info.descriptor.idVendor, devs[i].info.descriptor.idProduct,
               devs[i].addr);
             dev_detach(&devs[i]);
@@ -717,14 +712,15 @@ void usbd_daemon(void)
 void usbd_list(void)
 {
     if (!loaded) { kprintf("USBD.SYS is not loaded (see CONFIG.SYS)\n"); return; }
-    kprintf("Ctl Addr Port Speed  VID:PID    Class  Driver\n");
+    kprintf("Ctl Addr Hub Port Speed  VID:PID    Class  Driver\n");
     int n = 0;
     for (int i = 0; i < MAX_DEVS; i++) {
         usbd_dev_t *d = &devs[i];
         if (!d->used || !d->addr) continue;
         const DeviceDescriptor *dd = &d->info.descriptor;
-        kprintf("%3u %4u %4u %-6s %04x:%04x  %02x     %s\n",
-                d->ctrl, d->addr, d->port, speed_name(d->speed),
+        kprintf("%3u %4u %3u %4u %-6s %04x:%04x  %02x     %s\n",
+                d->ctrl, d->addr, d->parent >= 0 ? devs[d->parent].addr : 0u,
+                d->port, speed_name(d->speed),
                 dd->idVendor, dd->idProduct, dd->bDeviceClass,
                 d->parent < 0 ? "(root hub)" : d->is_hub ? "(hub)" :
                 d->owner >= 0 ? "claimed" : "-");
