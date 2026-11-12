@@ -53,15 +53,56 @@ static void print_dos_error(const char *cmd, APIRET rc)
 
 /* ── ECHO ─────────────────────────────────────────────────────────────────── */
 
+/* ECHO text            prints it
+ * ECHO text > file     writes it (and CR LF) to file, replacing it
+ * ECHO text >> file    appends it to file (created if missing)
+ * The redirection may also be written attached: >file, >>file. */
 void dos_echo(int argc, char **argv)
 {
-    uart_puts("\r\n");
+    int last = argc, append = 0;
+    const char *target = 0;
     for (int i = 1; i < argc; i++) {
-        if (i > 1)
-            uart_putc(' ');
-        uart_puts(argv[i]);
+        const char *a = argv[i];
+        if (a[0] != '>') continue;
+        append = a[1] == '>';
+        const char *t = a + 1 + append;
+        if (*t) target = t;
+        else if (i + 1 < argc) target = argv[i + 1];
+        last = i;
+        break;
     }
-    uart_puts("\r\n");
+    if (last < argc && !target) {
+        uart_puts("\r\nECHO: missing file name after >\r\n");
+        return;
+    }
+    if (!target) {
+        uart_puts("\r\n");
+        for (int i = 1; i < argc; i++) {
+            if (i > 1) uart_putc(' ');
+            uart_puts(argv[i]);
+        }
+        uart_puts("\r\n");
+        return;
+    }
+
+    char line[512];
+    uint32_t n = 0;
+    for (int i = 1; i < last; i++) {
+        if (i > 1 && n < sizeof line - 3) line[n++] = ' ';
+        for (const char *c = argv[i]; *c && n < sizeof line - 3; c++) line[n++] = *c;
+    }
+    line[n++] = '\r';
+    line[n++] = '\n';
+
+    HFILE h;
+    uint32_t action, written;
+    APIRET rc = DosOpen(target, &h, &action, 0, 0, 0,
+                        O_WRONLY | O_CREAT | (append ? O_APPEND : O_TRUNC));
+    if (rc != NO_ERROR) { print_dos_error("ECHO", rc); return; }
+    rc = DosWrite(h, line, n, &written);
+    DosClose(h);
+    if (rc != NO_ERROR) print_dos_error("ECHO", rc);
+    else uart_puts("\r\n");
 }
 
 /* ── DEBUG ─────────────────────────────────────────────────────────────────
@@ -1444,7 +1485,42 @@ void dos_copy(int argc, char **argv)
 void dos_del(int argc, char **argv)
 {
     if (argc < 2) {
-        uart_puts("\r\nUsage: DEL filename\r\n");
+        uart_puts("\r\nUsage: DEL filename (wildcards * and ? allowed)\r\n");
+        return;
+    }
+
+    if (strchr(argv[1], '*') || strchr(argv[1], '?')) {
+        /* Each match is deleted as it is found, while the search is still
+         * open - the filesystem must cope with its directory changing. */
+        char dir[VFS_PATH_MAX];
+        const char *base = argv[1];
+        for (const char *c = argv[1]; *c; c++)
+            if (*c == '\\' || *c == '/') base = c + 1;
+        uint32_t dl = (uint32_t)(base - argv[1]);
+        if (dl >= sizeof dir - 2) { print_dos_error("DEL", ERROR_BUFFER_OVERFLOW); return; }
+        memcpy(dir, argv[1], dl);
+
+        HDIR hdir;
+        FILEFINDBUF ffb;
+        uint32_t count = 1, deleted = 0, failed = 0;
+        APIRET rc = DosFindFirst(argv[1], &hdir, 0, &ffb, sizeof ffb, &count);
+        if (rc != NO_ERROR) { print_dos_error("DEL", rc); return; }
+        while (rc == NO_ERROR && count) {
+            if (!(ffb.attributes & VFS_ATTR_DIR)) {
+                uint32_t k = dl;
+                if (dl + ffb.name_len >= sizeof dir) { failed++; goto next; }
+                for (uint32_t j = 0; j < ffb.name_len; j++) dir[k++] = ffb.name[j];
+                dir[k] = '\0';
+                if (DosDelete(dir) == NO_ERROR) deleted++;
+                else failed++;
+            }
+        next:
+            rc = DosFindNext(hdir, &ffb, sizeof ffb, &count);
+        }
+        DosFindClose(hdir);
+        kprintf("\r\n%u file(s) deleted", deleted);
+        if (failed) kprintf(", %u could not be deleted", failed);
+        uart_puts("\r\n");
         return;
     }
 
