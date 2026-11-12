@@ -152,7 +152,9 @@ def fnode(name, up, size, btree, is_dir):
 
 
 class Builder:
-    def __init__(self, vol, stamp):
+    def __init__(self, vol, stamp, ea=False, fill=75):
+        self.ea = ea
+        self.fill = fill
         self.v = vol
         self.stamp = stamp
         self.biggest = (0, [])                     # (size, extents) for --hotfix
@@ -199,7 +201,14 @@ class Builder:
         ext = self.write_data(data)
         if len(data) > self.biggest[0]:
             self.biggest = (len(data), ext)
-        self.v.put(f, fnode(name, parent, len(data), self.file_btree(ext, f), False))
+        fn = bytearray(fnode(name, parent, len(data), self.file_btree(ext, f), False))
+        if self.ea and name.upper() == 'README.TXT':
+            # one FEA2-style record (flags, name length, value length, name, value)
+            ea = self.v.alloc(1)
+            rec = struct.pack('<BBH', 0, 9, 6) + b'.LONGNAME\0' + b'README'
+            self.v.put(ea, rec.ljust(SECTOR, b'\0'))
+            struct.pack_into('<II', fn, 44, len(rec), ea)    # ea_size_l, ea_secno
+        self.v.put(f, bytes(fn))
         return f, len(data), ATTR_ARCHIVE
 
     # ── directories ────────────────────────────────────────────────────
@@ -231,7 +240,7 @@ class Builder:
         cap = DNODE_SIZE - DNODE_HDR - 36             # room for "last" + down
         if sum(self._esize(e, c) for e, c in items) <= cap:
             return (items, tail)
-        target = cap * 3 // 4
+        target = cap * self.fill // 100
         groups, promoted, cur, used = [], [], [], 0
         for e, c in items:
             sz = self._esize(e, c)
@@ -319,6 +328,11 @@ def main():
                     help='simulate a bad sector: move one data sector of the biggest file '
                          'to a spare, fill the original with garbage, record the hotfix')
     ap.add_argument('--dirty', action='store_true', help='mark the volume not cleanly shut down')
+    ap.add_argument('--fill', type=int, default=75,
+                    help='how full to pack directory dnodes, percent (default 75; '
+                         'near 100 makes the next insert split)')
+    ap.add_argument('--ea', action='store_true',
+                    help='give each README.TXT an external extended attribute (one sector)')
     g = ap.add_mutually_exclusive_group()
     g.add_argument('--mbr', action='store_true')
     g.add_argument('--logical', action='store_true')
@@ -341,7 +355,7 @@ def main():
     dir_band_bitmap = v.alloc(4)
     v.dband, v.dband_slots, v.dband_used = dir_band, 16, [0] * 16
 
-    b = Builder(v, stamp)
+    b = Builder(v, stamp, a.ea, a.fill)
     root = v.alloc(1)
     b.add_dir(a.src, '', None, root)
 

@@ -91,6 +91,11 @@ typedef struct {
 typedef struct {
     hpfs_mount_t *m;
     dwalk_t       w;
+    uint32_t      dir_fnode;
+    uint32_t      gen;                      /* m->dir_gen the walk is valid for */
+    uint8_t       last[256];                /* last name returned (to resume) */
+    uint32_t      lastlen;
+    int           has_last;
 } hpfs_dir_t;
 
 static hpfs_file_t files[MAX_FILES];
@@ -293,7 +298,7 @@ static void entry_info(const uint8_t *p, hpfs_info_t *out)
 /* Look `s` up by descending the dnode B-tree: 1 found, 0 not there,
  * -1 if the tree is damaged (the caller then falls back to a full walk). */
 static int btree_find(hpfs_mount_t *m, uint32_t root, const char *s, uint32_t slen,
-                      hpfs_info_t *out)
+                      hpfs_info_t *out, uint32_t *at_lsn, uint32_t *at_off)
 {
     uint32_t lsn = root;
     for (int depth = 0; depth < MAX_DEPTH; depth++) {
@@ -310,7 +315,11 @@ static int btree_find(hpfs_mount_t *m, uint32_t root, const char *s, uint32_t sl
             int has_down = (p[2] & DE_DOWN) && len >= DE_HDR + p[30] + 4u;
             if (!(p[2] & DE_FIRST)) {
                 int c = (p[2] & DE_LAST) ? -1 : name_cmp(m, s, slen, p + 31, p[30]);
-                if (c == 0) { entry_info(p, out); return 1; }
+                if (c == 0) {
+                    entry_info(p, out);
+                    if (at_lsn) { *at_lsn = lsn; *at_off = off; }
+                    return 1;
+                }
                 if (c < 0) {                      /* belongs before this entry */
                     if (!has_down) return 0;
                     down = le32(p + len - 4);
@@ -340,7 +349,7 @@ static int lookup(hpfs_mount_t *m, uint32_t dir, const char *s, uint32_t slen,
 {
     uint32_t root = dir_root_dnode(m, dir);
     if (!root) return VFS_EIO;
-    int r = btree_find(m, root, s, slen, out);
+    int r = btree_find(m, root, s, slen, out, 0, 0);
     if (r == 1) return VFS_OK;
     if (r == 0 && (ascii(s, slen) || m->codepage)) return VFS_ENOENT;
 
@@ -499,9 +508,9 @@ static int load_spareblock(hpfs_mount_t *m)
 
 #define BAND_SECTORS     16384
 #define MAX_EXTENTS      480
-#define RB_BYTES         65536             /* directory rebuild limits */
-#define RB_ITEMS         2048
-#define RB_DNODES        1024
+#define RB_BYTES         262144            /* directory rebuild limits (deletes) */
+#define RB_ITEMS         8192
+#define RB_DNODES        4096
 
 typedef struct { uint32_t fsec, len, disk; } extent_t;
 
@@ -547,6 +556,7 @@ static int wr(hpfs_mount_t *m, uint32_t lsn, uint32_t count, const void *buf)
         in += run * 512;
         lsn += run;
         count -= run;
+        m->wcount += run;
     }
     return 0;
 }
@@ -700,7 +710,9 @@ static void bplus_header(uint8_t *bt, uint8_t flags, uint32_t used, uint32_t cap
 }
 
 /* Write a file's extent list back: into the fnode, or anodes + pointers.
- * Old anodes are freed after the new tree is on disk. */
+ * The file's existing anode sectors are reused in place (new ones would
+ * otherwise land right after the data and stop it growing contiguously);
+ * any left over are freed once the new tree is on disk. */
 static int write_extents(hpfs_mount_t *m, uint32_t fnode_lsn, uint8_t *fnode,
                          const extent_t *ext, uint32_t n, const uint32_t *old, uint32_t nold)
 {
@@ -719,7 +731,7 @@ static int write_extents(hpfs_mount_t *m, uint32_t fnode_lsn, uint8_t *fnode,
         bplus_header(bt, BP_INTERNAL, leaves, 12, 8);
         uint8_t node[512];
         for (uint32_t l = 0; l < leaves; l++) {
-            uint32_t a = alloc_sector(m, fnode_lsn + 1);
+            uint32_t a = l < nold ? old[l] : alloc_sector(m, m->dband_end + 1);
             if (!a) return VFS_ENOSPC;
             uint32_t first = l * 40, cnt = n - first > 40 ? 40 : n - first;
             kmemset(node, 0, sizeof node);
@@ -738,8 +750,41 @@ static int write_extents(hpfs_mount_t *m, uint32_t fnode_lsn, uint8_t *fnode,
         }
     }
     if (wr(m, fnode_lsn, 1, fnode) != 0) return VFS_EIO;
-    for (uint32_t i = 0; i < nold; i++) mark(m, old[i], 1, 0);
+    uint32_t reused = n <= 8 ? 0 : (n + 39) / 40;
+    for (uint32_t i = reused; i < nold; i++) mark(m, old[i], 1, 0);
     return VFS_OK;
+}
+
+/* Free extended-attribute / ACL storage hung off an fnode: either a run
+ * of sectors, or (anode flag) an anode tree of extents. */
+static void free_ext_storage(hpfs_mount_t *m, uint32_t secno, uint32_t size, int anode)
+{
+    if (!secno || !size) return;
+    if (!anode) { mark(m, secno, (size + 511) / 512, 0); return; }
+    uint32_t stack[64], sp = 0;
+    uint8_t node[512];
+    stack[sp++] = secno;
+    while (sp) {
+        uint32_t a = stack[--sp];
+        if (rd(m, a, 1, node) != 0 || le32(node) != ANODE_MAGIC || le32(node + 4) != a) return;
+        const uint8_t *bt = node + 12;
+        if (bt[0] & BP_INTERNAL) {
+            for (uint32_t i = 0; i < bt[5] && i < 60 && sp < 64; i++)
+                stack[sp++] = le32(bt + 8 + 8 * i + 4);
+        } else {
+            for (uint32_t i = 0; i < bt[5] && i < 40; i++)
+                mark(m, le32(bt + 8 + 12 * i + 8), le32(bt + 8 + 12 * i + 4), 0);
+        }
+        mark(m, a, 1, 0);
+    }
+}
+
+/* An fnode's EAs (+44 size, +48 sector, flag +54 bit 1 = anode) and ACL
+ * (+32 size, +36 sector, +42 anode). */
+static void free_fnode_extras(hpfs_mount_t *m, const uint8_t *fn)
+{
+    free_ext_storage(m, le32(fn + 48), le32(fn + 44), fn[54] & 2);
+    free_ext_storage(m, le32(fn + 36), le32(fn + 32), fn[42]);
 }
 
 /* Free a file's data and anodes, leaving an empty extent list. */
@@ -872,7 +917,14 @@ static int locate(hpfs_mount_t *m, uint32_t dir_fnode, const char *s, uint32_t n
 {
     uint32_t root = dir_root_dnode(m, dir_fnode);
     if (!root) return VFS_EIO;
-    dwalk_t w;
+    hpfs_info_t info;
+    int r = btree_find(m, root, s, n, &info, lsn, off);   /* B-tree descent */
+    if (r == 1 && load_dnode(m, *lsn)) {
+        kmemcpy(d, m->dnode, HPFS_DNODE_SIZE);
+        return VFS_OK;
+    }
+    if (r == 0 && (ascii(s, n) || m->codepage)) return VFS_ENOENT;
+    dwalk_t w;                                      /* damaged tree: full walk */
     walk_start(&w, root);
     const uint8_t *p;
     while ((p = walk_next(m, &w)) != 0)
@@ -894,21 +946,27 @@ static uint8_t   rb_node[HPFS_DNODE_SIZE];
 
 static uint32_t rb_size(const rb_item_t *it) { return it->len + (it->child ? 4 : 0); }
 
-static int rb_write(hpfs_mount_t *m, const rb_item_t *it, uint32_t n, uint32_t tail,
-                    int root, uint32_t up, uint32_t *out)
+/* One dnode's worth of entries (each without its down pointer, plus the
+ * child it should point down to) and the "last" entry's child. */
+typedef struct { const uint8_t *p; uint32_t len, child; } dn_item_t;
+
+static int node_write(hpfs_mount_t *m, uint32_t lsn, const dn_item_t *it, uint32_t n,
+                      uint32_t tail, int root, uint32_t up)
 {
-    uint32_t lsn = alloc_dnode(m);
-    if (!lsn) return VFS_ENOSPC;
     uint8_t *d = rb_node;
     kmemset(d, 0, HPFS_DNODE_SIZE);
     put32(d, DNODE_MAGIC);
     d[8] = root ? 1 : 0;
     put32(d + 12, up);
     put32(d + 16, lsn);
+    /* Everything, including the end entry, must fit exactly. */
+    uint32_t need = DNODE_HDR + 32 + (tail ? 4 : 0);
+    for (uint32_t i = 0; i < n; i++) need += it[i].len + (it[i].child ? 4 : 0);
+    if (need > HPFS_DNODE_SIZE) return VFS_EIO;
     uint32_t off = DNODE_HDR;
     for (uint32_t i = 0; i < n; i++) {
-        kmemcpy(d + off, rb_ents + it[i].off, it[i].len);
         uint32_t len = it[i].len;
+        kmemcpy(d + off, it[i].p, len);
         d[off + 2] &= (uint8_t)~DE_DOWN;
         if (it[i].child) {
             d[off + 2] |= DE_DOWN;
@@ -927,9 +985,21 @@ static int rb_write(hpfs_mount_t *m, const rb_item_t *it, uint32_t n, uint32_t t
     }
     off += last;
     put32(d + 4, off);
-    if (wr(m, lsn, 4, d) != 0) return VFS_EIO;
-    *out = lsn;
-    return VFS_OK;
+    return wr(m, lsn, 4, d) == 0 ? VFS_OK : VFS_EIO;
+}
+
+static int rb_write(hpfs_mount_t *m, const rb_item_t *it, uint32_t n, uint32_t tail,
+                    int root, uint32_t up, uint32_t *out)
+{
+    static dn_item_t conv[128];
+    if (n > 128) return VFS_EIO;
+    uint32_t lsn = alloc_dnode(m);
+    if (!lsn) return VFS_ENOSPC;
+    for (uint32_t i = 0; i < n; i++)
+        conv[i] = (dn_item_t){ rb_ents + it[i].off, it[i].len, it[i].child };
+    int r = node_write(m, lsn, conv, n, tail, root, up);
+    if (r == VFS_OK) *out = lsn;
+    return r;
 }
 
 /* Point every dnode's "up" at its parent dnode (the root's stays at the
@@ -1075,17 +1145,108 @@ static int dir_rebuild(hpfs_mount_t *m, uint32_t dir_fnode, const uint8_t *add,
     if (wr(m, dir_fnode, 1, fn) != 0) return VFS_EIO;
     for (uint32_t i = 0; i < nold; i++) free_dnode(m, old[i]);
     m->dnode_lsn = 0;
+    m->dir_gen++;
     return VFS_OK;
 }
 
 /* ── Directory insert / remove / update ───────────────────────────────── */
-/* Insert `e` (no down pointer) into its leaf dnode, or rebuild. */
+/* ── B-tree insertion ─────────────────────────────────────────────────── */
+static uint8_t   sp_node[MAX_DEPTH][HPFS_DNODE_SIZE];  /* a level's dnode, as read */
+static dn_item_t sp_items[MAX_DEPTH][80];
+
+static int set_up(hpfs_mount_t *m, uint32_t child, uint32_t up)
+{
+    static uint8_t c[HPFS_DNODE_SIZE];
+    if (rd(m, child, 4, c) != 0 || le32(c) != DNODE_MAGIC) return VFS_EIO;
+    put32(c + 12, up);
+    return wr(m, child, 4, c) == 0 ? VFS_OK : VFS_EIO;
+}
+
+/* Put entry `e` (elen bytes, no down pointer; `child` = the subtree before
+ * it, if any) into dnode path[depth] at its place in the order. `after`
+ * (from a split below) becomes the down pointer of the entry that follows
+ * it. A full dnode splits around its middle: the left half stays where it
+ * is, the right half moves to a new dnode, and the median goes up to the
+ * parent - or to a new root. path[0] is the root, path[depth] the target. */
+static int dnode_put(hpfs_mount_t *m, uint32_t dir_fnode, const uint32_t *path, int depth,
+                     const uint8_t *e, uint32_t elen, uint32_t child, uint32_t after)
+{
+    uint8_t *d = sp_node[depth];
+    dn_item_t *it = sp_items[depth];
+    uint32_t lsn = path[depth];
+    if (rd(m, lsn, 4, d) != 0 || le32(d) != DNODE_MAGIC || le32(d + 16) != lsn) return VFS_EIO;
+    uint32_t end = le32(d + 4), off = DNODE_HDR, n = 0, pos = ~0u, tail = 0;
+    if (end > HPFS_DNODE_SIZE) return VFS_EIO;
+    for (;;) {
+        if (off + DE_HDR + 1 > end) return VFS_EIO;
+        uint32_t len = le16(d + off);
+        uint8_t fl = d[off + 2];
+        if (len < DE_HDR + 1 || off + len > end || DE_HDR + d[off + 30] > len) return VFS_EIO;
+        int down = (fl & DE_DOWN) != 0;
+        if (down && len < DE_HDR + d[off + 30] + 4u) return VFS_EIO;
+        if (pos == ~0u && ((fl & DE_LAST) ||
+                           (!(fl & DE_FIRST) &&
+                            name_cmp(m, (const char *)e + 31, e[30], d + off + 31, d[off + 30]) < 0)))
+            pos = n;                                   /* the new entry goes here */
+        uint32_t dp = down ? le32(d + off + len - 4) : 0;
+        if (fl & DE_LAST) { tail = dp; break; }
+        if (n >= 78) return VFS_EIO;
+        it[n++] = (dn_item_t){ d + off, down ? len - 4 : len, dp };
+        off += len;
+    }
+    if (after) {
+        if (pos < n) it[pos].child = after;
+        else         tail = after;
+    }
+    for (uint32_t i = n; i > pos; i--) it[i] = it[i - 1];
+    it[pos] = (dn_item_t){ e, elen, child };
+    n++;
+    m->dir_gen++;
+
+    int root = d[8] & 1;
+    uint32_t up = le32(d + 12), total = DNODE_HDR + 32 + (tail ? 4 : 0);
+    for (uint32_t i = 0; i < n; i++) total += it[i].len + (it[i].child ? 4 : 0);
+    if (total <= HPFS_DNODE_SIZE) return node_write(m, lsn, it, n, tail, root, up);
+
+    /* Split: k = the median, by bytes, with entries on both sides. */
+    uint32_t half = (total - DNODE_HDR) / 2, acc = 0, k = 0;
+    while (k + 2 < n && acc + it[k].len + (it[k].child ? 4 : 0) < half) {
+        acc += it[k].len + (it[k].child ? 4 : 0);
+        k++;
+    }
+    if (k == 0) k = 1;
+    dn_item_t med = it[k];
+    uint32_t right = alloc_dnode(m), newroot = 0;
+    if (!right) return VFS_ENOSPC;
+    if (root && !(newroot = alloc_dnode(m))) { free_dnode(m, right); return VFS_ENOSPC; }
+    uint32_t parent = root ? newroot : up;
+    int r = node_write(m, right, it + k + 1, n - k - 1, tail, 0, parent);
+    for (uint32_t i = k + 1; r == VFS_OK && i < n; i++)
+        if (it[i].child) r = set_up(m, it[i].child, right);
+    if (r == VFS_OK && tail) r = set_up(m, tail, right);
+    if (r == VFS_OK) r = node_write(m, lsn, it, k, med.child, 0, parent);
+    if (r != VFS_OK) return r;
+    if (root) {                                        /* the tree grows a level */
+        dn_item_t ri = { med.p, med.len, lsn };
+        if ((r = node_write(m, newroot, &ri, 1, right, 1, dir_fnode)) != VFS_OK) return r;
+        uint8_t fn[512];
+        if (read_fnode(m, dir_fnode, fn) != VFS_OK) return VFS_EIO;
+        put32(fn + 72, newroot);
+        return wr(m, dir_fnode, 1, fn) == 0 ? VFS_OK : VFS_EIO;
+    }
+    if (depth == 0) return VFS_EIO;                    /* non-root dnode with no parent */
+    return dnode_put(m, dir_fnode, path, depth - 1, med.p, med.len, lsn, right);
+}
+
+/* Insert `e` (no down pointer) into the directory's B-tree. */
 static int dir_insert(hpfs_mount_t *m, uint32_t dir_fnode, const uint8_t *e)
 {
     static uint8_t d[HPFS_DNODE_SIZE];
-    uint32_t lsn = dir_root_dnode(m, dir_fnode), elen = le16(e);
-    if (!lsn) return VFS_EIO;
-    for (int depth = 0; depth < MAX_DEPTH; depth++) {
+    uint32_t path[MAX_DEPTH];
+    int depth = 0;
+    if (!(path[0] = dir_root_dnode(m, dir_fnode))) return VFS_EIO;
+    for (;;) {                                         /* down to the leaf it belongs in */
+        uint32_t lsn = path[depth];
         if (rd(m, lsn, 4, d) != 0 || le32(d) != DNODE_MAGIC || le32(d + 16) != lsn)
             return VFS_EIO;
         uint32_t end = le32(d + 4), off = DNODE_HDR, down = 0;
@@ -1093,25 +1254,21 @@ static int dir_insert(hpfs_mount_t *m, uint32_t dir_fnode, const uint8_t *e)
         for (;;) {
             if (off + DE_HDR + 1 > end) return VFS_EIO;
             uint32_t len = le16(d + off);
-            if (len < DE_HDR + 1 || off + len > end) return VFS_EIO;
             uint8_t fl = d[off + 2];
-            int before = (fl & DE_LAST) ||
-                         (!(fl & DE_FIRST) &&
-                          name_cmp(m, (const char *)e + 31, e[30], d + off + 31, d[off + 30]) < 0);
-            if (before) {
-                if (fl & DE_DOWN) { down = le32(d + off + len - 4); break; }
-                if (end + elen > HPFS_DNODE_SIZE)
-                    return dir_rebuild(m, dir_fnode, e, 0, 0);       /* full */
-                for (uint32_t k = end; k-- > off; ) d[k + elen] = d[k];
-                kmemcpy(d + off, e, elen);
-                put32(d + 4, end + elen);
-                return wr(m, lsn, 4, d) == 0 ? VFS_OK : VFS_EIO;
+            if (len < DE_HDR + 1 || off + len > end) return VFS_EIO;
+            if ((fl & DE_LAST) ||
+                (!(fl & DE_FIRST) &&
+                 name_cmp(m, (const char *)e + 31, e[30], d + off + 31, d[off + 30]) < 0)) {
+                if (fl & DE_DOWN) down = le32(d + off + len - 4);
+                break;
             }
             off += len;
         }
-        lsn = down;
+        if (!down) break;
+        if (depth + 1 >= MAX_DEPTH) return VFS_EIO;
+        path[++depth] = down;
     }
-    return VFS_EIO;
+    return dnode_put(m, dir_fnode, path, depth, e, le16(e), 0, 0);
 }
 
 static int dir_remove(hpfs_mount_t *m, uint32_t dir_fnode, const char *s, uint32_t n)
@@ -1131,6 +1288,7 @@ static int dir_remove(hpfs_mount_t *m, uint32_t dir_fnode, const char *s, uint32
     }
     if ((d[off + 2] & DE_DOWN) || (!others && !(d[8] & 1)))
         return dir_rebuild(m, dir_fnode, 0, s, n);
+    m->dir_gen++;
     for (uint32_t k = off; k + len < end; k++) d[k] = d[k + len];
     put32(d + 4, end - len);
     kmemset(d + end - len, 0, len);
@@ -1211,10 +1369,14 @@ static int hpfs_mount_op(vfs_mount_t *mnt)
      * volume (a dirty one needs CHKDSK first) and usable bitmaps. */
     m->rw = 0;
     m->marked_dirty = 0;
+    m->inconsistent = 0;
+    m->wcount = 0;
+    m->dir_gen = 0;
     const char *ro_why = 0;
     if (m->dev->flags & BLKDEV_READONLY)  ro_why = "device is read-only";
     else if (sb[8] != 2)                  ro_why = "unsupported HPFS version";
     else if (dirty != 0)                  ro_why = dirty == 1 ? "volume is dirty" : "no spareblock";
+    else if (!m->codepage)                ro_why = "code page table unreadable (names can't be sorted)";
     else if (write_setup(m, sb) != 0)     ro_why = "bitmaps unreadable";
     else                                  m->rw = 1;
     char cp[48] = "no code page table (ASCII case folding only)";
@@ -1244,7 +1406,10 @@ static int hpfs_unmount_op(vfs_mount_t *mnt)
     hpfs_mount_t *m = mnt->priv;
     for (int i = 0; i < MAX_FILES; i++) if (files[i].m == m) files[i].m = 0;
     for (int i = 0; i < MAX_DIRS; i++)  if (dirs[i].m == m)  dirs[i].m = 0;
-    if (m->rw && m->marked_dirty) set_dirty(m, 0);   /* cleanly closed */
+    if (m->rw && m->marked_dirty && !m->inconsistent)
+        set_dirty(m, 0);                             /* cleanly closed */
+    else if (m->inconsistent)
+        kprintf("[HPFS]   %s: left marked dirty - run CHKDSK on OS/2\n", m->dev->name);
     m->rw = 0;
     return VFS_OK;
 }
@@ -1258,7 +1423,7 @@ static int fnode_busy(hpfs_mount_t *m, uint32_t fnode, int writer)
     return 0;
 }
 
-static int hpfs_open(vfs_mount_t *mnt, const char *path, int flags, void **fpriv)
+static int hpfs_open_do(vfs_mount_t *mnt, const char *path, int flags, void **fpriv)
 {
     hpfs_mount_t *m = mnt->priv;
     int writer = (flags & (O_WRONLY | O_RDWR | O_CREAT | O_TRUNC | O_APPEND)) != 0;
@@ -1320,7 +1485,7 @@ static int hpfs_open(vfs_mount_t *mnt, const char *path, int flags, void **fpriv
     return VFS_OK;
 }
 
-static int hpfs_close(vfs_mount_t *mnt, void *fpriv)
+static int hpfs_close_do(vfs_mount_t *mnt, void *fpriv)
 {
     (void)mnt;
     hpfs_file_t *f = fpriv;
@@ -1369,7 +1534,7 @@ static int hpfs_read(vfs_mount_t *mnt, void *fpriv, void *buf, uint32_t len,
     return VFS_OK;
 }
 
-static int hpfs_write(vfs_mount_t *mnt, void *fpriv, const void *buf, uint32_t len,
+static int hpfs_write_do(vfs_mount_t *mnt, void *fpriv, const void *buf, uint32_t len,
                       uint32_t *actual)
 {
     hpfs_mount_t *m = mnt->priv;
@@ -1392,6 +1557,13 @@ static int hpfs_write(vfs_mount_t *mnt, void *fpriv, const void *buf, uint32_t l
     }
     static uint8_t sec[512];
     uint32_t disk, run;
+    if (f->pos > old_size && old_size % 512 && f->pos / 512 > old_size / 512) {
+        /* the old last sector's bytes past the old end are now inside */
+        if (map_sector(m, f->fnode, old_size / 512, &disk, &run) != 0 || rd(m, disk, 1, sec) != 0)
+            return VFS_EIO;
+        kmemset(sec + old_size % 512, 0, 512 - old_size % 512);
+        if (wr(m, disk, 1, sec) != 0) return VFS_EIO;
+    }
     for (uint32_t s = old_secs; s < f->pos / 512; s++) {         /* the gap */
         kmemset(sec, 0, 512);
         if (map_sector(m, f->fnode, s, &disk, &run) != 0 || wr(m, disk, 1, sec) != 0)
@@ -1442,8 +1614,10 @@ static int hpfs_seek(vfs_mount_t *mnt, void *fpriv, int32_t offset, int whence,
     hpfs_file_t *f = fpriv;
     int64_t base = whence == SEEK_CUR ? f->pos : whence == SEEK_END ? f->size : 0;
     int64_t p = base + offset;
-    if (p < 0) return VFS_EINVAL;
-    f->pos = p > f->size ? f->size : (uint32_t)p;
+    if (p < 0 || p > 0xFFFFFFFFLL) return VFS_EINVAL;
+    /* A writer may seek past the end (the gap reads as zeros once written);
+     * a reader stops at it. */
+    f->pos = (!f->writable && p > f->size) ? f->size : (uint32_t)p;
     if (newpos) *newpos = f->pos;
     return VFS_OK;
 }
@@ -1461,7 +1635,7 @@ static int hpfs_stat(vfs_mount_t *mnt, const char *path, vfs_stat_t *st)
 }
 
 /* Delete a file, or an empty directory (RMDIR comes here too). */
-static int hpfs_unlink(vfs_mount_t *mnt, const char *path)
+static int hpfs_unlink_do(vfs_mount_t *mnt, const char *path)
 {
     hpfs_mount_t *m = mnt->priv;
     if (!m->rw) return VFS_EROFS;
@@ -1473,8 +1647,9 @@ static int hpfs_unlink(vfs_mount_t *mnt, const char *path)
     if ((r = lookup(m, dir, name, nlen, &info)) != VFS_OK) return r;
     if (fnode_busy(m, info.fnode, 1)) return VFS_ERR_BUSY;
     if (info.attr & VFS_ATTR_RDONLY) return VFS_ERR_ISDIR;           /* access denied */
-    for (int i = 0; i < MAX_DIRS; i++)
-        if (dirs[i].m == m && info.attr & VFS_ATTR_DIR) return VFS_ERR_BUSY;
+    for (int i = 0; i < MAX_DIRS; i++)                /* being listed? */
+        if (dirs[i].m == m && (info.attr & VFS_ATTR_DIR) && dirs[i].dir_fnode == info.fnode)
+            return VFS_ERR_BUSY;
 
     uint8_t fn[512];
     if (read_fnode(m, info.fnode, fn) != VFS_OK) return VFS_EIO;
@@ -1493,11 +1668,12 @@ static int hpfs_unlink(vfs_mount_t *mnt, const char *path)
         if ((r = dir_remove(m, dir, name, nlen)) != VFS_OK) return r;
         if ((r = truncate_fnode(m, info.fnode, fn)) != VFS_OK) return r;
     }
+    free_fnode_extras(m, fn);                     /* EAs (.LONGNAME, WPS data), ACL */
     return mark(m, info.fnode, 1, 0) == 0 ? VFS_OK : VFS_EIO;
 }
 
 /* Rename and/or move (within this volume). */
-static int hpfs_rename(vfs_mount_t *mnt, const char *old, const char *nw)
+static int hpfs_rename_do(vfs_mount_t *mnt, const char *old, const char *nw)
 {
     hpfs_mount_t *m = mnt->priv;
     if (!m->rw) return VFS_EROFS;
@@ -1529,9 +1705,12 @@ static int hpfs_rename(vfs_mount_t *mnt, const char *old, const char *nw)
     make_dirent(e, nn, nl, 0, attr, info.fnode, le32(d + off + 12), le32(d + off + 8));
     put32(e + 16, le32(d + off + 16));
     put32(e + 20, le32(d + off + 20));
-    if (same) {                                    /* only the case changes */
-        if ((r = dir_remove(m, od, on, ol)) != VFS_OK) return r;
-        if ((r = dir_insert(m, nd, e)) != VFS_OK) return r;
+    if (same) {
+        /* Only the case changes: same length, same place in the
+         * (case-insensitive) order - rewrite the name in place. */
+        for (uint32_t i = 0; i < nl; i++) d[off + 31 + i] = (uint8_t)nn[i];
+        d[off + 3] = attr;
+        if (wr(m, lsn, 4, d) != 0) return VFS_EIO;
     } else {
         if ((r = dir_insert(m, nd, e)) != VFS_OK) return r;
         if ((r = dir_remove(m, od, on, ol)) != VFS_OK) return r;
@@ -1563,7 +1742,7 @@ static int hpfs_rename(vfs_mount_t *mnt, const char *old, const char *nw)
     return VFS_OK;
 }
 
-static int hpfs_mkdir(vfs_mount_t *mnt, const char *path)
+static int hpfs_mkdir_do(vfs_mount_t *mnt, const char *path)
 {
     hpfs_mount_t *m = mnt->priv;
     if (!m->rw) return VFS_EROFS;
@@ -1623,6 +1802,9 @@ static int hpfs_opendir(vfs_mount_t *mnt, const char *path, void **dpriv)
     if (!root) return VFS_EIO;
     walk_start(&d->w, root);
     d->m = m;
+    d->dir_fnode = info.fnode;
+    d->gen = m->dir_gen;
+    d->has_last = 0;
     *dpriv = d;
     return VFS_OK;
 }
@@ -1632,10 +1814,29 @@ static int hpfs_readdir(vfs_mount_t *mnt, void *dpriv, vfs_dirent_t *ent)
     (void)mnt;
     hpfs_dir_t *d = dpriv;
     if (!d || !d->m) return VFS_ENOENT;
-    const uint8_t *p = walk_next(d->m, &d->w);
+    hpfs_mount_t *m = d->m;
+    int skip = 0;
+    if (d->gen != m->dir_gen) {
+        /* The directory may have changed under us (DEL while listing):
+         * start over and skip up to the last name returned. */
+        uint32_t root = dir_root_dnode(m, d->dir_fnode);
+        if (!root) return VFS_ENOENT;
+        walk_start(&d->w, root);
+        d->gen = m->dir_gen;
+        skip = d->has_last;
+    }
+    const uint8_t *p;
+    while ((p = walk_next(m, &d->w)) != 0) {
+        if (skip && name_cmp(m, (const char *)d->last, d->lastlen, p + 31, p[30]) >= 0)
+            continue;
+        break;
+    }
     if (!p) return VFS_ENOENT;
     hpfs_info_t info;
     entry_info(p, &info);
+    kmemcpy(d->last, p + 31, p[30]);
+    d->lastlen = p[30];
+    d->has_last = 1;
     kstrncpy(ent->name, info.name, sizeof ent->name);
     return VFS_OK;
 }
@@ -1645,6 +1846,63 @@ static int hpfs_closedir(vfs_mount_t *mnt, void *dpriv)
     (void)mnt;
     ((hpfs_dir_t *)dpriv)->m = 0;
     return VFS_OK;
+}
+
+/* An operation that fails after it has written something may have left
+ * allocated-but-unreferenced sectors (or worse): keep the volume marked
+ * dirty at unmount so CHKDSK gets to look at it. */
+static int tracked(hpfs_mount_t *m, uint32_t w0, int r)
+{
+    if (r != VFS_OK && m->wcount != w0 && !m->inconsistent) {
+        kprintf("[HPFS]   %s: an update failed part-way (%d) - the volume stays "
+                "marked dirty; run CHKDSK on OS/2\n", m->dev->name, r);
+        m->inconsistent = 1;
+    }
+    return r;
+}
+
+static int hpfs_write(vfs_mount_t *mnt, void *f, const void *b, uint32_t n, uint32_t *a)
+{
+    hpfs_mount_t *m = mnt->priv;
+    uint32_t w0 = m->wcount;
+    return tracked(m, w0, hpfs_write_do(mnt, f, b, n, a));
+}
+
+static int hpfs_unlink(vfs_mount_t *mnt, const char *path)
+{
+    hpfs_mount_t *m = mnt->priv;
+    uint32_t w0 = m->wcount;
+    return tracked(m, w0, hpfs_unlink_do(mnt, path));
+}
+
+static int hpfs_rename(vfs_mount_t *mnt, const char *old, const char *nw)
+{
+    hpfs_mount_t *m = mnt->priv;
+    uint32_t w0 = m->wcount;
+    return tracked(m, w0, hpfs_rename_do(mnt, old, nw));
+}
+
+static int hpfs_mkdir(vfs_mount_t *mnt, const char *path)
+{
+    hpfs_mount_t *m = mnt->priv;
+    uint32_t w0 = m->wcount;
+    return tracked(m, w0, hpfs_mkdir_do(mnt, path));
+}
+
+static int hpfs_open(vfs_mount_t *mnt, const char *path, int flags, void **fpriv)
+{
+    hpfs_mount_t *m = mnt->priv;
+    uint32_t w0 = m->wcount;
+    return tracked(m, w0, hpfs_open_do(mnt, path, flags, fpriv));
+}
+
+static int hpfs_close(vfs_mount_t *mnt, void *fpriv)
+{
+    hpfs_file_t *f = fpriv;
+    hpfs_mount_t *m = f->m;
+    uint32_t w0 = m ? m->wcount : 0;
+    int r = hpfs_close_do(mnt, fpriv);
+    return m ? tracked(m, w0, r) : r;
 }
 
 vfs_fs_t vfs_hpfs_fs = {

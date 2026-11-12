@@ -33,6 +33,9 @@ typedef struct {
     uint32_t  dband_bitmap, dband_n;    /* its bitmap LSN, dnodes in it */
     uint8_t   dband_bm[2048];           /* bit set = dnode free */
     uint32_t  alloc_hint;
+    uint32_t  dir_gen;                  /* bumped when any directory changes */
+    uint32_t  wcount;                   /* sectors written (failure tracking) */
+    int       inconsistent;             /* an operation failed mid-way */
 } hpfs_mount_t;
 
 extern vfs_fs_t vfs_hpfs_fs;

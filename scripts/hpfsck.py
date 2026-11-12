@@ -202,6 +202,23 @@ class Fsck:
             self.err(f"{path}: bad fnode {lsn}")
             return None
         self.own(lsn, 1, f"fnode of {path}")
+        # external EAs (+44 size, +48 sector, +54 bit 1 anode) and ACL (+32/+36/+42)
+        for size, secno, anode, what in ((self.u32(f, 44), self.u32(f, 48), f[54] & 2, "EAs"),
+                                         (self.u32(f, 32), self.u32(f, 36), f[42], "ACL")):
+            if not (size and secno):
+                continue
+            if anode:
+                ext = []
+                an = self.sec(secno)
+                if self.u32(an, 0) != ANODE or self.u32(an, 4) != secno:
+                    self.err(f"{path}: bad {what} anode {secno}")
+                    continue
+                self.own(secno, 1, f"{what} anode of {path}")
+                self.extents(secno, an[12:], 40, 60, 1, ext, f"{what} of {path}")
+                for _, ln, disk in ext:
+                    self.own(disk, ln, f"{what} of {path}")
+            else:
+                self.own(secno, (size + SECTOR - 1) // SECTOR, f"{what} of {path}")
         if self.u32(f, 28) != parent:
             self.err(f"{path}: fnode parent {self.u32(f, 28)}, expected {parent}")
         if name is not None:
