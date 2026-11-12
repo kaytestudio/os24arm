@@ -110,6 +110,7 @@ typedef struct {
 #define TRB_GET_TYPE(c)    (((c) >> 10) & 0x3F)
 #define TRB_DIR_IN         (1u << 16)         /* data / status stage */
 #define TRB_TRT_NONE       (0u << 16)         /* setup stage */
+#define TRB_TRT_OUT        (2u << 16)
 #define TRB_TRT_IN         (3u << 16)
 
 #define TRB_NORMAL         1
@@ -148,6 +149,10 @@ typedef struct {
 #define HID_REQ_SET_PROTOCOL    0x0B
 
 #define KBD_REPORTS        4                  /* interrupt TRBs in flight */
+#define KBD_REPEAT_DELAY   500                /* ms before a held key repeats */
+#define KBD_REPEAT_RATE    33                 /* ms between repeats (~30/s) */
+#define HID_REQ_SET_REPORT 0x09
+#define HID_LED_CAPS_LOCK  (1u << 1)
 
 typedef struct {
     trb_t   *trbs;
@@ -181,6 +186,7 @@ static uint8_t      in_ctx[33 * CTX_MAX_SIZE]     __attribute__((aligned(64)));
 static uint8_t      dev_ctx[MAX_SLOTS][32 * CTX_MAX_SIZE] __attribute__((aligned(64)));
 static uint8_t      desc_buf[256]                 __attribute__((aligned(64)));
 static uint8_t      kbd_bufs[KBD_REPORTS][8]      __attribute__((aligned(64)));
+static uint8_t      kbd_led_buf[8]                __attribute__((aligned(64)));
 
 /* ── Driver state ─────────────────────────────────────────────────────── */
 static uintptr_t mmio, op, rt, db;
@@ -195,6 +201,11 @@ static uint32_t   kbd_dci;
 static ring_t     kbd_ring;
 static uint8_t    kbd_prev[8];
 static int        kbd_caps;
+static uint32_t   kbd_iface;
+static int        kbd_led_pending;  /* Caps Lock toggled: send SET_REPORT */
+static uint8_t    kbd_rep_key;      /* typematic: key being held, 0 = none */
+static uint8_t    kbd_rep_mods;
+static u64        kbd_rep_at;       /* when it next repeats */
 static char       kbd_q[64];      /* translated bytes for xhci_kbd_getc() */
 static uint32_t   kbd_qh, kbd_qt;
 
@@ -485,19 +496,22 @@ static int hc_start(xhci_info_t *info)
 }
 
 /* ── Control transfers ────────────────────────────────────────────────── */
-/* IN data stage if len > 0, else no data stage. 0 or -(completion code). */
+/* Data stage direction from bmRequestType bit 7; no data stage if len is
+ * 0. Returns 0 or -(completion code). */
 static int control(usb_dev_t *d, uint8_t req_type, uint8_t req,
                    uint16_t value, uint16_t index, void *buf, uint16_t len)
 {
+    int in = (req_type & 0x80) != 0;
     u64 setup = (u64)req_type | ((u64)req << 8) | ((u64)value << 16) |
                 ((u64)index << 32) | ((u64)len << 48);
     ring_push(&d->ep0, setup, 8, TRB_TYPE(TRB_SETUP) | TRB_IDT |
-              (len ? TRB_TRT_IN : TRB_TRT_NONE));
+              (!len ? TRB_TRT_NONE : in ? TRB_TRT_IN : TRB_TRT_OUT));
     if (len)
-        ring_push(&d->ep0, dma(buf), len, TRB_TYPE(TRB_DATA) | TRB_DIR_IN);
+        ring_push(&d->ep0, dma(buf), len,
+                  TRB_TYPE(TRB_DATA) | (in ? TRB_DIR_IN : 0));
     /* Status stage runs opposite to the data stage (IN when there is none). */
     ring_push(&d->ep0, 0, 0, TRB_TYPE(TRB_STATUS) | TRB_IOC |
-              (len ? 0 : TRB_DIR_IN));
+              (len && in ? 0 : TRB_DIR_IN));
     ring_doorbell(d->slot, 1);                       /* DCI 1 = EP0 */
 
     trb_t ev;
@@ -714,6 +728,9 @@ static int kbd_setup(usb_dev_t *d)
     }
 
     zero(kbd_prev, sizeof kbd_prev);
+    kbd_caps = kbd_led_pending = 0;
+    kbd_rep_key = 0;
+    kbd_iface = (uint32_t)iface;
     kbd_qh = kbd_qt = 0;
     kbd_dci = dci;
     kbd = d;
@@ -755,7 +772,7 @@ static void kbd_key(uint8_t usage, uint8_t mods)
         return;
     }
     switch (usage) {                                 /* VT100 sequences */
-    case 0x39: kbd_caps = !kbd_caps;  break;         /* Caps Lock */
+    case 0x39: kbd_caps = !kbd_caps; kbd_led_pending = 1; break;  /* Caps Lock */
     case 0x4A: kbd_puts("\x1b[H");    break;         /* Home */
     case 0x4C: kbd_puts("\x1b[3~");   break;         /* Delete */
     case 0x4D: kbd_puts("\x1b[F");    break;         /* End */
@@ -777,9 +794,34 @@ static void kbd_report(const uint8_t *r)
         int held = 0;
         for (int j = 2; j < 8; j++)
             if (kbd_prev[j] == k) held = 1;
-        if (!held) kbd_key(k, r[0]);
+        if (!held) {
+            kbd_key(k, r[0]);
+            /* The newest key pressed is the one that repeats. */
+            kbd_rep_key = k == 0x39 ? 0 : k;
+            kbd_rep_at  = ticks() + ms_to_ticks(KBD_REPEAT_DELAY);
+        }
     }
+    /* Stop repeating once that key is released; Shift etc. pressed or
+     * released while it's held apply to the following repeats. */
+    int still = 0;
+    for (int i = 2; i < 8; i++)
+        if (kbd_rep_key && r[i] == kbd_rep_key) still = 1;
+    if (!still) kbd_rep_key = 0;
+    kbd_rep_mods = r[0];
     copy(kbd_prev, r, 8);
+}
+
+/* Caps Lock LED: SET_REPORT(Output) with the LED bitmap. Run from the
+ * polling path, not from inside event handling, since it waits for its
+ * own transfer events. */
+static void kbd_send_leds(void)
+{
+    kbd_led_pending = 0;
+    kbd_led_buf[0] = kbd_caps ? HID_LED_CAPS_LOCK : 0;
+    int r = control(kbd, 0x21, HID_REQ_SET_REPORT, 0x0200,
+                    (uint16_t)kbd_iface, kbd_led_buf, 1);
+    if (r != 0)
+        kprintf("\n[XHCI]   keyboard: LED SET_REPORT failed (%d)\n", r);
 }
 
 int xhci_kbd_ready(void)
@@ -788,6 +830,12 @@ int xhci_kbd_ready(void)
         trb_t ev;
         while (event_poll(&ev))
             kbd_event(&ev);
+        if (kbd_led_pending)
+            kbd_send_leds();
+        if (kbd_qh == kbd_qt && kbd_rep_key && ticks() >= kbd_rep_at) {
+            kbd_key(kbd_rep_key, kbd_rep_mods);
+            kbd_rep_at = ticks() + ms_to_ticks(KBD_REPEAT_RATE);
+        }
     }
     return kbd_qh != kbd_qt;
 }
