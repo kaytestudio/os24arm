@@ -269,15 +269,15 @@ static void completion(USBRb *rb)
     if (!active || rb->deviceAddress != addr || rb->controllerId != ctrl) return;
     switch (rb->requestData1) {
     case RQ_SETCONF:
-        if (rb->status) { active = 0; break; }
+        if (rb->status) { active = 0; usb_release_device(ctrl, addr); break; }
         control(0x81, 6, 0x2200, rdesc, rdesc_len, RQ_RDESC);  /* report desc */
         break;
     case RQ_RDESC:
-        if (rb->status) { V("[USBMOUSE] report descriptor read failed\n"); active = 0; break; }
+        if (rb->status) { V("[USBMOUSE] report descriptor read failed\n"); active = 0; usb_release_device(ctrl, addr); break; }
         parse_rdesc(rdesc, rb->buffer2Length);
         if (!fx.present || !fy.present) {
             V("[USBMOUSE] address %u has no X/Y axes, ignored\n", addr);
-            active = 0;
+            active = 0; usb_release_device(ctrl, addr);
             break;
         }
         control(0x21, HID_REQ_SET_IDLE, 0, 0, 0, RQ_IDLE);
@@ -293,7 +293,7 @@ static void completion(USBRb *rb)
             report(reports[rb->requestData2], rb->buffer1Length);
         } else if (++errors > MAX_ERRORS) {
             V("[USBMOUSE] too many errors, pointer stopped\n");
-            active = 0;
+            active = 0; usb_release_device(ctrl, addr);
             break;
         }
         read_report((uint32_t)rb->requestData2);

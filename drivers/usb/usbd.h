@@ -153,7 +153,8 @@ typedef struct {
     uint16_t controllerId;
     uint8_t  deviceAddress;
     void    *classDriverDS;
-    uint8_t  configurationValue; /* SETINTF: alternate setting */
+    uint8_t  configurationValue; /* 0 = release the device (local; see
+                                  * below); SETINTF: alternate setting */
     uint16_t irqSwitchValue;     /* returned as requestData1 on completion */
     uint8_t  category;           /* Category for the completion call */
     uint8_t *setConfiguration;   /* caller's 8-byte setup packet buffer */
@@ -183,6 +184,11 @@ typedef struct {
     usb_idc_fn usbIDC;          /* class/client driver's IDC entry */
     void      *usbDS;
 } USBDClass;
+
+/* SETCONF with configurationValue 0 (local convention): the owning class
+ * driver gives the device up - e.g. it turned out not to be usable. USBD
+ * cancels its requests and offers it to the other drivers, not this one
+ * again. setConfiguration may be NULL. */
 
 /* REGISTER (Category 0x91): ParmPacket = USBHCD* with DataPacket NULL for
  * a host controller driver, or USBDClass* with DataPacket pointing at the
@@ -254,5 +260,15 @@ void usbd_summary(void);                      /* one-line boot summary */
 /* Helper for drivers: send an IDC request, return its Status. */
 uint16_t usb_idc_call(usb_idc_fn idc, uint8_t category, uint8_t function,
                       void *parm, void *data);
+
+/* Class drivers: give a claimed device back (SETCONF with configuration
+ * 0, see above) when it turns out not to be usable. */
+static inline void usb_release_device(uint16_t ctrl, uint8_t addr)
+{
+    USBSetConf sc = { 0 };
+    sc.controllerId  = ctrl;
+    sc.deviceAddress = addr;
+    usb_idc_call(usbd_idc, USB_IDC_CATEGORY_USBD, USB_IDC_FUNCTION_SETCONF, &sc, 0);
+}
 
 #endif /* DRIVERS_USB_USBD_H */

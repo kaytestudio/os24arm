@@ -283,22 +283,22 @@ static void copy_trim(char *dst, const uint8_t *src, int n)
     dst[len] = 0;
 }
 
-/* SETCONF done: bring the unit up and register it. */
-static void bring_up(void)
+/* SETCONF done: bring the unit up and register it; -1 if it isn't usable. */
+static int bring_up(void)
 {
     static const uint8_t inquiry[6] = { SCSI_INQUIRY, 0, 0, 0, 36, 0 };
     static const uint8_t tur[6]     = { SCSI_TEST_UNIT_READY, 0, 0, 0, 0, 0 };
     static const uint8_t sense[6]   = { SCSI_REQUEST_SENSE, 0, 0, 0, 18, 0 };
     static const uint8_t cap[10]    = { SCSI_READ_CAPACITY, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
-    if (scsi_in(inquiry, 6, 36) < 36) { V("[USBMSD] INQUIRY failed\n"); return; }
+    if (scsi_in(inquiry, 6, 36) < 36) { V("[USBMSD] INQUIRY failed\n"); return -1; }
     char vendor[9], product[17];
     copy_trim(vendor, bounce + 8, 8);
     copy_trim(product, bounce + 16, 16);
     if ((bounce[0] & 0x1F) != 0x00) {                 /* direct-access only */
         V("[USBMSD] %s %s: not a disk (type %u), ignored\n", vendor, product,
           bounce[0] & 0x1F);
-        return;
+        return -1;
     }
 
     int ready = 0;
@@ -306,16 +306,16 @@ static void bring_up(void)
         if (scsi_in(tur, 6, 0) == 0) ready = 1;
         else { scsi_in(sense, 6, 18); usb_delay_ms(100); }
     }
-    if (!ready) { V("[USBMSD] %s %s: not ready (no medium?)\n", vendor, product); return; }
+    if (!ready) { V("[USBMSD] %s %s: not ready (no medium?)\n", vendor, product); return -1; }
 
-    if (scsi_in(cap, 10, 8) < 8) { V("[USBMSD] READ CAPACITY failed\n"); return; }
+    if (scsi_in(cap, 10, 8) < 8) { V("[USBMSD] READ CAPACITY failed\n"); return -1; }
     uint32_t last = ((uint32_t)bounce[0] << 24) | ((uint32_t)bounce[1] << 16) |
                     ((uint32_t)bounce[2] << 8) | bounce[3];
     uint32_t bsize = ((uint32_t)bounce[4] << 24) | ((uint32_t)bounce[5] << 16) |
                      ((uint32_t)bounce[6] << 8) | bounce[7];
     if (bsize != SECTOR || last == 0xFFFFFFFFu) {
         V("[USBMSD] %s %s: %u-byte blocks / >2TB not supported\n", vendor, product, bsize);
-        return;
+        return -1;
     }
 
     /* Write protect: MODE SENSE(6) header byte 2 bit 7. Devices that
@@ -324,7 +324,7 @@ static void bring_up(void)
     int wp = scsi_in(msense, 6, 4) >= 3 && (bounce[2] & 0x80);
 
     msd_unit_t *u = mem_alloc(sizeof *u);
-    if (!u) { V("[USBMSD] out of memory\n"); return; }
+    if (!u) { V("[USBMSD] out of memory\n"); return -1; }
     usb_zero(u, sizeof *u);
     usb_copy(u->dev.name, "usb0", 5);
     u->dev.num_sectors = (int64_t)last + 1;
@@ -338,7 +338,7 @@ static void bring_up(void)
     V("[USBMSD] usb0: %s %s, %u sectors (%u MB), %s\n", vendor, product,
       (unsigned)u->dev.num_sectors, (unsigned)(u->dev.num_sectors / 2048),
       wp ? "write-protected" : "read/write");
-    if (blkdev_register(&u->dev) != 0) { V("[USBMSD] block device table full\n"); return; }
+    if (blkdev_register(&u->dev) != 0) { V("[USBMSD] block device table full\n"); return -1; }
     unit = u;
 
     /* Partitions, read fresh from this disk. GPT names partitions after
@@ -359,6 +359,7 @@ static void bring_up(void)
         if (++part == 9) break;
     }
     if (!part) mbr_probe(&u->dev);                  /* usb0p1..4, p5+ logical */
+    return 0;
 }
 
 /* The disk is gone: its unit stops answering, and usb0 + partitions leave
@@ -445,8 +446,10 @@ static void usbmsd_idc(RP_GENIOCTL *rp)
                 s->done = 1;
             } else if (rb->requestData1 == RQ_SETCONF && active &&
                        rb->deviceAddress == addr) {
-                if (rb->status) active = present = 0;
-                else bring_up();
+                if (rb->status || bring_up() != 0) {      /* not a usable disk */
+                    active = present = 0;
+                    usb_release_device(ctrl, addr);
+                }
             }
             break;
         }

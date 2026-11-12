@@ -88,6 +88,7 @@ typedef struct {
     int8_t   parent;         /* index of parent hub, -1 = this is a root hub */
     uint8_t  port;
     int8_t   owner;          /* class driver index, -1 = unclaimed */
+    uint8_t  declined;       /* class drivers that released it (bit per index) */
     uint8_t  is_hub;
     uint8_t  nports;
     uint8_t  hub_ep;         /* status-change endpoint */
@@ -117,6 +118,7 @@ static sync_t   syncs[SYNC_SLOTS];
 static uint32_t sync_gen;
 
 static int        loaded, verbose, started, in_daemon;
+static int        reoffer_pending;   /* a driver became free: re-offer (daemon) */
 static hcd_t      hcds[MAX_HCDS];
 static int        nhcds;
 static uint16_t   next_ctrl = 1;
@@ -411,7 +413,7 @@ static int hub_start(usbd_dev_t *hub)
 static void dev_offer(usbd_dev_t *d)
 {
     for (int i = 0; i < nclasses && d->owner < 0; i++) {
-        if (!classes[i].idc) continue;
+        if (!classes[i].idc || (d->declined & (1u << i))) continue;
         USBCDServe s = { &d->info, 0 };
         d->info.bConfigurationValue = 0;
         /* Tentative owner, so the driver may SETCONF from inside CHKSERV. */
@@ -475,6 +477,7 @@ static void dev_detach(usbd_dev_t *d)
         if (devs[i].used && devs[i].parent == dev_index(d))
             dev_detach(&devs[i]);
 
+    if (d->owner >= 0) reoffer_pending = 1;           /* its driver is free now */
     if (d->addr) {
         if (d->owner >= 0 && classes[d->owner].idc) {
             USBDetach det = { d->ctrl, d->addr };
@@ -503,16 +506,13 @@ static void offer_unclaimed(void)
 
 static void port_detach(usbd_dev_t *hub, uint8_t port)
 {
-    int freed = 0;
     for (int i = 0; i < MAX_DEVS; i++)
         if (devs[i].used && devs[i].parent == dev_index(hub) && devs[i].port == port) {
             V("[USBD]   hub %u port %u: device %04x:%04x (address %u) detached\n", hub->addr, port,
               devs[i].info.descriptor.idVendor, devs[i].info.descriptor.idProduct,
               devs[i].addr);
-            if (devs[i].owner >= 0 || devs[i].is_hub) freed = 1;
             dev_detach(&devs[i]);
         }
-    if (freed) offer_unclaimed();                     /* a driver may be free now */
 }
 
 /* Status-change pipe fired: look at each flagged port. */
@@ -609,22 +609,39 @@ static uint16_t do_register(RP_GENIOCTL *rp)
     classes[nclasses].category = cat;
     nclasses++;
     if (started) {                       /* offer what nobody claimed yet */
-        for (int i = 0; i < MAX_DEVS; i++)
-            if (devs[i].used && !devs[i].is_hub && devs[i].owner < 0 && devs[i].addr)
-                dev_offer(&devs[i]);
+        offer_unclaimed();
         send_idle();
     }
     return 0;
+}
+
+/* Cancel a device's requests on every endpoint, keeping the device. */
+static void cancel_endpoints(usbd_dev_t *d)
+{
+    for (uint8_t ep = 0; ep < 16; ep++) {
+        USBCancel c = { d->ctrl, d->addr, ep };
+        hcd_call(d->ctrl, USB_IDC_FUNCTION_CANCEL, &c);
+    }
 }
 
 static uint16_t do_unregister(RP_GENIOCTL *rp)
 {
     for (int i = 0; i < nclasses; i++)
         if (rp->ParmPacket && classes[i].idc == ((USBDClass *)rp->ParmPacket)->usbIDC) {
+            /* Hand its devices back cleanly: tell it they're gone, drop
+             * whatever it still has queued (those completions would go to
+             * a driver that has left), then let others have them. */
             for (int d = 0; d < MAX_DEVS; d++)
-                if (devs[d].used && devs[d].owner == i) devs[d].owner = -1;
+                if (devs[d].used && devs[d].owner == i) {
+                    USBDetach det = { devs[d].ctrl, devs[d].addr };
+                    usb_idc_call(classes[i].idc, classes[i].category,
+                                 USB_IDC_FUNCTION_DETDEV, &det, 0);
+                    cancel_endpoints(&devs[d]);
+                    devs[d].owner = -1;
+                    devs[d].info.bConfigurationValue = 0;
+                    reoffer_pending = 1;
+                }
             classes[i].idc = 0;
-            if (started) offer_unclaimed();
             return 0;
         }
     return USB_IDC_PARMERR;
@@ -648,10 +665,24 @@ static uint16_t do_accio(USBRb *rb)
  * irqSwitchValue. */
 static uint16_t do_setconf(USBSetConf *sc, int intf)
 {
-    if (!sc || !sc->setConfiguration) return USB_IDC_PARMERR;
+    if (!sc) return USB_IDC_PARMERR;
     usbd_dev_t *d = dev_by_addr(sc->controllerId, sc->deviceAddress);
     if (!d) return USB_IDC_ADDRINV;
     if (d->owner < 0) return USB_IDC_SERVREJCTD;
+
+    /* SETCONF with configuration 0 = the owner releases the device
+     * (local convention, see usbd.h): it's offered to the other drivers,
+     * never back to this one. */
+    if (!intf && sc->configurationValue == 0) {
+        V("[USBD]   address %u released by its driver\n", d->addr);
+        cancel_endpoints(d);
+        d->declined |= (uint8_t)(1u << d->owner);
+        d->owner = -1;
+        d->info.bConfigurationValue = 0;
+        reoffer_pending = 1;
+        return 0;
+    }
+    if (!sc->setConfiguration) return USB_IDC_PARMERR;
 
     if (intf)
         usb_setup(sc->setConfiguration, 0x01, REQ_SET_INTERFACE,
@@ -777,6 +808,12 @@ void usbd_daemon(void)
         if (d->hub_change) hub_service(d);
         else if (!d->hub_armed && d->nports && d->hub_errors < 8) hub_arm(d);
     }
+    /* After hub servicing, so a device that just re-attached on the same
+     * port gets its driver back before an idle one is offered it. */
+    if (reoffer_pending) {
+        reoffer_pending = 0;
+        offer_unclaimed();
+    }
     in_daemon = 0;
 }
 
@@ -810,7 +847,6 @@ void usbd_summary(void)
         devices++;
         if (devs[i].owner >= 0) claimed++;
     }
-    kprintf("[USB]    USBD: %d host controller(s), %d device(s) (%d claimed by drivers)%s",
-            ctrls, devices, claimed, hubs ? ", " : "\n");
-    if (hubs) kprintf("%d hub(s)\n", hubs);
+    kprintf("[USB]    USBD: %d host controller(s), %d device(s) (%d claimed by drivers), "
+            "%d hub(s)\n", ctrls, devices, claimed, hubs);
 }

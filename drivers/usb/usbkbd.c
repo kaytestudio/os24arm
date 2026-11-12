@@ -239,7 +239,7 @@ static void completion(USBRb *rb)
     case RQ_SETCONF:
         if (rb->status) {
             V("[USBKBD] SET_CONFIGURATION failed (status 0x%02x)\n", rb->status);
-            active = 0;
+            active = 0; usb_release_device(ctrl, addr);
             break;
         }
         class_request(setup_req, HID_REQ_SET_PROTOCOL, 0, 0, 0, RQ_PROTOCOL);
@@ -257,7 +257,7 @@ static void completion(USBRb *rb)
             if (rb->buffer1Length >= 8) report(reports[rb->requestData2]);
         } else if (++errors > KBD_MAX_ERRORS) {
             V("[USBKBD] too many errors, keyboard stopped\n");
-            active = 0;
+            active = 0; usb_release_device(ctrl, addr);
             break;
         }
         read_report((uint32_t)rb->requestData2);
