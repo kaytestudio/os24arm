@@ -14,4 +14,10 @@ void usbkbd_init_complete(void);      /* INITIALIZATION COMPLETE (1Fh) */
 int usbkbd_ready(void);               /* nonzero if usbkbd_getc() has a byte */
 int usbkbd_getc(void);                /* next byte, or -1 */
 
+/* Raw key events: 1 and (HID usage, pressed) if there is one, else 0.
+ * usbkbd_grab(1): keys go only there, not to usbkbd_getc (and the queue
+ * starts empty). Used by the Linux evdev device (/dev/input/event0). */
+int  usbkbd_poll_raw(int *usage, int *down);
+void usbkbd_grab(int on);
+
 #endif /* DRIVERS_USB_USBKBD_H */

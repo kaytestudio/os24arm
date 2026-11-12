@@ -73,16 +73,37 @@ platform-specific are new code.
    released; the server reads it with `wl_shm_buffer`, composites it with
    pixman and checks every pixel; xkbcommon compiles and serialises a
    keymap. Passes with no unimplemented system calls.
-5. **wlroots backend for this machine.** A wlroots backend (in the
-   spirit of its `headless` backend) whose output is the kernel's
-   framebuffer (virtio-gpu / ramfb, exposed to userspace as a mappable
-   device and a `DRM_IOCTL_MODE_*`-free "present" ioctl), and whose input
-   devices are the USB HID / virtio-input devices, delivered as
-   evdev-style events. Renderer: wlroots' pixman renderer (no GPU).
-6. **Compositor.** `tinywl` (wlroots' reference compositor) first, then
-   a real one (e.g. `cage`, `labwc`), and native Wayland clients built
-   against the same sysroot. The in-kernel compositor
-   (`kernel/src/gui/wayland.c`) stays as the fallback console GUI.
+5. **wlroots on this machine** *(done)*. `build-libs.sh` adds libdrm
+   (core library only), wayland-protocols and wlroots 0.19.2 (pixman
+   renderer, shm allocator; no DRM/libinput/X11 backends, no session, no
+   XWayland). The kernel provides, with the standard Linux interfaces:
+   - `/dev/fb0` - fbdev (`FBIOGET_VSCREENINFO`/`FSCREENINFO`,
+     `FBIOPAN_DISPLAY`) on the kernel's framebuffer (virtio-gpu or ramfb,
+     XRGB8888), `mmap`able (the front buffer's own page frames), plus a
+     damage ioctl (`_IOW('F', 0xF0, {x, y, w, h})`) for virtio-gpu flushes
+   - `/dev/input/event0` (USB keyboard: press/release from the HID boot
+     reports, HID usage -> Linux key code; `EVIOCGRAB` keeps keys away from
+     the console) and `/dev/input/event1` (USB mouse or tablet: `EV_REL` /
+     `EV_ABS` 0..32767, buttons, wheel), with the usual `EVIOCG*` ioctls
+   - POSIX shared memory (`/dev/shm`, `shm_open`), which wlroots' shm
+     allocator uses
+   `userland/wlr-os2/os2_backend.c` is the wlroots backend: one output on
+   `/dev/fb0` (damage copied from the rendered frame, 60 Hz frame timer,
+   software cursor) and evdev keyboard/pointer devices. `keymap_us.h`
+   (from `gen-keymap.py`) is a built-in US keymap for when xkeyboard-config
+   isn't installed.
+   Tests: `wlrtest` (headless backend, scene graph, xdg-shell client,
+   output pixels checked), `evtest` (prints evdev events).
+6. **Compositor** *(tinywl runs)*. `userland/build-compositor.sh` builds
+   wlroots' `tinywl` (patched at build time: os2 backend, fallback keymap,
+   `-s` client started without a shell) and `wlclient`, a small xdg-shell
+   client. In QEMU, `tinywl -s /h/wlclient` shows the client's window on
+   the virtio-gpu display, keyboard and pointer input reach it, Alt+Esc
+   quits. Try it: `scripts/run-vm.sh --wayland`, then `MOUNT usb0p1 \h`
+   and `RUNELF \h\tinywl -s /h/wlclient`. Next: a real compositor (e.g.
+   `cage`, `labwc`), xkeyboard-config and cursor themes on a volume,
+   preemptive scheduling. The in-kernel compositor (`kernel/src/gui/
+   wayland.c`, `GUI`) stays as the fallback console GUI.
 
 ## Building the toolchain pieces
 

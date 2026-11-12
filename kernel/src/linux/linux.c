@@ -63,6 +63,16 @@ extern void cpu_switch(lx_u64 *save, const lx_u64 *load);
 extern void el0_start(void);
 extern uint32_t kernel_time_seconds(void) __attribute__((weak));
 extern void usbd_daemon(void) __attribute__((weak));
+/* Display (drivers/video/virtiofb.c) and input (drivers/usb) for /dev/fb0
+ * and /dev/input/event*; weak, so boards without them still link. */
+extern int       fb_init_driver(void) __attribute__((weak));
+extern uint32_t *fb_front(void) __attribute__((weak));
+extern void      fb_flush(int x, int y, int w, int h) __attribute__((weak));
+extern void      fb_get_info(int *w, int *h, int *bpp) __attribute__((weak));
+extern int       usbkbd_poll_raw(int *usage, int *down) __attribute__((weak));
+extern void      usbkbd_grab(int on) __attribute__((weak));
+typedef struct { int absolute, x, y, dx, dy, wheel; unsigned buttons; } usbmouse_ev_t;
+extern int       usbmouse_poll(usbmouse_ev_t *ev) __attribute__((weak));
 
 #define PAGE            4096UL
 #define USER_TOP        (MMU_USER_BASE + MMU_USER_SIZE)
@@ -195,7 +205,7 @@ typedef __INT64_TYPE__ s64;
 
 /* ── Objects behind file descriptors ──────────────────────────────────── */
 enum { F_FREE, F_CONSOLE, F_FILE, F_DIR, F_PIPE_R, F_PIPE_W, F_NULL, F_ZERO, F_RANDOM,
-       F_EVENTFD, F_TIMERFD, F_SIGNALFD, F_EPOLL, F_MEMFD, F_SOCK };
+       F_EVENTFD, F_TIMERFD, F_SIGNALFD, F_EPOLL, F_MEMFD, F_SOCK, F_FB, F_EVDEV };
 
 typedef struct pipe {
     int      used;
@@ -759,6 +769,7 @@ static void file_put(file_t *f)
     case F_EPOLL:  f->ep->used = 0; break;
     case F_MEMFD:  mem_put(f->mem); break;
     case F_SOCK:   sock_release(f->sock); break;
+    case F_EVDEV:  if (f->vfd == 0 && f->count && usbkbd_grab) usbkbd_grab(0); break;
     default: break;
     }
     f->kind = F_FREE;
@@ -824,6 +835,254 @@ static void fill_stat(uint8_t *st, const vfs_stat_t *vs, uint32_t kind, lx_u64 s
     }
 }
 
+static lx_u64 page_up(lx_u64 a);
+
+/* ── /dev/fb0: Linux fbdev on the kernel's framebuffer ────────────────── */
+#define FB_DAMAGE_IOCTL 0x401046F0      /* _IOW('F', 0xF0, {u32 x, y, w, h}): present a rectangle */
+
+static long frames_kept;                /* allocated for good meanwhile (leak check) */
+
+static int fb_geom(int *w, int *h, lx_u64 *size)
+{
+    if (!fb_front || !fb_get_info) return -ENODEV;
+    if (!fb_front()) {
+        unsigned long before = mmu_frames_free_count();
+        if (!fb_init_driver || !fb_init_driver() || !fb_front()) return -ENODEV;
+        frames_kept += (long)(before - mmu_frames_free_count());   /* the framebuffer stays */
+    }
+    int bpp;
+    fb_get_info(w, h, &bpp);
+    *size = (lx_u64)*w * *h * 4;
+    return 0;
+}
+
+static s64 fb_ioctl(lx_u64 req, lx_u64 arg)
+{
+    int w, h;
+    lx_u64 size;
+    if (fb_geom(&w, &h, &size)) return -ENODEV;
+    switch (req) {
+    case 0x4600: case 0x4601: {                        /* FBIOGET / FBIOPUT_VSCREENINFO */
+        if (!uok(arg, 160, req == 0x4600)) return -EFAULT;
+        uint32_t *v = (uint32_t *)(uintptr_t)arg;
+        if (req == 0x4601)                             /* one mode: accept only it */
+            return v[0] == (uint32_t)w && v[1] == (uint32_t)h && (v[6] == 32 || !v[6]) ? 0 : -EINVAL;
+        kmemset(v, 0, 160);
+        v[0] = v[2] = (uint32_t)w;                     /* xres, xres_virtual */
+        v[1] = v[3] = (uint32_t)h;
+        v[6] = 32;                                     /* bits_per_pixel: XRGB8888 */
+        v[8] = 16; v[9] = 8;                           /* red: offset, length */
+        v[11] = 8; v[12] = 8;                          /* green */
+        v[14] = 0; v[15] = 8;                          /* blue */
+        v[22] = (uint32_t)-1; v[23] = (uint32_t)-1;    /* height, width in mm: unknown */
+        v[25] = 16667;                                 /* pixclock (ps), nominal 60 Hz */
+        return 0;
+    }
+    case 0x4602: {                                     /* FBIOGET_FSCREENINFO */
+        if (!uok(arg, 80, 1)) return -EFAULT;
+        uint8_t *x = (uint8_t *)(uintptr_t)arg;
+        kmemset(x, 0, 80);
+        kstrncpy((char *)x, "os2warp-fb", 16);
+        *(lx_u64 *)(x + 16) = (lx_u64)(uintptr_t)fb_front();   /* smem_start */
+        *(uint32_t *)(x + 24) = (uint32_t)size;        /* smem_len */
+        *(uint32_t *)(x + 36) = 2;                     /* visual: TRUECOLOR */
+        *(uint32_t *)(x + 48) = (uint32_t)w * 4;       /* line_length */
+        return 0;
+    }
+    case 0x4606:                                       /* FBIOPAN_DISPLAY: present all */
+        if (fb_flush) fb_flush(0, 0, w, h);
+        return 0;
+    case 0x40044620: return 0;                         /* FBIO_WAITFORVSYNC: no vsync to wait for */
+    case FB_DAMAGE_IOCTL: {
+        if (!uok(arg, 16, 0)) return -EFAULT;
+        const uint32_t *r = (const uint32_t *)(uintptr_t)arg;
+        if (fb_flush) fb_flush((int)r[0], (int)r[1], (int)r[2], (int)r[3]);
+        return 0;
+    }
+    default: return -ENOTTY;
+    }
+}
+
+/* Map the framebuffer's pages: the program draws straight to the screen. */
+static s64 fb_mmap(lx_u64 at, lx_u64 size, lx_u64 off, int prot)
+{
+    int w, h;
+    lx_u64 fbsize;
+    if (fb_geom(&w, &h, &fbsize)) return -ENODEV;
+    if (off + size > page_up(fbsize)) return -EINVAL;
+    uint8_t *base = (uint8_t *)fb_front() + off;
+    for (lx_u64 k = 0; k < size; k += PAGE) {
+        void *frame = base + k;
+        if (mmu_as_map_shared(cur->as, at + k, &frame, 1, prot)) {
+            mmu_as_unmap(cur->as, at, k);
+            return -ENOMEM;
+        }
+    }
+    return (s64)at;
+}
+
+/* ── /dev/input/event0 (keyboard), event1 (pointer): Linux evdev ──────── */
+#define EV_SYN 0
+#define EV_KEY 1
+#define EV_REL 2
+#define EV_ABS 3
+#define BTN_LEFT 0x110
+
+/* HID keyboard usage (page 7) -> Linux key code (as drivers/hid/hid-input.c) */
+static const uint8_t hid_to_key[256] = {
+      0,  0,  0,  0, 30, 48, 46, 32, 18, 33, 34, 35, 23, 36, 37, 38,
+     50, 49, 24, 25, 16, 19, 31, 20, 22, 47, 17, 45, 21, 44,  2,  3,
+      4,  5,  6,  7,  8,  9, 10, 11, 28,  1, 14, 15, 57, 12, 13, 26,
+     27, 43, 43, 39, 40, 41, 51, 52, 53, 58, 59, 60, 61, 62, 63, 64,
+     65, 66, 67, 68, 87, 88, 99, 70,119,110,102,104,111,107,109,106,
+    105,108,103, 69, 98, 55, 74, 78, 96, 79, 80, 81, 75, 76, 77, 71,
+     72, 73, 82, 83, 86,127,116,117,183,184,185,186,187,188,189,190,
+    191,192,193,194,134,138,130,132,128,129,131,137,133,135,136,113,
+    115,114,  0,  0,  0,121,  0, 89, 93,124, 92, 94, 95,  0,  0,  0,
+    122,123, 90, 91, 85,  0,  0,  0,  0,  0,  0,  0,111,  0,  0,  0,
+      0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+      0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+      0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+      0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+     29, 42, 56,125, 97, 54,100,126,  0,  0,  0,  0,  0,  0,  0,  0,
+      0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
+};
+
+typedef struct { uint16_t type, code; int32_t value; } evrec_t;
+#define EVQ 128
+static evrec_t  evq[2][EVQ];
+static uint32_t evh[2], evt[2];
+static unsigned mouse_buttons;
+
+static void ev_push(int d, uint16_t type, uint16_t code, int32_t value)
+{
+    uint32_t next = (evt[d] + 1) % EVQ;
+    if (next == evh[d]) return;                        /* full: drop (a SYN_DROPPED would be right) */
+    evq[d][evt[d]] = (evrec_t){ type, code, value };
+    evt[d] = next;
+}
+
+/* Pull whatever the drivers have into the device's queue. */
+static void ev_fill(int d)
+{
+    if (d == 0 && usbkbd_poll_raw) {
+        int usage, down;
+        while ((evt[0] + 3) % EVQ != evh[0] && usbkbd_poll_raw(&usage, &down)) {
+            if (!hid_to_key[usage]) continue;
+            ev_push(0, EV_KEY, hid_to_key[usage], down);
+            ev_push(0, EV_SYN, 0, 0);
+        }
+    }
+    if (d == 1 && usbmouse_poll) {
+        usbmouse_ev_t m;
+        while ((evt[1] + 8) % EVQ != evh[1] && usbmouse_poll(&m)) {
+            if (m.absolute) { ev_push(1, EV_ABS, 0, m.x); ev_push(1, EV_ABS, 1, m.y); }
+            else {
+                if (m.dx) ev_push(1, EV_REL, 0, m.dx);
+                if (m.dy) ev_push(1, EV_REL, 1, m.dy);
+            }
+            if (m.wheel) ev_push(1, EV_REL, 8, m.wheel);   /* REL_WHEEL */
+            for (int b = 0; b < 3; b++)
+                if ((m.buttons ^ mouse_buttons) >> b & 1)
+                    ev_push(1, EV_KEY, (uint16_t)(BTN_LEFT + (b == 0 ? 0 : b == 1 ? 1 : 2)),
+                            (int32_t)(m.buttons >> b & 1));
+            mouse_buttons = m.buttons;
+            ev_push(1, EV_SYN, 0, 0);
+        }
+    } else if (d == 1 && usbd_daemon) {
+        usbd_daemon();
+    }
+}
+
+static int ev_ready(int d) { ev_fill(d); return evh[d] != evt[d]; }
+
+static s64 ev_read(file_t *f, uint8_t *buf, lx_u64 n)
+{
+    int d = f->vfd;
+    if (n < 24) return -EINVAL;
+    while (!ev_ready(d)) {
+        if (f->flags & L_O_NONBLOCK) return -EAGAIN;
+        if (sig_interrupt()) return -EINTR;
+        sleep_until(&pollq, ticks() + freq() / 200);   /* devices are polled: 5 ms */
+    }
+    s64 ts[2];
+    ticks_to_ts(ticks(), ts);
+    lx_u64 k = 0;
+    while (k + 24 <= n && evh[d] != evt[d]) {
+        evrec_t *e = &evq[d][evh[d]];
+        uint8_t *o = buf + k;
+        *(s64 *)o = ts[0];                             /* struct timeval */
+        *(s64 *)(o + 8) = ts[1] / 1000;
+        *(uint16_t *)(o + 16) = e->type;
+        *(uint16_t *)(o + 18) = e->code;
+        *(int32_t *)(o + 20) = e->value;
+        evh[d] = (evh[d] + 1) % EVQ;
+        k += 24;
+    }
+    return (s64)k;
+}
+
+static void set_bit(uint8_t *bits, uint32_t room, uint32_t bit)
+{
+    if (bit / 8 < room) bits[bit / 8] |= (uint8_t)(1u << (bit % 8));
+}
+
+static s64 ev_ioctl(file_t *f, lx_u64 req, lx_u64 arg)
+{
+    int d = f->vfd;
+    uint32_t dir = (uint32_t)(req >> 30), size = (uint32_t)(req >> 16) & 0x3FFF;
+    uint32_t type = (uint32_t)(req >> 8) & 0xFF, nr = (uint32_t)req & 0xFF;
+    if (type != 'E') return -ENOTTY;
+    if (nr == 0x90) {                                                 /* EVIOCGRAB (value) */
+        if (d == 0 && usbkbd_grab) { usbkbd_grab(arg != 0); f->count = arg != 0; }
+        return 0;
+    }
+    if (nr == 0x91) return 0;                                         /* EVIOCREVOKE (value) */
+    if (size && !uok(arg, size, dir & 2)) return -EFAULT;
+    uint8_t *out = (uint8_t *)(uintptr_t)arg;
+    if (nr == 0x01) { *(int32_t *)out = 0x010001; return 0; }        /* EVIOCGVERSION */
+    if (nr == 0x02) {                                                 /* EVIOCGID */
+        uint16_t *id = (uint16_t *)out;
+        id[0] = 3; id[1] = 0x0627; id[2] = d ? 1 : 2; id[3] = 1;      /* BUS_USB, QEMU-ish */
+        return 0;
+    }
+    if (nr == 0x06 || nr == 0x07 || nr == 0x08) {                     /* EVIOCGNAME / PHYS / UNIQ */
+        const char *s = nr == 0x06 ? (d ? "USB pointer" : "USB keyboard") : nr == 0x07 ? "usb-0" : "";
+        uint32_t l = (uint32_t)kstrlen(s) + 1;
+        if (l > size) l = size;
+        kmemcpy(out, s, l);
+        if (l) out[l - 1] = 0;
+        return l;
+    }
+    if (nr >= 0x18 && nr <= 0x1B) { kmemset(out, 0, size); return size; }   /* GKEY/GLED/GSND/GSW state */
+    if (nr == 0x03 || nr == 0x04 || nr == 0x81 || nr == 0xA0) return 0;  /* REP, KEYCODE, REVOKE, CLKID */
+    if (nr >= 0x20 && nr < 0x40) {                                    /* EVIOCGBIT(ev, len) */
+        kmemset(out, 0, size);
+        uint32_t ev = nr - 0x20;
+        if (ev == 0) {
+            set_bit(out, size, EV_SYN); set_bit(out, size, EV_KEY);
+            if (d) { set_bit(out, size, EV_REL); set_bit(out, size, EV_ABS); }
+        } else if (ev == EV_KEY) {
+            if (d) for (int b = 0; b < 3; b++) set_bit(out, size, BTN_LEFT + (uint32_t)b);
+            else for (int i = 0; i < 256; i++) if (hid_to_key[i]) set_bit(out, size, hid_to_key[i]);
+        } else if (ev == EV_REL && d) {
+            set_bit(out, size, 0); set_bit(out, size, 1); set_bit(out, size, 8);
+        } else if (ev == EV_ABS && d) {
+            set_bit(out, size, 0); set_bit(out, size, 1);
+        }
+        return size;
+    }
+    if (nr >= 0x40 && nr < 0x80) {                                    /* EVIOCGABS(axis) */
+        if (size < 24) return -EINVAL;
+        int32_t *a = (int32_t *)out;
+        kmemset(a, 0, 24);
+        if (!d || nr - 0x40 > 1) return -EINVAL;
+        a[2] = 32767;                                                 /* min 0, max 32767 */
+        return 0;
+    }
+    return -ENOTTY;
+}
+
 /* ── Memory ───────────────────────────────────────────────────────────── */
 static lx_u64 page_up(lx_u64 a) { return (a + PAGE - 1) & ~(PAGE - 1); }
 
@@ -857,7 +1116,8 @@ static s64 sys_mmap(lx_u64 addr, lx_u64 len, lx_u64 prot, lx_u64 flags, s64 fd, 
     if (!(flags & MAP_ANON)) {
         f = fd_get((lx_u64)fd);
         if (!f) return -EBADF;
-        if (f->kind != F_FILE && f->kind != F_MEMFD) return -ENODEV;
+        if (f->kind != F_FILE && f->kind != F_MEMFD && f->kind != F_FB) return -ENODEV;
+        if (f->kind == F_FB && !(flags & MAP_SHARED)) return -EINVAL;
     }
     lx_u64 size = page_up(len), at;
     if (flags & MAP_FIXED) {
@@ -881,6 +1141,10 @@ static s64 sys_mmap(lx_u64 addr, lx_u64 len, lx_u64 prot, lx_u64 flags, s64 fd, 
         off = 0;
     } else if ((flags & MAP_SHARED) && f->kind == F_MEMFD) {
         m = f->mem;
+    } else if (f && f->kind == F_FB) {
+        s64 r = fb_mmap(at, size, off, p ? p : MMU_PROT_READ);
+        if (r >= 0 && !p) mmu_as_unmap(cur->as, at, size);
+        return r;
     }
     if (m) {
         if (off + size > page_up(m->size)) { if (own) mem_put(m); return -EINVAL; }
@@ -2069,6 +2333,10 @@ static uint32_t f_poll(file_t *f, int depth)
         return (cur->sig_pending & f->sigmask) ? PIN : 0;
     case F_EPOLL:
         return depth < 4 ? ep_ready(f->ep, depth) : 0;
+    case F_EVDEV:
+        return ev_ready(f->vfd) ? PIN : 0;
+    case F_FB:
+        return POUT;
     case F_SOCK: {
         sock_t *s = f->sock;
         if (s->state == S_LISTEN) return s->nbacklog ? PIN : 0;
@@ -2090,6 +2358,7 @@ static lx_u64 f_deadline(file_t *f, int depth)
 {
     if (f->kind == F_TIMERFD) return f->next;
     if (f->kind == F_CONSOLE) return ticks() + freq() / 100;
+    if (f->kind == F_EVDEV) return ticks() + freq() / 200;           /* polled devices */
     if (f->kind == F_EPOLL && depth < 4) {
         lx_u64 d = 0;
         for (int i = 0; i < f->ep->n; i++) {
@@ -2360,12 +2629,18 @@ static s64 sys_openat(int dirfd, lx_u64 up, lx_u64 flags)
     static const struct { const char *name; int kind; } devs[] = {
         { "/dev/null", F_NULL }, { "/dev/zero", F_ZERO }, { "/dev/urandom", F_RANDOM },
         { "/dev/random", F_RANDOM }, { "/dev/tty", F_CONSOLE }, { "/dev/console", F_CONSOLE },
+        { "/dev/fb0", F_FB }, { "/dev/input/event0", F_EVDEV }, { "/dev/input/event1", F_EVDEV },
     };
     for (unsigned i = 0; i < sizeof devs / sizeof devs[0]; i++)
         if (streq(path, devs[i].name)) {
+            if (devs[i].kind == F_FB) { int w, h; lx_u64 sz; if (fb_geom(&w, &h, &sz)) return -ENODEV; }
             file_t *f = file_new(devs[i].kind);
             if (!f) return -ENFILE;
             f->flags = (int)(flags & (L_O_ACCMODE | L_O_NONBLOCK));
+            if (devs[i].kind == F_EVDEV) {
+                f->vfd = path[16] - '0';                /* event0 / event1 */
+                evh[f->vfd] = evt[f->vfd];             /* start with nothing old */
+            }
             kstrncpy(f->path, path, sizeof f->path);
             return fd_new(f, cl);
         }
@@ -2464,6 +2739,8 @@ static s64 sys_read(lx_u64 fd, lx_u64 buf, lx_u64 n)
     case F_PIPE_W:  return -EBADF;
     case F_DIR:     return -EISDIR;
     case F_NULL: case F_ZERO: case F_RANDOM: return dev_read(f, b, n);
+    case F_EVDEV:   return ev_read(f, b, n);
+    case F_FB:      return -EINVAL;
     case F_MEMFD:   return mem_rw(f->mem, &f->pos, b, n, 0);
     case F_EPOLL:   return -EINVAL;
     case F_SOCK: {
@@ -2623,7 +2900,8 @@ static s64 sys_fstatat(int dirfd, lx_u64 up, lx_u64 stp, lx_u64 flags, int by_fd
         file_t *f = fd_get((lx_u64)dirfd);
         if (!f) return -EBADF;
         switch (f->kind) {
-        case F_CONSOLE: case F_NULL: case F_ZERO: case F_RANDOM: kind = ST_CHR; break;
+        case F_CONSOLE: case F_NULL: case F_ZERO: case F_RANDOM: case F_FB: case F_EVDEV:
+            kind = ST_CHR; break;
         case F_PIPE_R: case F_PIPE_W: kind = ST_FIFO; break;
         case F_SOCK: kind = ST_SOCK; break;
         case F_MEMFD: kind = ST_MEM; size = f->mem->size; break;
@@ -2639,7 +2917,10 @@ static s64 sys_fstatat(int dirfd, lx_u64 up, lx_u64 stp, lx_u64 flags, int by_fd
         int r = user_path(dirfd, up, path);
         if (r) return r;
         if (path[0] == '/' && !path[1]) vs.attrs = VFS_ATTR_DIR;
-        else if (streq(path, "/dev") || streq(path, "/dev/shm")) vs.attrs = VFS_ATTR_DIR;
+        else if (streq(path, "/dev") || streq(path, "/dev/shm") || streq(path, "/dev/input"))
+            vs.attrs = VFS_ATTR_DIR;
+        else if (streq(path, "/dev/fb0") || streq(path, "/dev/input/event0") ||
+                 streq(path, "/dev/input/event1")) kind = ST_CHR;
         else if (shm_name(path)) {
             int i = shm_find(shm_name(path));
             if (i < 0) return -ENOENT;
@@ -2725,6 +3006,8 @@ static s64 sys_ioctl(lx_u64 fd, lx_u64 req, lx_u64 arg)
         *(int32_t *)(uintptr_t)arg = v;
         return 0;
     }
+    if (f->kind == F_FB) return fb_ioctl(req, arg);
+    if (f->kind == F_EVDEV) return ev_ioctl(f, req, arg);
     if (f->kind != F_CONSOLE) return -ENOTTY;
     if (req == 0x5413) {                               /* TIOCGWINSZ */
         if (!uok(arg, 8, 1)) return -EFAULT;
@@ -2927,7 +3210,9 @@ static s64 linux_syscall(linux_tf_t *tf)
         vfs_stat_t vs;
         int r = user_path((int)a0, a1, p);
         if (r) return r;
-        if ((p[0] == '/' && !p[1]) || streq(p, "/dev") || streq(p, "/dev/null")) return 0;
+        if ((p[0] == '/' && !p[1]) || streq(p, "/dev") || streq(p, "/dev/null") ||
+            streq(p, "/dev/fb0") || streq(p, "/dev/input/event0") || streq(p, "/dev/input/event1"))
+            return 0;
         return vfs_stat(p, &vs) == VFS_OK ? 0 : -ENOENT;
     }
     case 49: {                                          /* chdir */
@@ -3201,6 +3486,7 @@ int linux_run(const char *path, int argc, char **argv)
         used += l;
     }
     uint32_t free0 = mmu_frames_free_count();
+    frames_kept = 0;
     proc_t *init = proc_alloc();
     if (!init) { kprintf("[LINUX]  out of memory\n"); return -1; }
     mmu_as_t *as;
@@ -3267,8 +3553,8 @@ int linux_run(const char *path, int argc, char **argv)
         if (socks[i].used) { kprintf("[LINUX]  leaked socket %d\n", i); sock_free(&socks[i]); }
     for (int i = 0; i < MAX_SHM; i++)                   /* shared memory nobody unlinked */
         if (shm_names[i].m) shm_unlink_index(i);
-    if (mmu_frames_free_count() != free0)
+    if ((long)mmu_frames_free_count() + frames_kept != (long)free0)
         kprintf("[LINUX]  warning: %d page frames not returned\n",
-                (int)free0 - (int)mmu_frames_free_count());
+                (int)((long)free0 - frames_kept - (long)mmu_frames_free_count()));
     return (status & 0x7F) ? 128 + (status & 0x7F) : (status >> 8) & 0xFF;
 }

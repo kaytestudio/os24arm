@@ -109,6 +109,39 @@ static void send_leds(void)
     class_request(setup_led, HID_REQ_SET_REPORT, 0x0200, led_data, 1, RQ_LED);
 }
 
+/* ── Raw key events (for /dev/input/event0) ───────────────────────────── */
+/* Presses and releases as HID usages (page 7; modifiers are 0xE0-0xE7),
+ * bit 8 = pressed. While grabbed, keys don't go to the ASCII queue. */
+#define RAWQ 128
+static uint16_t rawq[RAWQ];
+static uint32_t rawh, rawt;
+static int grabbed;
+
+static void raw(uint8_t usage, int down)
+{
+    uint32_t next = (rawt + 1) % RAWQ;
+    if (next == rawh) rawh = (rawh + 1) % RAWQ;      /* full: drop the oldest */
+    rawq[rawt] = (uint16_t)(usage | (down ? 0x100 : 0));
+    rawt = next;
+}
+
+int usbkbd_poll_raw(int *usage, int *down)
+{
+    if (rawh == rawt) usbd_daemon();
+    if (rawh == rawt) return 0;
+    *usage = rawq[rawh] & 0xFF;
+    *down = (rawq[rawh] & 0x100) != 0;
+    rawh = (rawh + 1) % RAWQ;
+    return 1;
+}
+
+void usbkbd_grab(int on)
+{
+    grabbed = on;
+    rawh = rawt = 0;
+    if (on) rep_key = 0;
+}
+
 /* ── Key translation ──────────────────────────────────────────────────── */
 static void put(char c)
 {
@@ -155,6 +188,21 @@ static void key(uint8_t usage, uint8_t mods)
 static void report(const uint8_t *r)
 {
     if (r[2] == 0x01) return;                         /* rollover error */
+    for (int b = 0; b < 8; b++)                       /* raw events: modifiers, */
+        if ((r[0] ^ prev[0]) >> b & 1) raw((uint8_t)(0xE0 + b), r[0] >> b & 1);
+    for (int i = 2; i < 8; i++) {                     /* releases, presses */
+        uint8_t k = prev[i];
+        int still = 0;
+        for (int j = 2; j < 8; j++) if (r[j] == k) still = 1;
+        if (k >= 0x04 && !still) raw(k, 0);
+    }
+    for (int i = 2; i < 8; i++) {
+        uint8_t k = r[i];
+        int was = 0;
+        for (int j = 2; j < 8; j++) if (prev[j] == k) was = 1;
+        if (k >= 0x04 && !was) raw(k, 1);
+    }
+    if (grabbed) { usb_copy(prev, r, 8); rep_key = 0; return; }
     for (int i = 2; i < 8; i++) {
         uint8_t k = r[i];
         if (k < 0x04) continue;

@@ -15,6 +15,10 @@
 /* Forward declare memory functions */
 extern void *mem_alloc(size_t size);
 extern void mem_free(void *ptr);
+/* Page frames (kernel/src/mmu.c, QEMU virt): the front buffer comes from
+ * there when it can, page aligned and contiguous, so Linux programs can
+ * map it (/dev/fb0, kernel/src/linux/linux.c). */
+extern void *mmu_frames_alloc(unsigned long n) __attribute__((weak));
 
 /* ── Framebuffer Configuration ────────────────────────────────────────────── */
 #define FB_WIDTH        1024
@@ -52,8 +56,9 @@ bool fb_init_driver(void)
 
     uart_puts("[FB] Initializing framebuffer...\r\n");
 
-    /* Allocate front buffer (16 MB aligned for performance) */
-    fb.pixels = (uint32_t *)mem_alloc(FB_SIZE);
+    /* Front buffer: page frames if there are any, else the heap */
+    fb.pixels = mmu_frames_alloc ? (uint32_t *)mmu_frames_alloc((FB_SIZE + 4095) / 4096) : 0;
+    if (!fb.pixels) fb.pixels = (uint32_t *)mem_alloc(FB_SIZE);
     if (!fb.pixels) {
         uart_puts("[FB] ERROR: Failed to allocate front buffer\r\n");
         return false;
@@ -109,6 +114,20 @@ void fb_get_info(int *width, int *height, int *bpp)
     if (width) *width = fb.width;
     if (height) *height = fb.height;
     if (bpp) *bpp = FB_BPP;
+}
+
+/* The displayed buffer (what /dev/fb0 maps), and telling the display
+ * that a rectangle of it changed (virtio-gpu; ramfb needs nothing). */
+uint32_t *fb_front(void) { return fb.initialized ? fb.pixels : 0; }
+
+void fb_flush(int x, int y, int w, int h)
+{
+    if (!fb.initialized) return;
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > FB_WIDTH) w = FB_WIDTH - x;
+    if (y + h > FB_HEIGHT) h = FB_HEIGHT - y;
+    if (w > 0 && h > 0) virtio_gpu_flush(x, y, w, h);
 }
 
 /**

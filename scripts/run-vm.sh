@@ -14,6 +14,11 @@
 #                the output, exit 0/1 (log kept in build/run-vm-test.log)
 #   --gdb        wait for a debugger on :1234
 #   --usb        add an xHCI controller + USB keyboard (drivers/usb/xhci.c)
+#   --wayland    a display window (virtio-gpu), USB keyboard + tablet, and a
+#                USB stick (HPFS, build/userland/stick.img, made from
+#                build/userland/bin and tests if missing) with the wlroots
+#                compositor: at the prompt, MOUNT usb0p1 \h then
+#                RUNELF \h\tinywl -s /h/wlclient  (Alt+Esc quits it)
 #   -h, --help
 #
 # Interactive: type VM TEST at the [C:\]> prompt. Inside the guest,
@@ -29,6 +34,7 @@ USE_DISK=1
 TEST_MODE=0
 GDB_OPT=()
 USB_OPT=()
+WAYLAND=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -37,7 +43,8 @@ while [ $# -gt 0 ]; do
         --test)     TEST_MODE=1 ;;
         --gdb)      GDB_OPT=(-s -S) ;;
         --usb)      USB_OPT=(-device qemu-xhci -device usb-kbd) ;;
-        -h|--help)  sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --wayland)  WAYLAND=1 ;;
+        -h|--help)  sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "Unknown option: $1 (see --help)" >&2; exit 1 ;;
     esac
     shift
@@ -72,6 +79,24 @@ if [ "$USE_DISK" = 1 ] && [ -f "$BUILD/testdisk.img" ]; then
     DISK_OPT=(-device "loader,file=$BUILD/testdisk.img,addr=0x44000000,force-raw=on")
 fi
 
+DISPLAY_OPT=(-display none -nographic)
+if [ "$WAYLAND" = 1 ]; then
+    STICK="$BUILD/userland/stick.img"
+    if [ ! -f "$STICK" ]; then
+        [ -x "$BUILD/userland/bin/tinywl" ] || {
+            echo "build the compositor first: userland/build-libs.sh && userland/build-compositor.sh" >&2; exit 1; }
+        STAGE="$(mktemp -d)"
+        cp "$BUILD"/userland/bin/* "$STAGE"/
+        find "$BUILD/userland/tests" -maxdepth 1 -type f -perm -u+x -exec cp {} "$STAGE"/ \;
+        python3 "$ROOT/scripts/mkhpfs.py" "$STICK" --size 32M --from "$STAGE" --mbr >/dev/null
+        rm -rf "$STAGE"
+        echo "made $STICK"
+    fi
+    USB_OPT=(-device qemu-xhci -device usb-kbd -device usb-tablet
+             -device usb-storage,drive=stick -drive "if=none,id=stick,file=$STICK,format=raw")
+    DISPLAY_OPT=(-global virtio-mmio.force-legacy=false -device virtio-gpu-device -display default)
+fi
+
 QEMU=(qemu-system-aarch64
       -machine virt,gic-version=3,virtualization=on
       -cpu cortex-a72
@@ -81,8 +106,7 @@ QEMU=(qemu-system-aarch64
       -kernel "$KERNEL"
       "${DISK_OPT[@]}"
       -serial mon:stdio
-      -display none
-      -nographic
+      "${DISPLAY_OPT[@]}"
       "${USB_OPT[@]}"
       "${GDB_OPT[@]}")
 
