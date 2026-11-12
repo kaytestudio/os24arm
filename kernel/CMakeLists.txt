@@ -119,6 +119,7 @@ if(TARGET_ARCH STREQUAL "aarch64")
             rexx
             ext4            # ← ext4 filesystem driver
             btrfs           # ← btrfs filesystem driver
+            usb             # ← USB driver (stub)
     )
 else()
     # BeagleBone Black / BeagleV-Ahead: OS/2 API over the VFS, microSD

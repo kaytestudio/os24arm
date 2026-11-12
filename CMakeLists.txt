@@ -523,6 +523,8 @@ if(TARGET_ARCH STREQUAL "aarch64")
     add_subdirectory(dos)
     # Add filesystems subdirectory
     add_subdirectory(fs)
+    # USB driver (stub, no host controller support yet)
+    add_subdirectory(drivers/usb)
 else()
     # The BeagleBone Black and BeagleV-Ahead kernels link the OS/2 API
     # (DosOpen, DosRead, KernVMAlloc, ...) on top of the VFS, with no
