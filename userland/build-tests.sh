@@ -19,13 +19,25 @@ for src in "$ROOT"/userland/tests/*.c; do
     # " * pkg: a b c" in a test: link against those libraries (userland/build-libs.sh)
     pkgs="$(sed -n 's/^ \* pkg: //p' "$src" | head -1)"
     if [ -n "$pkgs" ]; then
-        if [ ! -x "$CC_WRAP" ] || ! PKG_CONFIG_LIBDIR="$SR/lib/pkgconfig" pkg-config --exists $pkgs; then
+        if [ ! -x "$CC_WRAP" ] || ! PKG_CONFIG_LIBDIR="$SR/lib/pkgconfig:$SR/share/pkgconfig" pkg-config --exists $pkgs; then
             echo "  $name: skipped (needs $pkgs - run userland/build-libs.sh)"
             continue
         fi
+        # " * protocols: stable/xdg-shell/xdg-shell.xml ...": generated client and
+        # server headers plus the glue code, from the sysroot's wayland-protocols
+        protos="$(sed -n 's/^ \* protocols: //p' "$src" | head -1)"
+        gen="$OUT/gen-$name"; rm -rf "$gen"; mkdir -p "$gen"
+        extra=()
+        for x in $protos; do
+            b="$(basename "${x%.xml}")"; xml="$SR/share/wayland-protocols/$x"
+            "$ROOT/build/userland/host/bin/wayland-scanner" client-header "$xml" "$gen/$b-client-protocol.h"
+            "$ROOT/build/userland/host/bin/wayland-scanner" server-header "$xml" "$gen/$b-protocol.h"
+            "$ROOT/build/userland/host/bin/wayland-scanner" private-code "$xml" "$gen/$b-protocol.c"
+            extra+=("$gen/$b-protocol.c")
+        done
         # shellcheck disable=SC2046
-        "$CC_WRAP" -O2 -Wall -o "$OUT/$name" "$src" \
-            $(PKG_CONFIG_LIBDIR="$SR/lib/pkgconfig" PKG_CONFIG_SYSROOT_DIR= pkg-config --static --cflags --libs $pkgs)
+        "$CC_WRAP" -O2 -Wall -DWLR_USE_UNSTABLE -I"$gen" -o "$OUT/$name" "$src" ${extra[@]+"${extra[@]}"} \
+            $(PKG_CONFIG_LIBDIR="$SR/lib/pkgconfig:$SR/share/pkgconfig" PKG_CONFIG_SYSROOT_DIR= pkg-config --static --cflags --libs $pkgs)
         echo "  $name ($pkgs)"
         continue
     fi

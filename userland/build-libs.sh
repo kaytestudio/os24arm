@@ -4,7 +4,9 @@
 #
 #   Linux UAPI headers (sabotage's sanitized kernel-headers, as musl-cross-make
 #   uses), libffi, libwayland (server, client, cursor, egl), pixman,
-#   libxkbcommon
+#   libxkbcommon, libdrm (core library only: wlroots uses its format and
+#   modifier definitions), wayland-protocols, wlroots (pixman renderer;
+#   no DRM/libinput/X11 backends, no session, no XWayland)
 #
 # installed into the musl sysroot (build/userland/sysroot: include/, lib/,
 # lib/pkgconfig/), plus a host wayland-scanner (with a host expat) in
@@ -41,6 +43,9 @@ PKGS=(
   "libffi       3.5.2   f3a3082a23b37c293a4fcd1053147b371f2ff91fa7ea1b2a52e335676bac82dc https://github.com/libffi/libffi/releases/download/v3.5.2/libffi-3.5.2.tar.gz"
   "wayland      1.24.0  82892487a01ad67b334eca83b54317a7c86a03a89cfadacfef5211f11a5d0536 https://gitlab.freedesktop.org/wayland/wayland/-/releases/1.24.0/downloads/wayland-1.24.0.tar.xz"
   "pixman       0.46.4  d09c44ebc3bd5bee7021c79f922fe8fb2fb57f7320f55e97ff9914d2346a591c https://www.cairographics.org/releases/pixman-0.46.4.tar.gz"
+  "libdrm       2.4.128 3bb35db8700c2a0b569f2c6729a53f5495786856b310854c8de57782a22bddac https://dri.freedesktop.org/libdrm/libdrm-2.4.128.tar.xz"
+  "wayland-protocols 1.45 4d2b2a9e3e099d017dc8107bf1c334d27bb87d9e4aff19a0c8d856d17cd41ef0 https://gitlab.freedesktop.org/wayland/wayland-protocols/-/releases/1.45/downloads/wayland-protocols-1.45.tar.xz"
+  "wlroots      0.19.2  09a0a8d60104c8b0772fee4f60ba76a89aed7e59dff7659d00960fba06bdf267 https://gitlab.freedesktop.org/wlroots/wlroots/-/releases/0.19.2/downloads/wlroots-0.19.2.tar.gz"
   "libxkbcommon 1.11.0  78a6b14f16e9a55025978c252e53ce9e16a02bfdb929550b9a0db5af87db7e02 https://github.com/xkbcommon/libxkbcommon/archive/refs/tags/xkbcommon-1.11.0.tar.gz"
 )
 
@@ -107,7 +112,6 @@ pkg-config = 'pkg-config'
 
 [properties]
 pkg_config_libdir = '$SR/lib/pkgconfig:$SR/share/pkgconfig'
-sys_root = '$SR'
 
 [built-in options]
 default_library = 'static'
@@ -203,6 +207,42 @@ if ! done_marker xkbcommon; then
     mark xkbcommon
 fi
 echo "xkbcommon: $(PKG_CONFIG_LIBDIR=$SR/lib/pkgconfig pkg-config --modversion xkbcommon)"
+
+# ── libdrm (no GPU drivers, no udev) ──────────────────────────────────
+if ! done_marker libdrm; then
+    fetch libdrm
+    rm -rf "$WORK/b-libdrm"
+    meson setup "$WORK/b-libdrm" "$DIR" "${CROSS[@]}" -Dintel=disabled -Dradeon=disabled \
+        -Damdgpu=disabled -Dnouveau=disabled -Dvmwgfx=disabled -Domap=disabled \
+        -Dexynos=disabled -Dfreedreno=disabled -Dtegra=disabled -Dvc4=disabled \
+        -Detnaviv=disabled -Dcairo-tests=disabled -Dman-pages=disabled \
+        -Dvalgrind=disabled -Dtests=false -Dudev=false -Dinstall-test-programs=false >/dev/null
+    ninja -C "$WORK/b-libdrm" install >/dev/null
+    mark libdrm
+fi
+echo "libdrm: $(PKG_CONFIG_LIBDIR=$SR/lib/pkgconfig pkg-config --modversion libdrm)"
+
+# ── wayland-protocols (XML + pkg-config file) ───────────────────────────
+if ! done_marker wayland-protocols; then
+    fetch wayland-protocols
+    rm -rf "$WORK/b-wayland-protocols"
+    meson setup "$WORK/b-wayland-protocols" "$DIR" "${CROSS[@]}" -Dtests=false >/dev/null
+    ninja -C "$WORK/b-wayland-protocols" install >/dev/null
+    mark wayland-protocols
+fi
+echo "wayland-protocols: $(PKG_CONFIG_LIBDIR=$SR/share/pkgconfig pkg-config --modversion wayland-protocols)"
+
+# ── wlroots ─────────────────────────────────────────────────────────────
+if ! done_marker wlroots; then
+    fetch wlroots
+    rm -rf "$WORK/b-wlroots"
+    meson setup "$WORK/b-wlroots" "$DIR" "${CROSS[@]}" -Dxwayland=disabled -Dexamples=false \
+        -Drenderers= -Dbackends= -Dallocators= -Dsession=disabled -Dcolor-management=disabled \
+        -Dlibliftoff=disabled -Dxcb-errors=disabled >/dev/null
+    ninja -C "$WORK/b-wlroots" install >/dev/null
+    mark wlroots
+fi
+echo "wlroots: $(PKG_CONFIG_LIBDIR=$SR/lib/pkgconfig:$SR/share/pkgconfig pkg-config --modversion wlroots-0.19)"
 
 echo "libraries installed in $SR/lib:"
 ls "$SR/lib" | grep -E '\.a$' | tr '\n' ' '; echo

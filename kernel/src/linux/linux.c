@@ -38,8 +38,8 @@
  * Files: VFS files and directories (paths are VFS paths: /BOOT/...,
  * /H/... for MOUNTed volumes, /tmp is a RAM file system), the console
  * (the first process's fds 0-2), /dev/null, /dev/zero, /dev/urandom,
- * pipes, eventfd, timerfd, signalfd, epoll, memfd (shareable with
- * mmap(MAP_SHARED)), AF_UNIX stream sockets (bind/listen/accept/connect,
+ * pipes, eventfd, timerfd, signalfd, epoll, memfd and POSIX shared memory
+ * (/dev/shm/<name>, shm_open; both shareable with mmap(MAP_SHARED)), AF_UNIX stream sockets (bind/listen/accept/connect,
  * socketpair, SCM_RIGHTS fd passing, SO_PEERCRED). Open files are shared
  * objects with reference counts (fork and dup share them).
  *
@@ -2295,6 +2295,58 @@ static s64 sys_epoll_pwait(lx_u64 epfd, lx_u64 uev, lx_u64 max, s64 timeout_ms, 
     return ret;
 }
 
+/* ── POSIX shared memory: /dev/shm/<name> (musl's shm_open) ──────────── */
+#define MAX_SHM 32
+static struct { char name[64]; memobj_t *m; } shm_names[MAX_SHM];
+
+/* "/dev/shm/x" -> "x" (one component), else NULL */
+static const char *shm_name(const char *path)
+{
+    const char *pre = "/dev/shm/";
+    for (int i = 0; pre[i]; i++) if (path[i] != pre[i]) return 0;
+    const char *n = path + 9;
+    if (!*n || kstrlen(n) >= 64) return 0;
+    for (const char *c = n; *c; c++) if (*c == '/') return 0;
+    return n;
+}
+
+static int shm_find(const char *n)
+{
+    for (int i = 0; i < MAX_SHM; i++) if (shm_names[i].m && streq(shm_names[i].name, n)) return i;
+    return -1;
+}
+
+static s64 shm_open_path(const char *n, lx_u64 flags)
+{
+    int i = shm_find(n);
+    if (i >= 0 && (flags & L_O_CREAT) && (flags & L_O_EXCL)) return -EEXIST;
+    if (i < 0) {
+        if (!(flags & L_O_CREAT)) return -ENOENT;
+        for (i = 0; i < MAX_SHM && shm_names[i].m; i++) { }
+        if (i == MAX_SHM) return -ENFILE;
+        if (!(shm_names[i].m = mem_new())) return -ENFILE;   /* the name's reference */
+        kstrncpy(shm_names[i].name, n, sizeof shm_names[i].name);
+    } else if (flags & L_O_TRUNC) {
+        int r = mem_resize(shm_names[i].m, 0);
+        if (r) return r;
+    }
+    file_t *f = file_new(F_MEMFD);
+    if (!f) return -ENFILE;
+    f->mem = shm_names[i].m;
+    f->mem->refs++;
+    f->flags = (int)(flags & (L_O_ACCMODE | L_O_NONBLOCK));
+    kstrncpy(f->path, "/dev/shm/", sizeof f->path);
+    kstrncpy(f->path + 9, n, sizeof f->path - 10);
+    return fd_new(f, (flags & L_O_CLOEXEC) != 0);
+}
+
+static void shm_unlink_index(int i)
+{
+    memobj_t *m = shm_names[i].m;
+    shm_names[i].m = 0;
+    mem_put(m);
+}
+
 /* ── File system calls ────────────────────────────────────────────────── */
 static s64 sys_openat(int dirfd, lx_u64 up, lx_u64 flags)
 {
@@ -2302,6 +2354,8 @@ static s64 sys_openat(int dirfd, lx_u64 up, lx_u64 flags)
     int r = user_path(dirfd, up, path);
     if (r) return r;
     int cl = (flags & L_O_CLOEXEC) != 0;
+    const char *sn = shm_name(path);
+    if (sn) return shm_open_path(sn, flags);
     /* /dev */
     static const struct { const char *name; int kind; } devs[] = {
         { "/dev/null", F_NULL }, { "/dev/zero", F_ZERO }, { "/dev/urandom", F_RANDOM },
@@ -2585,7 +2639,13 @@ static s64 sys_fstatat(int dirfd, lx_u64 up, lx_u64 stp, lx_u64 flags, int by_fd
         int r = user_path(dirfd, up, path);
         if (r) return r;
         if (path[0] == '/' && !path[1]) vs.attrs = VFS_ATTR_DIR;
-        else if (streq(path, "/dev")) vs.attrs = VFS_ATTR_DIR;
+        else if (streq(path, "/dev") || streq(path, "/dev/shm")) vs.attrs = VFS_ATTR_DIR;
+        else if (shm_name(path)) {
+            int i = shm_find(shm_name(path));
+            if (i < 0) return -ENOENT;
+            kind = ST_MEM;
+            size = shm_names[i].m->size;
+        }
         else if (streq(path, "/dev/null") || streq(path, "/dev/zero") ||
                  streq(path, "/dev/urandom") || streq(path, "/dev/random") ||
                  streq(path, "/dev/tty") || streq(path, "/dev/console")) kind = ST_CHR;
@@ -2820,6 +2880,13 @@ static s64 linux_syscall(linux_tf_t *tf)
         char p[VFS_PATH_MAX];
         int r = user_path((int)a0, a1, p);
         if (r) return r;
+        const char *sn = shm_name(p);
+        if (sn) {                                       /* shm_unlink */
+            int i = shm_find(sn);
+            if (i < 0) return -ENOENT;
+            shm_unlink_index(i);
+            return 0;
+        }
         vfs_stat_t vs;
         if ((r = vfs_stat(p, &vs)) != VFS_OK) return verr(r);
         if ((vs.attrs & VFS_ATTR_DIR) && !(a2 & AT_REMOVEDIR)) return -EISDIR;
@@ -3198,6 +3265,8 @@ int linux_run(const char *path, int argc, char **argv)
         if (files[i].refs) { kprintf("[LINUX]  leaked open file %d\n", i); files[i].refs = 1; file_put(&files[i]); }
     for (int i = 0; i < MAX_SOCKS; i++)
         if (socks[i].used) { kprintf("[LINUX]  leaked socket %d\n", i); sock_free(&socks[i]); }
+    for (int i = 0; i < MAX_SHM; i++)                   /* shared memory nobody unlinked */
+        if (shm_names[i].m) shm_unlink_index(i);
     if (mmu_frames_free_count() != free0)
         kprintf("[LINUX]  warning: %d page frames not returned\n",
                 (int)free0 - (int)mmu_frames_free_count());
