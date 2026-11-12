@@ -31,6 +31,33 @@ driver.
 """
 import argparse, os, struct, sys, time
 
+CODEPAGE = 850                           # OS/2's default; names are stored in it
+
+
+def cp_upcase():
+    """Upper-case map for bytes 80h..FFh in CODEPAGE, as HPFS stores it."""
+    enc = 'cp%d' % CODEPAGE
+    m = bytearray()
+    for b in range(0x80, 0x100):
+        ch = bytes([b]).decode(enc)
+        up = ch.upper()
+        try:
+            ub = up.encode(enc) if len(up) == 1 else bytes([b])
+        except UnicodeEncodeError:
+            ub = bytes([b])
+        m.append(ub[0] if len(ub) == 1 else b)
+    return bytes(m)
+
+
+UPCASE = cp_upcase()
+
+
+def hpfs_key(name):
+    """HPFS collation key: code page bytes upper-cased (then by length)."""
+    nb = name if isinstance(name, bytes) else name.encode('cp%d' % CODEPAGE)
+    return bytes((c - 32) if 0x61 <= c <= 0x7A else UPCASE[c - 0x80] if 0x80 <= c < 0xFF else c
+                 for c in nb)
+
 SECTOR = 512
 DNODE_SECTORS = 4
 BAND = 16384                    # sectors per bitmap band (2 KB bitmap)
@@ -111,7 +138,7 @@ def bplus(flags, nodes, capacity, leaf):
 
 
 def fnode(name, up, size, btree, is_dir):
-    nb = name.encode('latin-1')
+    nb = name.encode('cp%d' % CODEPAGE)
     f = bytearray(SECTOR)
     struct.pack_into('<I', f, 0, FNODE_MAGIC)
     f[12] = min(len(nb), 255)
@@ -174,7 +201,7 @@ class Builder:
 
     # ── directories ────────────────────────────────────────────────────
     def dirent(self, name, flags, attr, fnode_lsn, size, down=None):
-        nb = name if isinstance(name, bytes) else name.encode('latin-1')
+        nb = name if isinstance(name, bytes) else name.encode('cp%d' % CODEPAGE)
         length = (31 + len(nb) + 3) & ~3
         if down is not None:
             length += 4
@@ -191,7 +218,7 @@ class Builder:
     # hanging off the "last" entry. A child holds the names before its item.
     @staticmethod
     def _esize(e, child):
-        nb = e[0] if isinstance(e[0], bytes) else e[0].encode('latin-1')
+        nb = e[0] if isinstance(e[0], bytes) else e[0].encode('cp%d' % CODEPAGE)
         return ((31 + len(nb) + 3) & ~3) + (4 if child is not None else 0)
 
     def _tree(self, items, tail):
@@ -260,7 +287,7 @@ class Builder:
             parent = me                                # root: its own parent
         entries = [(b'\x01\x01', DE_FIRST, ATTR_DIR, parent, 0)]
         kids = []
-        for child in sorted(os.listdir(path), key=lambda s: s.upper()) if path else []:
+        for child in sorted(os.listdir(path), key=hpfs_key) if path else []:
             full = os.path.join(path, child)
             if os.path.isdir(full):
                 lsn, size, attr = self.add_dir(full, child, me)
@@ -269,7 +296,7 @@ class Builder:
             if not is_83(child):
                 attr |= ATTR_NOT83
             kids.append((child, 0, attr, lsn, size))
-        names = [k[0].upper() for k in kids]
+        names = [hpfs_key(k[0]) for k in kids]
         if len(set(names)) != len(names):
             sys.exit("mkhpfs: names differ only in case in " + path)
         entries += kids
@@ -332,8 +359,23 @@ def main():
     struct.pack_into('<I', sb, 96, uid_table)
     v.put(16, sb)
 
+    # Code page: directory -> data sector holding one upper-case table
+    # (layouts as Linux hpfs.h: code_page_directory / code_page_data).
+    cpdir, cpdata = v.alloc(1), v.alloc(1)
+    d = bytearray(SECTOR)
+    struct.pack_into('<II', d, 0, 0x494521F7, 1)
+    struct.pack_into('<HHIIHH', d, 16, 0, CODEPAGE, 0, cpdata, 0, 0)
+    v.put(cpdir, d)
+    d = bytearray(SECTOR)
+    struct.pack_into('<II', d, 0, 0x894521F7, 1)
+    struct.pack_into('<H', d, 20, 26)                  # offs[0]: entry right after header
+    struct.pack_into('<HHH', d, 26, 0, CODEPAGE, 0)
+    d[32:32 + 128] = UPCASE
+    v.put(cpdata, d)
+
     sp = bytearray(SECTOR)
     struct.pack_into('<II', sp, 0, SP_MAGIC[0], SP_MAGIC[1])
+    struct.pack_into('<II', sp, 32, cpdir, 1)          # code_page_dir, n_code_pages
     v.put(17, sp)
 
     # Free-space bitmaps: bit set = free.

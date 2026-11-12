@@ -26,10 +26,10 @@
  *   the dnode with the names before that entry, so an in-order walk
  *   lists the directory.
  *
- * Lookups walk the whole directory tree in order and compare names
- * case-insensitively (ASCII), rather than trusting the B-tree's order,
- * so a collation difference can't hide a file. Every structure is
- * checked (signatures, bounds, depth) before use.
+ * Lookups descend the dnode B-tree, comparing names upper-cased through
+ * the volume's code page table (ASCII-only if it can't be loaded), and
+ * fall back to a full in-order walk when the tree is damaged. Every
+ * structure is checked (signatures, bounds, depth) before use.
  */
 
 #include "hpfs.h"
@@ -41,6 +41,10 @@
 #define FNODE_MAGIC      0xF7E40AAEu
 #define ANODE_MAGIC      0x37E40AAEu
 #define DNODE_MAGIC      0x77E40AAEu
+#define SP_MAGIC0        0xF9911849u           /* spareblock */
+#define SP_MAGIC1        0xFA5229C5u
+#define CPDIR_MAGIC      0x494521F7u           /* code page directory */
+#define CPDATA_MAGIC     0x894521F7u           /* code page data */
 
 #define DE_FIRST         0x01
 #define DE_DOWN          0x04
@@ -102,22 +106,32 @@ static int rd(hpfs_mount_t *m, uint32_t lsn, uint32_t count, void *buf)
     return blk_read(m->dev, lsn, count, buf);
 }
 
-static char upc(char c) { return (c >= 'a' && c <= 'z') ? (char)(c - 32) : c; }
+/* Upper case as HPFS does it: ASCII letters, and 80h..FFh through the
+ * volume's code page table (identity if it has none we could load). */
+static uint8_t upc(const hpfs_mount_t *m, uint8_t c)
+{
+    if (c >= 'a' && c <= 'z') return (uint8_t)(c - 32);
+    if (c >= 0x80 && c != 0xFF && m->codepage) return m->upcase[c - 0x80];
+    return c;
+}
 
-static int name_eq(const uint8_t *name, uint32_t len, const char *s, uint32_t slen)
+static int name_eq(const hpfs_mount_t *m, const uint8_t *name, uint32_t len,
+                   const char *s, uint32_t slen)
 {
     if (len != slen) return 0;
     for (uint32_t i = 0; i < len; i++)
-        if (upc((char)name[i]) != upc(s[i])) return 0;
+        if (upc(m, name[i]) != upc(m, (uint8_t)s[i])) return 0;
     return 1;
 }
 
-/* HPFS collation for ASCII names: upper-cased bytes, then length. */
-static int name_cmp(const char *s, uint32_t slen, const uint8_t *name, uint32_t len)
+/* HPFS collation: upper-cased bytes, then length (as Linux's
+ * hpfs_compare_names). */
+static int name_cmp(const hpfs_mount_t *m, const char *s, uint32_t slen,
+                    const uint8_t *name, uint32_t len)
 {
     uint32_t n = slen < len ? slen : len;
     for (uint32_t i = 0; i < n; i++) {
-        uint8_t a = (uint8_t)upc(s[i]), b = (uint8_t)upc((char)name[i]);
+        uint8_t a = upc(m, (uint8_t)s[i]), b = upc(m, name[i]);
         if (a != b) return a < b ? -1 : 1;
     }
     return slen < len ? -1 : slen > len ? 1 : 0;
@@ -271,7 +285,7 @@ static int btree_find(hpfs_mount_t *m, uint32_t root, const char *s, uint32_t sl
             if (len < DE_HDR + 1 || off + len > end || DE_HDR + p[30] > len) return -1;
             int has_down = (p[2] & DE_DOWN) && len >= DE_HDR + p[30] + 4u;
             if (!(p[2] & DE_FIRST)) {
-                int c = (p[2] & DE_LAST) ? -1 : name_cmp(s, slen, p + 31, p[30]);
+                int c = (p[2] & DE_LAST) ? -1 : name_cmp(m, s, slen, p + 31, p[30]);
                 if (c == 0) { entry_info(p, out); return 1; }
                 if (c < 0) {                      /* belongs before this entry */
                     if (!has_down) return 0;
@@ -294,8 +308,9 @@ static int ascii(const char *s, uint32_t n)
 }
 
 /* One path component in directory fnode `dir`. B-tree descent first; a
- * full in-order walk if the tree is damaged or the name isn't ASCII (the
- * volume's code page may order those differently). */
+ * full in-order walk if the tree is damaged, or for a non-ASCII name when
+ * the volume's code page table couldn't be loaded (its order is then
+ * unknown). */
 static int lookup(hpfs_mount_t *m, uint32_t dir, const char *s, uint32_t slen,
                   hpfs_info_t *out)
 {
@@ -303,13 +318,13 @@ static int lookup(hpfs_mount_t *m, uint32_t dir, const char *s, uint32_t slen,
     if (!root) return VFS_EIO;
     int r = btree_find(m, root, s, slen, out);
     if (r == 1) return VFS_OK;
-    if (r == 0 && ascii(s, slen)) return VFS_ENOENT;
+    if (r == 0 && (ascii(s, slen) || m->codepage)) return VFS_ENOENT;
 
     dwalk_t w;
     walk_start(&w, root);
     const uint8_t *p;
     while ((p = walk_next(m, &w)) != 0)
-        if (name_eq(p + 31, p[30], s, slen)) { entry_info(p, out); return VFS_OK; }
+        if (name_eq(m, p + 31, p[30], s, slen)) { entry_info(p, out); return VFS_OK; }
     return VFS_ENOENT;
 }
 
@@ -390,6 +405,27 @@ static int map_sector(hpfs_mount_t *m, const uint8_t *fnode, uint32_t fsec,
     return -1;
 }
 
+/* Code page upper-case table: spareblock (LSN 17) +32 code page directory
+ * (magic 494521F7, entry 0 at +16: +8 data sector, +12 index) -> code
+ * page data (magic 894521F7, +20 offsets[3]) -> entry: +2 code page
+ * number, +6 128-byte map for 80h..FFh (layouts as Linux hpfs.h /
+ * hpfs_load_code_page). Anything unexpected: leave ASCII-only. */
+static void load_codepage(hpfs_mount_t *m)
+{
+    uint8_t b[512];
+    m->codepage = 0;
+    if (rd(m, 17, 1, b) != 0 || le32(b) != SP_MAGIC0 || le32(b + 4) != SP_MAGIC1) return;
+    uint32_t dir = le32(b + 32);
+    if (!dir || rd(m, dir, 1, b) != 0 || le32(b) != CPDIR_MAGIC || !le32(b + 4)) return;
+    uint32_t data = le32(b + 16 + 8), idx = le16(b + 16 + 12);
+    if (idx >= 3 || !data || rd(m, data, 1, b) != 0 || le32(b) != CPDATA_MAGIC) return;
+    uint32_t off = le16(b + 20 + 2 * idx);
+    if (off < 26 || off + 6 + 128 > 512) return;
+    for (int i = 0; i < 128; i++) m->upcase[i] = b[off + 6 + i];
+    uint16_t num = le16(b + off + 2);
+    m->codepage = num ? num : 1;
+}
+
 /* ── VFS operations ───────────────────────────────────────────────────── */
 static int hpfs_mount_op(vfs_mount_t *mnt)
 {
@@ -416,8 +452,10 @@ static int hpfs_mount_op(vfs_mount_t *mnt)
         m->label[n] = 0;
     }
     if (!dir_root_dnode(m, m->root_fnode)) return VFS_EIO;
-    kprintf("[HPFS]   %s: HPFS v%u, %u sectors, root fnode %u%s%s\n", m->dev->name,
-            sb[8], m->n_sectors, m->root_fnode, m->label[0] ? ", label " : "", m->label);
+    load_codepage(m);
+    kprintf("[HPFS]   %s: HPFS v%u, %u sectors, root fnode %u%s%s, %s%u\n", m->dev->name,
+            sb[8], m->n_sectors, m->root_fnode, m->label[0] ? ", label " : "", m->label,
+            m->codepage ? "code page " : "no code page table, ASCII case only", m->codepage);
     return VFS_OK;
 }
 

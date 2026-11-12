@@ -85,6 +85,7 @@ typedef uint32_t HDIR;              /* Directory search handle */
 #define ERROR_NO_MORE_FILES         18
 #define ERROR_WRITE_PROTECT         19
 #define ERROR_NOT_DOS_DISK          26
+#define ERROR_READ_FAULT            30
 #define ERROR_SHARING_VIOLATION     32
 #define ERROR_HANDLE_EOF            38
 #define ERROR_HANDLE_DISK_FULL      39

@@ -76,7 +76,8 @@ APIRET vfs_to_os2_error(int vfs_error)
         case VFS_ERR_NOTDIR:   return ERROR_PATH_NOT_FOUND;
         case VFS_ERR_ISDIR:    return ERROR_ACCESS_DENIED;
         case VFS_ERR_ROFS:     return ERROR_WRITE_PROTECT;
-        case VFS_ERR_IO:       return ERROR_NOT_SUPPORTED;
+        case VFS_ERR_IO:       return ERROR_READ_FAULT;   /* e.g. medium removed */
+        case VFS_ERR_BUSY:     return ERROR_SHARING_VIOLATION;
         default:                return ERROR_NOT_SUPPORTED;
     }
 }

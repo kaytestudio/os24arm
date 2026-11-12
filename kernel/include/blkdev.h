@@ -58,6 +58,8 @@ void blk_init(void);
  */
 int blkdev_register(blkdev_t *dev);
 
+int blkdev_unregister(blkdev_t *dev);   /* + its partitions; 0 if found */
+
 /**
  * Get block device by name
  */

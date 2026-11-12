@@ -21,10 +21,10 @@
  * write-protect switch, and a protected medium stays read-only.
  *
  * Limits: one device, LUN 0, 512-byte sectors, up to 2 TB, no write
- * cache flush (SYNCHRONIZE CACHE) yet. Block devices can't be
- * unregistered, so an unplugged disk stays listed but fails every read;
- * plugging a disk in again reuses "usb0" (partitions aren't re-probed).
- */
+ * cache flush (SYNCHRONIZE CACHE) yet. Each attach registers a fresh
+ * usb0 (and re-reads its partitions); on removal the old one leaves the
+ * block device table and stops answering, so a filesystem left mounted
+ * on it fails cleanly and can never read or write the next disk. */
 
 #include "usbmsd.h"
 #include "usbd.h"
@@ -71,9 +71,16 @@ static uint8_t  setup_req[8]  __attribute__((aligned(8)));
 static uint8_t  cbw[32]       __attribute__((aligned(64)));
 static uint8_t  csw[16]       __attribute__((aligned(64)));
 static uint8_t  bounce[BOUNCE_SIZE] __attribute__((aligned(BOUNCE_SIZE)));
-static blkdev_t disk;
-static int      disk_registered;
-static int      wp;                 /* medium write-protected */
+/* One per attach. A disk that went away keeps its unit (and blkdev_t,
+ * which partitions and mounts may still point at) with present = 0, so
+ * anything left over from it fails instead of reaching the next disk. */
+typedef struct {
+    blkdev_t dev;                    /* "usb0"; partitions point here */
+    int      present;
+    int      wp;                     /* medium write-protected */
+} msd_unit_t;
+static msd_unit_t *unit;             /* the attached disk, or NULL */
+extern void *mem_alloc(size_t size);
 
 #define V(...) do { if (verbose) kprintf(__VA_ARGS__); } while (0)
 
@@ -227,10 +234,19 @@ static int write10(uint32_t lba, uint16_t count)
 }
 
 /* ── Block device ─────────────────────────────────────────────────────── */
+/* Partitions share the disk's driver_data, so dev->driver_data is the unit
+ * for both; sector is already absolute (blk_read adds start_sector). */
+static msd_unit_t *live_unit(blkdev_t *dev, int64_t sector, uint32_t count)
+{
+    msd_unit_t *u = dev ? dev->driver_data : 0;
+    if (!u || u != unit || !u->present || !present) return 0;
+    if (sector < 0 || sector + count > u->dev.num_sectors) return 0;
+    return u;
+}
+
 static int msd_read(blkdev_t *dev, int64_t sector, uint32_t count, void *buf)
 {
-    (void)dev;
-    if (!present || sector < 0 || sector + count > disk.num_sectors) return -1;
+    if (!live_unit(dev, sector, count)) return -1;
     uint8_t *out = buf;
     while (count) {
         uint32_t n = count > BOUNCE_SIZE / SECTOR ? BOUNCE_SIZE / SECTOR : count;
@@ -245,8 +261,8 @@ static int msd_read(blkdev_t *dev, int64_t sector, uint32_t count, void *buf)
 
 static int msd_write(blkdev_t *dev, int64_t sector, uint32_t count, const void *buf)
 {
-    (void)dev;
-    if (!present || wp || sector < 0 || sector + count > disk.num_sectors) return -1;
+    msd_unit_t *u = live_unit(dev, sector, count);
+    if (!u || u->wp) return -1;
     const uint8_t *in = buf;
     while (count) {
         uint32_t n = count > BOUNCE_SIZE / SECTOR ? BOUNCE_SIZE / SECTOR : count;
@@ -305,42 +321,54 @@ static void bring_up(void)
     /* Write protect: MODE SENSE(6) header byte 2 bit 7. Devices that
      * don't support the command are treated as writable. */
     static const uint8_t msense[6] = { SCSI_MODE_SENSE6, 0, 0x3F, 0, 4, 0 };
-    wp = scsi_in(msense, 6, 4) >= 3 && (bounce[2] & 0x80);
+    int wp = scsi_in(msense, 6, 4) >= 3 && (bounce[2] & 0x80);
 
-    disk.num_sectors = (int64_t)last + 1;
-    if (!disk_registered) {
-        usb_copy(disk.name, "usb0", 5);
-        disk.start_sector = 0;
-        disk.sector_size  = SECTOR;
-        disk.read         = msd_read;
-        disk.write        = msd_write;   /* partitions copy this pointer */
-        disk.driver_data  = 0;
-    }
-    disk.flags = BLKDEV_REMOVABLE | (wp ? BLKDEV_READONLY : 0);
+    msd_unit_t *u = mem_alloc(sizeof *u);
+    if (!u) { V("[USBMSD] out of memory\n"); return; }
+    usb_zero(u, sizeof *u);
+    usb_copy(u->dev.name, "usb0", 5);
+    u->dev.num_sectors = (int64_t)last + 1;
+    u->dev.sector_size = SECTOR;
+    u->dev.read        = msd_read;
+    u->dev.write       = msd_write;           /* partitions copy these */
+    u->dev.driver_data = u;
+    u->dev.flags       = BLKDEV_REMOVABLE | (wp ? BLKDEV_READONLY : 0);
+    u->wp              = wp;
+    u->present         = 1;
     V("[USBMSD] usb0: %s %s, %u sectors (%u MB), %s\n", vendor, product,
-      (unsigned)disk.num_sectors, (unsigned)(disk.num_sectors / 2048),
+      (unsigned)u->dev.num_sectors, (unsigned)(u->dev.num_sectors / 2048),
       wp ? "write-protected" : "read/write");
-    if (!disk_registered && blkdev_register(&disk) == 0) {
-        disk_registered = 1;
-        gpt_probe(&disk);
-        /* GPT names partitions after their labels; a USB disk made from
-         * the same image as the boot disk would otherwise shadow its
-         * "BOOT"/"C". Use usb0p1, usb0p2, ... instead. */
-        int part = 0;
-        for (int i = 0; ; i++) {
-            blkdev_t *b = blkdev_get_by_index(i);
-            if (!b) break;
-            if (b->parent != &disk) continue;
-            char *nm = b->name;
-            V("[USBMSD] usb0p%d: partition '%s', %u sectors\n", part + 1, nm,
-              (unsigned)b->num_sectors);
-            usb_copy(nm, "usb0p", 5);
-            nm[5] = (char)('1' + part);
-            nm[6] = 0;
-            if (++part == 9) break;
-        }
-        if (!part) mbr_probe(&disk);                 /* usb0p1..4, p5+ logical */
+    if (blkdev_register(&u->dev) != 0) { V("[USBMSD] block device table full\n"); return; }
+    unit = u;
+
+    /* Partitions, read fresh from this disk. GPT names partitions after
+     * their labels; a USB disk made from the same image as the boot disk
+     * would otherwise shadow its "BOOT"/"C", so use usb0p1, usb0p2, ... */
+    gpt_probe(&u->dev);
+    int part = 0;
+    for (int i = 0; ; i++) {
+        blkdev_t *b = blkdev_get_by_index(i);
+        if (!b) break;
+        if (b->parent != &u->dev) continue;
+        char *nm = b->name;
+        V("[USBMSD] usb0p%d: partition '%s', %u sectors\n", part + 1, nm,
+          (unsigned)b->num_sectors);
+        usb_copy(nm, "usb0p", 5);
+        nm[5] = (char)('1' + part);
+        nm[6] = 0;
+        if (++part == 9) break;
     }
+    if (!part) mbr_probe(&u->dev);                  /* usb0p1..4, p5+ logical */
+}
+
+/* The disk is gone: its unit stops answering, and usb0 + partitions leave
+ * the block device table so the next disk registers fresh. */
+static void drop_unit(void)
+{
+    if (!unit) return;
+    unit->present = 0;
+    blkdev_unregister(&unit->dev);
+    unit = 0;
 }
 
 /* ── CHKSERV ──────────────────────────────────────────────────────────── */
@@ -426,7 +454,8 @@ static void usbmsd_idc(RP_GENIOCTL *rp)
             USBDetach *d = rp->ParmPacket;
             if (d && active && d->controllerId == ctrl && d->deviceAddress == addr) {
                 active = present = 0;
-                V("[USBMSD] usb0 detached (reads now fail)\n");
+                drop_unit();
+                V("[USBMSD] usb0 removed (anything still mounted on it now fails)\n");
             }
             break;
         }

@@ -30,6 +30,22 @@ int blkdev_register(blkdev_t *dev)
     return 0;
 }
 
+/* Remove a device and every partition registered on it (removable media
+ * gone). The structures stay allocated - a filesystem still mounted on
+ * one keeps a valid pointer whose reads simply fail. */
+int blkdev_unregister(blkdev_t *dev)
+{
+    int n = 0, removed = 0;
+    for (int i = 0; i < blkdev_count; i++) {
+        blkdev_t *d = blkdevs[i];
+        if (d == dev || d->parent == dev) { removed++; continue; }
+        blkdevs[n++] = d;
+    }
+    for (int i = n; i < blkdev_count; i++) blkdevs[i] = NULL;
+    blkdev_count = n;
+    return removed ? 0 : -1;
+}
+
 blkdev_t *blkdev_get_by_index(int index)
 {
     if (index < 0 || index >= blkdev_count) return NULL;

@@ -40,6 +40,8 @@ static void print_dos_error(const char *cmd, APIRET rc)
         case ERROR_INVALID_DRIVE:   uart_puts("Invalid drive or filesystem not mounted\r\n"); break;
         case ERROR_NO_MORE_FILES:   uart_puts("File not found\r\n"); break;
         case ERROR_WRITE_PROTECT:   uart_puts("Disk is write-protected\r\n"); break;
+        case ERROR_READ_FAULT:      uart_puts("Error reading drive (removed or damaged?)\r\n"); break;
+        case ERROR_SHARING_VIOLATION: uart_puts("File or drive in use\r\n"); break;
         case ERROR_NOT_SUPPORTED:   uart_puts("Not supported by this filesystem\r\n"); break;
         case ERROR_INVALID_PARAMETER: uart_puts("Invalid parameter\r\n"); break;
         case ERROR_BUFFER_OVERFLOW: uart_puts("Path too long\r\n"); break;
