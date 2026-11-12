@@ -96,15 +96,20 @@ platform-specific are new code.
    isn't installed.
    Tests: `wlrtest` (headless backend, scene graph, xdg-shell client,
    output pixels checked), `evtest` (prints evdev events).
-6. **Compositor** *(tinywl runs)*. `userland/build-compositor.sh` builds
-   wlroots' `tinywl` (patched at build time: os2 backend, fallback keymap,
-   `-s` client started without a shell) and `wlclient`, a small xdg-shell
-   client. In QEMU, `tinywl -s /h/wlclient` shows the client's window on
-   the virtio-gpu display, keyboard and pointer input reach it, Alt+Esc
-   quits. Try it: `scripts/run-vm.sh --wayland`, then `MOUNT usb0p1 \h`
-   and `RUNELF \h\tinywl -s /h/wlclient`. Next: a real compositor (e.g.
-   `cage`, `labwc`), xkeyboard-config and cursor themes on a volume. The in-kernel compositor (`kernel/src/gui/
-   wayland.c`, `GUI`) stays as the fallback console GUI.
+6. **Compositors** *(tinywl and cage run)*. `userland/build-compositor.sh`
+   builds wlroots' `tinywl` and the `cage` kiosk compositor (0.2.1, pinned
+   download), both patched at build time - os2 backend, the built-in
+   keymap when xkeyboard-config is missing, `tinywl -s` without a shell,
+   cage without VT switching or XWayland - and `wlclient`, a small
+   xdg-shell client. In QEMU both show the client on the virtio-gpu
+   display with a software cursor; keyboard and pointer input reach it;
+   tinywl quits on Alt+Esc, cage when its application exits (and returns
+   its status). Try it: `scripts/run-vm.sh --wayland`, `MOUNT usb0p1 \h`,
+   then `RUNELF \h\cage /h/wlclient` or `RUNELF \h\tinywl -s
+   /h/wlclient`. Next: xkeyboard-config and cursor themes on a volume,
+   real Wayland applications (e.g. foot, which needs fontconfig/freetype),
+   threads. The in-kernel compositor (`kernel/src/gui/wayland.c`, `GUI`)
+   stays as the fallback console GUI.
 
 ## Building the toolchain pieces
 

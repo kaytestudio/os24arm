@@ -231,6 +231,7 @@ typedef struct {
     int      fd;
     uint32_t events;
     lx_u64   data;
+    int      disarmed;                /* EPOLLONESHOT item reported; until EPOLL_CTL_MOD */
 } epitem_t;
 
 typedef struct {
@@ -2312,7 +2313,7 @@ static uint32_t ep_ready(epoll_t *ep, int depth)
     uint32_t any = 0;
     for (int i = 0; i < ep->n; i++) {
         uint32_t want = ep->it[i].events | PERR | PHUP;
-        if (f_poll(ep->it[i].f, depth + 1) & want) { any = 1; break; }
+        if (!ep->it[i].disarmed && (f_poll(ep->it[i].f, depth + 1) & want)) { any = 1; break; }
     }
     return any ? PIN : 0;
 }
@@ -2515,7 +2516,7 @@ static s64 sys_epoll_ctl(lx_u64 epfd, lx_u64 op, lx_u64 fd, lx_u64 uev)
     case 1:                                             /* ADD */
         if (at >= 0) return -EEXIST;
         if (ep->n >= EPOLL_ITEMS) return -ENOSPC;
-        ep->it[ep->n++] = (epitem_t){ f, (int)fd, events, data };
+        ep->it[ep->n++] = (epitem_t){ f, (int)fd, events, data, 0 };
         break;
     case 2:                                             /* DEL */
         if (at < 0) return -ENOENT;
@@ -2525,6 +2526,7 @@ static s64 sys_epoll_ctl(lx_u64 epfd, lx_u64 op, lx_u64 fd, lx_u64 uev)
         if (at < 0) return -ENOENT;
         ep->it[at].events = events;
         ep->it[at].data = data;
+        ep->it[at].disarmed = 0;
         break;
     default: return -EINVAL;
     }
@@ -2549,14 +2551,16 @@ static s64 sys_epoll_pwait(lx_u64 epfd, lx_u64 uev, lx_u64 max, s64 timeout_ms, 
         lx_u64 wake = deadline;
         for (int i = 0; i < ep->n && (lx_u64)n < max; i++) {
             epitem_t *it = &ep->it[i];
+            if (it->disarmed) continue;
+            /* EPOLLERR / EPOLLHUP are reported even when not asked for */
             uint32_t m = f_poll(it->f, 1) & (it->events | PERR | PHUP);
             wake = dmin(wake, f_deadline(it->f, 1));
-            if (!m || !(it->events & ~(EPOLLONESHOT | EPOLLET) )) continue;
+            if (!m) continue;
             uint8_t *o = (uint8_t *)(uintptr_t)(uev + 16 * (lx_u64)n);
             *(uint32_t *)o = m;
             *(lx_u64 *)(o + 8) = it->data;
             n++;
-            if (it->events & EPOLLONESHOT) it->events &= EPOLLONESHOT | EPOLLET;
+            if (it->events & EPOLLONESHOT) it->disarmed = 1;
         }
         if (n || timeout_ms == 0) { ret = n; break; }
         if (deadline && ticks() >= deadline) { ret = 0; break; }

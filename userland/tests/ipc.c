@@ -124,6 +124,29 @@ int main(void)
     read(efd, &v, 8);
     CHECK(epoll_wait(ep, out, 8, 50) == 0, "epoll: timeout");
     epoll_ctl(ep, EPOLL_CTL_DEL, efd, 0);
+    /* hang-up is reported without being asked for (events = 0), as cage's
+     * child-exit pipe relies on; EPOLLONESHOT disarms until EPOLL_CTL_MOD */
+    {
+        int hp[2];
+        pipe(hp);
+        struct epoll_event e0 = { .events = 0, .data.u64 = 0x4444 };
+        epoll_ctl(ep, EPOLL_CTL_ADD, hp[0], &e0);
+        CHECK(epoll_wait(ep, out, 8, 0) == 0, "epoll: events=0, writer open: nothing");
+        close(hp[1]);
+        n = epoll_wait(ep, out, 8, 100);
+        CHECK(n == 1 && out[0].data.u64 == 0x4444 && (out[0].events & EPOLLHUP), "epoll: EPOLLHUP reported unasked");
+        epoll_ctl(ep, EPOLL_CTL_DEL, hp[0], 0);
+        close(hp[0]);
+        v = 1; write(efd, &v, 8);
+        struct epoll_event e1 = { .events = EPOLLIN | EPOLLONESHOT, .data.u64 = 0x5555 };
+        epoll_ctl(ep, EPOLL_CTL_ADD, efd, &e1);
+        int a1 = epoll_wait(ep, out, 8, 0), a2 = epoll_wait(ep, out, 8, 0);
+        epoll_ctl(ep, EPOLL_CTL_MOD, efd, &e1);
+        int a3 = epoll_wait(ep, out, 8, 0);
+        CHECK(a1 == 1 && a2 == 0 && a3 == 1, "epoll: EPOLLONESHOT %d, disarmed %d, re-armed %d", a1, a2, a3);
+        epoll_ctl(ep, EPOLL_CTL_DEL, efd, 0);
+        read(efd, &v, 8);
+    }
 
     /* signal handler, siginfo */
     struct sigaction sa = { 0 };
