@@ -119,8 +119,9 @@ if(TARGET_ARCH STREQUAL "aarch64")
             rexx
             ext4            # ← ext4 filesystem driver
             btrfs           # ← btrfs filesystem driver
-            usb             # ← USB driver (stub)
+            usb             # ← USB: xHCI + HID boot keyboard
     )
+    target_compile_definitions(os2warp_kernel PRIVATE HAVE_XHCI)
 else()
     # BeagleBone Black / BeagleV-Ahead: OS/2 API over the VFS, microSD
     # mounted at boot (see beagle_main.c)
