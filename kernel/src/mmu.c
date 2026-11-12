@@ -136,7 +136,10 @@ static uint64_t mmu_l2_ram[MMU_L2_ENTRIES];
 #define POOL_PAGES        ((MMU_POOL_END - MMU_POOL_BASE) / MMU_PAGE)
 #define MAX_AS            32
 
+#define MMU_SW_SHARED     (1UL << 55)         /* software bit: frame shared, not copied by fork */
+
 static uint8_t pool_bitmap[POOL_PAGES / 8];   /* bit set = frame in use */
+static uint16_t frame_refs[POOL_PAGES];       /* references to single frames (mmu_frame_get/put) */
 static unsigned long pool_free = POOL_PAGES, pool_hint;
 
 struct mmu_as {
@@ -165,7 +168,7 @@ void *mmu_frames_alloc(unsigned long n)
             pool_free -= n;
             pool_hint = i + n;
             void *p = (void *)(MMU_POOL_BASE + i * MMU_PAGE);
-            for (k = 0; k < n; k++) zero_page((uint8_t *)p + k * MMU_PAGE);
+            for (k = 0; k < n; k++) { zero_page((uint8_t *)p + k * MMU_PAGE); frame_refs[i + k] = 1; }
             return p;
         }
     return 0;
@@ -178,12 +181,32 @@ void mmu_frames_free(void *p, unsigned long n)
     for (unsigned long k = 0; k < n; k++)
         if (pool_bitmap[(i + k) / 8] & (1u << ((i + k) % 8))) {
             pool_bitmap[(i + k) / 8] &= (uint8_t)~(1u << ((i + k) % 8));
+            frame_refs[i + k] = 0;
             pool_free++;
         }
     if (i < pool_hint) pool_hint = i;
 }
 
 unsigned long mmu_frames_free_count(void) { return pool_free; }
+
+static long frame_index(unsigned long pa)
+{
+    if (pa < MMU_POOL_BASE || pa >= MMU_POOL_END) return -1;
+    return (long)((pa - MMU_POOL_BASE) / MMU_PAGE);
+}
+
+void mmu_frame_get(void *frame)
+{
+    long i = frame_index((unsigned long)(uintptr_t)frame);
+    if (i >= 0 && frame_refs[i] && frame_refs[i] < 0xFFFF) frame_refs[i]++;
+}
+
+void mmu_frame_put(void *frame)
+{
+    long i = frame_index((unsigned long)(uintptr_t)frame);
+    if (i < 0 || !frame_refs[i]) return;
+    if (--frame_refs[i] == 0) mmu_frames_free(frame, 1);
+}
 
 static void mmu_tlb_flush(void)
 {
@@ -236,7 +259,7 @@ void mmu_as_unmap(mmu_as_t *as, unsigned long va, unsigned long len)
     for (unsigned long a = start; a < end && a >= start; a += MMU_PAGE) {
         uint64_t *p = pte(as, a, 0);
         if (p && (*p & 1)) {
-            mmu_frames_free((void *)(uintptr_t)(*p & MMU_PA_MASK), 1);
+            mmu_frame_put((void *)(uintptr_t)(*p & MMU_PA_MASK));
             *p = 0;
         }
     }
@@ -262,9 +285,27 @@ int mmu_as_map(mmu_as_t *as, unsigned long va, unsigned long len, int prot)
     for (unsigned long a = start; a < end; a += MMU_PAGE) {
         uint64_t *p = pte(as, a, 1);
         if (!p) return -1;
-        uint64_t frame = *p & 1 ? (*p & MMU_PA_MASK) : (uint64_t)(uintptr_t)mmu_frames_alloc(1);
+        uint64_t frame = *p & 1 ? (*p & (MMU_PA_MASK | MMU_SW_SHARED))
+                                : (uint64_t)(uintptr_t)mmu_frames_alloc(1);
         if (!frame) { if (as == as_active) mmu_tlb_flush(); return -1; }
         *p = frame | attrs;
+    }
+    if (as == as_active) mmu_tlb_flush();
+    return 0;
+}
+
+int mmu_as_map_shared(mmu_as_t *as, unsigned long va, void *const *frames, unsigned long n, int prot)
+{
+    if ((va & (MMU_PAGE - 1)) || va < MMU_USER_BASE || n > MMU_USER_SIZE / MMU_PAGE ||
+        va + n * MMU_PAGE > MMU_USER_BASE + MMU_USER_SIZE)
+        return -1;
+    uint64_t attrs = page_attrs(prot) | MMU_SW_SHARED;
+    for (unsigned long k = 0; k < n; k++) {
+        uint64_t *p = pte(as, va + k * MMU_PAGE, 1);
+        if (!p) { mmu_as_unmap(as, va, k * MMU_PAGE); return -1; }
+        if (*p & 1) mmu_frame_put((void *)(uintptr_t)(*p & MMU_PA_MASK));
+        mmu_frame_get(frames[k]);
+        *p = (uint64_t)(uintptr_t)frames[k] | attrs;
     }
     if (as == as_active) mmu_tlb_flush();
     return 0;
@@ -277,7 +318,7 @@ int mmu_as_protect(mmu_as_t *as, unsigned long va, unsigned long len, int prot)
     for (unsigned long a = start; a < end && a >= start; a += MMU_PAGE) {
         uint64_t *p = pte(as, a, 0);
         if (!p || !(*p & 1)) return -1;
-        *p = (*p & MMU_PA_MASK) | attrs;
+        *p = (*p & (MMU_PA_MASK | MMU_SW_SHARED)) | attrs;
     }
     if (as == as_active) mmu_tlb_flush();
     return 0;
@@ -294,6 +335,11 @@ mmu_as_t *mmu_as_fork(mmu_as_t *parent)
             if (!(e & 1)) continue;
             unsigned long va = MMU_USER_BASE + t * MMU_BLOCK_2MB + (unsigned long)j * MMU_PAGE;
             uint64_t *p = pte(as, va, 1);
+            if (p && (e & MMU_SW_SHARED)) {           /* MAP_SHARED: same frame */
+                mmu_frame_get((void *)(uintptr_t)(e & MMU_PA_MASK));
+                *p = e;
+                continue;
+            }
             void *frame = mmu_frames_alloc(1);
             if (!p || !frame) { if (frame) mmu_frames_free(frame, 1); mmu_as_destroy(as); return 0; }
             const uint64_t *src = (const uint64_t *)(uintptr_t)(e & MMU_PA_MASK);

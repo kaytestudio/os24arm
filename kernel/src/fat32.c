@@ -787,7 +787,19 @@ static int fat32_vfs_unlink(vfs_mount_t *mnt, const char *path)
     uint32_t dir_cluster, entry_idx;
     if (fat32_resolve(m, path, &de, &dir_cluster, &entry_idx, NULL) != VFS_OK)
         return VFS_ENOENT;
-    if (de.attr & FAT32_ATTR_DIR) return VFS_EISDIR;
+    if (de.attr & FAT32_ATTR_DIR) {
+        /* A directory goes only when empty (VFS_EISDIR otherwise, as the
+         * other drivers report it): nothing but ".", ".." and deleted or
+         * long-name entries. The root has no entry of its own. */
+        uint32_t dc = dirent_cluster(m, &de);
+        if (dc < 2) return VFS_EISDIR;
+        for (uint32_t i = 0; ; i++) {
+            fat32_dirent_t e;
+            if (fat32_read_dirent(m, dc, i, &e) != 0 || e.name[0] == 0x00) break;
+            if ((uint8_t)e.name[0] == 0xE5 || e.attr == FAT32_ATTR_LFN || e.name[0] == '.') continue;
+            return VFS_EISDIR;
+        }
+    }
 
     /* Free cluster chain */
     uint32_t c = dirent_cluster(m, &de);

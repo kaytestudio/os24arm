@@ -52,6 +52,12 @@ int  mmu_as_map(mmu_as_t *as, unsigned long va, unsigned long len, int prot);
 int  mmu_as_protect(mmu_as_t *as, unsigned long va, unsigned long len, int prot);
 void mmu_as_unmap(mmu_as_t *as, unsigned long va, unsigned long len);
 
+/* Map n given frames at va (page aligned) as shared pages: each gains a
+ * reference (mmu_frame_get), fork shares rather than copies them, unmap
+ * drops the reference. Used for MAP_SHARED (memfd, shared anonymous). */
+int  mmu_as_map_shared(mmu_as_t *as, unsigned long va, void *const *frames, unsigned long n,
+                       int prot);
+
 /* In the active address space: is every page mapped and allowing prot? */
 int  mmu_user_mapped(unsigned long va, unsigned long len, int prot);
 
@@ -59,5 +65,9 @@ int  mmu_user_mapped(unsigned long va, unsigned long len, int prot);
 void         *mmu_frames_alloc(unsigned long n);
 void          mmu_frames_free(void *p, unsigned long n);
 unsigned long mmu_frames_free_count(void);
+/* Single frames are reference counted (mmu_frames_alloc returns them with
+ * one reference; the last mmu_frame_put frees). */
+void          mmu_frame_get(void *frame);
+void          mmu_frame_put(void *frame);
 
 #endif /* MMU_H */

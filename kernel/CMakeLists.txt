@@ -53,6 +53,7 @@ else()
             src/mmu.c    # ← identity-mapped MMU bring-up (QEMU virt memory map only)
             src/linux/linux.c   # ← Linux-ABI user mode: ELF loader + syscalls (userland/README.md)
             src/linux/el0.S     # ← EL0 entry/exit and trap frame
+            src/ramfs.c         # ← in-memory file system for /TMP
             src/hyp.c           # ← EL2 hypervisor: stage 2, vCPU run loop, VM command
             src/hyp_entry.S     # ← EL2 vectors + guest/host world switch
             src/vgic.c          # ← emulated GICv2 the guest sees

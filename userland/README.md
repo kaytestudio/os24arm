@@ -33,23 +33,34 @@ platform-specific are new code.
    `mmap`, file I/O through the VFS, console I/O. One program at a time,
    in a fixed user window of the identity map. Shell: `RUNELF path args`.
    Test: musl-built programs (hello, malloc, file read, clock).
-2. **Processes** *(done, except preemption and signal handlers)*.
+2. **Processes** *(done, except preemption)*.
    Per-process address spaces (page frames from a pool at
    0x64000000-0x80000000, TTBR0 switch), per-process kernel stacks, up to
-   16 processes. `clone` as `fork` (address space copied) and as
-   `CLONE_VM|CLONE_VFORK` (musl's `posix_spawn`), `execve`, `exit` /
-   zombies / `wait4`, `kill` (default actions), `getpid`/`getppid`,
-   shared open-file objects (fork and `dup` share offsets), `pipe2`,
-   `dup`/`dup3`/`fcntl`, close-on-exec, per-process `tpidr_el0`, Ctrl-C at
-   the console -> SIGINT. Scheduling is cooperative (switch on block or
-   `sched_yield`). Still to do: preemption from the timer interrupt,
-   `rt_sigaction` handlers (SIGCHLD/SIGPIPE), threads (`CLONE_THREAD`,
-   futex). Tests: `procs` (fork/wait, pipes, posix_spawn, execve, kill),
-   `cat` (console input, Ctrl-D, Ctrl-C).
-3. **Event and IPC primitives.** `poll`/`ppoll`, `epoll`, `eventfd`,
-   `timerfd`, `signalfd`, `pipe2`; `AF_UNIX` stream sockets with
-   `SCM_RIGHTS`; `memfd_create` + `MAP_SHARED` mappings shared between
-   processes; `/dev/null`, `/dev/urandom`, `/proc/self` basics.
+   16 processes. `clone` as `fork` (address space copied, `MAP_SHARED`
+   pages shared) and as `CLONE_VM|CLONE_VFORK` (musl's `posix_spawn`),
+   `execve`, `exit` / zombies / `wait4`, `getpid`/`getppid`, shared
+   open-file objects (fork and `dup` share offsets), close-on-exec,
+   per-process `tpidr_el0`. Scheduling is cooperative (switch on block or
+   `sched_yield`); waits can have deadlines. Still to do: preemption from
+   the timer interrupt, threads (`CLONE_THREAD`, futex).
+   Tests: `procs` (fork/wait, pipes, posix_spawn, execve, kill), `cat`
+   (console input, Ctrl-D, Ctrl-C).
+3. **Event and IPC primitives** *(done)*.
+   Signals: `rt_sigaction` handlers run on the user stack with a
+   Linux-layout `rt_sigframe` (siginfo, ucontext, FP/SIMD record) and
+   return via `rt_sigreturn`; `SA_RESTART`/`SA_NODEFER`/`SA_RESETHAND`,
+   masks, pending sets, `rt_sigsuspend`, default actions, SIGCHLD on child
+   exit, SIGPIPE, Ctrl-C -> SIGINT. `ppoll`, `pselect6`, `epoll`
+   (`create1`/`ctl`/`pwait`/`pwait2`, `EPOLLONESHOT`), `eventfd2`,
+   `timerfd_*`, `signalfd4`, `pipe2`; `AF_UNIX` stream sockets (`bind`/
+   `listen`/`accept4`/`connect`, `socketpair`, `sendmsg`/`recvmsg` with
+   `SCM_RIGHTS`, `SO_PEERCRED`, `shutdown`); `memfd_create` + `ftruncate`
+   + `mmap(MAP_SHARED)` (frames are reference counted and shared between
+   processes), shared anonymous mappings; `/dev/null`, `/dev/zero`,
+   `/dev/urandom`; `/tmp` is a RAM file system (`kernel/src/ramfs.c`,
+   `XDG_RUNTIME_DIR=/tmp`), `flock` always succeeds (one user). Not done:
+   datagram/seqpacket sockets, `/proc`.
+   Tests: `ipc` (all of the above), `fsops` (directory ops on a volume).
 4. **Libraries.** Cross-build libffi, libwayland (server + client +
    `wayland-scanner` host tool), pixman, libxkbcommon (with a compiled-in
    keymap; no X11 data files at runtime), against the musl sysroot.
