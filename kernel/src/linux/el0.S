@@ -1,6 +1,6 @@
 /*
- * kernel/src/linux/el0.S - entering and leaving EL0 for the Linux-ABI user
- * mode (see linux.c).
+ * kernel/src/linux/el0.S - EL0 trap entry/return and kernel context switch
+ * for the Linux-ABI user mode (see linux.c).
  *
  * Trap frame (linux_tf_t in linux_abi.h), built on the EL1 stack when an
  * exception is taken from EL0:
@@ -35,111 +35,34 @@
     .text
     .balign 4
 
-/* long el0_run(uint64_t entry, uint64_t user_sp, uint64_t kctx[13])
- * Saves the callee-saved registers and the kernel stack pointer in kctx,
- * then drops to EL0 at entry with sp_el0 = user_sp and every register
- * cleared. Returns (via el0_exit) with the program's exit status. */
-    .global el0_run
-el0_run:
-    stp     x19, x20, [x2, #0]
-    stp     x21, x22, [x2, #16]
-    stp     x23, x24, [x2, #32]
-    stp     x25, x26, [x2, #48]
-    stp     x27, x28, [x2, #64]
-    stp     x29, x30, [x2, #80]
+/* void cpu_switch(uint64_t save[13], const uint64_t load[13])
+ * Kernel context switch: saves x19-x30 and sp into save, loads them from
+ * load, and returns into whatever context load describes. */
+    .global cpu_switch
+cpu_switch:
+    stp     x19, x20, [x0, #0]
+    stp     x21, x22, [x0, #16]
+    stp     x23, x24, [x0, #32]
+    stp     x25, x26, [x0, #48]
+    stp     x27, x28, [x0, #64]
+    stp     x29, x30, [x0, #80]
     mov     x9, sp
-    str     x9, [x2, #96]
-
-    msr     elr_el1, x0
-    msr     sp_el0, x1
-    mov     x9, #0x3c0                  /* EL0t, DAIF masked (no preemption yet) */
-    msr     spsr_el1, x9
-    msr     fpsr, xzr
-    msr     fpcr, xzr
-    msr     tpidr_el0, xzr
-    align_check 0
-
-    /* No kernel values leak into the program. */
-    movi    v0.2d, #0
-    movi    v1.2d, #0
-    movi    v2.2d, #0
-    movi    v3.2d, #0
-    movi    v4.2d, #0
-    movi    v5.2d, #0
-    movi    v6.2d, #0
-    movi    v7.2d, #0
-    movi    v8.2d, #0
-    movi    v9.2d, #0
-    movi    v10.2d, #0
-    movi    v11.2d, #0
-    movi    v12.2d, #0
-    movi    v13.2d, #0
-    movi    v14.2d, #0
-    movi    v15.2d, #0
-    movi    v16.2d, #0
-    movi    v17.2d, #0
-    movi    v18.2d, #0
-    movi    v19.2d, #0
-    movi    v20.2d, #0
-    movi    v21.2d, #0
-    movi    v22.2d, #0
-    movi    v23.2d, #0
-    movi    v24.2d, #0
-    movi    v25.2d, #0
-    movi    v26.2d, #0
-    movi    v27.2d, #0
-    movi    v28.2d, #0
-    movi    v29.2d, #0
-    movi    v30.2d, #0
-    movi    v31.2d, #0
-    mov     x0, #0
-    mov     x1, #0
-    mov     x2, #0
-    mov     x3, #0
-    mov     x4, #0
-    mov     x5, #0
-    mov     x6, #0
-    mov     x7, #0
-    mov     x8, #0
-    mov     x9, #0
-    mov     x10, #0
-    mov     x11, #0
-    mov     x12, #0
-    mov     x13, #0
-    mov     x14, #0
-    mov     x15, #0
-    mov     x16, #0
-    mov     x17, #0
-    mov     x18, #0
-    mov     x19, #0
-    mov     x20, #0
-    mov     x21, #0
-    mov     x22, #0
-    mov     x23, #0
-    mov     x24, #0
-    mov     x25, #0
-    mov     x26, #0
-    mov     x27, #0
-    mov     x28, #0
-    mov     x29, #0
-    mov     x30, #0
-    eret
-
-/* void el0_exit(uint64_t kctx[13], long status) - from a syscall or fault
- * handler: abandon the trap frame(s) and return from el0_run(). */
-    .global el0_exit
-el0_exit:
-    align_check 1
-    ldp     x19, x20, [x0, #0]
-    ldp     x21, x22, [x0, #16]
-    ldp     x23, x24, [x0, #32]
-    ldp     x25, x26, [x0, #48]
-    ldp     x27, x28, [x0, #64]
-    ldp     x29, x30, [x0, #80]
-    ldr     x9, [x0, #96]
+    str     x9, [x0, #96]
+    ldp     x19, x20, [x1, #0]
+    ldp     x21, x22, [x1, #16]
+    ldp     x23, x24, [x1, #32]
+    ldp     x25, x26, [x1, #48]
+    ldp     x27, x28, [x1, #64]
+    ldp     x29, x30, [x1, #80]
+    ldr     x9, [x1, #96]
     mov     sp, x9
-    mov     x0, x1
     ret
+
+/* First return to EL0 of a new process: its kernel context was set up with
+ * sp = its trap frame and x30 = here (see new_kctx in linux.c). */
+    .global el0_start
+el0_start:
+    b       el0_restore
 
 /* Synchronous exception from EL0 (vector table: lower EL, AArch64). */
     .global el0_sync_entry
@@ -191,6 +114,7 @@ el0_sync_entry:
     align_check 1
     mov     x0, sp
     bl      linux_el0_trap
+el0_restore:                            /* sp = trap frame */
     align_check 0
 
     add     x9, sp, #784

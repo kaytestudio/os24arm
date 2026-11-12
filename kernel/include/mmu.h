@@ -22,23 +22,42 @@
  * needed. */
 void mmu_init(void);
 
-/* ── User (EL0) window ────────────────────────────────────────────────────
- * [MMU_USER_BASE, MMU_USER_BASE + MMU_USER_SIZE) is mapped with 4KB pages
- * (level-3 tables) so each page gets its own EL0 permissions; every page
- * starts unmapped. Identity mapped like the rest of RAM: VA == PA. Used by
- * the Linux-ABI user mode (kernel/src/linux). */
+/* ── User (EL0) address spaces ───────────────────────────────────────────
+ * Every process sees [MMU_USER_BASE, MMU_USER_BASE + MMU_USER_SIZE) mapped
+ * with 4 KB pages to frames of its own, with per-page EL0 permissions;
+ * the kernel's own tables leave that window unmapped. Frames come from
+ * [MMU_POOL_BASE, MMU_POOL_END), which the kernel keeps identity mapped.
+ * Used by the Linux-ABI user mode (kernel/src/linux). */
 #define MMU_USER_BASE  0x60000000UL
 #define MMU_USER_SIZE  (64UL * 1024 * 1024)
+#define MMU_POOL_BASE  0x64000000UL
+#define MMU_POOL_END   0x80000000UL
 
 #define MMU_PROT_READ  1
 #define MMU_PROT_WRITE 2
 #define MMU_PROT_EXEC  4
 
-/* Map / unmap [va, va+len) (page-rounded, inside the window) for EL0 with
- * PROT_* bits. Writable pages are never executable. 0 on success. */
-int  mmu_user_map(unsigned long va, unsigned long len, int prot);
-void mmu_user_unmap(unsigned long va, unsigned long len);
-void mmu_user_clear(void);                 /* unmap the whole window */
-int  mmu_user_mapped(unsigned long va, unsigned long len, int prot); /* all pages allow prot? */
+typedef struct mmu_as mmu_as_t;
+
+mmu_as_t *mmu_as_create(void);              /* empty user window */
+mmu_as_t *mmu_as_fork(mmu_as_t *parent);    /* copy of every mapped page */
+void      mmu_as_destroy(mmu_as_t *as);     /* frees its frames */
+void      mmu_as_activate(mmu_as_t *as);    /* TTBR0; NULL = kernel tables */
+mmu_as_t *mmu_as_current(void);
+
+/* [va, va+len), page-rounded: map (new pages zeroed; existing ones keep
+ * their contents and get prot), change permissions, unmap (frees). Writable
+ * pages are never executable. 0 on success. */
+int  mmu_as_map(mmu_as_t *as, unsigned long va, unsigned long len, int prot);
+int  mmu_as_protect(mmu_as_t *as, unsigned long va, unsigned long len, int prot);
+void mmu_as_unmap(mmu_as_t *as, unsigned long va, unsigned long len);
+
+/* In the active address space: is every page mapped and allowing prot? */
+int  mmu_user_mapped(unsigned long va, unsigned long len, int prot);
+
+/* Physical frames (zeroed), e.g. for kernel stacks. */
+void         *mmu_frames_alloc(unsigned long n);
+void          mmu_frames_free(void *p, unsigned long n);
+unsigned long mmu_frames_free_count(void);
 
 #endif /* MMU_H */

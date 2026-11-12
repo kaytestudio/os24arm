@@ -119,65 +119,208 @@ static uint64_t mmu_l2_ram[MMU_L2_ENTRIES];
 #define MMU_ATTRS_NORMAL_RX (MMU_DESC_BLOCK | MMU_ATTRINDX(MAIR_IDX_NORMAL) | \
                              MMU_DESC_AF | MMU_DESC_SH_INNER)
 
-/* ── User window: level-3 tables, 4KB pages (see mmu.h) ─────────────────── */
+/* ── User address spaces (see mmu.h) ──────────────────────────────────────
+ * Each address space has its own level-1 and level-2 tables - copies of
+ * the kernel's - whose user-window entries point to its own level-3
+ * tables. Those map user pages to frames from the physical pool, which
+ * the kernel keeps identity-mapped (so it can reach any frame by its
+ * physical address, e.g. to copy a parent's pages for fork). The kernel's
+ * own tables leave the user window unmapped. */
 #define MMU_PAGE          4096UL
 #define MMU_DESC_PAGE     (3UL << 0)          /* level 3: [1:0] = 0b11 page */
 #define MMU_AP_EL0_RW     (1UL << 6)          /* AP[2:1] = 01: EL1+EL0 read/write */
 #define MMU_AP_RO_ALL     (3UL << 6)          /* AP[2:1] = 11: EL1+EL0 read-only */
+#define MMU_PA_MASK       0x0000FFFFFFFFF000UL
 #define MMU_USER_L3S      (MMU_USER_SIZE / MMU_BLOCK_2MB)
-__attribute__((aligned(4096)))
-static uint64_t mmu_user_l3[MMU_USER_L3S][512];
+#define MMU_USER_L2_FIRST ((MMU_USER_BASE - MMU_L2_BASE) / MMU_BLOCK_2MB)
+#define POOL_PAGES        ((MMU_POOL_END - MMU_POOL_BASE) / MMU_PAGE)
+#define MAX_AS            32
+
+static uint8_t pool_bitmap[POOL_PAGES / 8];   /* bit set = frame in use */
+static unsigned long pool_free = POOL_PAGES, pool_hint;
+
+struct mmu_as {
+    int       used;
+    uint64_t *l1, *l2;                        /* frames */
+    uint64_t *l3[MMU_USER_L3S];               /* frames, NULL = nothing mapped there */
+};
+static mmu_as_t as_pool[MAX_AS];
+static mmu_as_t *as_active;
+
+static void zero_page(void *p)
+{
+    uint64_t *q = p;
+    for (unsigned i = 0; i < MMU_PAGE / 8; i++) q[i] = 0;
+}
+
+void *mmu_frames_alloc(unsigned long n)
+{
+    if (!n || n > pool_free) return 0;
+    for (unsigned long pass = 0; pass < 2; pass++)
+        for (unsigned long i = pass ? 0 : pool_hint; i + n <= POOL_PAGES; i++) {
+            unsigned long k = 0;
+            while (k < n && !(pool_bitmap[(i + k) / 8] & (1u << ((i + k) % 8)))) k++;
+            if (k < n) { i += k; continue; }
+            for (k = 0; k < n; k++) pool_bitmap[(i + k) / 8] |= (uint8_t)(1u << ((i + k) % 8));
+            pool_free -= n;
+            pool_hint = i + n;
+            void *p = (void *)(MMU_POOL_BASE + i * MMU_PAGE);
+            for (k = 0; k < n; k++) zero_page((uint8_t *)p + k * MMU_PAGE);
+            return p;
+        }
+    return 0;
+}
+
+void mmu_frames_free(void *p, unsigned long n)
+{
+    unsigned long i = ((unsigned long)(uintptr_t)p - MMU_POOL_BASE) / MMU_PAGE;
+    if ((unsigned long)(uintptr_t)p < MMU_POOL_BASE || i + n > POOL_PAGES) return;
+    for (unsigned long k = 0; k < n; k++)
+        if (pool_bitmap[(i + k) / 8] & (1u << ((i + k) % 8))) {
+            pool_bitmap[(i + k) / 8] &= (uint8_t)~(1u << ((i + k) % 8));
+            pool_free++;
+        }
+    if (i < pool_hint) pool_hint = i;
+}
+
+unsigned long mmu_frames_free_count(void) { return pool_free; }
 
 static void mmu_tlb_flush(void)
 {
     __asm__ volatile("dsb ishst\n\ttlbi vmalle1\n\tdsb ish\n\tisb" ::: "memory");
 }
 
-static uint64_t *user_pte(unsigned long va)
+static uint64_t page_attrs(int prot)
 {
-    if (va < MMU_USER_BASE || va >= MMU_USER_BASE + MMU_USER_SIZE) return 0;
-    unsigned long off = va - MMU_USER_BASE;
-    return &mmu_user_l3[off / MMU_BLOCK_2MB][(off % MMU_BLOCK_2MB) / MMU_PAGE];
+    uint64_t a = MMU_DESC_PAGE | MMU_ATTRINDX(MAIR_IDX_NORMAL) | MMU_DESC_AF |
+                 MMU_DESC_SH_INNER | MMU_DESC_PXN;               /* never EL1-executable */
+    if (prot & MMU_PROT_WRITE) a |= MMU_AP_EL0_RW | MMU_DESC_UXN; /* W^X */
+    else a |= MMU_AP_RO_ALL | ((prot & MMU_PROT_EXEC) ? 0 : MMU_DESC_UXN);
+    return a;
 }
 
-int mmu_user_map(unsigned long va, unsigned long len, int prot)
+static uint64_t *pte(mmu_as_t *as, unsigned long va, int create)
+{
+    if (!as || va < MMU_USER_BASE || va >= MMU_USER_BASE + MMU_USER_SIZE) return 0;
+    unsigned long off = va - MMU_USER_BASE, t = off / MMU_BLOCK_2MB;
+    if (!as->l3[t]) {
+        if (!create || !(as->l3[t] = mmu_frames_alloc(1))) return 0;
+        as->l2[MMU_USER_L2_FIRST + t] = (uint64_t)(uintptr_t)as->l3[t] | MMU_DESC_TABLE;
+    }
+    return &as->l3[t][(off % MMU_BLOCK_2MB) / MMU_PAGE];
+}
+
+mmu_as_t *mmu_as_create(void)
+{
+    mmu_as_t *as = 0;
+    for (int i = 0; i < MAX_AS; i++) if (!as_pool[i].used) { as = &as_pool[i]; break; }
+    if (!as) return 0;
+    for (unsigned i = 0; i < MMU_USER_L3S; i++) as->l3[i] = 0;
+    as->l1 = mmu_frames_alloc(1);
+    as->l2 = mmu_frames_alloc(1);
+    if (!as->l1 || !as->l2) {
+        if (as->l1) mmu_frames_free(as->l1, 1);
+        if (as->l2) mmu_frames_free(as->l2, 1);
+        return 0;
+    }
+    for (int i = 0; i < MMU_L1_ENTRIES; i++) as->l1[i] = mmu_l1_table[i];
+    for (int i = 0; i < MMU_L2_ENTRIES; i++) as->l2[i] = mmu_l2_ram[i];
+    as->l1[1] = (uint64_t)(uintptr_t)as->l2 | MMU_DESC_TABLE;
+    as->used = 1;
+    return as;
+}
+
+void mmu_as_unmap(mmu_as_t *as, unsigned long va, unsigned long len)
+{
+    unsigned long start = va & ~(MMU_PAGE - 1), end = (va + len + MMU_PAGE - 1) & ~(MMU_PAGE - 1);
+    for (unsigned long a = start; a < end && a >= start; a += MMU_PAGE) {
+        uint64_t *p = pte(as, a, 0);
+        if (p && (*p & 1)) {
+            mmu_frames_free((void *)(uintptr_t)(*p & MMU_PA_MASK), 1);
+            *p = 0;
+        }
+    }
+    if (as == as_active) mmu_tlb_flush();
+}
+
+void mmu_as_destroy(mmu_as_t *as)
+{
+    if (!as || !as->used) return;
+    if (as == as_active) mmu_as_activate(0);
+    mmu_as_unmap(as, MMU_USER_BASE, MMU_USER_SIZE);
+    for (unsigned i = 0; i < MMU_USER_L3S; i++) if (as->l3[i]) mmu_frames_free(as->l3[i], 1);
+    mmu_frames_free(as->l1, 1);
+    mmu_frames_free(as->l2, 1);
+    as->used = 0;
+}
+
+int mmu_as_map(mmu_as_t *as, unsigned long va, unsigned long len, int prot)
 {
     unsigned long start = va & ~(MMU_PAGE - 1), end = (va + len + MMU_PAGE - 1) & ~(MMU_PAGE - 1);
     if (start < MMU_USER_BASE || end > MMU_USER_BASE + MMU_USER_SIZE || end < start) return -1;
-    uint64_t attrs = MMU_DESC_PAGE | MMU_ATTRINDX(MAIR_IDX_NORMAL) | MMU_DESC_AF |
-                     MMU_DESC_SH_INNER | MMU_DESC_PXN;     /* never executable at EL1 */
-    if (prot & MMU_PROT_WRITE)      attrs |= MMU_AP_EL0_RW | MMU_DESC_UXN;  /* W^X */
-    else                            attrs |= MMU_AP_RO_ALL |
-                                             ((prot & MMU_PROT_EXEC) ? 0 : MMU_DESC_UXN);
-    for (unsigned long a = start; a < end; a += MMU_PAGE)
-        *user_pte(a) = a | attrs;                          /* identity: PA == VA */
-    mmu_tlb_flush();
+    uint64_t attrs = page_attrs(prot);
+    for (unsigned long a = start; a < end; a += MMU_PAGE) {
+        uint64_t *p = pte(as, a, 1);
+        if (!p) return -1;
+        uint64_t frame = *p & 1 ? (*p & MMU_PA_MASK) : (uint64_t)(uintptr_t)mmu_frames_alloc(1);
+        if (!frame) { if (as == as_active) mmu_tlb_flush(); return -1; }
+        *p = frame | attrs;
+    }
+    if (as == as_active) mmu_tlb_flush();
     return 0;
 }
 
-void mmu_user_unmap(unsigned long va, unsigned long len)
+int mmu_as_protect(mmu_as_t *as, unsigned long va, unsigned long len, int prot)
 {
     unsigned long start = va & ~(MMU_PAGE - 1), end = (va + len + MMU_PAGE - 1) & ~(MMU_PAGE - 1);
-    for (unsigned long a = start; a < end; a += MMU_PAGE) {
-        uint64_t *p = user_pte(a);
-        if (p) *p = 0;
+    uint64_t attrs = page_attrs(prot);
+    for (unsigned long a = start; a < end && a >= start; a += MMU_PAGE) {
+        uint64_t *p = pte(as, a, 0);
+        if (!p || !(*p & 1)) return -1;
+        *p = (*p & MMU_PA_MASK) | attrs;
     }
-    mmu_tlb_flush();
+    if (as == as_active) mmu_tlb_flush();
+    return 0;
 }
 
-void mmu_user_clear(void)
+mmu_as_t *mmu_as_fork(mmu_as_t *parent)
 {
-    for (unsigned long i = 0; i < MMU_USER_L3S; i++)
-        for (int j = 0; j < 512; j++) mmu_user_l3[i][j] = 0;
-    mmu_tlb_flush();
+    mmu_as_t *as = mmu_as_create();
+    if (!as) return 0;
+    for (unsigned t = 0; t < MMU_USER_L3S; t++) {
+        if (!parent->l3[t]) continue;
+        for (int j = 0; j < 512; j++) {
+            uint64_t e = parent->l3[t][j];
+            if (!(e & 1)) continue;
+            unsigned long va = MMU_USER_BASE + t * MMU_BLOCK_2MB + (unsigned long)j * MMU_PAGE;
+            uint64_t *p = pte(as, va, 1);
+            void *frame = mmu_frames_alloc(1);
+            if (!p || !frame) { if (frame) mmu_frames_free(frame, 1); mmu_as_destroy(as); return 0; }
+            const uint64_t *src = (const uint64_t *)(uintptr_t)(e & MMU_PA_MASK);
+            uint64_t *dst = frame;
+            for (unsigned i = 0; i < MMU_PAGE / 8; i++) dst[i] = src[i];
+            *p = (uint64_t)(uintptr_t)frame | (e & ~MMU_PA_MASK);
+        }
+    }
+    return as;
 }
+
+void mmu_as_activate(mmu_as_t *as)
+{
+    uint64_t root = (uint64_t)(uintptr_t)(as ? as->l1 : mmu_l1_table);
+    __asm__ volatile("dsb ish\n\tmsr ttbr0_el1, %0\n\tisb" :: "r"(root) : "memory");
+    mmu_tlb_flush();
+    as_active = as;
+}
+
+mmu_as_t *mmu_as_current(void) { return as_active; }
 
 int mmu_user_mapped(unsigned long va, unsigned long len, int prot)
 {
     if (!len) return 1;
-    if (va + len < va) return 0;
+    if (va + len < va || !as_active) return 0;
     for (unsigned long a = va & ~(MMU_PAGE - 1); a < va + len; a += MMU_PAGE) {
-        uint64_t *p = user_pte(a);
+        uint64_t *p = pte(as_active, a, 0);
         if (!p || !(*p & 1)) return 0;
         if ((prot & MMU_PROT_WRITE) && (*p & (3UL << 6)) != MMU_AP_EL0_RW) return 0;
     }
@@ -216,12 +359,10 @@ void mmu_init(void)
     /* DOSCALLS.DLL code - lx/lx_dll.ld pads/ASSERTs the same way. */
     mmu_mark_rx(LX_DLL_LOAD_BASE, LX_DLL_LOAD_BASE + LX_DLL_CODE_REGION_SIZE);
 
-    /* User window: level-3 tables, all pages unmapped to start with. */
-    for (unsigned long i = 0; i < MMU_USER_L3S; i++) {
-        for (int j = 0; j < 512; j++) mmu_user_l3[i][j] = 0;
-        mmu_l2_ram[(MMU_USER_BASE - MMU_L2_BASE) / MMU_BLOCK_2MB + i] =
-            (uint64_t)(uintptr_t)mmu_user_l3[i] | MMU_DESC_TABLE;
-    }
+    /* User window: unmapped in the kernel's own tables; each address space
+     * maps it to its own frames (mmu_as_*). */
+    for (unsigned long i = 0; i < MMU_USER_L3S; i++)
+        mmu_l2_ram[MMU_USER_L2_FIRST + i] = 0;
 
     /* L1 */
     for (int i = 0; i < MMU_L1_ENTRIES; i++)

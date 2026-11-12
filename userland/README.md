@@ -26,17 +26,26 @@ platform-specific are new code.
 
 ## Stages
 
-1. **EL0 + Linux syscall ABI + static ELF loader** *(this commit)*.
+1. **EL0 + Linux syscall ABI + static ELF loader** *(done)*.
    `svc #0` with the syscall number in `x8`, arguments in `x0`-`x5`, result
    in `x0` (negative errno). ELF64 `ET_EXEC` loader with per-segment
    permissions, initial stack with argv/envp/auxv, `brk`, anonymous
    `mmap`, file I/O through the VFS, console I/O. One program at a time,
    in a fixed user window of the identity map. Shell: `RUNELF path args`.
    Test: musl-built programs (hello, malloc, file read, clock).
-2. **Processes.** Per-process page tables (TTBR0 switch), several
-   processes, `clone`/`fork`-less `posix_spawn` (`vfork`+`execve`),
-   `wait4`, preemption from the timer interrupt, signals (enough for
-   `SIGCHLD`/`SIGPIPE`/`SIGINT`).
+2. **Processes** *(done, except preemption and signal handlers)*.
+   Per-process address spaces (page frames from a pool at
+   0x64000000-0x80000000, TTBR0 switch), per-process kernel stacks, up to
+   16 processes. `clone` as `fork` (address space copied) and as
+   `CLONE_VM|CLONE_VFORK` (musl's `posix_spawn`), `execve`, `exit` /
+   zombies / `wait4`, `kill` (default actions), `getpid`/`getppid`,
+   shared open-file objects (fork and `dup` share offsets), `pipe2`,
+   `dup`/`dup3`/`fcntl`, close-on-exec, per-process `tpidr_el0`, Ctrl-C at
+   the console -> SIGINT. Scheduling is cooperative (switch on block or
+   `sched_yield`). Still to do: preemption from the timer interrupt,
+   `rt_sigaction` handlers (SIGCHLD/SIGPIPE), threads (`CLONE_THREAD`,
+   futex). Tests: `procs` (fork/wait, pipes, posix_spawn, execve, kill),
+   `cat` (console input, Ctrl-D, Ctrl-C).
 3. **Event and IPC primitives.** `poll`/`ppoll`, `epoll`, `eventfd`,
    `timerfd`, `signalfd`, `pipe2`; `AF_UNIX` stream sockets with
    `SCM_RIGHTS`; `memfd_create` + `MAP_SHARED` mappings shared between
