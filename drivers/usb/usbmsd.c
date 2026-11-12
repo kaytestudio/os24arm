@@ -17,8 +17,11 @@
  * Data goes through a 16 KB bounce buffer aligned so no transfer crosses
  * a 64 KB boundary (an xHCI TRB rule).
  *
- * Limits: one device, LUN 0, 512-byte sectors, READ(10) (up to 2 TB),
- * read-only (writes not implemented yet). Block devices can't be
+ * Reads and writes use READ(10) / WRITE(10); MODE SENSE(6) reports the
+ * write-protect switch, and a protected medium stays read-only.
+ *
+ * Limits: one device, LUN 0, 512-byte sectors, up to 2 TB, no write
+ * cache flush (SYNCHRONIZE CACHE) yet. Block devices can't be
  * unregistered, so an unplugged disk stays listed but fails every read;
  * plugging a disk in again reuses "usb0" (partitions aren't re-probed).
  */
@@ -40,7 +43,9 @@
 #define SCSI_REQUEST_SENSE   0x03
 #define SCSI_INQUIRY         0x12
 #define SCSI_READ_CAPACITY   0x25
+#define SCSI_MODE_SENSE6     0x1A
 #define SCSI_READ10          0x28
+#define SCSI_WRITE10         0x2A
 
 enum { RQ_SETCONF = 1, RQ_SYNC };
 
@@ -62,6 +67,7 @@ static uint8_t  csw[16]       __attribute__((aligned(64)));
 static uint8_t  bounce[BOUNCE_SIZE] __attribute__((aligned(BOUNCE_SIZE)));
 static blkdev_t disk;
 static int      disk_registered;
+static int      wp;                 /* medium write-protected */
 
 #define V(...) do { if (verbose) kprintf(__VA_ARGS__); } while (0)
 
@@ -142,9 +148,10 @@ static void reset_recovery(void)
 }
 
 /* ── BOT command ──────────────────────────────────────────────────────── */
-/* Run SCSI command `cb` with an optional IN data stage into the bounce
- * buffer. Returns bytes received, or -1 (also on CHECK CONDITION). */
-static int scsi_in(const uint8_t *cb, uint8_t cblen, uint32_t len)
+/* Run SCSI command `cb` with an optional data stage through the bounce
+ * buffer (IN: device -> bounce, OUT: bounce -> device). Returns bytes
+ * moved, or -1 (also on CHECK CONDITION). */
+static int scsi_cmd(const uint8_t *cb, uint8_t cblen, uint32_t len, int out)
 {
     if (!present || len > BOUNCE_SIZE) return -1;
     uint32_t t = tag++;
@@ -154,7 +161,7 @@ static int scsi_in(const uint8_t *cb, uint8_t cblen, uint32_t len)
     cbw[6] = (uint8_t)(t >> 16); cbw[7] = (uint8_t)(t >> 24);
     cbw[8] = (uint8_t)len; cbw[9] = (uint8_t)(len >> 8);
     cbw[10] = (uint8_t)(len >> 16); cbw[11] = (uint8_t)(len >> 24);
-    cbw[12] = len ? 0x80 : 0x00;                      /* direction IN */
+    cbw[12] = (len && !out) ? 0x80 : 0x00;            /* direction */
     cbw[13] = 0;                                      /* LUN 0 */
     cbw[14] = cblen;
     usb_copy(cbw + 15, cb, cblen);
@@ -163,9 +170,11 @@ static int scsi_in(const uint8_t *cb, uint8_t cblen, uint32_t len)
 
     int got = 0;
     if (len) {
-        got = bulk(1, bounce, (uint16_t)len);
-        if (got == -2) { clear_halt((uint8_t)(0x80 | ep_in)); got = 0; }
-        else if (got < 0) { reset_recovery(); return -1; }
+        got = bulk(!out, bounce, (uint16_t)len);
+        if (got == -2) {                              /* device ended the stage */
+            clear_halt(out ? ep_out : (uint8_t)(0x80 | ep_in));
+            got = 0;
+        } else if (got < 0) { reset_recovery(); return -1; }
     }
 
     int n = bulk(1, csw, 13);
@@ -184,6 +193,11 @@ static int scsi_in(const uint8_t *cb, uint8_t cblen, uint32_t len)
     return csw[12] == 0 ? got : -1;                   /* 1 = command failed */
 }
 
+static int scsi_in(const uint8_t *cb, uint8_t cblen, uint32_t len)
+{
+    return scsi_cmd(cb, cblen, len, 0);
+}
+
 static int read10(uint32_t lba, uint16_t count)
 {
     uint8_t cb[10] = { SCSI_READ10, 0,
@@ -192,6 +206,16 @@ static int read10(uint32_t lba, uint16_t count)
                        (uint8_t)(count >> 8), (uint8_t)count, 0 };
     int got = scsi_in(cb, 10, (uint32_t)count * SECTOR);
     return got == (int)(count * SECTOR) ? 0 : -1;
+}
+
+static int write10(uint32_t lba, uint16_t count)
+{
+    uint8_t cb[10] = { SCSI_WRITE10, 0,
+                       (uint8_t)(lba >> 24), (uint8_t)(lba >> 16),
+                       (uint8_t)(lba >> 8), (uint8_t)lba, 0,
+                       (uint8_t)(count >> 8), (uint8_t)count, 0 };
+    int put = scsi_cmd(cb, 10, (uint32_t)count * SECTOR, 1);
+    return put == (int)(count * SECTOR) ? 0 : -1;
 }
 
 /* ── Block device ─────────────────────────────────────────────────────── */
@@ -205,6 +229,22 @@ static int msd_read(blkdev_t *dev, int64_t sector, uint32_t count, void *buf)
         if (read10((uint32_t)sector, (uint16_t)n) != 0) return -1;
         usb_copy(out, bounce, n * SECTOR);
         out += n * SECTOR;
+        sector += n;
+        count -= n;
+    }
+    return 0;
+}
+
+static int msd_write(blkdev_t *dev, int64_t sector, uint32_t count, const void *buf)
+{
+    (void)dev;
+    if (!present || wp || sector < 0 || sector + count > disk.num_sectors) return -1;
+    const uint8_t *in = buf;
+    while (count) {
+        uint32_t n = count > BOUNCE_SIZE / SECTOR ? BOUNCE_SIZE / SECTOR : count;
+        usb_copy(bounce, in, n * SECTOR);
+        if (write10((uint32_t)sector, (uint16_t)n) != 0) return -1;
+        in += n * SECTOR;
         sector += n;
         count -= n;
     }
@@ -254,18 +294,24 @@ static void bring_up(void)
         return;
     }
 
+    /* Write protect: MODE SENSE(6) header byte 2 bit 7. Devices that
+     * don't support the command are treated as writable. */
+    static const uint8_t msense[6] = { SCSI_MODE_SENSE6, 0, 0x3F, 0, 4, 0 };
+    wp = scsi_in(msense, 6, 4) >= 3 && (bounce[2] & 0x80);
+
     disk.num_sectors = (int64_t)last + 1;
     if (!disk_registered) {
         usb_copy(disk.name, "usb0", 5);
         disk.start_sector = 0;
         disk.sector_size  = SECTOR;
         disk.read         = msd_read;
-        disk.write        = 0;
-        disk.flags        = BLKDEV_READONLY | BLKDEV_REMOVABLE;
+        disk.write        = msd_write;   /* partitions copy this pointer */
         disk.driver_data  = 0;
     }
-    V("[USBMSD] usb0: %s %s, %u sectors (%u MB), read-only\n", vendor, product,
-      (unsigned)disk.num_sectors, (unsigned)(disk.num_sectors / 2048));
+    disk.flags = BLKDEV_REMOVABLE | (wp ? BLKDEV_READONLY : 0);
+    V("[USBMSD] usb0: %s %s, %u sectors (%u MB), %s\n", vendor, product,
+      (unsigned)disk.num_sectors, (unsigned)(disk.num_sectors / 2048),
+      wp ? "write-protected" : "read/write");
     if (!disk_registered && blkdev_register(&disk) == 0) {
         disk_registered = 1;
         gpt_probe(&disk);
