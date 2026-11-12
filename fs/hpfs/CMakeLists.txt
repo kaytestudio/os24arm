@@ -1,4 +1,4 @@
-# fs/hpfs/CMakeLists.txt - HPFS Filesystem Driver (read-only)
+# fs/hpfs/CMakeLists.txt - HPFS Filesystem Driver
 
 add_library(hpfs STATIC hpfs.c)
 
@@ -13,4 +13,4 @@ target_compile_options(hpfs PRIVATE
         -Werror=implicit-function-declaration
 )
 
-message(STATUS "HPFS filesystem driver configured (read-only)")
+message(STATUS "HPFS filesystem driver configured")

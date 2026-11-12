@@ -400,6 +400,8 @@ def main():
         struct.pack_into('<I', hm, 4 * n_spares, spares)
         used = 1
         print(f"mkhpfs: hotfix: sector {bad} -> spare {spares}")
+    for i in range(n_spares):                          # every spare, used or not
+        struct.pack_into('<I', hm, 4 * (n_spares + i), spares + i)
     v.put(hotmap, hm)
     struct.pack_into('<III', sp, 12, hotmap, used, n_spares)
     if a.dirty:

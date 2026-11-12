@@ -121,7 +121,7 @@ if(TARGET_ARCH STREQUAL "aarch64")
             rexx
             ext4            # ← ext4 filesystem driver
             btrfs           # ← btrfs filesystem driver
-            hpfs            # ← HPFS filesystem driver (read-only)
+            hpfs            # ← HPFS filesystem driver
             usb             # ← USB stack: USBD + USBXHCD + USBKBD
     )
     target_compile_definitions(os2warp_kernel PRIVATE HAVE_USB)

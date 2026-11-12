@@ -370,6 +370,13 @@ static void cmd_run(int argc, char **argv)
     }
 }
 
+/* Wall clock for filesystem timestamps: QEMU virt's PL031 RTC (data
+ * register at 0x09010000, seconds since 1970). Used by fs/hpfs. */
+uint32_t kernel_time_seconds(void)
+{
+    return *(volatile uint32_t *)0x09010000UL;
+}
+
 /* ── MOUNT / UMOUNT ──────────────────────────────────────────────────────────
  * Mount an HPFS or FAT16/FAT32 block device (e.g. a USB stick's
  * partition, usb0p1) after boot, reachable from the shell as \<DIR>:
@@ -482,7 +489,8 @@ static void cmd_mount(int argc, char **argv)
     kstrncpy(user_mnt_path[slot], path, sizeof user_mnt_path[slot]);
     user_mnt_dev[slot] = dev;
     blkdev_set_remove_hook(user_mount_device_removed);
-    kprintf("\n%s mounted at %s (%s%s)\n", dev->name, path, hpfs ? "HPFS, read-only" : "FAT",
+    kprintf("\n%s mounted at %s (%s%s)\n", dev->name, path,
+            hpfs ? (hpfs_is_rw(&user_hpfs[slot]) ? "HPFS" : "HPFS, read-only") : "FAT",
             (!hpfs && (dev->flags & BLKDEV_READONLY)) ? ", read-only" : "");
 }
 

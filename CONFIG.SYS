@@ -123,7 +123,7 @@ IFS=C:\OS2\BOOT\EXFAT.IFS /CACHE:512
 REM CDFS (CD-ROM file system)
 IFS=C:\OS2\BOOT\CDFS.IFS /Q /W /CACHE:128
 
-REM HPFS (High Performance File System), read-only: fs/hpfs mounts any
+REM HPFS (High Performance File System): fs/hpfs mounts any
 REM HPFS volume found at boot as \HPFS; MOUNT dev \DIR mounts one later.
 IFS=C:\OS2\BOOT\HPFS.IFS /CACHE:1024 /CRECL:4 /AUTOCHECK:*
 
