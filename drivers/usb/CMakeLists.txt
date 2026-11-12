@@ -1,6 +1,6 @@
-# drivers/usb/CMakeLists.txt - USB Driver (stub)
+# drivers/usb/CMakeLists.txt - USB drivers (xHCI host controller)
 
-add_library(usb STATIC usb.c)
+add_library(usb STATIC usb.c xhci.c)
 
 target_include_directories(usb PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}
@@ -13,4 +13,4 @@ target_compile_options(usb PRIVATE
         -Werror=implicit-function-declaration
 )
 
-message(STATUS "USB driver (stub) configured")
+message(STATUS "USB driver (xHCI) configured")

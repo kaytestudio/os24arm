@@ -13,6 +13,7 @@
 #   --test       non-interactive: run VM TEST, type into the guest, check
 #                the output, exit 0/1 (log kept in build/run-vm-test.log)
 #   --gdb        wait for a debugger on :1234
+#   --usb        add an xHCI controller + USB keyboard (drivers/usb/xhci.c)
 #   -h, --help
 #
 # Interactive: type VM TEST at the [C:\]> prompt. Inside the guest,
@@ -27,6 +28,7 @@ BUILD_IT=1
 USE_DISK=1
 TEST_MODE=0
 GDB_OPT=()
+USB_OPT=()
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -34,7 +36,8 @@ while [ $# -gt 0 ]; do
         --no-disk)  USE_DISK=0 ;;
         --test)     TEST_MODE=1 ;;
         --gdb)      GDB_OPT=(-s -S) ;;
-        -h|--help)  sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --usb)      USB_OPT=(-device qemu-xhci -device usb-kbd) ;;
+        -h|--help)  sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "Unknown option: $1 (see --help)" >&2; exit 1 ;;
     esac
     shift
@@ -80,6 +83,7 @@ QEMU=(qemu-system-aarch64
       -serial mon:stdio
       -display none
       -nographic
+      "${USB_OPT[@]}"
       "${GDB_OPT[@]}")
 
 if [ "$TEST_MODE" = 0 ]; then

@@ -29,7 +29,9 @@
  *                                       matching this project's `-m 2G`
  *                                       QEMU invocation)
  *
- * Everything from 0xC0000000 up is left unmapped - not backed by RAM
+ *   L1[256] [0x40_0000_0000, +1GB) Device-nGnRnE, XN  - high PCIe ECAM
+ *
+ * Everything else from 0xC0000000 up is left unmapped - not backed by RAM
  * under `-m 2G`, so an access there should fault, not silently succeed.
  *
  * L2 (2MB blocks, [0x40000000, 0x80000000)) defaults every entry to
@@ -156,6 +158,9 @@ void mmu_init(void)
     mmu_l1_table[0] = (0UL * MMU_BLOCK_1GB) | MMU_ATTRS_DEVICE;
     mmu_l1_table[1] = (uint64_t)(uintptr_t)mmu_l2_ram | MMU_DESC_TABLE;
     mmu_l1_table[2] = (2UL * MMU_BLOCK_1GB) | MMU_ATTRS_NORMAL_RW_NX;
+    /* [0x40_0000_0000, +1GB): virt's high PCIe ECAM (0x40_1000_0000,
+     * the default with highmem=on) - drivers/usb/xhci.c scans it. */
+    mmu_l1_table[256] = (256UL * MMU_BLOCK_1GB) | MMU_ATTRS_DEVICE;
 
     __asm__ volatile("dsb sy" ::: "memory");
 

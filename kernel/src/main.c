@@ -17,6 +17,7 @@
 #include "unixroot.h"
 #include "kprintf.h"
 #include "hyp.h"
+#include "xhci.h"
 
 
 /* Memory heap configuration */
@@ -517,6 +518,9 @@ void kernel_main(void)
     uart_puts("[BLK]    Initializing block devices...\r\n");
     blk_init();
 
+    uart_puts("[USB]    Probing xHCI controller...\r\n");
+    if (xhci_init(NULL) == -1)
+        uart_puts("[USB]    No xHCI controller (QEMU: -device qemu-xhci)\r\n");
 
     /* ── IFS Loader Integration ─────────────────────────────────────────── */
     uart_puts("[IFS]    Initializing IFS loader...\r\n");
