@@ -41,6 +41,7 @@
 #define REQ_SET_INTERFACE   11
 #define DESC_DEVICE         1
 #define DESC_CONFIG         2
+#define DESC_INTERFACE      4
 #define DESC_ENDPOINT       5
 #define DESC_HUB            0x29
 #define CLASS_HUB           9
@@ -324,6 +325,10 @@ static void hub_arm(usbd_dev_t *hub)
     rb.maxErrorCount = 3;
     fill_routing(&rb, hub);
     hub->hub_armed = !(hcd_call(hub->ctrl, USB_IDC_FUNCTION_ACCIO, &rb) & STERR);
+    /* Refused outright (no ring, Configure Endpoint failed, ...): count it
+     * like a failed read, so the daemon doesn't retry forever. */
+    if (!hub->hub_armed && ++hub->hub_errors == 8)
+        V("[USBD]   hub %u: status pipe can't be set up, not polling it\n", hub->addr);
 }
 
 /* ── Enumeration ──────────────────────────────────────────────────────── */
@@ -376,20 +381,32 @@ static int dev_setup(usbd_dev_t *d)
 /* Configure a hub, power its ports, scan them and arm its status pipe. */
 static int hub_start(usbd_dev_t *hub)
 {
-    const uint8_t *cfg = hub->info.configurationData;
-    for (uint16_t i = 0; i + 2 <= hub->info.configLength && cfg[i] >= 2; i += cfg[i])
-        if (cfg[i + 1] == DESC_ENDPOINT && (cfg[i + 2] & 0x80) && (cfg[i + 3] & 3) == 3) {
-            hub->hub_ep   = cfg[i + 2] & 0xF;
-            hub->hub_mps  = (uint16_t)(cfg[i + 4] | (cfg[i + 5] << 8));
-            hub->hub_ival = cfg[i + 6];
-            break;
+    const uint8_t *cfg = hub->info.configurationData, *p;
+    uint32_t len = hub->info.configLength;
+    int mtt_if = -1;                                  /* interface with a multi-TT alt */
+    if (len < 9 || cfg[0] < 9) return -1;
+    for (uint32_t o = 0; (p = usb_desc_next(cfg, len, &o)) != 0; ) {
+        if (p[1] == DESC_INTERFACE && p[0] >= 9 && p[3] == 1 && p[7] == 2)
+            mtt_if = p[2];                            /* alt 1, protocol 2 */
+        else if (p[1] == DESC_ENDPOINT && p[0] >= 7 && !hub->hub_ep &&
+                 (p[2] & 0x80) && (p[3] & 3) == 3) {
+            hub->hub_ep   = p[2] & 0xF;
+            hub->hub_mps  = (uint16_t)(p[4] | (p[5] << 8));
+            hub->hub_ival = p[6];
         }
+    }
     if (!hub->hub_ep) return -1;
 
     if (control(hub, 0x00, REQ_SET_CONFIG, cfg[5], 0, 0, 0)) return -1;
     hub->info.bConfigurationValue = cfg[5];
     if (control(hub, 0xA0, REQ_GET_DESCRIPTOR, DESC_HUB << 8, 0, xbuf, 9)) return -1;
     hub->nports = xbuf[2] > MAX_HUB_PORTS ? MAX_HUB_PORTS : xbuf[2];
+    /* A high-speed hub with a TT per port runs in multi-TT mode only once
+     * that alternate setting is selected (the HCD notices and tells the
+     * controller). */
+    if (hub->info.descriptor.bDeviceProtocol == 2 && mtt_if >= 0 &&
+        control(hub, 0x01, REQ_SET_INTERFACE, 1, (uint16_t)mtt_if, 0, 0) == 0)
+        V("[USBD]   hub %u: multiple transaction translators enabled\n", hub->addr);
     uint32_t pgood = xbuf[5] * 2u;
 
     for (uint8_t p = 1; p <= hub->nports; p++)

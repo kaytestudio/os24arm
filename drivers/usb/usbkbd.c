@@ -185,9 +185,8 @@ static int chkserv(USBCDServe *s)
     uint32_t total = di->configLength;
     int in_kbd = 0, found_if = -1;
     uint8_t ep_addr = 0;
-    for (uint32_t i = 0; i + 2 <= total && c[i] >= 2; i += c[i]) {
-        const uint8_t *p = &c[i];
-        if (i + p[0] > total) break;
+    const uint8_t *p;
+    for (uint32_t o = 0; (p = usb_desc_next(c, total, &o)) != 0; ) {
         if (p[1] == 4 && p[0] >= 9) {                 /* interface */
             in_kbd = p[5] == 3 && p[6] == 1 && p[7] == 1;
             if (in_kbd && found_if < 0) found_if = p[2];

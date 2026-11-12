@@ -323,7 +323,11 @@ static int bring_up(void)
     static const uint8_t msense[6] = { SCSI_MODE_SENSE6, 0, 0x3F, 0, 4, 0 };
     int wp = scsi_in(msense, 6, 4) >= 3 && (bounce[2] & 0x80);
 
-    msd_unit_t *u = mem_alloc(sizeof *u);
+    /* A unit that never got registered was never seen by anyone: reuse it
+     * (mem_alloc can't give memory back). */
+    static msd_unit_t *spare;
+    msd_unit_t *u = spare ? spare : mem_alloc(sizeof *u);
+    spare = 0;
     if (!u) { V("[USBMSD] out of memory\n"); return -1; }
     usb_zero(u, sizeof *u);
     usb_copy(u->dev.name, "usb0", 5);
@@ -338,7 +342,11 @@ static int bring_up(void)
     V("[USBMSD] usb0: %s %s, %u sectors (%u MB), %s\n", vendor, product,
       (unsigned)u->dev.num_sectors, (unsigned)(u->dev.num_sectors / 2048),
       wp ? "write-protected" : "read/write");
-    if (blkdev_register(&u->dev) != 0) { V("[USBMSD] block device table full\n"); return -1; }
+    if (blkdev_register(&u->dev) != 0) {
+        V("[USBMSD] block device table full\n");
+        spare = u;
+        return -1;
+    }
     unit = u;
 
     /* Partitions, read fresh from this disk. GPT names partitions after
@@ -382,9 +390,8 @@ static void chkserv(USBCDServe *s)
     uint32_t total = di->configLength;
     int in_msd = 0, found_if = -1;
     uint8_t in = 0, out = 0;
-    for (uint32_t i = 0; i + 2 <= total && c[i] >= 2; i += c[i]) {
-        const uint8_t *p = &c[i];
-        if (i + p[0] > total) break;
+    const uint8_t *p;
+    for (uint32_t o = 0; (p = usb_desc_next(c, total, &o)) != 0; ) {
         if (p[1] == 4 && p[0] >= 9) {
             if (found_if >= 0 && in && out) break;
             in_msd = p[5] == 8 && p[6] == 6 && p[7] == 0x50;

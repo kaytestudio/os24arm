@@ -121,8 +121,12 @@ static void parse_rdesc(const uint8_t *d, uint32_t len)
             nusages = 0; umin = umax = 0;             /* locals reset */
         }
     }
-    /* Everything must come from the same report. */
+    /* Everything must come from the report X is in: report() only decodes
+     * that one, so fields of other reports would be read from wrong bits. */
     if (fy.report_id != fx.report_id) fy.present = 0;
+    if (fwheel.report_id != fx.report_id) fwheel.present = 0;
+    for (int b = 0; b < 3; b++)
+        if (fbtn[b].report_id != fx.report_id) fbtn[b].present = 0;
 }
 
 static int32_t field(const uint8_t *r, uint32_t len, const field_t *f)
@@ -216,9 +220,8 @@ static void chkserv(USBCDServe *s)
     int in_hid = 0, found_if = -1;
     uint8_t ep_addr = 0;
     uint16_t rlen = 0;
-    for (uint32_t i = 0; i + 2 <= total && c[i] >= 2; i += c[i]) {
-        const uint8_t *p = &c[i];
-        if (i + p[0] > total) break;
+    const uint8_t *p;
+    for (uint32_t o = 0; (p = usb_desc_next(c, total, &o)) != 0; ) {
         if (p[1] == 4 && p[0] >= 9) {                 /* interface */
             if (found_if >= 0 && ep_addr) break;      /* first one wins */
             in_hid = p[5] == 3 && p[7] != 1;          /* HID, not keyboard */

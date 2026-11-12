@@ -157,6 +157,8 @@ typedef struct {
 #define CC_DATA_BUFFER     2
 #define CC_BABBLE          3
 #define CC_STALL           6
+#define CC_TRANSACTION     4
+#define CC_SPLIT_TXN       36
 #define CC_SHORT_PACKET    13
 
 #define RING_TRBS          32                 /* last one is the link TRB */
@@ -350,11 +352,12 @@ static uint32_t td_size(uint32_t remaining, uint32_t mps)
 
 /* Queue a data buffer as chained TRBs; first_type is the first TRB's type
  * (Data for a control data stage, Normal otherwise), later ones Normal. */
-static void push_data(xfer_t *x, ring_t *r, u64 buf, uint32_t len, uint32_t first_type,
-                      uint32_t flags, uint32_t last_flags, uint32_t mps)
+static void push_data(xfer_t *x, ring_t *r, u64 buf, uint32_t len, uint32_t nseg,
+                      const uint32_t *seglen, uint32_t first_type, uint32_t flags,
+                      uint32_t last_flags, uint32_t mps)
 {
-    uint32_t seglen[MAX_SEGS], off = 0;
-    x->nseg = split_64k(buf, len, seglen);
+    uint32_t off = 0;
+    x->nseg = nseg;
     for (uint32_t k = 0; k < x->nseg; k++) {
         int last = k + 1 == x->nseg;
         uint32_t ctl = TRB_TYPE(k ? TRB_NORMAL : first_type) | flags |
@@ -477,7 +480,10 @@ static void handle_event(const trb_t *ev)
         if (!x->used || x->done || x->slot != slot || x->dci != dci) continue;
         if (!trb_in(t, x->first, x->last)) continue;
         if (cc != CC_SUCCESS && cc != CC_SHORT_PACKET) {
-            if (cc == CC_STALL && slot && slot <= MAX_SLOTS)
+            /* xHCI halts the endpoint on these (not only on STALL): it
+             * needs Reset Endpoint + Set TR Dequeue before it runs again. */
+            if ((cc == CC_STALL || cc == CC_BABBLE || cc == CC_TRANSACTION ||
+                 cc == CC_SPLIT_TXN) && slot && slot <= MAX_SLOTS)
                 hdevs[slot - 1].halted |= 1u << dci;
             xfer_complete(i, cc_status(cc));
             return;
@@ -1009,7 +1015,7 @@ static uint16_t accio_control(int xi, hdev_t *d)
     x->first = ring_push(&d->ep0, setup, 8, TRB_TYPE(TRB_SETUP) | TRB_IDT |
                          (!len ? TRB_TRT_NONE : in ? TRB_TRT_IN : TRB_TRT_OUT));
     if (len)
-        push_data(x, &d->ep0, dma(rb->buffer2), len, TRB_DATA,
+        push_data(x, &d->ep0, dma(rb->buffer2), len, nseg, seglen, TRB_DATA,
                   TRB_ISP | (in ? TRB_DIR_IN : 0), 0, d->ep0_mps);
     x->last = ring_push(&d->ep0, 0, 0, TRB_TYPE(TRB_STATUS) | TRB_IOC |
                         (len && in ? 0 : TRB_DIR_IN));
@@ -1072,7 +1078,7 @@ static uint16_t accio_pipe(int xi)
     x->ntrbs = nseg;
     r->pending += nseg;
     if (len) {
-        push_data(x, r, dma(rb->buffer1), len, TRB_NORMAL, TRB_ISP, TRB_IOC,
+        push_data(x, r, dma(rb->buffer1), len, nseg, seglen, TRB_NORMAL, TRB_ISP, TRB_IOC,
                   rb->maxPacketSize);
     } else {                                          /* zero-length packet */
         x->nseg = 1;
@@ -1147,16 +1153,43 @@ static uint16_t cancel(const USBCancel *c)
 /* The slot context must say whether a device is a hub (and how many
  * ports, multi-TT or not) - nothing in the IDC tells the HCD, so it reads
  * that off the descriptors USBD fetches during enumeration. */
+/* Tell the controller a device is a hub (Hub, MTT, Number of Ports in the
+ * slot context) as soon as that is known - before USBD addresses anything
+ * behind it, since those devices' slots name it as their TT hub.
+ * Configure Endpoint with only the slot context (as Linux does). */
+static void hub_slot_update(hdev_t *d)
+{
+    usb_zero(in_ctx, sizeof in_ctx);
+    ictx(0)[1] = 1u << 0;
+    usb_copy(ictx(1), dctx(d), ctx_size);
+    ictx(1)[0] |= 1u << 26;
+    if (d->hub_mtt && d->speed == XSPEED_HIGH) ictx(1)[0] |= 1u << 25;
+    else                                       ictx(1)[0] &= ~(1u << 25);
+    ictx(1)[1] = (ictx(1)[1] & 0x00FFFFFFu) | (d->hub_nports << 24);
+    dma_barrier();
+    if (command(dma(in_ctx), TRB_TYPE(TRB_CONFIGURE_EP) | TRB_SLOT(d->slot), 0) != CC_SUCCESS)
+        V("[XHCD]   slot %u: hub slot context update failed\n", d->slot);
+}
+
 static void snoop(hdev_t *d, const USBRb *rb)
 {
     if ((rb->flags & USRB_FLAGS_TTYPE_MASK) != USRB_FLAGS_TTYPE_SETUP) return;
     const uint8_t *s = rb->buffer1, *b = rb->buffer2;
-    if (!s || !b) return;
-    if (REQ_IS(s, 0x80, 6) && s[3] == 1 && rb->buffer2Length >= 7) {
+    if (!s) return;
+    if (b && REQ_IS(s, 0x80, 6) && s[3] == 1 && rb->buffer2Length >= 7) {
         d->is_hub  = b[4] == 9;
-        d->hub_mtt = b[6] == 2;
-    } else if (REQ_IS(s, 0xA0, 6) && s[3] == 0x29 && rb->buffer2Length >= 3) {
+        d->hub_mtt = 0;              /* until USBD selects the multi-TT setting */
+    } else if (b && REQ_IS(s, 0xA0, 6) && s[3] == 0x29 && rb->buffer2Length >= 3) {
         d->hub_nports = b[2];
+        if (d->is_hub && d->addr) hub_slot_update(d);
+    } else if (REQ_IS(s, 0x01, 11) && d->is_hub) {
+        d->hub_mtt = s[2] == 1;      /* SET_INTERFACE alt 1 = multiple TTs */
+        if (d->hub_nports) hub_slot_update(d);
+    } else if (b && REQ_IS(s, 0xA3, 0) && d->is_hub && rb->buffer2Length >= 1 && !(b[0] & 1)) {
+        /* A port with nothing connected: drop a half-enumerated slot left
+         * on it (as rh_bitmap does for root ports). */
+        hdev_t *dd = find_default(d->slot, s[4]);
+        if (dd) free_slot(dd);
     }
 }
 

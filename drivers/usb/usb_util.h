@@ -49,4 +49,16 @@ static inline void usb_setup(uint8_t *p, uint8_t type, uint8_t req,
     p[6] = (uint8_t)len;   p[7] = (uint8_t)(len >> 8);
 }
 
+/* Walk the descriptors of a configuration (cfg, len bytes): start with
+ * *off = 0; each call returns the next descriptor that lies wholly inside
+ * the buffer (bLength >= 2), or NULL at the end or on a malformed one.
+ * Callers still check bLength for the descriptor type they read. */
+static inline const uint8_t *usb_desc_next(const uint8_t *cfg, uint32_t len, uint32_t *off)
+{
+    uint32_t o = *off;
+    if (o + 2 > len || cfg[o] < 2 || cfg[o] > len - o) return 0;
+    *off = o + cfg[o];
+    return cfg + o;
+}
+
 #endif /* DRIVERS_USB_UTIL_H */
