@@ -17,7 +17,7 @@ add_subdirectory(f2fs)
 # add_subdirectory(fat32)
 
 # HPFS filesystem (future)
-# add_subdirectory(hpfs)
+add_subdirectory(hpfs)
 
 # NTFS filesystem (future)
 # add_subdirectory(ntfs)
@@ -34,7 +34,7 @@ target_link_libraries(filesystems INTERFACE
         btrfs
         f2fs
         # fat32
-        # hpfs
+        hpfs
         # ntfs
         # cdfs
 )
@@ -43,5 +43,6 @@ message(STATUS "Filesystem drivers configured:")
 message(STATUS "  - ext4")
 message(STATUS "  - btrfs")
 message(STATUS "  - f2fs")
+message(STATUS "  - hpfs (read-only)")
 # message(STATUS "  - fat32")
 # message(STATUS "  - hpfs")

@@ -109,6 +109,7 @@ target_include_directories(os2warp_kernel PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/fs/ext4
         ${CMAKE_SOURCE_DIR}/fs/btrfs
+        ${CMAKE_SOURCE_DIR}/fs/hpfs
 )
 
 # ── Link libraries ────────────────────────────────────────────────────────────
@@ -119,6 +120,7 @@ if(TARGET_ARCH STREQUAL "aarch64")
             rexx
             ext4            # ← ext4 filesystem driver
             btrfs           # ← btrfs filesystem driver
+            hpfs            # ← HPFS filesystem driver (read-only)
             usb             # ← USB stack: USBD + USBXHCD + USBKBD
     )
     target_compile_definitions(os2warp_kernel PRIVATE HAVE_USB)

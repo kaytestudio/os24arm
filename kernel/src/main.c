@@ -6,6 +6,7 @@
 #include "../../fs/ext4/ext4.h"
 #include "../../fs/btrfs/btrfs.h"
 #include "fat32.h"
+#include "hpfs.h"
 #include "kio.h"
 #include "basic.h"
 #include "gui/framebuffer.h"
@@ -286,7 +287,7 @@ static void cmd_help(void)
     uart_puts("              /HISTORY, /MACROS, name=text)\r\n");
     uart_puts("  MEM       - Display memory information\r\n");
     uart_puts("  USB       - List USB devices (USBD)\r\n");
-    uart_puts("  MOUNT     - MOUNT dev \\DIR: mount a FAT volume (e.g. usb0p1)\r\n");
+    uart_puts("  MOUNT     - MOUNT dev \\DIR: mount an HPFS/FAT volume (e.g. usb0p1)\r\n");
     uart_puts("  UMOUNT    - UMOUNT \\DIR: unmount it\r\n");
     uart_puts("  IFS       - List loaded filesystem drivers\r\n");
     uart_puts("  RUN       - Load and run an OS/2 LX .EXE (e.g. RUN CMD.EXE)\r\n");
@@ -370,14 +371,15 @@ static void cmd_run(int argc, char **argv)
 }
 
 /* ── MOUNT / UMOUNT ──────────────────────────────────────────────────────────
- * Mount a FAT16/FAT32 block device (e.g. a USB stick's partition, usb0p1)
- * after boot, reachable from the shell as \<DIR>:
+ * Mount an HPFS or FAT16/FAT32 block device (e.g. a USB stick's
+ * partition, usb0p1) after boot, reachable from the shell as \<DIR>:
  *   MOUNT                  list mounts and block devices
  *   MOUNT usb0p1 \USB      mount it at /USB
  *   UMOUNT \USB            unmount (refused while files are open there)
  */
 #define USER_MOUNTS 4
 static fat32_mount_t user_mnt[USER_MOUNTS];
+static hpfs_mount_t  user_hpfs[USER_MOUNTS];
 static char          user_mnt_path[USER_MOUNTS][32];
 
 static int name_eq_nocase(const char *a, const char *b)
@@ -443,17 +445,24 @@ static void cmd_mount(int argc, char **argv)
         if (!user_mnt_path[i][0]) { slot = i; break; }
     if (slot < 0) { kprintf("\nMOUNT: too many mounts (max %d)\n", USER_MOUNTS); return; }
 
-    kmemset(&user_mnt[slot], 0, sizeof(user_mnt[slot]));
-    user_mnt[slot].dev = dev;
-    int r = vfs_mount(path, &vfs_fat32_fs, &user_mnt[slot]);
+    int hpfs = hpfs_probe(dev), r;
+    if (hpfs) {                                       /* HPFS: superblock at LSN 16 */
+        kmemset(&user_hpfs[slot], 0, sizeof(user_hpfs[slot]));
+        user_hpfs[slot].dev = dev;
+        r = vfs_mount(path, &vfs_hpfs_fs, &user_hpfs[slot]);
+    } else {
+        kmemset(&user_mnt[slot], 0, sizeof(user_mnt[slot]));
+        user_mnt[slot].dev = dev;
+        r = vfs_mount(path, &vfs_fat32_fs, &user_mnt[slot]);
+    }
     if (r != VFS_OK) {
         kprintf("\nMOUNT: %s at %s failed (%d)%s\n", dev->name, path, r,
-                r == VFS_ERR_INVAL ? " - already mounted?" : " - not FAT16/FAT32?");
+                r == VFS_ERR_INVAL ? " - already mounted?" : " - not HPFS/FAT16/FAT32?");
         return;
     }
     kstrncpy(user_mnt_path[slot], path, sizeof user_mnt_path[slot]);
-    kprintf("\n%s mounted at %s (FAT%s)\n", dev->name, path,
-            (dev->flags & BLKDEV_READONLY) ? ", read-only" : "");
+    kprintf("\n%s mounted at %s (%s%s)\n", dev->name, path, hpfs ? "HPFS, read-only" : "FAT",
+            (!hpfs && (dev->flags & BLKDEV_READONLY)) ? ", read-only" : "");
 }
 
 static void cmd_umount(int argc, char **argv)
@@ -694,6 +703,13 @@ void kernel_main(void)
         uart_puts("[IFS]    ERROR: Failed to register FAT driver\r\n");
     }
 
+    uart_puts("[IFS]    Registering HPFS driver...\r\n");
+    if (ifs_register_builtin("HPFS", hpfs_init, &vfs_hpfs_fs) == 0) {
+        uart_puts("[IFS]    HPFS driver registered successfully\r\n");
+    } else {
+        uart_puts("[IFS]    ERROR: Failed to register HPFS driver\r\n");
+    }
+
     uart_puts("[IFS]    Registering btrfs driver...\r\n");
     if (ifs_register_builtin("BTRFS", btrfs_init, btrfs_get_fs()) == 0) {
         uart_puts("[IFS]    btrfs driver registered successfully\r\n");
@@ -709,6 +725,7 @@ void kernel_main(void)
     fat32_init(NULL);
     ext4_init("/CACHE:1024");
     btrfs_init(NULL);
+    hpfs_init("/CACHE:1024");   /* any HPFS volume -> /HPFS */
 
     /* ── CONFIG.SYS / UNIXROOT ────────────────────────────────────────────
      * Root is now mounted at "/" (see ext4_init/btrfs_init above - that
