@@ -487,15 +487,32 @@ static void dev_detach(usbd_dev_t *d)
     d->used = 0;
 }
 
+/* Offer every addressed, unclaimed, non-hub device to the class drivers
+ * again - e.g. a second keyboard, once the one its driver had is gone. */
+static void offer_unclaimed(void)
+{
+    for (int i = 0; i < MAX_DEVS; i++)
+        if (devs[i].used && !devs[i].is_hub && devs[i].owner < 0 && devs[i].addr &&
+            devs[i].parent >= 0) {
+            dev_offer(&devs[i]);
+            if (devs[i].owner >= 0)
+                V("[USBD]   address %u (%04x:%04x) now claimed\n", devs[i].addr,
+                  devs[i].info.descriptor.idVendor, devs[i].info.descriptor.idProduct);
+        }
+}
+
 static void port_detach(usbd_dev_t *hub, uint8_t port)
 {
+    int freed = 0;
     for (int i = 0; i < MAX_DEVS; i++)
         if (devs[i].used && devs[i].parent == dev_index(hub) && devs[i].port == port) {
             V("[USBD]   hub %u port %u: device %04x:%04x (address %u) detached\n", hub->addr, port,
               devs[i].info.descriptor.idVendor, devs[i].info.descriptor.idProduct,
               devs[i].addr);
+            if (devs[i].owner >= 0 || devs[i].is_hub) freed = 1;
             dev_detach(&devs[i]);
         }
+    if (freed) offer_unclaimed();                     /* a driver may be free now */
 }
 
 /* Status-change pipe fired: look at each flagged port. */
@@ -607,6 +624,7 @@ static uint16_t do_unregister(RP_GENIOCTL *rp)
             for (int d = 0; d < MAX_DEVS; d++)
                 if (devs[d].used && devs[d].owner == i) devs[d].owner = -1;
             classes[i].idc = 0;
+            if (started) offer_unclaimed();
             return 0;
         }
     return USB_IDC_PARMERR;
@@ -784,13 +802,15 @@ void usbd_list(void)
 
 void usbd_summary(void)
 {
-    int devices = 0, claimed = 0, ctrls = 0;
+    int devices = 0, hubs = 0, claimed = 0, ctrls = 0;
     for (int i = 0; i < nhcds; i++) ctrls += hcds[i].count;
-    for (int i = 0; i < MAX_DEVS; i++)
-        if (devs[i].used && devs[i].parent >= 0) {
-            devices++;
-            if (devs[i].owner >= 0) claimed++;
-        }
-    kprintf("[USB]    USBD: %d host controller(s), %d device(s), %d claimed by drivers\n",
-            ctrls, devices, claimed);
+    for (int i = 0; i < MAX_DEVS; i++) {
+        if (!devs[i].used || devs[i].parent < 0) continue;   /* root hubs */
+        if (devs[i].is_hub) { hubs++; continue; }
+        devices++;
+        if (devs[i].owner >= 0) claimed++;
+    }
+    kprintf("[USB]    USBD: %d host controller(s), %d device(s) (%d claimed by drivers)%s",
+            ctrls, devices, claimed, hubs ? ", " : "\n");
+    if (hubs) kprintf("%d hub(s)\n", hubs);
 }

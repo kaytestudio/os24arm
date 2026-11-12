@@ -381,6 +381,25 @@ static void cmd_run(int argc, char **argv)
 static fat32_mount_t user_mnt[USER_MOUNTS];
 static hpfs_mount_t  user_hpfs[USER_MOUNTS];
 static char          user_mnt_path[USER_MOUNTS][32];
+static blkdev_t     *user_mnt_dev[USER_MOUNTS];      /* what each slot mounted */
+
+/* A block device went away (USB stick pulled): unmount what MOUNT put on
+ * it. If files are still open there it stays mounted, failing cleanly,
+ * until they're closed and it's UMOUNTed. */
+static void user_mount_device_removed(blkdev_t *dev)
+{
+    for (int i = 0; i < USER_MOUNTS; i++) {
+        if (!user_mnt_path[i][0] || user_mnt_dev[i] != dev) continue;
+        if (vfs_unmount(user_mnt_path[i]) == VFS_OK) {
+            kprintf("\n[MOUNT]  %s unmounted: %s was removed\n", user_mnt_path[i], dev->name);
+            user_mnt_path[i][0] = '\0';
+            user_mnt_dev[i] = 0;
+        } else {
+            kprintf("\n[MOUNT]  %s: %s was removed but files are still open there\n",
+                    user_mnt_path[i], dev->name);
+        }
+    }
+}
 
 static int name_eq_nocase(const char *a, const char *b)
 {
@@ -461,6 +480,8 @@ static void cmd_mount(int argc, char **argv)
         return;
     }
     kstrncpy(user_mnt_path[slot], path, sizeof user_mnt_path[slot]);
+    user_mnt_dev[slot] = dev;
+    blkdev_set_remove_hook(user_mount_device_removed);
     kprintf("\n%s mounted at %s (%s%s)\n", dev->name, path, hpfs ? "HPFS, read-only" : "FAT",
             (!hpfs && (dev->flags & BLKDEV_READONLY)) ? ", read-only" : "");
 }
@@ -480,6 +501,7 @@ static void cmd_umount(int argc, char **argv)
     if (r == VFS_ERR_BUSY) { kprintf("\nUMOUNT: %s is busy (files open)\n", path); return; }
     if (r != VFS_OK)       { kprintf("\nUMOUNT: failed (%d)\n", r); return; }
     user_mnt_path[slot][0] = '\0';
+    user_mnt_dev[slot] = 0;
     kprintf("\n%s unmounted\n", path);
 }
 

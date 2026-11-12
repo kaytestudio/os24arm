@@ -60,6 +60,11 @@ int blkdev_register(blkdev_t *dev);
 
 int blkdev_unregister(blkdev_t *dev);   /* + its partitions; 0 if found */
 
+/* Called for each device blkdev_unregister() removes (e.g. to unmount
+ * filesystems on a USB stick that was pulled). One hook; NULL clears it. */
+typedef void (*blkdev_remove_fn)(blkdev_t *dev);
+void blkdev_set_remove_hook(blkdev_remove_fn fn);
+
 /**
  * Get block device by name
  */

@@ -453,9 +453,10 @@ static int hpfs_mount_op(vfs_mount_t *mnt)
     }
     if (!dir_root_dnode(m, m->root_fnode)) return VFS_EIO;
     load_codepage(m);
-    kprintf("[HPFS]   %s: HPFS v%u, %u sectors, root fnode %u%s%s, %s%u\n", m->dev->name,
-            sb[8], m->n_sectors, m->root_fnode, m->label[0] ? ", label " : "", m->label,
-            m->codepage ? "code page " : "no code page table, ASCII case only", m->codepage);
+    kprintf("[HPFS]   %s: HPFS v%u, %u sectors, root fnode %u%s%s, ", m->dev->name,
+            sb[8], m->n_sectors, m->root_fnode, m->label[0] ? ", label " : "", m->label);
+    if (m->codepage) kprintf("code page %u\n", m->codepage);
+    else             kprintf("no code page table (ASCII case folding only)\n");
     return VFS_OK;
 }
 
