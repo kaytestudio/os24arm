@@ -6,6 +6,7 @@
 #include "../../fs/ext4/ext4.h"
 #include "../../fs/btrfs/btrfs.h"
 #include "fat32.h"
+#include "kio.h"
 #include "basic.h"
 #include "gui/framebuffer.h"
 #include "gui/wayland.h"
@@ -285,6 +286,8 @@ static void cmd_help(void)
     uart_puts("              /HISTORY, /MACROS, name=text)\r\n");
     uart_puts("  MEM       - Display memory information\r\n");
     uart_puts("  USB       - List USB devices (USBD)\r\n");
+    uart_puts("  MOUNT     - MOUNT dev \\DIR: mount a FAT volume (e.g. usb0p1)\r\n");
+    uart_puts("  UMOUNT    - UMOUNT \\DIR: unmount it\r\n");
     uart_puts("  IFS       - List loaded filesystem drivers\r\n");
     uart_puts("  RUN       - Load and run an OS/2 LX .EXE (e.g. RUN CMD.EXE)\r\n");
 #ifdef LX_HAS_TEST_PAYLOAD
@@ -366,6 +369,111 @@ static void cmd_run(int argc, char **argv)
     }
 }
 
+/* ── MOUNT / UMOUNT ──────────────────────────────────────────────────────────
+ * Mount a FAT16/FAT32 block device (e.g. a USB stick's partition, usb0p1)
+ * after boot, reachable from the shell as \<DIR>:
+ *   MOUNT                  list mounts and block devices
+ *   MOUNT usb0p1 \USB      mount it at /USB
+ *   UMOUNT \USB            unmount (refused while files are open there)
+ */
+#define USER_MOUNTS 4
+static fat32_mount_t user_mnt[USER_MOUNTS];
+static char          user_mnt_path[USER_MOUNTS][32];
+
+static int name_eq_nocase(const char *a, const char *b)
+{
+    for (;; a++, b++) {
+        char x = *a, y = *b;
+        if (x >= 'a' && x <= 'z') x = (char)(x - 32);
+        if (y >= 'a' && y <= 'z') y = (char)(y - 32);
+        if (x != y) return 0;
+        if (!x) return 1;
+    }
+}
+
+/* "\usb", "/USB", "usb" -> "/USB" */
+static int mount_path(const char *in, char *out, int size)
+{
+    int n = 0;
+    if (*in != '/' && *in != '\\') out[n++] = '/';
+    for (; *in && n < size - 1; in++) {
+        char c = *in == '\\' ? '/' : *in;
+        if (c >= 'a' && c <= 'z') c = (char)(c - 32);
+        out[n++] = c;
+    }
+    while (n > 1 && out[n - 1] == '/') n--;           /* no trailing slash */
+    out[n] = '\0';
+    return n > 1 ? 0 : -1;                            /* not "/" itself */
+}
+
+static void cmd_mount(int argc, char **argv)
+{
+    if (argc == 1) {
+        kprintf("\nMounted:\n");
+        const char *mp, *fs;
+        for (int i = 0; vfs_mount_info(i, &mp, &fs) == VFS_OK; i++)
+            kprintf("  %-12s %s\n", mp, fs);
+        kprintf("Block devices:\n");
+        for (int i = 0; ; i++) {
+            blkdev_t *d = blkdev_get_by_index(i);
+            if (!d) break;
+            unsigned mb = (unsigned)((d->num_sectors * (int64_t)d->sector_size) >> 20);
+            kprintf("  %-12s %6u MB%s%s\n", d->name, mb,
+                    (d->flags & BLKDEV_READONLY) ? "  read-only" : "",
+                    (d->flags & BLKDEV_REMOVABLE) ? "  removable" : "");
+        }
+        return;
+    }
+    if (argc != 3) {
+        kprintf("\nUsage: MOUNT [device directory]   e.g. MOUNT usb0p1 \\USB\n");
+        return;
+    }
+    blkdev_t *dev = 0;
+    for (int i = 0; (dev = blkdev_get_by_index(i)) != 0; i++)
+        if (name_eq_nocase(dev->name, argv[1])) break;
+    if (!dev) { kprintf("\nMOUNT: no block device '%s'\n", argv[1]); return; }
+
+    char path[32];
+    if (mount_path(argv[2], path, sizeof path) != 0) {
+        kprintf("\nMOUNT: bad directory '%s'\n", argv[2]);
+        return;
+    }
+    int slot = -1;
+    for (int i = 0; i < USER_MOUNTS; i++)
+        if (!user_mnt_path[i][0]) { slot = i; break; }
+    if (slot < 0) { kprintf("\nMOUNT: too many mounts (max %d)\n", USER_MOUNTS); return; }
+
+    kmemset(&user_mnt[slot], 0, sizeof(user_mnt[slot]));
+    user_mnt[slot].dev = dev;
+    int r = vfs_mount(path, &vfs_fat32_fs, &user_mnt[slot]);
+    if (r != VFS_OK) {
+        kprintf("\nMOUNT: %s at %s failed (%d)%s\n", dev->name, path, r,
+                r == VFS_ERR_INVAL ? " - already mounted?" : " - not FAT16/FAT32?");
+        return;
+    }
+    kstrncpy(user_mnt_path[slot], path, sizeof user_mnt_path[slot]);
+    kprintf("\n%s mounted at %s (FAT%s)\n", dev->name, path,
+            (dev->flags & BLKDEV_READONLY) ? ", read-only" : "");
+}
+
+static void cmd_umount(int argc, char **argv)
+{
+    char path[32];
+    if (argc != 2 || mount_path(argv[1], path, sizeof path) != 0) {
+        kprintf("\nUsage: UMOUNT directory   e.g. UMOUNT \\USB\n");
+        return;
+    }
+    int slot = -1;
+    for (int i = 0; i < USER_MOUNTS; i++)
+        if (user_mnt_path[i][0] && name_eq_nocase(user_mnt_path[i], path)) slot = i;
+    if (slot < 0) { kprintf("\nUMOUNT: %s was not mounted with MOUNT\n", path); return; }
+    int r = vfs_unmount(user_mnt_path[slot]);
+    if (r == VFS_ERR_BUSY) { kprintf("\nUMOUNT: %s is busy (files open)\n", path); return; }
+    if (r != VFS_OK)       { kprintf("\nUMOUNT: failed (%d)\n", r); return; }
+    user_mnt_path[slot][0] = '\0';
+    kprintf("\n%s unmounted\n", path);
+}
+
 /* ── Command dispatcher ──────────────────────────────────────────────────── */
 
 static void execute_command(char *cmdline)
@@ -392,6 +500,12 @@ static void execute_command(char *cmdline)
     }
     else if (my_strcmp(argv[0], "USB") == 0) {
         usbd_list();
+    }
+    else if (my_strcmp(argv[0], "MOUNT") == 0) {
+        cmd_mount(argc, argv);
+    }
+    else if (my_strcmp(argv[0], "UMOUNT") == 0 || my_strcmp(argv[0], "UNMOUNT") == 0) {
+        cmd_umount(argc, argv);
     }
     else if (my_strcmp(argv[0], "MEM") == 0) {
         cmd_mem();

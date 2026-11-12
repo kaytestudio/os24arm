@@ -29,6 +29,7 @@
 #define VFS_ERR_NOTDIR   -7
 #define VFS_ERR_ISDIR    -8
 #define VFS_ERR_ROFS     -9
+#define VFS_ERR_BUSY     -10   /* unmount: files/dirs still open */
 
 /* Aliases for compatibility */
 #define VFS_EIO       VFS_ERR_IO
@@ -155,6 +156,8 @@ void vfs_init(void);
 /* Mount/unmount */
 int vfs_mount(const char *mountpoint, vfs_fs_t *fs, void *fs_priv);
 int vfs_unmount(const char *mountpoint);
+/* index-th active mount (0-based): VFS_OK, or VFS_ERR_NOMOUNT past the end */
+int vfs_mount_info(int index, const char **mountpoint, const char **fsname);
 
 /* File operations (fd-based) */
 int vfs_open(const char *path, int flags);

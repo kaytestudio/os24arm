@@ -488,17 +488,23 @@ static int fat32_alloc_dirent(fat32_mount_t *m, uint32_t dir_cluster,
 static fat32_file_t open_files[FAT32_MAX_OPEN_FILES];
 static fat32_dir_t  open_dirs [FAT32_MAX_OPEN_DIRS];
 
+/* open_files/open_dirs are shared by every FAT volume; each entry
+ * records its own volume (->mnt), so mounting another volume must not
+ * touch them (it used to clear both tables, breaking the open files of
+ * a volume already mounted). */
 static int fat32_vfs_mount(vfs_mount_t *mnt)
 {
     fat32_mount_t *m = (fat32_mount_t *)mnt->priv;
-    kmemset(open_files, 0, sizeof(open_files));
-    kmemset(open_dirs,  0, sizeof(open_dirs));
     return fat32_mount_init(m, m->dev);
 }
 
 static int fat32_vfs_unmount(vfs_mount_t *mnt)
 {
-    (void)mnt;
+    fat32_mount_t *m = (fat32_mount_t *)mnt->priv;
+    for (int i = 0; i < FAT32_MAX_OPEN_FILES; i++)
+        if (open_files[i].mnt == m) open_files[i].mnt = NULL;
+    for (int i = 0; i < FAT32_MAX_OPEN_DIRS; i++)
+        if (open_dirs[i].mnt == m) open_dirs[i].mnt = NULL;
     return VFS_OK;
 }
 
@@ -966,8 +972,8 @@ int fat32_init(const char *params)
     /* A GPT-partitioned disk (see gpt.c) keeps a FAT "BOOT" partition as a
      * safety/recovery area mounted at "/BOOT" - FAT so firmware and any
      * host OS can read and repair it. The main "/" drive is partition 2,
-     * owned by ext4_init() or btrfs_init(). One static mount suffices:
-     * this driver's open-file/dir tables only support one FAT volume. */
+     * owned by ext4_init() or btrfs_init(). More FAT volumes (e.g. USB
+     * sticks) can be mounted later with the shell's MOUNT command. */
     static fat32_mount_t boot_mnt;
 
     blkdev_t *dev = blkdev_get_by_name("BOOT");

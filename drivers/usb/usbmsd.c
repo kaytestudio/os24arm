@@ -315,6 +315,22 @@ static void bring_up(void)
     if (!disk_registered && blkdev_register(&disk) == 0) {
         disk_registered = 1;
         gpt_probe(&disk);
+        /* GPT names partitions after their labels; a USB disk made from
+         * the same image as the boot disk would otherwise shadow its
+         * "BOOT"/"C". Use usb0p1, usb0p2, ... instead. */
+        int part = 0;
+        for (int i = 0; ; i++) {
+            blkdev_t *b = blkdev_get_by_index(i);
+            if (!b) break;
+            if (b->parent != &disk) continue;
+            char *nm = b->name;
+            V("[USBMSD] usb0p%d: partition '%s', %u sectors\n", part + 1, nm,
+              (unsigned)b->num_sectors);
+            usb_copy(nm, "usb0p", 5);
+            nm[5] = (char)('1' + part);
+            nm[6] = 0;
+            if (++part == 9) break;
+        }
     }
 }
 

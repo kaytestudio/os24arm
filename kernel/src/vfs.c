@@ -23,6 +23,20 @@ static vfs_dir_t  dirs [VFS_MAX_DIRS];
    INTERNAL HELPERS
    ══════════════════════════════════════════════════════════════════════════ */
 
+/* Mountpoints match case-insensitively, as OS/2 paths do ("\usb" and
+ * "\USB" are the same drive); what's below the mountpoint is passed to
+ * the filesystem unchanged. */
+static int mp_prefix(const char *path, const char *mp, int n)
+{
+    for (int i = 0; i < n; i++) {
+        char a = path[i], b = mp[i];
+        if (a >= 'a' && a <= 'z') a = (char)(a - 32);
+        if (b >= 'a' && b <= 'z') b = (char)(b - 32);
+        if (a != b) return 1;
+    }
+    return 0;
+}
+
 /* Find the best-matching mount for a path.
    "C:/FOO" matches mount "C:", "/" matches mount "/".
    Returns NULL if none. */
@@ -32,11 +46,12 @@ static vfs_mount_t *find_mount(const char *path)
     int          best_len = -1;
 
     for (int i = 0; i < mount_count; i++) {
+        if (!mounts[i].fs) continue;                  /* free slot */
         const char *mp  = mounts[i].mountpoint;
         int         mpl = kstrlen(mp);
 
         /* Match the mountpoint prefix */
-        if (kstrncmp(path, mp, (size_t)mpl) != 0) continue;
+        if (mp_prefix(path, mp, mpl) != 0) continue;
 
         /* Root mount "/" matches any absolute path: the leading slash IS
          * the separator, so there's no boundary character left to check
@@ -98,11 +113,22 @@ void vfs_init(void)
 }
 /* ── Mount management ────────────────────────────────────────────────────── */
 
+/* Slots never move once used: open files and directories keep pointers to
+ * their mount (files[].mnt, dirs[].mnt), so unmounting frees a slot in
+ * place and mounting reuses the first free one. */
 int vfs_mount(const char *mountpoint, vfs_fs_t *fs, void *fs_priv)
 {
-    if (mount_count >= VFS_MAX_MOUNTS) return VFS_ERR_NOSPACE;
+    int slot = -1;
+    for (int i = 0; i < mount_count; i++) {
+        if (!mounts[i].fs) { if (slot < 0) slot = i; continue; }
+        if (kstrcmp(mounts[i].mountpoint, mountpoint) == 0) return VFS_ERR_INVAL;
+    }
+    if (slot < 0) {
+        if (mount_count >= VFS_MAX_MOUNTS) return VFS_ERR_NOSPACE;
+        slot = mount_count;
+    }
 
-    vfs_mount_t *mnt = &mounts[mount_count];
+    vfs_mount_t *mnt = &mounts[slot];
     kstrncpy(mnt->mountpoint, mountpoint, VFS_PATH_MAX);
     mnt->fs   = fs;
     mnt->priv = fs_priv;
@@ -114,7 +140,7 @@ int vfs_mount(const char *mountpoint, vfs_fs_t *fs, void *fs_priv)
         return r;
     }
 
-    mount_count++;
+    if (slot == mount_count) mount_count++;
     kprintf("[VFS]  Mounted '%s' as '%s'\n", fs->name, mountpoint);
     return VFS_OK;
 }
@@ -122,12 +148,27 @@ int vfs_mount(const char *mountpoint, vfs_fs_t *fs, void *fs_priv)
 int vfs_unmount(const char *mountpoint)
 {
     for (int i = 0; i < mount_count; i++) {
-        if (kstrcmp(mounts[i].mountpoint, mountpoint) == 0) {
-            mounts[i].fs->unmount(&mounts[i]);
-            /* Shift table down */
-            for (int j = i; j < mount_count - 1; j++)
-                mounts[j] = mounts[j + 1];
-            mount_count--;
+        if (!mounts[i].fs || kstrcmp(mounts[i].mountpoint, mountpoint) != 0)
+            continue;
+        for (int f = 0; f < VFS_MAX_FILES; f++)
+            if (files[f].used && files[f].mnt == &mounts[i]) return VFS_ERR_BUSY;
+        for (int d = 0; d < VFS_MAX_DIRS; d++)
+            if (dirs[d].used && dirs[d].mnt == &mounts[i]) return VFS_ERR_BUSY;
+        if (mounts[i].fs->unmount) mounts[i].fs->unmount(&mounts[i]);
+        kmemset(&mounts[i], 0, sizeof(mounts[i]));    /* free in place */
+        return VFS_OK;
+    }
+    return VFS_ERR_NOMOUNT;
+}
+
+int vfs_mount_info(int index, const char **mountpoint, const char **fsname)
+{
+    int n = 0;
+    for (int i = 0; i < mount_count; i++) {
+        if (!mounts[i].fs) continue;
+        if (n++ == index) {
+            if (mountpoint) *mountpoint = mounts[i].mountpoint;
+            if (fsname)     *fsname     = mounts[i].fs->name;
             return VFS_OK;
         }
     }
