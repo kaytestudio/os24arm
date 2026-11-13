@@ -227,6 +227,7 @@ int vfs_seek(int fd, int32_t offset, int whence)
 {
     if (fd < 0 || fd >= VFS_MAX_FILES || !files[fd].used) return VFS_ERR_BADFD;
     uint32_t newpos = 0;
+    if (!files[fd].mnt->fs->seek) return VFS_ERR_INVAL;          /* driver can't seek */
     int r = files[fd].mnt->fs->seek(files[fd].mnt, files[fd].fpriv, offset, whence, &newpos);
     if (r != VFS_OK) return r;
     files[fd].pos = newpos;

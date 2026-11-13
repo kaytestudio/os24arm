@@ -47,6 +47,22 @@ static int same(const char *a, const char *b, uint32_t n)
 }
 
 static rnode_t   nodes[RAMFS_NODES];
+static unsigned long frames_held;          /* for leak checks (ramfs_frames) */
+
+static void *ramfs_alloc(void)
+{
+    void *p = mmu_frames_alloc(1);
+    if (p) frames_held++;
+    return p;
+}
+
+static void ramfs_free(void *p)
+{
+    mmu_frames_free(p, 1);
+    frames_held--;
+}
+
+unsigned long ramfs_frames(void) { return frames_held; }
 static rhandle_t handles[48];
 static int       inited;
 
@@ -117,7 +133,7 @@ static void truncate_to(rnode_t *n, uint32_t size)
 {
     if (n->pages)
         for (uint32_t p = (size + PAGE - 1) / PAGE; p < MAX_PAGES; p++)
-            if (n->pages[p]) { mmu_frames_free(n->pages[p], 1); n->pages[p] = 0; }
+            if (n->pages[p]) { ramfs_free(n->pages[p]); n->pages[p] = 0; }
     if (size < n->size && n->pages && size % PAGE && n->pages[size / PAGE])
         kmemset(n->pages[size / PAGE] + size % PAGE, 0, PAGE - size % PAGE);
     n->size = size;
@@ -126,7 +142,7 @@ static void truncate_to(rnode_t *n, uint32_t size)
 static void free_node(int i)
 {
     truncate_to(&nodes[i], 0);
-    if (nodes[i].pages) mmu_frames_free(nodes[i].pages, 1);
+    if (nodes[i].pages) ramfs_free(nodes[i].pages);
     nodes[i].used = 0;
 }
 
@@ -193,13 +209,13 @@ static int r_write(vfs_mount_t *mnt, void *fpriv, const void *buf, uint32_t len,
     rnode_t *n = &nodes[h->node];
     *actual = 0;
     if (h->append) h->pos = n->size;
-    if (!n->pages && !(n->pages = mmu_frames_alloc(1))) return VFS_ERR_NOSPACE;
+    if (!n->pages && !(n->pages = ramfs_alloc())) return VFS_ERR_NOSPACE;
     uint32_t done = 0;
     while (done < len) {
         uint32_t pi = h->pos / PAGE, off = h->pos % PAGE, k = PAGE - off;
         if (pi >= MAX_PAGES) break;
         if (k > len - done) k = len - done;
-        if (!n->pages[pi] && !(n->pages[pi] = mmu_frames_alloc(1))) break;
+        if (!n->pages[pi] && !(n->pages[pi] = ramfs_alloc())) break;
         kmemcpy(n->pages[pi] + off, (const uint8_t *)buf + done, k);
         done += k;
         h->pos += k;

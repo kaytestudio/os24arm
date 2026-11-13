@@ -69,8 +69,23 @@ platform-specific are new code.
    processes), shared anonymous mappings; `/dev/null`, `/dev/zero`,
    `/dev/urandom`; `/tmp` is a RAM file system (`kernel/src/ramfs.c`,
    `XDG_RUNTIME_DIR=/tmp`), `flock` always succeeds (one user). Not done:
-   datagram/seqpacket sockets, `/proc`.
-   Tests: `ipc` (all of the above), `fsops` (directory ops on a volume).
+   datagram/seqpacket sockets, `/proc` (beyond `/proc/self/exe` and
+   `/proc/self/fd/N` links).
+   Terminals: the console and pseudo-terminals (`/dev/ptmx`, `/dev/pts/N`)
+   share one line discipline - Linux termios (`TCGETS`/`TCSETS*`;
+   canonical editing with VERASE/VKILL/VWERASE/VEOF, raw mode, ECHO,
+   ISIG, ICRNL, OPOST/ONLCR), window size with SIGWINCH, controlling
+   terminals (`setsid`, `TIOCSCTTY`, `/dev/tty`), process groups and
+   sessions (`setpgid`, `TIOCSPGRP`; Ctrl-C goes to the foreground group),
+   hang-up when the master closes.
+   Tests: `ipc` (all of the above), `fsops` (directory ops on a volume),
+   `ptytest` (an interactive busybox shell on a pty, driven through the
+   master: commands, Ctrl-C, resize, exit).
+
+   A shell: `userland/build-busybox.sh` builds busybox 1.37 (static, ash
+   with the applets built in). `RUNELF \h\busybox sh` gives an
+   interactive shell on the console - line editing, pipes, redirection,
+   job control, Ctrl-C.
 4. **Libraries** *(done)*. `userland/build-libs.sh` cross-builds, as
    static libraries in the musl sysroot: Linux UAPI headers (sabotage's
    sanitized 4.19 kernel-headers), libffi 3.5.2, libwayland 1.24.0

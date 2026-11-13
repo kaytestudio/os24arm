@@ -10,4 +10,7 @@ extern vfs_fs_t vfs_ramfs;
  * adds zeros. VFS_OK or a VFS error. */
 int ramfs_truncate(const char *path_in_mount, uint32_t size);
 
+/* Page frames holding files and directories (files outlive programs). */
+unsigned long ramfs_frames(void);
+
 #endif /* RAMFS_H */

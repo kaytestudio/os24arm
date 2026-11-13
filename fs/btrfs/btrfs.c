@@ -33,6 +33,7 @@ static int btrfs_open(vfs_mount_t *mnt, const char *path, int flags, void **fpri
 static int btrfs_close(vfs_mount_t *mnt, void *fpriv);
 static int btrfs_read(vfs_mount_t *mnt, void *fpriv, void *buf, uint32_t len, uint32_t *actual);
 static int btrfs_write(vfs_mount_t *mnt, void *fpriv, const void *buf, uint32_t len, uint32_t *actual);
+static int btrfs_seek(vfs_mount_t *mnt, void *fpriv, int32_t offset, int whence, uint32_t *newpos);
 static int btrfs_opendir(vfs_mount_t *mnt, const char *path, void **dpriv);
 static int btrfs_readdir(vfs_mount_t *mnt, void *dpriv, vfs_dirent_t *ent);
 static int btrfs_closedir(vfs_mount_t *mnt, void *dpriv);
@@ -49,6 +50,7 @@ static vfs_fs_t btrfs_fs_ops = {
     .close    = btrfs_close,
     .read     = btrfs_read,
     .write    = btrfs_write,
+    .seek     = btrfs_seek,
     .opendir  = btrfs_opendir,
     .readdir  = btrfs_readdir,
     .closedir = btrfs_closedir,
@@ -657,6 +659,22 @@ static int btrfs_close(vfs_mount_t *mnt, void *fpriv)
     (void)mnt;
     if (!fpriv) return VFS_ERR_BADFD;
     mem_free(fpriv);
+    return VFS_OK;
+}
+
+/* Anywhere within the file (writes still only append: btrfs_write). */
+static int btrfs_seek(vfs_mount_t *mnt, void *fpriv, int32_t offset, int whence, uint32_t *newpos)
+{
+    (void)mnt;
+    btrfs_file_t *f = (btrfs_file_t *)fpriv;
+    if (!f) return VFS_ERR_BADFD;
+    int64_t base = whence == SEEK_SET ? 0 : whence == SEEK_CUR ? (int64_t)f->pos
+                 : whence == SEEK_END ? (int64_t)f->inode.size : -1;
+    if (base < 0) return VFS_ERR_INVAL;
+    int64_t p = base + offset;
+    if (p < 0 || (uint64_t)p > f->inode.size || p > 0xFFFFFFFFLL) return VFS_ERR_INVAL;
+    f->pos = (uint64_t)p;
+    *newpos = (uint32_t)p;
     return VFS_OK;
 }
 

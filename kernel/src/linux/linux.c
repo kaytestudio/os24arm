@@ -56,8 +56,14 @@
  * the kernel touches it (-EFAULT otherwise); a fault in a program kills
  * it (SIGSEGV / SIGILL; handlers for those aren't run).
  *
- * Not yet: datagram sockets, futexes shared between processes, /proc,
- * dynamic linking.
+ * Terminals: the console and pseudo-terminals (/dev/ptmx, /dev/pts/N) are
+ * tty_t's with one line discipline (termios: canonical editing, raw mode,
+ * echo, signals to the foreground process group), window sizes, process
+ * groups, sessions and controlling terminals. /proc/self/exe and
+ * /proc/self/fd/N exist as links (readlink, and exe as a path).
+ *
+ * Not yet: datagram sockets, futexes shared between processes, the rest
+ * of /proc, dynamic linking.
  */
 
 #include "linux_abi.h"
@@ -95,7 +101,8 @@ extern int       usbmouse_poll(usbmouse_ev_t *ev) __attribute__((weak));
 #define PAGES           (MMU_USER_SIZE / PAGE)
 #define MAX_PROCS       48                     /* threads */
 #define MAX_GROUPS      16                     /* processes */
-#define KSTACK_PAGES    4
+#define KSTACK_PAGES    16                     /* 64 KB: btrfs writes need a lot */
+#define KSTACK_CANARY   0x5354414B43414E59ULL  /* bottom of every kernel stack */
 #define MAX_FILES       160
 #define MAX_PIPES       32
 #define PIPE_SIZE       4096
@@ -220,7 +227,7 @@ extern int       usbmouse_poll(usbmouse_ev_t *ev) __attribute__((weak));
 typedef __INT64_TYPE__ s64;
 
 /* ── Objects behind file descriptors ──────────────────────────────────── */
-enum { F_FREE, F_CONSOLE, F_FILE, F_DIR, F_PIPE_R, F_PIPE_W, F_NULL, F_ZERO, F_RANDOM,
+enum { F_FREE, F_CONSOLE /* a tty: the console or a pty's slave */, F_PTMX, F_FILE, F_DIR, F_PIPE_R, F_PIPE_W, F_NULL, F_ZERO, F_RANDOM,
        F_EVENTFD, F_TIMERFD, F_SIGNALFD, F_EPOLL, F_MEMFD, F_SOCK, F_FB, F_EVDEV };
 
 typedef struct pipe {
@@ -297,6 +304,7 @@ typedef struct file {
     epoll_t *ep;
     memobj_t *mem;
     sock_t  *sock;
+    struct tty *tty;                  /* F_CONSOLE, F_PTMX */
     char     path[VFS_PATH_MAX];
 } file_t;
 
@@ -332,6 +340,9 @@ typedef struct group {
     lx_u64   brk_start, brk_cur, mmap_next;
     sigact_t sa[NSIG];
     char     cwd[VFS_PATH_MAX];
+    char     exe[VFS_PATH_MAX];    /* /proc/self/exe */
+    int      pgid, sid;            /* process group, session */
+    struct tty *ctty;              /* controlling terminal */
 } group_t;
 
 typedef struct proc {
@@ -369,10 +380,23 @@ static char    argbuf[ARGBUF];         /* execve: argv / envp copied in */
 static lx_u64 ticks(void) { lx_u64 v; __asm__ volatile("isb\n\tmrs %0, cntvct_el0" : "=r"(v)); return v; }
 static lx_u64 freq(void)  { lx_u64 v; __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(v)); return v; }
 
+/* A kernel stack overflow would silently corrupt the stack below it
+ * (another thread's): stop loudly instead. */
+static void check_kstack(proc_t *p)
+{
+    if (!p || !p->kstack) return;
+    for (int k = 0; k < 8; k++)
+        if (((lx_u64 *)p->kstack)[k] != KSTACK_CANARY) {
+            kprintf("[LINUX]  FATAL: kernel stack overflow in thread %d\n", p->pid);
+            for (;;) { }
+        }
+}
+
 static void switch_to(proc_t *next)
 {
     proc_t *prev = cur;
     if (prev == next) return;
+    check_kstack(prev);
     if (prev) __asm__ volatile("mrs %0, tpidr_el0" : "=r"(prev->tpidr));
     cur = next;
     mmu_as_t *as = next ? next->g->as : 0;
@@ -626,6 +650,8 @@ static int norm_path(const char *base, const char *in, char *out)
     return 0;
 }
 
+static int streq(const char *a, const char *b) { return kstrcmp(a, b) == 0; }
+
 static int user_path(int dirfd, lx_u64 up, char *out)
 {
     char in[VFS_PATH_MAX];
@@ -637,10 +663,12 @@ static int user_path(int dirfd, lx_u64 up, char *out)
             return -EBADF;
         base = cur->g->fd[dirfd]->path;
     }
-    return norm_path(base, in, out);
+    r = norm_path(base, in, out);
+    if (!r && streq(out, "/proc/self/exe") && cur->g->exe[0])   /* the program itself */
+        kstrncpy(out, cur->g->exe, VFS_PATH_MAX);
+    return r;
 }
 
-static int streq(const char *a, const char *b) { return kstrcmp(a, b) == 0; }
 
 /* /tmp/... -> the path inside the RAM file system, else NULL */
 static const char *tmp_rel(const char *path)
@@ -652,65 +680,335 @@ static const char *tmp_rel(const char *path)
 }
 
 /* ── Console ──────────────────────────────────────────────────────────── */
-static char     con_line[256];
-static uint32_t con_have, con_pos;
-static int      con_eol, con_eof;      /* a complete line / Ctrl-D is waiting */
+/* ── Terminals: the console and pseudo-terminals ─────────────────────── */
+/* A tty: termios state (Linux's kernel struct termios, 36 bytes), window
+ * size, foreground process group and session, the input queue a reader
+ * gets (complete lines in canonical mode, bytes in raw mode) and the line
+ * being edited. Input arrives a character at a time (tty_input) from the
+ * UART / USB keyboard (the console) or a pty master's writes; output (and
+ * echo) goes to out(): the UART, or the master's read queue. */
+#define T_ISIG   0x0001
+#define T_ICANON 0x0002
+#define T_ECHO   0x0008
+#define T_ECHOE  0x0010
+#define T_ECHOK  0x0020
+#define T_ECHOCTL 0x0200
+#define T_IEXTEN 0x8000
+#define T_ICRNL  0x0100
+#define T_INLCR  0x0040
+#define T_IGNCR  0x0080
+#define T_OPOST  0x0001
+#define T_ONLCR  0x0004
+enum { VINTR = 0, VQUIT = 1, VERASE = 2, VKILL = 3, VEOF = 4, VTIME = 5, VMIN = 6,
+       VSUSP = 10, VEOL = 11, VWERASE = 14, VEOL2 = 16 };
+#define TTY_IN 2048
+#define MAX_PTYS 8
 
-static void con_write(const char *s, lx_u64 n)
+typedef struct tty {
+    int      used;
+    struct {
+        uint32_t iflag, oflag, cflag, lflag;
+        uint8_t  line, cc[19];
+    } __attribute__((packed)) tio;
+    uint16_t rows, cols, xpix, ypix;
+    char     in[TTY_IN];               /* readable input */
+    uint32_t inh, inn;
+    uint32_t lines;                    /* canonical: line ends (or EOFs) in in[] */
+    char     edit[256];                /* canonical: the line being typed */
+    uint32_t editn;
+    int      pgrp, sid;
+    void   (*out)(struct tty *t, const char *s, uint32_t n);
+    void   (*pump)(struct tty *t);     /* pull input from the device (console) */
+    /* pty */
+    int      index, locked, masters, slaves, hung_up, slave_gone;
+    char     obuf[8192];               /* slave output for the master to read */
+    uint32_t oh, on;
+} tty_t;
+
+static tty_t console_tty, ptys[MAX_PTYS];
+
+static void tty_defaults(tty_t *t)
 {
-    for (lx_u64 i = 0; i < n; i++) {
-        if (s[i] == '\n') uart_putc('\r');
-        uart_putc(s[i]);
+    kmemset(&t->tio, 0, sizeof t->tio);
+    t->tio.iflag = T_ICRNL | 0x2000 /* IXON */ | 0x4000 /* IUTF8 */;
+    t->tio.oflag = T_OPOST | T_ONLCR;
+    t->tio.cflag = 0x000F /* B38400 */ | 0x0030 /* CS8 */ | 0x0080 /* CREAD */;
+    t->tio.lflag = T_ISIG | T_ICANON | T_ECHO | T_ECHOE | T_ECHOK | T_ECHOCTL | 0x0800 /* ECHOKE */ | T_IEXTEN;
+    t->tio.cc[VINTR] = 3; t->tio.cc[VQUIT] = 28; t->tio.cc[VERASE] = 127; t->tio.cc[VKILL] = 21;
+    t->tio.cc[VEOF] = 4; t->tio.cc[VMIN] = 1; t->tio.cc[VSUSP] = 26; t->tio.cc[VWERASE] = 23;
+    t->rows = 25; t->cols = 80;
+    t->inh = t->inn = t->lines = t->editn = 0;
+}
+
+/* Output with OPOST processing (\n -> \r\n under ONLCR). */
+static void tty_output(tty_t *t, const char *s, lx_u64 n)
+{
+    if (!(t->tio.oflag & T_OPOST) || !(t->tio.oflag & T_ONLCR)) { t->out(t, s, (uint32_t)n); return; }
+    lx_u64 i = 0;
+    while (i < n) {
+        lx_u64 j = i;
+        while (j < n && s[j] != '\n') j++;
+        if (j > i) t->out(t, s + i, (uint32_t)(j - i));
+        if (j < n) { t->out(t, "\r\n", 2); j++; }
+        i = j;
     }
 }
 
-static void sig_all(int sig)
+static void tty_echo(tty_t *t, char c)
 {
-    for (int i = 0; i < MAX_GROUPS; i++) send_sig_group(&groups[i], sig, 0);
-}
-
-/* Cooked line input: echo, backspace, Enter -> '\n', Ctrl-D -> end of
- * file (or the partial line), Ctrl-C -> SIGINT to every process. Takes
- * whatever has been typed into the line buffer, without waiting. */
-static void con_pump(void)
-{
-    if (con_eol || con_eof) return;
-    while (uart_ready()) {
-        char c = uart_getc();
-        if (c == '\r' || c == '\n') {
-            con_write("\n", 1);
-            con_line[con_have++] = '\n';
-            con_eol = 1;
-            return;
-        }
-        if (c == 0x04) { if (con_have) con_eol = 1; else con_eof = 1; return; }
-        if (c == 0x03) {
-            con_write("^C\n", 3);
-            con_have = con_pos = 0;
-            sig_all(SIGINT);
-            return;
-        }
-        if ((c == 0x7F || c == '\b') && con_have) { con_have--; uart_puts("\b \b"); continue; }
-        if ((uint8_t)c < 0x20 || con_have >= sizeof con_line - 1) continue;
-        con_line[con_have++] = c;
-        uart_putc(c);
+    if (!(t->tio.lflag & T_ECHO)) return;
+    if ((uint8_t)c < 0x20 && c != '\n' && c != '\t' && (t->tio.lflag & T_ECHOCTL)) {
+        char e[2] = { '^', (char)(c + 64) };
+        tty_output(t, e, 2);
+    } else {
+        tty_output(t, &c, 1);
     }
 }
 
-static s64 con_read(char *buf, lx_u64 n, int nonblock)
+static void sig_pgrp(int pgrp, int sig);
+
+static void tty_push(tty_t *t, char c)
+{
+    if (t->inn < TTY_IN) { t->in[(t->inh + t->inn) % TTY_IN] = c; t->inn++; }
+}
+
+/* One character of input, through the line discipline. */
+static void tty_input(tty_t *t, char c)
+{
+    uint32_t lf = t->tio.lflag, iff = t->tio.iflag;
+    const uint8_t *cc = t->tio.cc;
+    if (c == '\r') { if (iff & T_IGNCR) return; if (iff & T_ICRNL) c = '\n'; }
+    else if (c == '\n' && (iff & T_INLCR)) c = '\r';
+    if (lf & T_ISIG) {
+        int sig = (uint8_t)c == cc[VINTR] ? SIGINT : (uint8_t)c == cc[VQUIT] ? 3 : 0;
+        if (sig && c) {
+            tty_echo(t, c);
+            if (lf & T_ICANON) t->editn = 0;
+            if (t->pgrp) sig_pgrp(t->pgrp, sig);
+            wakeup(t);
+            return;
+        }
+        if (c && (uint8_t)c == cc[VSUSP]) return;          /* no job stopping (yet) */
+    }
+    if (!(lf & T_ICANON)) {                                 /* raw */
+        tty_push(t, c);
+        tty_echo(t, c);
+        wakeup(t);
+        return;
+    }
+    if ((uint8_t)c == cc[VERASE] || c == '\b') {
+        if (t->editn) {
+            t->editn--;
+            if ((lf & T_ECHO) && (lf & T_ECHOE)) tty_output(t, "\b \b", 3);
+        }
+        return;
+    }
+    if ((uint8_t)c == cc[VKILL] && c) {
+        while (t->editn) { t->editn--; if ((lf & T_ECHO) && (lf & T_ECHOE)) tty_output(t, "\b \b", 3); }
+        return;
+    }
+    if ((uint8_t)c == cc[VWERASE] && c && (lf & T_IEXTEN)) {
+        while (t->editn && t->edit[t->editn - 1] == ' ') { t->editn--; tty_output(t, "\b \b", 3); }
+        while (t->editn && t->edit[t->editn - 1] != ' ') { t->editn--; tty_output(t, "\b \b", 3); }
+        return;
+    }
+    int eof = c && (uint8_t)c == cc[VEOF];
+    if (c == '\n' || eof || (c && ((uint8_t)c == cc[VEOL] || (uint8_t)c == cc[VEOL2]))) {
+        if (!eof) { t->edit[t->editn++] = c; tty_echo(t, c); }
+        if (t->inn + t->editn + 1 > TTY_IN) { t->editn = 0; return; }   /* full: drop the line */
+        for (uint32_t i = 0; i < t->editn; i++) tty_push(t, t->edit[i]);
+        if (eof && !t->editn) tty_push(t, 0);                         /* EOF marker (a read of 0) */
+        t->lines++;
+        t->editn = 0;
+        wakeup(t);
+        return;
+    }
+    if (t->editn < sizeof t->edit - 1) {
+        t->edit[t->editn++] = c;
+        tty_echo(t, c);
+    }
+}
+
+static int tty_readable(tty_t *t)
+{
+    if (t->pump) t->pump(t);
+    if (t->hung_up) return 1;
+    return (t->tio.lflag & T_ICANON) ? t->lines > 0 : t->inn > 0;
+}
+
+static s64 tty_read(tty_t *t, char *buf, lx_u64 n, int nonblock)
 {
     for (;;) {
-        con_pump();
-        if (con_eol || con_eof) break;
-        if (sig_interrupt()) return -EINTR;
+        if (tty_readable(t)) break;
+        if (!(t->tio.lflag & T_ICANON) && !t->tio.cc[VMIN] && !t->tio.cc[VTIME]) return 0;  /* polling read */
         if (nonblock) return -EAGAIN;
-        yield();
+        if (sig_interrupt()) return -EINTR;
+        if (t->pump) yield();                          /* the console is polled */
+        else sleep_on(t);
     }
-    if (con_eof) { con_eof = 0; return 0; }
+    if (t->hung_up && !t->inn) return 0;
     lx_u64 k = 0;
-    while (k < n && con_pos < con_have) buf[k++] = con_line[con_pos++];
-    if (con_pos >= con_have) con_have = con_pos = con_eol = 0;
+    if (t->tio.lflag & T_ICANON) {                     /* one line at most */
+        if (t->in[t->inh] == 0 && t->inn) {            /* EOF marker */
+            t->inh = (t->inh + 1) % TTY_IN; t->inn--; t->lines--;
+            return 0;
+        }
+        while (k < n && t->inn) {
+            char c = t->in[t->inh];
+            t->inh = (t->inh + 1) % TTY_IN; t->inn--;
+            buf[k++] = c;
+            if (c == '\n' || c == (char)t->tio.cc[VEOL] || c == (char)t->tio.cc[VEOL2]) { t->lines--; break; }
+        }
+    } else {
+        while (k < n && t->inn) { buf[k++] = t->in[t->inh]; t->inh = (t->inh + 1) % TTY_IN; t->inn--; }
+    }
     return (s64)k;
+}
+
+/* The console: UART output, input from the UART / USB keyboard. */
+static void con_out(tty_t *t, const char *s, uint32_t n) { (void)t; for (uint32_t i = 0; i < n; i++) uart_putc(s[i]); }
+static void con_pump(tty_t *t) { while (uart_ready()) tty_input(t, uart_getc()); }
+
+/* A pty's slave output (and echo) is what its master reads. */
+static void pty_out(tty_t *t, const char *s, uint32_t n)
+{
+    for (uint32_t i = 0; i < n && t->on < sizeof t->obuf; i++) {
+        t->obuf[(t->oh + t->on) % sizeof t->obuf] = s[i];
+        t->on++;
+    }
+    wakeup(t);
+}
+
+static tty_t *pty_alloc(void)
+{
+    for (int i = 0; i < MAX_PTYS; i++)
+        if (!ptys[i].used) {
+            tty_t *t = &ptys[i];
+            kmemset(t, 0, sizeof *t);
+            t->used = 1;
+            t->index = i;
+            t->locked = 1;
+            t->out = pty_out;
+            tty_defaults(t);
+            return t;
+        }
+    return 0;
+}
+
+static void pty_release(tty_t *t)
+{
+    if (!t->masters && !t->slaves) t->used = 0;
+}
+
+static s64 ptm_read(file_t *f, char *buf, lx_u64 n)
+{
+    tty_t *t = f->tty;
+    while (!t->on) {
+        if (!t->slaves && t->slave_gone) return -EIO;  /* every slave closed */
+        if (f->flags & L_O_NONBLOCK) return -EAGAIN;
+        if (sig_interrupt()) return -EINTR;
+        sleep_on(t);
+    }
+    lx_u64 k = 0;
+    while (k < n && t->on) { buf[k++] = t->obuf[t->oh]; t->oh = (t->oh + 1) % sizeof t->obuf; t->on--; }
+    wakeup(t);
+    return (s64)k;
+}
+
+static s64 ptm_write(file_t *f, const char *buf, lx_u64 n)
+{
+    for (lx_u64 i = 0; i < n; i++) tty_input(f->tty, buf[i]);
+    return (s64)n;
+}
+
+static void sig_pgrp(int pgrp, int sig)
+{
+    for (int i = 0; i < MAX_GROUPS; i++)
+        if (groups[i].state == G_LIVE && groups[i].pgid == pgrp) send_sig_group(&groups[i], sig, 0);
+}
+
+/* termios / window / job-control ioctls, for the console and ptys (either side). */
+static s64 tty_ioctl(file_t *f, tty_t *t, lx_u64 req, lx_u64 arg)
+{
+    switch (req) {
+    case 0x5401:                                       /* TCGETS */
+        if (!uok(arg, sizeof t->tio, 1)) return -EFAULT;
+        kmemcpy((void *)(uintptr_t)arg, &t->tio, sizeof t->tio);
+        return 0;
+    case 0x5402: case 0x5403: case 0x5404: {          /* TCSETS, TCSETSW, TCSETSF */
+        if (!uok(arg, sizeof t->tio, 0)) return -EFAULT;
+        int was_canon = (t->tio.lflag & T_ICANON) != 0;
+        kmemcpy(&t->tio, (void *)(uintptr_t)arg, sizeof t->tio);
+        if (req == 0x5404) { t->inh = t->inn = t->lines = 0; t->editn = 0; }   /* flush input */
+        if (was_canon && !(t->tio.lflag & T_ICANON) && t->editn) {          /* to raw: keep the typed part */
+            for (uint32_t i = 0; i < t->editn; i++) tty_push(t, t->edit[i]);
+            t->editn = 0;
+        }
+        if (!(t->tio.lflag & T_ICANON)) t->lines = 0;
+        wakeup(t);
+        return 0;
+    }
+    case 0x540B:                                       /* TCFLSH */
+        if (arg == 0 || arg == 2) { t->inh = t->inn = t->lines = 0; t->editn = 0; }
+        if (arg == 1 || arg == 2) t->oh = t->on = 0;
+        return 0;
+    case 0x5409: case 0x540A: return 0;                /* TCSBRK, TCXONC */
+    case 0x5413:                                       /* TIOCGWINSZ */
+        if (!uok(arg, 8, 1)) return -EFAULT;
+        ((uint16_t *)(uintptr_t)arg)[0] = t->rows; ((uint16_t *)(uintptr_t)arg)[1] = t->cols;
+        ((uint16_t *)(uintptr_t)arg)[2] = t->xpix; ((uint16_t *)(uintptr_t)arg)[3] = t->ypix;
+        return 0;
+    case 0x5414: {                                     /* TIOCSWINSZ */
+        if (!uok(arg, 8, 0)) return -EFAULT;
+        const uint16_t *w = (const uint16_t *)(uintptr_t)arg;
+        int changed = w[0] != t->rows || w[1] != t->cols;
+        t->rows = w[0]; t->cols = w[1]; t->xpix = w[2]; t->ypix = w[3];
+        if (changed && t->pgrp) sig_pgrp(t->pgrp, 28);   /* SIGWINCH */
+        return 0;
+    }
+    case 0x540E:                                       /* TIOCSCTTY */
+        if (cur->g->sid != cur->g->pid && t->sid != cur->g->sid) return -EPERM;
+        cur->g->ctty = t;
+        t->sid = cur->g->sid;
+        t->pgrp = cur->g->pgid;
+        return 0;
+    case 0x5422:                                       /* TIOCNOTTY */
+        if (cur->g->ctty == t) cur->g->ctty = 0;
+        return 0;
+    case 0x540F:                                       /* TIOCGPGRP */
+        if (!uok(arg, 4, 1)) return -EFAULT;
+        *(int32_t *)(uintptr_t)arg = t->pgrp ? t->pgrp : cur->g->pgid;
+        return 0;
+    case 0x5410:                                       /* TIOCSPGRP */
+        if (!uok(arg, 4, 0)) return -EFAULT;
+        t->pgrp = *(int32_t *)(uintptr_t)arg;
+        return 0;
+    case 0x5429:                                       /* TIOCGSID */
+        if (!uok(arg, 4, 1)) return -EFAULT;
+        *(int32_t *)(uintptr_t)arg = t->sid ? t->sid : cur->g->sid;
+        return 0;
+    case 0x541B:                                       /* FIONREAD */
+        if (!uok(arg, 4, 1)) return -EFAULT;
+        *(int32_t *)(uintptr_t)arg = f->kind == F_PTMX ? (int32_t)t->on
+                                     : (t->tio.lflag & T_ICANON) && !t->lines ? 0 : (int32_t)t->inn;
+        return 0;
+    case 0x80045430:                                   /* TIOCGPTN */
+        if (f->kind != F_PTMX) return -ENOTTY;
+        if (!uok(arg, 4, 1)) return -EFAULT;
+        *(int32_t *)(uintptr_t)arg = t->index;
+        return 0;
+    case 0x40045431:                                   /* TIOCSPTLCK */
+        if (f->kind != F_PTMX) return -ENOTTY;
+        if (!uok(arg, 4, 0)) return -EFAULT;
+        t->locked = *(int32_t *)(uintptr_t)arg != 0;
+        return 0;
+    case 0x80045439:                                   /* TIOCGPKT */
+        if (!uok(arg, 4, 1)) return -EFAULT;
+        *(int32_t *)(uintptr_t)arg = 0;
+        return 0;
+    default:
+        return -ENOTTY;
+    }
 }
 
 /* DOS date/time (VFS stat) -> seconds since 1970 */
@@ -835,6 +1133,24 @@ static void file_put(file_t *f)
     case F_MEMFD:  mem_put(f->mem); break;
     case F_SOCK:   sock_release(f->sock); break;
     case F_EVDEV:  if (f->vfd == 0 && f->count && usbkbd_grab) usbkbd_grab(0); break;
+    case F_CONSOLE:
+        if (f->tty != &console_tty && --f->tty->slaves == 0) {
+            f->tty->slave_gone = 1;
+            wakeup(f->tty);
+            pty_release(f->tty);
+        }
+        break;
+    case F_PTMX:
+        if (--f->tty->masters == 0) {                  /* hang-up for the slave side */
+            tty_t *t = f->tty;
+            t->hung_up = 1;
+            if (t->pgrp) sig_pgrp(t->pgrp, 1);         /* SIGHUP */
+            for (int i = 0; i < MAX_GROUPS; i++)
+                if (groups[i].state == G_LIVE && groups[i].ctty == t) groups[i].ctty = 0;
+            wakeup(t);
+            pty_release(t);
+        }
+        break;
     default: break;
     }
     f->kind = F_FREE;
@@ -1425,6 +1741,7 @@ static proc_t *proc_alloc(void)
             proc_t *p = &procs[i];
             kmemset(p, 0, sizeof *p);
             if (!(p->kstack = mmu_frames_alloc(KSTACK_PAGES))) return 0;
+            for (int k = 0; k < 8; k++) ((lx_u64 *)p->kstack)[k] = KSTACK_CANARY;
             p->pid = next_pid++;
             return p;
         }
@@ -1566,6 +1883,10 @@ static s64 sys_clone(lx_u64 flags, lx_u64 newsp, lx_u64 ptid, lx_u64 tls, lx_u64
         g->mmap_next = cur->g->mmap_next;
         kmemcpy(g->sa, cur->g->sa, sizeof g->sa);
         kstrncpy(g->cwd, cur->g->cwd, sizeof g->cwd);
+        kstrncpy(g->exe, cur->g->exe, sizeof g->exe);
+        g->pgid = cur->g->pgid;
+        g->sid = cur->g->sid;
+        g->ctty = cur->g->ctty;
     }
     c->g = g;
     g->nthreads++;
@@ -1697,6 +2018,7 @@ static s64 sys_execve(lx_u64 upath, lx_u64 uargv, lx_u64 uenvp)
     mmu_as_activate(as);
     cur->g->as = as;
     cur->g->brk_start = cur->g->brk_cur = top;
+    kstrncpy(cur->g->exe, path, sizeof cur->g->exe);
     cur->g->mmap_next = MMAP_BASE;
     for (int i = 0; i < MAX_FDS; i++)
         if ((cur->g->cloexec >> i) & 1) fd_close(cur, i);
@@ -1738,8 +2060,8 @@ static s64 sys_wait4(s64 pid, lx_u64 ustatus, lx_u64 options)
     }
 }
 
-/* kill(pid > 0): that process; 0, -1: every process (one session); < -1:
- * that process (no process groups yet). */
+/* kill(pid > 0): that process; 0: the caller's process group; -1: every
+ * process; < -1: process group -pid. */
 static s64 sys_kill(s64 pid, lx_u64 sig)
 {
     if (sig > NSIG) return -EINVAL;
@@ -1748,7 +2070,8 @@ static s64 sys_kill(s64 pid, lx_u64 sig)
         group_t *g = &groups[i];
         if (g->state != G_LIVE) continue;
         if (pid > 0 && g->pid != pid) continue;
-        if (pid < -1 && g->pid != -pid) continue;
+        if (pid == 0 && g->pgid != cur->g->pgid) continue;
+        if (pid < -1 && g->pgid != -pid) continue;
         hits++;
         if (sig) send_sig_group(g, (int)sig, cur->g->pid);
     }
@@ -2557,8 +2880,11 @@ static uint32_t f_poll(file_t *f, int depth)
 {
     switch (f->kind) {
     case F_CONSOLE:
-        con_pump();
-        return POUT | ((con_eol || con_eof) ? PIN : 0);
+        return (f->tty->hung_up ? PHUP | PIN : 0) | POUT | (tty_readable(f->tty) ? PIN : 0);
+    case F_PTMX: {
+        tty_t *t = f->tty;
+        return (t->on ? PIN : 0) | (t->slave_gone && !t->slaves ? PHUP : 0) | POUT;
+    }
     case F_PIPE_R:
         return (f->pipe->count ? PIN : 0) | (!f->pipe->writers ? PHUP : 0);
     case F_PIPE_W:
@@ -2596,7 +2922,7 @@ static uint32_t f_poll(file_t *f, int depth)
 static lx_u64 f_deadline(file_t *f, int depth)
 {
     if (f->kind == F_TIMERFD) return f->next;
-    if (f->kind == F_CONSOLE) return ticks() + freq() / 100;
+    if (f->kind == F_CONSOLE && f->tty->pump) return ticks() + freq() / 100;   /* polled console */
     if (f->kind == F_EVDEV) return ticks() + freq() / 200;           /* polled devices */
     if (f->kind == F_EPOLL && depth < 4) {
         lx_u64 d = 0;
@@ -2871,13 +3197,23 @@ static s64 sys_openat(int dirfd, lx_u64 up, lx_u64 flags)
     static const struct { const char *name; int kind; } devs[] = {
         { "/dev/null", F_NULL }, { "/dev/zero", F_ZERO }, { "/dev/urandom", F_RANDOM },
         { "/dev/random", F_RANDOM }, { "/dev/tty", F_CONSOLE }, { "/dev/console", F_CONSOLE },
+        { "/dev/ptmx", F_PTMX },
         { "/dev/fb0", F_FB }, { "/dev/input/event0", F_EVDEV }, { "/dev/input/event1", F_EVDEV },
     };
     for (unsigned i = 0; i < sizeof devs / sizeof devs[0]; i++)
         if (streq(path, devs[i].name)) {
             if (devs[i].kind == F_FB) { int w, h; lx_u64 sz; if (fb_geom(&w, &h, &sz)) return -ENODEV; }
+            tty_t *t = 0;
+            if (devs[i].kind == F_CONSOLE) {           /* /dev/tty: the controlling terminal */
+                t = path[5] == 't' ? cur->g->ctty : &console_tty;
+                if (!t) return -6;                     /* ENXIO */
+            }
+            if (devs[i].kind == F_PTMX && !(t = pty_alloc())) return -28;   /* ENOSPC */
             file_t *f = file_new(devs[i].kind);
-            if (!f) return -ENFILE;
+            if (!f) { if (devs[i].kind == F_PTMX) pty_release(t); return -ENFILE; }
+            f->tty = t;
+            if (devs[i].kind == F_PTMX) t->masters++;
+            if (t && devs[i].kind == F_CONSOLE && t != &console_tty) t->slaves++;
             f->flags = (int)(flags & (L_O_ACCMODE | L_O_NONBLOCK));
             if (devs[i].kind == F_EVDEV) {
                 f->vfd = path[16] - '0';                /* event0 / event1 */
@@ -2886,6 +3222,28 @@ static s64 sys_openat(int dirfd, lx_u64 up, lx_u64 flags)
             kstrncpy(f->path, path, sizeof f->path);
             return fd_new(f, cl);
         }
+    const char *pre = "/dev/pts/";
+    int is_pts = 1;
+    for (int i = 0; pre[i]; i++) if (path[i] != pre[i]) is_pts = 0;
+    if (is_pts && path[9] >= '0' && path[9] <= '9' && !path[10]) {     /* a pty's slave */
+        tty_t *t = &ptys[path[9] - '0'];
+        if (path[9] - '0' >= MAX_PTYS || !t->used || t->hung_up) return -ENOENT;
+        if (t->locked) return -5;                       /* EIO, as Linux */
+        file_t *f = file_new(F_CONSOLE);
+        if (!f) return -ENFILE;
+        f->tty = t;
+        f->flags = (int)(flags & (L_O_ACCMODE | L_O_NONBLOCK));
+        kstrncpy(f->path, path, sizeof f->path);
+        t->slaves++;
+        t->slave_gone = 0;
+        /* A session leader without a terminal gets this one (no O_NOCTTY). */
+        if (!(flags & 0400) && !cur->g->ctty && cur->g->sid == cur->g->pid && !t->sid) {
+            cur->g->ctty = t;
+            t->sid = cur->g->sid;
+            t->pgrp = cur->g->pgid;
+        }
+        return fd_new(f, cl);
+    }
     if (streq(path, "/dev") || (path[0] == '/' && path[1] == 'd' && path[2] == 'e' &&
                                 path[3] == 'v' && path[4] == '/'))
         return -ENOENT;
@@ -2976,7 +3334,8 @@ static s64 sys_read(lx_u64 fd, lx_u64 buf, lx_u64 n)
     uint8_t *b = (uint8_t *)(uintptr_t)buf;
     int nb = (f->flags & L_O_NONBLOCK) != 0;
     switch (f->kind) {
-    case F_CONSOLE: return n ? con_read((char *)b, n, nb) : 0;
+    case F_CONSOLE: return n ? tty_read(f->tty, (char *)b, n, nb) : 0;
+    case F_PTMX:    return n ? ptm_read(f, (char *)b, n) : 0;
     case F_PIPE_R:  return n ? pipe_read(f, b, n, nb) : 0;
     case F_PIPE_W:  return -EBADF;
     case F_DIR:     return -EISDIR;
@@ -3047,7 +3406,11 @@ static s64 sys_write(lx_u64 fd, lx_u64 buf, lx_u64 n)
     const uint8_t *b = (const uint8_t *)(uintptr_t)buf;
     int nb = (f->flags & L_O_NONBLOCK) != 0;
     switch (f->kind) {
-    case F_CONSOLE: con_write((const char *)b, n); return (s64)n;
+    case F_CONSOLE:
+        if (f->tty->hung_up) return -EIO;
+        tty_output(f->tty, (const char *)b, n);
+        return (s64)n;
+    case F_PTMX:    return ptm_write(f, (const char *)b, n);
     case F_PIPE_W:  return n ? pipe_write(f, b, n, nb) : 0;
     case F_PIPE_R:  return -EBADF;
     case F_DIR:     return -EISDIR;
@@ -3142,7 +3505,7 @@ static s64 sys_fstatat(int dirfd, lx_u64 up, lx_u64 stp, lx_u64 flags, int by_fd
         file_t *f = fd_get((lx_u64)dirfd);
         if (!f) return -EBADF;
         switch (f->kind) {
-        case F_CONSOLE: case F_NULL: case F_ZERO: case F_RANDOM: case F_FB: case F_EVDEV:
+        case F_CONSOLE: case F_PTMX: case F_NULL: case F_ZERO: case F_RANDOM: case F_FB: case F_EVDEV:
             kind = ST_CHR; break;
         case F_PIPE_R: case F_PIPE_W: kind = ST_FIFO; break;
         case F_SOCK: kind = ST_SOCK; break;
@@ -3162,7 +3525,14 @@ static s64 sys_fstatat(int dirfd, lx_u64 up, lx_u64 stp, lx_u64 flags, int by_fd
         else if (streq(path, "/dev") || streq(path, "/dev/shm") || streq(path, "/dev/input"))
             vs.attrs = VFS_ATTR_DIR;
         else if (streq(path, "/dev/fb0") || streq(path, "/dev/input/event0") ||
-                 streq(path, "/dev/input/event1")) kind = ST_CHR;
+                 streq(path, "/dev/input/event1") || streq(path, "/dev/ptmx")) kind = ST_CHR;
+        else if (streq(path, "/dev/pts")) vs.attrs = VFS_ATTR_DIR;
+        else if (path[0] == '/' && path[1] == 'd' && path[5] == 'p' && path[6] == 't' &&
+                 path[7] == 's' && path[8] == '/' && path[9] >= '0' && path[9] < '0' + MAX_PTYS &&
+                 !path[10]) {
+            if (!ptys[path[9] - '0'].used) return -ENOENT;
+            kind = ST_CHR;
+        }
         else if (shm_name(path)) {
             int i = shm_find(shm_name(path));
             if (i < 0) return -ENOENT;
@@ -3243,27 +3613,15 @@ static s64 sys_ioctl(lx_u64 fd, lx_u64 req, lx_u64 arg)
         int32_t v = 0;
         if (f->kind == F_PIPE_R) v = (int32_t)f->pipe->count;
         else if (f->kind == F_SOCK) v = (int32_t)(f->sock->wr - f->sock->rd);
-        else if (f->kind == F_CONSOLE) v = con_eol ? (int32_t)(con_have - con_pos) : 0;
+        else if (f->kind == F_CONSOLE || f->kind == F_PTMX) return tty_ioctl(f, f->tty, req, arg);
         else return -ENOTTY;
         *(int32_t *)(uintptr_t)arg = v;
         return 0;
     }
     if (f->kind == F_FB) return fb_ioctl(req, arg);
     if (f->kind == F_EVDEV) return ev_ioctl(f, req, arg);
-    if (f->kind != F_CONSOLE) return -ENOTTY;
-    if (req == 0x5413) {                               /* TIOCGWINSZ */
-        if (!uok(arg, 8, 1)) return -EFAULT;
-        uint16_t *w = (uint16_t *)(uintptr_t)arg;
-        w[0] = 25; w[1] = 80; w[2] = w[3] = 0;
-        return 0;
-    }
-    if (req == 0x5401) {                               /* TCGETS: a plain tty */
-        if (!uok(arg, 60, 1)) return -EFAULT;
-        kmemset((void *)(uintptr_t)arg, 0, 60);
-        return 0;
-    }
-    if (req >= 0x5402 && req <= 0x5404) return 0;      /* TCSETS*: accepted */
-    return -ENOTTY;
+    if (f->kind != F_CONSOLE && f->kind != F_PTMX) return -ENOTTY;
+    return tty_ioctl(f, f->tty, req, arg);
 }
 
 static s64 sys_dup3(lx_u64 old, lx_u64 new, lx_u64 flags, int is_dup3)
@@ -3491,10 +3849,78 @@ static s64 linux_syscall(linux_tf_t *tf)
     case 66: return sys_iov(a0, a1, a2, 1);
     case 67: return sys_pread(a0, a1, a2, (s64)a3, 0);
     case 68: return sys_pread(a0, a1, a2, (s64)a3, 1);
+    case 71: {                                          /* sendfile(out, in, offset *, count) */
+        static uint8_t kb[4096];
+        file_t *in = fd_get(a1);
+        if (!in || !fd_get(a0)) return -EBADF;
+        s64 saved = -1;
+        if (a2) {                                       /* from *offset, leaving the position alone */
+            if (!uok(a2, 8, 1)) return -EFAULT;
+            if (in->kind != F_FILE) return -ESPIPE;
+            saved = vfs_seek(in->vfd, 0, SEEK_CUR);
+            if (vfs_seek(in->vfd, (int32_t)*(s64 *)(uintptr_t)a2, SEEK_SET) < 0) return -EINVAL;
+        }
+        s64 total = 0;
+        while ((lx_u64)total < a3) {
+            lx_u64 want = a3 - (lx_u64)total < sizeof kb ? a3 - (lx_u64)total : sizeof kb;
+            s64 r;
+            if (in->kind == F_FILE) { int g = vfs_read(in->vfd, kb, (uint32_t)want); r = g < 0 ? verr(g) : g; }
+            else if (in->kind == F_MEMFD) r = mem_rw(in->mem, &in->pos, kb, want, 0);
+            else { r = -EINVAL; }
+            if (r <= 0) { if (!total) total = r; break; }
+            /* the write side goes through the normal paths (user memory not needed) */
+            file_t *out = fd_get(a0);
+            s64 w;
+            if (out->kind == F_FILE) { int g = vfs_write(out->vfd, kb, (uint32_t)r); w = g < 0 ? verr(g) : g; }
+            else if (out->kind == F_PIPE_W) w = pipe_write(out, kb, (lx_u64)r, (out->flags & L_O_NONBLOCK) != 0);
+            else if (out->kind == F_CONSOLE) { tty_output(out->tty, (const char *)kb, (lx_u64)r); w = r; }
+            else if (out->kind == F_SOCK) w = sock_send(out, kb, (lx_u64)r, 0, 0, 0);
+            else if (out->kind == F_MEMFD) w = mem_rw(out->mem, &out->pos, kb, (lx_u64)r, 1);
+            else w = -EINVAL;
+            if (w < 0) { if (!total) total = w; break; }
+            total += w;
+            if (w < r) break;
+        }
+        if (a2) {
+            if (total > 0) *(s64 *)(uintptr_t)a2 += total;
+            vfs_seek(in->vfd, (int32_t)saved, SEEK_SET);
+        }
+        return total;
+    }
     case 72: return sys_pselect6(a0, a1, a2, a3, a4, a5);
     case 73: return sys_ppoll(a0, a1, a2, a3, a4);
     case 74: return sys_signalfd4((s64)(int32_t)a0, a1, a2, a3);
-    case 78: return -EINVAL;                            /* readlinkat: no symlinks */
+    case 78: {                                          /* readlinkat: /proc/self/exe only */
+        char in[VFS_PATH_MAX], p2[VFS_PATH_MAX];
+        int r = copy_in_str(in, a1, sizeof in);
+        if (r) return r;
+        if (norm_path(cur->g->cwd, in, p2)) return -EINVAL;
+        const char *target = 0;
+        if (streq(p2, "/proc/self/exe")) target = cur->g->exe;
+        const char *fdp = "/proc/self/fd/";
+        int isfd = 1;
+        for (int i = 0; fdp[i]; i++) if (p2[i] != fdp[i]) isfd = 0;
+        if (isfd && p2[14] >= '0' && p2[14] <= '9') {  /* /proc/self/fd/N: what it is */
+            int n = 0;
+            for (const char *c = p2 + 14; *c; c++) {
+                if (*c < '0' || *c > '9') return -ENOENT;
+                n = n * 10 + (*c - '0');
+            }
+            file_t *f = fd_get((lx_u64)n);
+            if (!f) return -ENOENT;
+            target = f->path[0] ? f->path : f->kind == F_PIPE_R || f->kind == F_PIPE_W ? "pipe:[0]"
+                   : f->kind == F_SOCK ? "socket:[0]" : "anon_inode:[unknown]";
+        }
+        if (target) {
+            lx_u64 n = kstrlen(target);
+            if (n > a3) n = a3;
+            if (!uok(a2, n, 1)) return -EFAULT;
+            kmemcpy((void *)(uintptr_t)a2, target, n);
+            return (s64)n;
+        }
+        vfs_stat_t vs;
+        return vfs_stat(p2, &vs) == VFS_OK || (p2[0] == '/' && !p2[1]) ? -EINVAL : -ENOENT;
+    }
     case 79: return sys_fstatat((int)a0, a1, a2, a3, 0);
     case 80: return sys_fstatat((int)a0, 0, a1, 0, 1);
     case 81: return 0;                                  /* sync */
@@ -3552,8 +3978,27 @@ static s64 linux_syscall(linux_tf_t *tf)
     case 139: return sys_sigreturn(tf);
     case 140: case 141: return 0;                       /* setpriority, getpriority */
     case 153: return 0;                                 /* times */
-    case 154: case 155: case 157: return a0 ? 0 : cur->g->pid;   /* setpgid, getpgid, setsid */
-    case 156: return 0;                                 /* getsid */
+    case 154: {                                         /* setpgid(pid, pgid) */
+        group_t *g = a0 ? group_by_pid((int)a0) : cur->g;
+        if (!g || (g != cur->g && g->ppid != cur->g->pid)) return -ESRCH;
+        if ((s64)a1 < 0) return -EINVAL;
+        if (g->sid == g->pid && g->pgid == g->pid && a1 != (lx_u64)g->pid) return -EPERM;  /* session leader */
+        g->pgid = a1 ? (int)a1 : g->pid;
+        return 0;
+    }
+    case 155: case 156: {                               /* getpgid, getsid */
+        group_t *g = a0 ? group_by_pid((int)a0) : cur->g;
+        if (!g) return -ESRCH;
+        return tf->x[8] == 155 ? g->pgid : g->sid;
+    }
+    case 157:                                           /* setsid */
+        if (cur->g->pgid == cur->g->pid) return -EPERM;
+        for (int i = 0; i < MAX_GROUPS; i++)            /* (nobody else may use that group id) */
+            if (groups[i].state == G_LIVE && &groups[i] != cur->g && groups[i].pgid == cur->g->pid)
+                return -EPERM;
+        cur->g->sid = cur->g->pgid = cur->g->pid;
+        cur->g->ctty = 0;
+        return cur->g->sid;
     case 160: return sys_uname(a0);
     case 165: {                                         /* getrusage: zeros */
         if (!uok(a1, 144, 1)) return -EFAULT;
@@ -3710,6 +4155,7 @@ void linux_el0_irq(linux_tf_t *tf)
     intid &= 0xFFFFFF;
     if (intid >= 1020) return;                                     /* spurious */
     if (intid == GICV3_PPI_PHYS_TIMER) tick_arm();                 /* (nothing else is routed) */
+    if (console_tty.used) con_pump(&console_tty);                  /* typed keys, Ctrl-C */
     __asm__ volatile("msr S3_0_C12_C12_1, %0\n\tisb" :: "r"(intid)); /* ICC_EOIR1_EL1 */
     if (usbd_daemon) usbd_daemon();
     schedule();                                                    /* time's up: next one */
@@ -3718,6 +4164,7 @@ void linux_el0_irq(linux_tf_t *tf)
 
 void linux_el0_trap(linux_tf_t *tf)
 {
+    check_kstack(cur);
     lx_u64 esr, far;
     __asm__ volatile("mrs %0, esr_el1\n\tmrs %1, far_el1" : "=r"(esr), "=r"(far));
     cur->tf = tf;
@@ -3750,9 +4197,10 @@ void linux_el0_trap(linux_tf_t *tf)
     const char *what = ec == 0x24 ? "data abort" : ec == 0x20 ? "instruction abort" :
                        ec == 0x22 ? "PC alignment fault" : ec == 0x26 ? "SP alignment fault" :
                        ec == 0x00 ? "undefined instruction" : "exception";
-    kprintf("[LINUX]  pid %d: %s at pc 0x%x, address 0x%x (ESR 0x%x) - killed (%s)\n",
+    kprintf("[LINUX]  pid %d: %s at pc 0x%x, address 0x%x (ESR 0x%x, lr 0x%x, sp 0x%x) - killed (%s)\n",
             cur->pid, what, (unsigned)(tf->elr & 0xFFFFFFFF), (unsigned)(far & 0xFFFFFFFF),
-            (unsigned)esr, ec == 0x00 ? "SIGILL" : "SIGSEGV");
+            (unsigned)esr, (unsigned)(tf->x[30] & 0xFFFFFFFF), (unsigned)(tf->sp & 0xFFFFFFFF),
+            ec == 0x00 ? "SIGILL" : "SIGSEGV");
     do_exit_group(ec == 0x00 ? SIGILL : SIGSEGV);
 }
 
@@ -3780,6 +4228,7 @@ int linux_run(const char *path, int argc, char **argv)
         used += l;
     }
     uint32_t free0 = mmu_frames_free_count();
+    unsigned long ram0 = ramfs_frames();
     frames_kept = 0;
     proc_t *init = proc_alloc();
     group_t *ig = init ? group_alloc() : 0;
@@ -3807,10 +4256,20 @@ int linux_run(const char *path, int argc, char **argv)
     init->g->brk_start = init->g->brk_cur = top;
     init->g->mmap_next = MMAP_BASE;
     kstrncpy(init->g->cwd, "/", sizeof init->g->cwd);
+    kstrncpy(init->g->exe, path, sizeof init->g->exe);
+    tty_defaults(&console_tty);
+    console_tty.used = 1;
+    console_tty.out = con_out;
+    console_tty.pump = con_pump;
+    init->g->pgid = init->g->sid = init->g->pid;      /* a session, the console its terminal */
+    init->g->ctty = &console_tty;
+    console_tty.sid = console_tty.pgrp = init->g->pid;
     for (int i = 0; i < 3; i++) {
         file_t *f = file_new(F_CONSOLE);
         if (!f) break;
-        f->flags = i ? 1 : 0;
+        f->flags = i ? 1 : 2;
+        f->tty = &console_tty;
+        kstrncpy(f->path, "/dev/console", sizeof f->path);
         init->g->fd[i] = f;
     }
     linux_tf_t *tf = new_frame(init);
@@ -3819,7 +4278,6 @@ int linux_run(const char *path, int argc, char **argv)
     tf->sp = sp;
     tf->spsr = 0;                                       /* EL0t, interrupts on */
     init->state = P_RUN;
-    con_have = con_pos = con_eol = con_eof = 0;
     tick_start();
 
     /* The shell's context is the idle loop: run whatever is runnable
@@ -3828,17 +4286,11 @@ int linux_run(const char *path, int argc, char **argv)
         if (ig->state == G_ZOMBIE) break;
         proc_t *p = pick_runnable(0);
         if (p) { switch_to(p); continue; }
-        int timed = 0;
-        for (int i = 0; i < MAX_PROCS; i++)
-            if (procs[i].state == P_SLEEP && procs[i].deadline) timed = 1;
-        if (timed) {                                    /* wait for the next deadline */
-            if (usbd_daemon) usbd_daemon();
-            __asm__ volatile("yield");
-            continue;
-        }
-        kprintf("[LINUX]  every process is blocked - killing them\n");
-        for (int i = 0; i < MAX_PROCS; i++)
-            if (procs[i].state == P_SLEEP) send_sig(&procs[i], SIGKILL, 0);
+        /* Nothing runnable: wait for a deadline, a key (Ctrl-C reaches
+         * the foreground process group), or USB. */
+        if (console_tty.used) con_pump(&console_tty);
+        if (usbd_daemon) usbd_daemon();
+        __asm__ volatile("yield");
     }
     tick_stop();
     int status = ig->wstatus;
@@ -3860,6 +4312,7 @@ int linux_run(const char *path, int argc, char **argv)
         if (socks[i].used) { kprintf("[LINUX]  leaked socket %d\n", i); sock_free(&socks[i]); }
     for (int i = 0; i < MAX_SHM; i++)                   /* shared memory nobody unlinked */
         if (shm_names[i].m) shm_unlink_index(i);
+    frames_kept += (long)ramfs_frames() - (long)ram0;   /* files in /tmp stay */
     if ((long)mmu_frames_free_count() + frames_kept != (long)free0)
         kprintf("[LINUX]  warning: %d page frames not returned\n",
                 (int)((long)free0 - frames_kept - (long)mmu_frames_free_count()));

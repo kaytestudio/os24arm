@@ -192,6 +192,7 @@ sync_exception_sp0:
     mrs     x0, esr_el1
     mrs     x1, elr_el1
     mrs     x2, far_el1
+    mov     x3, x30                 /* the faulting code's return address */
     bl      report_sync_exception
     b       hang
 
@@ -209,6 +210,7 @@ sync_exception_spx:
     mrs     x0, esr_el1
     mrs     x1, elr_el1
     mrs     x2, far_el1
+    mov     x3, x30                 /* the faulting code's return address */
     bl      report_sync_exception
     b       hang
 

@@ -60,10 +60,12 @@ static void uart_puthex64(unsigned long val)
  * Uses only uart_putc/uart_puts (no kprintf, no varargs) so it stays usable
  * even if the fault is inside variadic-argument handling itself.
  */
-void report_sync_exception(unsigned long esr, unsigned long elr, unsigned long far)
+void report_sync_exception(unsigned long esr, unsigned long elr, unsigned long far,
+                           unsigned long lr)
 {
     uart_puts("\r\n[EXC] Synchronous exception!\r\n");
     uart_puts("[EXC] ESR_EL1: "); uart_puthex64(esr); uart_puts("\r\n");
     uart_puts("[EXC] ELR_EL1: "); uart_puthex64(elr); uart_puts("\r\n");
     uart_puts("[EXC] FAR_EL1: "); uart_puthex64(far); uart_puts("\r\n");
+    uart_puts("[EXC] LR:      "); uart_puthex64(lr); uart_puts("\r\n");
 }
