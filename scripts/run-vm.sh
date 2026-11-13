@@ -21,6 +21,9 @@
 #                RUNELF \h\busybox sh /h/desktop.sh   (foot terminal in cage)
 #                RUNELF \h\busybox sh                 (a shell on the console)
 #                RUNELF \h\cage /h/wlclient           (Esc ends it)
+#   --hvf        run natively with Apple's Hypervisor.framework (-accel hvf
+#                -cpu host) instead of TCG: much faster, but no EL2 for the
+#                kernel's own hypervisor (VM TEST; not with --test)
 #   -h, --help
 #
 # Interactive: type VM TEST at the [C:\]> prompt. Inside the guest,
@@ -37,6 +40,7 @@ TEST_MODE=0
 GDB_OPT=()
 USB_OPT=()
 WAYLAND=0
+HVF=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -46,7 +50,8 @@ while [ $# -gt 0 ]; do
         --gdb)      GDB_OPT=(-s -S) ;;
         --usb)      USB_OPT=(-device qemu-xhci -device usb-kbd) ;;
         --wayland)  WAYLAND=1 ;;
-        -h|--help)  sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --hvf)      HVF=1 ;;
+        -h|--help)  sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "Unknown option: $1 (see --help)" >&2; exit 1 ;;
     esac
     shift
@@ -96,10 +101,15 @@ if [ "$WAYLAND" = 1 ]; then
     DISPLAY_OPT=(-global virtio-mmio.force-legacy=false -device virtio-gpu-device -display default)
 fi
 
+if [ "$HVF" = 1 ]; then
+    [ "$TEST_MODE" = 0 ] || { echo "--test needs EL2 (TCG); drop --hvf" >&2; exit 1; }
+    ACCEL=(-machine virt,gic-version=3 -cpu host -accel hvf)
+else
+    ACCEL=(-machine virt,gic-version=3,virtualization=on -cpu cortex-a72 -accel tcg)
+fi
+
 QEMU=(qemu-system-aarch64
-      -machine virt,gic-version=3,virtualization=on
-      -cpu cortex-a72
-      -accel tcg
+      "${ACCEL[@]}"
       -m 2G
       -smp 1
       -kernel "$KERNEL"
@@ -110,7 +120,11 @@ QEMU=(qemu-system-aarch64
       "${GDB_OPT[@]}")
 
 if [ "$TEST_MODE" = 0 ]; then
-    echo "Booting with EL2 (TCG). At the prompt: VM TEST.  Ctrl-A X quits QEMU."
+    if [ "$HVF" = 1 ]; then
+        echo "Booting natively (HVF, no EL2: no VM TEST).  Ctrl-A X quits QEMU."
+    else
+        echo "Booting with EL2 (TCG). At the prompt: VM TEST.  Ctrl-A X quits QEMU."
+    fi
     exec "${QEMU[@]}"
 fi
 

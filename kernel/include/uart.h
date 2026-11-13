@@ -9,6 +9,9 @@ char uart_getc(void);
 int  uart_ready(void);
 
 /* Called from boot.S's exception vectors; uses only uart_putc/uart_puts. */
+/* Stop the CPU until the next timer event (~1 ms): for polling loops. */
+void uart_idle_wait(void);
+
 /* x30 at the time of the fault: who called, when ELR is a bad branch target */
 void report_sync_exception(unsigned long esr, unsigned long elr, unsigned long far,
                            unsigned long lr);

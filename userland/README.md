@@ -140,7 +140,10 @@ platform-specific are new code.
    all on an HPFS stick image with `userland/rootfs/` (`desktop.sh`,
    `fonts.conf`, `foot.ini`).
 
-   Try it: `scripts/run-vm.sh --wayland`, `MOUNT usb0p1 \h`, then
+   Try it: `scripts/run-vm.sh --wayland --hvf` (`--hvf`: native speed
+   with Apple's Hypervisor.framework; without it QEMU emulates (TCG),
+   which the kernel's own hypervisor needs, and the desktop is slow),
+   `MOUNT usb0p1 \h`, then
    `RUNELF \h\busybox sh /h/desktop.sh [layout [variant]]` (e.g. `pt`,
    `de nodeadkeys`; default `us`) - foot in cage on the virtio-gpu
    display, a busybox shell in it; `exit` ends the session.

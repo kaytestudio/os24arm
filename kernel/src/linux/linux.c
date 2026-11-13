@@ -863,8 +863,9 @@ static s64 tty_read(tty_t *t, char *buf, lx_u64 n, int nonblock)
         if (!(t->tio.lflag & T_ICANON) && !t->tio.cc[VMIN] && !t->tio.cc[VTIME]) return 0;  /* polling read */
         if (nonblock) return -EAGAIN;
         if (sig_interrupt()) return -EINTR;
-        if (t->pump) yield();                          /* the console is polled */
-        else sleep_on(t);
+        /* The console is polled (the tick and the idle loop pump it and
+         * wake us): sleep in 10 ms steps rather than spin. */
+        sleep_until(t, t->pump ? ticks() + freq() / 100 : 0);
     }
     if (t->hung_up && !t->inn) return 0;
     lx_u64 k = 0;
@@ -4560,10 +4561,16 @@ int linux_run(const char *path, int argc, char **argv)
         proc_t *p = pick_runnable(0);
         if (p) { switch_to(p); continue; }
         /* Nothing runnable: wait for a deadline, a key (Ctrl-C reaches
-         * the foreground process group), or USB. */
+         * the foreground process group), or USB - with the CPU stopped
+         * until the next tick (WFI wakes on the pending timer interrupt
+         * even though it's masked here). */
         if (console_tty.used) con_pump(&console_tty);
         if (usbd_daemon) usbd_daemon();
-        __asm__ volatile("yield");
+        if (pick_runnable(0)) continue;
+        lx_u64 ctl;
+        __asm__ volatile("mrs %0, cntp_ctl_el0" : "=r"(ctl));
+        if (ctl & 4) tick_arm();                       /* ISTATUS: it fired; next one */
+        __asm__ volatile("dsb sy\n\twfi");
     }
     tick_stop();
     int status = ig->wstatus;

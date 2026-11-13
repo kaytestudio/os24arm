@@ -30,8 +30,10 @@
  *   - other endpoints are configured on first use from the USBRb (flags,
  *     maxPacketSize, serviceTime) with Configure Endpoint.
  *
- * Bring-up details: virt's high PCIe ECAM (0x40_1000_0000, mapped as
- * Device memory by kernel/src/mmu.c), BAR0 placed at 0x10000000, all
+ * Bring-up details: virt's PCIe ECAM - the high one (0x40_1000_0000,
+ * mapped as Device memory by kernel/src/mmu.c) when the physical address
+ * space reaches it, else the low one (0x3F00_0000; e.g. under HVF, whose
+ * VMs have a 36-bit IPA space) - BAR0 placed at 0x10000000, all
  * controller structures static and identity-mapped, polled, no cache
  * maintenance (TCG doesn't model caches; real hardware would need it).
  */
@@ -43,6 +45,7 @@
 
 /* ── QEMU virt memory map ─────────────────────────────────────────────── */
 #define VIRT_PCIE_ECAM_HIGH   0x4010000000UL  /* bus 0, 1MB per bus */
+#define VIRT_PCIE_ECAM_LOW    0x3F000000UL    /* when there's no high one (16 buses) */
 #define VIRT_PCIE_MMIO_BASE   0x10000000UL    /* 32-bit BAR window */
 #define VIRT_PCIE_MMIO_SIZE   0x2EFF0000UL
 
@@ -288,9 +291,17 @@ static int wait_reg(uintptr_t reg, uint32_t mask, uint32_t want, uint32_t ms)
     return 0;
 }
 
+/* QEMU places the ECAM high only if the PA space covers it (40 bits). */
+static uintptr_t ecam_base(void)
+{
+    u64 mmfr0;
+    __asm__ volatile("mrs %0, id_aa64mmfr0_el1" : "=r"(mmfr0));
+    return (mmfr0 & 0xF) >= 2 ? VIRT_PCIE_ECAM_HIGH : VIRT_PCIE_ECAM_LOW;
+}
+
 static volatile uint32_t *pci_cfg(uint32_t dev, uint32_t reg)
 {
-    return (volatile uint32_t *)(VIRT_PCIE_ECAM_HIGH + ((uintptr_t)dev << 15) + reg);
+    return (volatile uint32_t *)(ecam_base() + ((uintptr_t)dev << 15) + reg);
 }
 
 /* ── Rings ────────────────────────────────────────────────────────────── */

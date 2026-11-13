@@ -651,6 +651,9 @@ static bool usb_pointer_poll(void)
     return changed;
 }
 
+int  uart_ready(void);          /* uart.c (its header clashes with the local helpers above) */
+void uart_idle_wait(void);
+
 static void kernel_shell_idle(void)
 {
     usbd_daemon();          /* USB: completions, hot-plug */
@@ -663,6 +666,7 @@ static void kernel_shell_idle(void)
     if (vinput_poll_pointer()) {
         wl_compositor_flush(); /* redraw so the cursor's new position is visible */
     }
+    if (!uart_ready()) uart_idle_wait();   /* nothing typed: don't spin the CPU */
 }
 
 static void kernel_shell(void)
