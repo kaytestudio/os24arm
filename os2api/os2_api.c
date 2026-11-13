@@ -468,6 +468,22 @@ static void split_pattern(const char *path, char *dir_out, uint32_t dir_size, ch
     strncpy(pattern_out, name, pattern_size);
 }
 
+/* The UNIXROOT tree's top-level folders on C: (kernel/src/unixroot.c lays
+ * them down for the programs: /bin, /etc, /tmp, ...) are the system's, not
+ * the user's: shown hidden + system, so DIR and TREE list them only with
+ * /A, like \OS2 on the stick. */
+static int unixroot_folder(const char *vfs_path)
+{
+    static const char *const names[] = { "bin", "emx", "etc", "home", "usr", "tmp", "var", 0 };
+    if (vfs_path[0] != '/') return 0;
+    for (int i = 0; names[i]; i++) {
+        const char *a = vfs_path + 1, *b = names[i];
+        while (*b && (*a | 0x20) == *b) { a++; b++; }
+        if (!*b && !*a) return 1;
+    }
+    return 0;
+}
+
 static void fill_findbuf(FILEFINDBUF *buf, const vfs_stat_t *st, const char *name)
 {
     memset(buf, 0, sizeof(*buf));
@@ -522,6 +538,7 @@ static APIRET find_next_locked(find_state_t *fs, FILEFINDBUF *buffer, uint32_t *
         if (vfs_stat(full, &st) != VFS_OK) continue;
 
         fill_findbuf(buffer, &st, ent.name);
+        if (unixroot_folder(full)) buffer->attributes |= VFS_ATTR_HIDDEN | VFS_ATTR_SYSTEM;
         if (count) *count = 1;
         return NO_ERROR;
     }
@@ -595,6 +612,7 @@ APIRET DosQueryPathInfo(const char *filename, uint32_t info_level, FILESTATUS *i
     info->file_size = st.size;
     info->alloc_size = st.size;
     info->attributes = vfs_to_os2_attrs(st.attrs);
+    if (unixroot_folder(resolved)) info->attributes |= VFS_ATTR_HIDDEN | VFS_ATTR_SYSTEM;
     return NO_ERROR;
 }
 
