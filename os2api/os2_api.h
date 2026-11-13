@@ -51,6 +51,10 @@ void DosResolvePath(const char *in, char *out, uint32_t out_size);
  * has mount points instead of drive letters). */
 APIRET DosQueryFSInfoPath(const char *path, FSINFOPATH *info);
 
+/* A VFS path as the user sees it: "/h/notes.txt" -> "D:\\notes.txt" (C: is
+ * the system volume, D:, E:, ... the others in mount order). */
+void DosDisplayPath(const char *vfs_path, char *out, uint32_t out_size);
+
 /* Programs the kernel starts: work on the kernel's own file systems and
  * start in its current directory (see kernel/include/lx_services.h). */
 struct lx_services;

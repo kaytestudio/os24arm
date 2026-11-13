@@ -67,6 +67,9 @@ static int os2_vfs_mkdir(const char *p) { return kvfs ? kvfs->mkdir(p) : vfs_mkd
 static int os2_vfs_opendir(const char *p) { return kvfs ? kvfs->opendir(p) : vfs_opendir(p); }
 static int os2_vfs_readdir(int d, vfs_dirent_t *e) { return kvfs ? kvfs->readdir(d, e) : vfs_readdir(d, e); }
 static int os2_vfs_closedir(int d) { return kvfs ? kvfs->closedir(d) : vfs_closedir(d); }
+static int os2_vfs_mount_info(int i, const char **mp, const char **fs)
+{ return kvfs ? kvfs->mount_info(i, mp, fs) : vfs_mount_info(i, mp, fs); }
+static int os2_vfs_mount_quiet(int i) { return kvfs ? kvfs->mount_quiet(i) : vfs_mount_quiet(i); }
 #define vfs_open     os2_vfs_open
 #define vfs_close    os2_vfs_close
 #define vfs_read     os2_vfs_read
@@ -80,6 +83,8 @@ static int os2_vfs_closedir(int d) { return kvfs ? kvfs->closedir(d) : vfs_close
 #define vfs_opendir  os2_vfs_opendir
 #define vfs_readdir  os2_vfs_readdir
 #define vfs_closedir os2_vfs_closedir
+#define vfs_mount_info  os2_vfs_mount_info
+#define vfs_mount_quiet os2_vfs_mount_quiet
 #endif
 
 static void os2_api_ensure_init(void)
@@ -133,33 +138,119 @@ uint16_t vfs_to_os2_attrs(uint32_t vfs_attrs)
 
 static char current_dir[VFS_PATH_MAX] = "/";
 
+/* ── Drive letters ───────────────────────────────────────────────────
+ * C: is the system volume ("/"); D:, E:, ... the other volumes, in mount
+ * order (MOUNT usb0p1 \h: the stick is D:) - not /BOOT (inside C:) and
+ * not the system's own mounts (vfs_mount_quiet: the programs' /tmp). */
+static int is_letter_mount(const char *mp)
+{
+    if (!mp || mp[0] != '/' || !mp[1]) return 0;
+    const char *b = "/BOOT";
+    int i = 0;
+    for (; b[i] && mp[i] && (mp[i] | 0x20) == (b[i] | 0x20); i++) { }
+    return !(b[i] == 0 && mp[i] == 0);
+}
+
+/* The mount point drive letter L is ("/" for C:), or 0. */
+static const char *drive_root(char L)
+{
+    if (L >= 'a' && L <= 'z') L = (char)(L - 32);
+    if (L == 'C') return "/";
+    if (L < 'D' || L > 'Z') return 0;
+    char next = 'D';
+    const char *mp, *fs;
+    for (int i = 0; vfs_mount_info(i, &mp, &fs) == VFS_OK; i++) {
+        if (vfs_mount_quiet(i) || !is_letter_mount(mp)) continue;
+        if (next == L) return mp;
+        next++;
+    }
+    return 0;
+}
+
+/* Is path inside directory root (case-insensitive, on a component
+ * boundary)? Returns the length of root's match, or -1. */
+static int under(const char *path, const char *root)
+{
+    if (root[0] == '/' && !root[1]) return 0;
+    int k = 0;
+    while (root[k] && path[k] && (root[k] | 0x20) == (path[k] | 0x20)) k++;
+    if (root[k] || (path[k] && path[k] != '/')) return -1;
+    return k;
+}
+
+/* The drive a VFS path is on ('C' when no other volume holds it), and
+ * the length of that volume's mount point in it. */
+static char drive_of(const char *path, int *root_len)
+{
+    char best = 'C', next = 'D';
+    int best_len = 0;
+    const char *mp, *fs;
+    for (int i = 0; vfs_mount_info(i, &mp, &fs) == VFS_OK; i++) {
+        if (vfs_mount_quiet(i) || !is_letter_mount(mp)) continue;
+        int k = under(path, mp);
+        if (k > best_len) { best = next; best_len = k; }
+        next++;
+    }
+    if (root_len) *root_len = best_len;
+    return best;
+}
+
+void DosDisplayPath(const char *vfs_path, char *out, uint32_t out_size)
+{
+    int rl = 0;
+    char L = drive_of(vfs_path, &rl);
+    uint32_t n = 0;
+    if (out_size < 4) { if (out_size) out[0] = '\0'; return; }
+    out[n++] = L;
+    out[n++] = ':';
+    const char *rest = vfs_path + rl;
+    if (*rest != '/') out[n++] = '\\';
+    for (; *rest && n < out_size - 1; rest++) out[n++] = (*rest == '/') ? '\\' : *rest;
+    out[n] = '\0';
+}
+
 void DosResolvePath(const char *in, char *out, uint32_t out_size)
 {
     char tmp[VFS_PATH_MAX];
     uint32_t n = 0;
 
-    /* DOS-style backslashes are accepted anywhere and normalized to '/'. */
-    const char *src = in;
-    if (*src == '/' || *src == '\\') {
-        /* Already absolute. */
-        while (*src && n < sizeof(tmp) - 1) {
-            tmp[n++] = (*src == '\\') ? '/' : *src;
-            src++;
-        }
-        tmp[n] = '\0';
+    /* "D:\\x", "D:x" (on drive D:), "\\x" (the current drive's root), "x"
+     * (the current directory), "/x" (already a VFS path: as it is);
+     * backslashes accepted anywhere after that. The result never climbs
+     * above its drive's root with "..". */
+    const char *src = in, *base, *root;
+    int rl;
+    char cur = drive_of(current_dir, &rl);
+    static char cur_root[VFS_PATH_MAX];
+    uint32_t k = 0;
+    for (; k < (uint32_t)rl && k < sizeof cur_root - 1; k++) cur_root[k] = current_dir[k];
+    cur_root[k] = '\0';
+    if (!k) { cur_root[0] = '/'; cur_root[1] = '\0'; }
+    if (((src[0] | 0x20) >= 'a' && (src[0] | 0x20) <= 'z') && src[1] == ':') {
+        char L = (char)(src[0] & ~0x20);
+        root = drive_root(L);
+        if (!root) root = "/?:";                       /* no such drive: nothing there */
+        src += 2;
+        base = (*src == '/' || *src == '\\') ? root : (L == cur ? current_dir : root);
+    } else if (*src == '/') {
+        /* "/..." is already a VFS path (the system's own callers resolve
+         * their results again): as it is */
+        root = "/";
+        base = "";
+    } else if (*src == '\\') {
+        root = cur_root;                               /* "\\x": the current drive's root */
+        base = root;
     } else {
-        /* Relative to current_dir. */
-        uint32_t cdlen = (uint32_t)strlen(current_dir);
-        for (uint32_t i = 0; i < cdlen && n < sizeof(tmp) - 1; i++) tmp[n++] = current_dir[i];
-        if (n == 0 || tmp[n - 1] != '/') {
-            if (n < sizeof(tmp) - 1) tmp[n++] = '/';
-        }
-        while (*src && n < sizeof(tmp) - 1) {
-            tmp[n++] = (*src == '\\') ? '/' : *src;
-            src++;
-        }
-        tmp[n] = '\0';
+        root = cur_root;
+        base = current_dir;
     }
+    for (const char *c = base; *c && n < sizeof(tmp) - 1; c++) tmp[n++] = *c;
+    if (n < sizeof(tmp) - 1) tmp[n++] = '/';
+    while (*src && n < sizeof(tmp) - 1) {
+        tmp[n++] = (*src == '\\') ? '/' : *src;
+        src++;
+    }
+    tmp[n] = '\0';
 
     /* Normalize: collapse "//", drop "." and resolve ".." components, so
      * the current directory and paths shown to the user stay canonical
@@ -186,6 +277,11 @@ void DosResolvePath(const char *in, char *out, uint32_t out_size)
     }
     if (m == 0) norm[m++] = '/';
     norm[m] = '\0';
+    if (under(norm, root) < 0) {                       /* ".." past the drive's root */
+        uint32_t r = 0;
+        for (; root[r] && r < sizeof(norm) - 1; r++) norm[r] = root[r];
+        norm[r] = '\0';
+    }
 
     uint32_t i = 0;
     while (norm[i] && i < out_size - 1) { out[i] = norm[i]; i++; }

@@ -72,7 +72,8 @@ int dos_shell_dispatch(int argc, char **argv);
  */
 typedef void (*dos_idle_fn)(void);
 
-/* A VFS path the way DOS shows it: "/h/fonts" -> "C:\h\fonts". */
+/* A VFS path the way the user sees it, with its drive letter:
+ * "/h/fonts" -> "D:\fonts" when the volume mounted at \h is D:. */
 void dos_display_path(const char *vfs_path, char *out, int out_size);
 /* The command prompt for the current directory: "[C:\h]> ". */
 void dos_prompt(char *out, int out_size);

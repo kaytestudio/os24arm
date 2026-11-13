@@ -184,6 +184,12 @@ platform-specific are new code.
    applets); `START prog` opens one in a new window, `START /PM prog` a
    graphical one. `/h/OS2/os2cmd dir \h` runs one OS/2 command from a script.
 
+   Drive letters: C: is the system volume, D:, E:, ... the volumes MOUNTed
+   after it (the stick is D:; os2api DosResolvePath/DosDisplayPath, which
+   CMD.EXE shares through DOSCALLS.DLL); `D:` changes drive, `\x` is the
+   current drive's root. os2cmd asks /dev/os2cmd (an ioctl) for the Linux
+   path of what's typed.
+
    Everything the desktop needs lives in `\h\OS2`, a hidden system folder
    (`make-stick.sh`, `mkhpfs.py --hidden`): DIR, TREE, DEL and wildcard
    COPY leave hidden and system entries out unless given `/A`, so the

@@ -20,6 +20,8 @@ struct lx_vfs_ops {
     int (*opendir)(const char *path);
     int (*readdir)(int dfd, vfs_dirent_t *ent);
     int (*closedir)(int dfd);
+    int (*mount_info)(int index, const char **mountpoint, const char **fsname);
+    int (*mount_quiet)(int index);
 };
 
 #endif

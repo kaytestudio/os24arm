@@ -49,6 +49,7 @@ extern APIRET (*DosQueryCurrentDir)(char *buffer, uint32_t buffer_len);
 
 extern void (*DosResolvePath)(const char *in, char *out, uint32_t out_size);
 extern APIRET (*DosQueryFSInfoPath)(const char *path, FSINFOPATH *info);
+extern void (*DosDisplayPath)(const char *vfs_path, char *out, uint32_t out_size);
 struct lx_services;
 extern APIRET (*DosSetKernelServices)(const struct lx_services *svc);
 

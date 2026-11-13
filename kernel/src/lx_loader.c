@@ -121,6 +121,7 @@ static const struct lx_vfs_ops lx_vfs = {
     .seek = vfs_seek, .stat = vfs_stat, .statfs = vfs_statfs,
     .unlink = vfs_unlink, .rename = vfs_rename, .mkdir = vfs_mkdir,
     .opendir = vfs_opendir, .readdir = vfs_readdir, .closedir = vfs_closedir,
+    .mount_info = vfs_mount_info, .mount_quiet = vfs_mount_quiet,
 };
 static char lx_cwd[VFS_PATH_MAX];
 static struct lx_services lx_svc = {

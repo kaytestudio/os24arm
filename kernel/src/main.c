@@ -303,7 +303,8 @@ static void cmd_help(void)
     uart_puts("              /HISTORY, /MACROS, name=text)\r\n");
     uart_puts("  MEM       - Display memory information\r\n");
     uart_puts("  USB       - List USB devices (USBD)\r\n");
-    uart_puts("  MOUNT     - MOUNT dev \\DIR: mount an HPFS/FAT volume (e.g. usb0p1)\r\n");
+    uart_puts("  MOUNT     - MOUNT dev \\DIR: an HPFS/FAT volume (e.g. usb0p1) as the next drive\r\n");
+    uart_puts("  D:        - Change to drive D: (C: the system, D:, E:, ... mounted volumes)\r\n");
     uart_puts("  DESKTOP   - The graphical desktop [keyboard layout [variant]]\r\n");
     uart_puts("  SHUTDOWN  - Close everything, unmount the drives, power off\r\n");
     uart_puts("  UMOUNT    - UMOUNT \\DIR: unmount it\r\n");
@@ -521,8 +522,13 @@ static void cmd_mount(int argc, char **argv)
     if (argc == 1) {
         kprintf("\nMounted:\n");
         const char *mp, *fs;
-        for (int i = 0; vfs_mount_info(i, &mp, &fs) == VFS_OK; i++)
-            if (!vfs_mount_quiet(i)) kprintf("  %-12s %s\n", mp, fs);
+        extern void DosDisplayPath(const char *vfs_path, char *out, uint32_t out_size);
+        for (int i = 0; vfs_mount_info(i, &mp, &fs) == VFS_OK; i++) {
+            if (vfs_mount_quiet(i)) continue;
+            char drv[VFS_PATH_MAX];
+            DosDisplayPath(mp, drv, sizeof drv);
+            kprintf("  %-12s %-6s %s\n", drv, fs, mp);
+        }
         kprintf("Block devices:\n");
         for (int i = 0; ; i++) {
             blkdev_t *d = blkdev_get_by_index(i);
@@ -572,7 +578,10 @@ static void cmd_mount(int argc, char **argv)
     kstrncpy(user_mnt_path[slot], path, sizeof user_mnt_path[slot]);
     user_mnt_dev[slot] = dev;
     blkdev_set_remove_hook(user_mount_device_removed);
-    kprintf("\n%s mounted at %s (%s%s)\n", dev->name, path,
+    char drv[VFS_PATH_MAX];
+    extern void DosDisplayPath(const char *vfs_path, char *out, uint32_t out_size);
+    DosDisplayPath(path, drv, sizeof drv);
+    kprintf("\n%s is drive %c: (%s%s)\n", dev->name, drv[0],
             hpfs ? (hpfs_is_rw(&user_hpfs[slot]) ? "HPFS" : "HPFS, read-only") : "FAT",
             (!hpfs && (dev->flags & BLKDEV_READONLY)) ? ", read-only" : "");
 }

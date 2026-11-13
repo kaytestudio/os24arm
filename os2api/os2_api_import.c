@@ -37,6 +37,7 @@ APIRET (*DosQueryCurrentDir)(char *buffer, uint32_t buffer_len) = 0;
 
 void (*DosResolvePath)(const char *in, char *out, uint32_t out_size) = 0;
 APIRET (*DosQueryFSInfoPath)(const char *path, FSINFOPATH *info) = 0;
+void (*DosDisplayPath)(const char *vfs_path, char *out, uint32_t out_size) = 0;
 APIRET (*DosSetKernelServices)(const struct lx_services *svc) = 0;
 
 static lx_dll_t g_doscalls;
@@ -82,6 +83,7 @@ int os2_api_import_init(void)
     RESOLVE(DosQueryCurrentDir, "DosQueryCurrentDir");
     RESOLVE(DosResolvePath, "DosResolvePath");
     RESOLVE(DosQueryFSInfoPath, "DosQueryFSInfoPath");
+    RESOLVE(DosDisplayPath, "DosDisplayPath");
     RESOLVE(DosSetKernelServices, "DosSetKernelServices");
 
     return 0;

@@ -3934,6 +3934,8 @@ void os2_shell_prompt(void);
 void os2_shell_line(const char *line);
 void os2_session_enter(char *cwd);
 void os2_session_leave(char *cwd);
+void DosResolvePath(const char *in, char *out, uint32_t out_size);   /* os2api */
+#define OS2CMD_RESOLVE 0x4F53                         /* ioctl: see sys_ioctl */
 
 /* A session's current directory: kept at the end of its output buffer. */
 #define OS2_OUT_MAX (OS2_BUF - VFS_PATH_MAX)
@@ -4491,6 +4493,18 @@ static s64 sys_ioctl(lx_u64 fd, lx_u64 req, lx_u64 arg)
     }
     if (f->kind == F_FB) return fb_ioctl(req, arg);
     if (f->kind == F_EVDEV) return ev_ioctl(f, req, arg);
+    if (f->kind == F_OS2 && req == OS2CMD_RESOLVE) {
+        /* a path as typed in this session ("D:\\x", "\\x", "x") -> its VFS
+         * path, in place (a VFS_PATH_MAX buffer) */
+        if (!uok(arg, VFS_PATH_MAX, 1)) return -EFAULT;
+        char *u = (char *)(uintptr_t)arg, in[VFS_PATH_MAX];
+        for (int i = 0; i < VFS_PATH_MAX; i++) { in[i] = u[i]; if (!in[i]) break; }
+        in[VFS_PATH_MAX - 1] = '\0';
+        os2_session_enter(os2_cwd(f));
+        DosResolvePath(in, u, VFS_PATH_MAX);
+        os2_session_leave(os2_cwd(f));
+        return 0;
+    }
     if (f->kind != F_CONSOLE && f->kind != F_PTMX) return -ENOTTY;
     return tty_ioctl(f, f->tty, req, arg);
 }

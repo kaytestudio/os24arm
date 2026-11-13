@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -37,7 +38,22 @@ extern char **environ;
 
 static char out[OUT_MAX + 1];
 static size_t out_len;
-static char cwd[512] = "/";          /* the OS/2 shell's directory, from its prompt */
+static char cwd[512] = "/";          /* the OS/2 session's directory (a Linux path) */
+static int dev_fd = -1;              /* /dev/os2cmd */
+
+/* A path as the OS/2 session sees it ("D:\\x", "\\x", "x") -> the Linux
+ * path, from the kernel (/dev/os2cmd's resolve ioctl, which knows the
+ * drive letters and this session's current directory). */
+#define OS2CMD_RESOLVE 0x4F53
+#define VFS_PATH_MAX   256
+static int os2_resolve(const char *dos, char *out, size_t size)
+{
+    char buf[VFS_PATH_MAX];
+    snprintf(buf, sizeof buf, "%s", dos);
+    if (dev_fd < 0 || ioctl(dev_fd, OS2CMD_RESOLVE, buf) != 0) return -1;
+    snprintf(out, size, "%s", buf);
+    return 0;
+}
 
 static void put(const char *s, size_t n)
 {
@@ -59,22 +75,13 @@ static void collect(int fd)
     out[out_len] = '\0';
 }
 
-/* Where the prompt starts (the text after the last newline), and the
- * directory it names: "[C:\h\fonts]> " -> "/h/fonts". */
+/* Where the prompt starts (the text after the last newline); and the
+ * session's current directory, refreshed. */
 static size_t prompt_at(void)
 {
     size_t p = out_len;
     while (p > 0 && out[p - 1] != '\n') p--;
-    const char *s = out + p;
-    if (s[0] == '[' && s[1] == 'C' && s[2] == ':') {
-        const char *e = strstr(s, "]>");
-        if (e && (size_t)(e - (s + 3)) < sizeof cwd) {
-            size_t n = 0;
-            for (const char *c = s + 3; c < e; c++) cwd[n++] = *c == '\\' ? '/' : *c;
-            cwd[n] = '\0';
-            if (!n) strcpy(cwd, "/");
-        }
-    }
+    if (os2_resolve(".", cwd, sizeof cwd) != 0) strcpy(cwd, "/");
     return p;
 }
 
@@ -117,16 +124,8 @@ static int is_file(const char *path)
 static int find_program(const char *name, char *path, size_t size)
 {
     char p[512];
-    size_t n = 0;
-    const char *s = name;
-    if ((s[0] == 'C' || s[0] == 'c') && s[1] == ':') s += 2;
-    int has_dir = strchr(s, '\\') || strchr(s, '/');
-    if (s[0] != '\\' && s[0] != '/') {               /* relative: the OS/2 directory */
-        n = (size_t)snprintf(p, sizeof p, "%s%s", cwd, cwd[1] ? "/" : "");
-    }
-    for (; *s && n < sizeof p - 1; s++) p[n++] = *s == '\\' ? '/' : *s;
-    p[n] = '\0';
-    if (is_file(p)) { snprintf(path, size, "%s", p); return 1; }
+    int has_dir = strchr(name, '\\') || strchr(name, '/') || (name[0] && name[1] == ':');
+    if (os2_resolve(name, p, sizeof p) == 0 && is_file(p)) { snprintf(path, size, "%s", p); return 1; }
     if (has_dir) return 0;
 
     /* $PATH, then the directory os2cmd itself is in (on the stick: /h) */
@@ -352,6 +351,7 @@ int main(int argc, char **argv)
         perror("os2cmd: /dev/os2cmd");
         return 1;
     }
+    dev_fd = fd;
     collect(fd);                                      /* the banner and first prompt */
     prompt_at();
 

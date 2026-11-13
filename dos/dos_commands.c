@@ -55,14 +55,7 @@ static void print_dos_error(const char *cmd, APIRET rc)
 
 void dos_display_path(const char *vfs_path, char *out, int out_size)
 {
-    int n = 0;
-    if (out_size < 4) { if (out_size > 0) out[0] = '\0'; return; }
-    out[n++] = 'C';
-    out[n++] = ':';
-    if (*vfs_path != '/' && *vfs_path != '\\') out[n++] = '\\';
-    for (const char *c = vfs_path; *c && n < out_size - 1; c++)
-        out[n++] = (*c == '/') ? '\\' : *c;
-    out[n] = '\0';
+    DosDisplayPath(vfs_path, out, (uint32_t)out_size);   /* drive letters: os2api */
 }
 
 void dos_prompt(char *out, int out_size)
@@ -1562,7 +1555,9 @@ void dos_dir(int argc, char **argv)
     memcpy(dir, resolved, dl);
     dir[dl] = '\0';
     dos_display_path(dir, shown, sizeof shown);
-    uart_puts("\r\n Volume in drive C ");
+    uart_puts("\r\n Volume in drive ");
+    uart_putc(shown[0]);
+    uart_putc(' ');
     if (have_fi && fi.label[0]) { uart_puts("is "); uart_puts(fi.label); }
     else uart_puts("has no label");
     uart_puts("\r\n Directory of ");
@@ -2270,6 +2265,14 @@ int dos_shell_dispatch(int argc, char **argv)
         return 0;
 
     dos_str_toupper(argv[0]);
+
+    /* "D:" - change to that drive */
+    if (argv[0][0] >= 'A' && argv[0][0] <= 'Z' && argv[0][1] == ':' && !argv[0][2] && argc == 1) {
+        char root[4] = { argv[0][0], ':', '\\', 0 };
+        if (DosSetCurrentDir(root) != NO_ERROR)
+            uart_puts("\r\nThe system cannot find the drive specified.\r\n");
+        return 1;
+    }
 
     if (strcmp(argv[0], "DIR") == 0) {
         dos_dir(argc, argv);
