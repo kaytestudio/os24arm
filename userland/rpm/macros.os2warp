@@ -1,0 +1,63 @@
+# macros.os2warp - rpmbuild settings for UNIXROOT packages (OS/2 Warp
+# ARM64), on rpm's macro path in userland/build-rpms.sh. %{os2_root} (the repository) and
+# %{os2_w} (build/userland) are defined on its command line.
+#
+# Packages the system's rpm can install: format 4 headers and an xz payload
+# (busybox's rpm reads neither rpm 6's format 6 nor zstd), for Linux on
+# aarch64, without the Mac's strip, debuginfo or build-id links, without
+# automatic dependencies (they'd come from the Mac), and with a neutral
+# build host.
+%_rpmformat             4
+%_binary_payload        w9.xzdio
+%_source_payload        w9.xzdio
+%debug_package          %{nil}
+%__os_install_post      %{nil}
+%_build_id_links        none
+%_buildhost             os2warp-build
+%_unpackaged_files_terminate_build 1
+
+# The system's directory layout (Homebrew's rpm defaults to /opt/homebrew):
+# what the packages install where (%%license, %%doc, %%{_bindir}, ...).
+%_prefix                /usr
+%_exec_prefix           /usr
+%_bindir                /usr/bin
+%_sbindir               /usr/sbin
+%_libdir                /usr/lib
+%_libexecdir            /usr/libexec
+%_includedir            /usr/include
+%_datadir               /usr/share
+%_mandir                /usr/share/man
+%_infodir               /usr/share/info
+%_docdir                /usr/share/doc
+%_defaultdocdir         /usr/share/doc
+%_defaultlicensedir     /usr/share/licenses
+%_sysconfdir            /etc
+%_localstatedir         /var
+%_sharedstatedir        /var/lib
+
+# The Mac's tools where rpm (from Homebrew) looks for Linux's: xz isn't
+# /usr/bin/xz here.
+%__xz                   %(command -v xz || echo /opt/homebrew/bin/xz)
+# (%%setup unpacks with rpmuncompress, a separate program that loads only
+# the default macros: hand it this one)
+%__rpmuncompress        %(command -v rpmuncompress) --define "__xz %{__xz}"
+
+# The cross toolchain (userland/build-libs.sh): clang for aarch64-linux-musl
+# with the musl sysroot, linking static programs for the kernel's loader.
+%os2_llvm               %(brew --prefix llvm 2>/dev/null || echo /usr)/bin
+%os2_cc                 %{os2_w}/toolchain/aarch64-linux-musl-cc
+%os2_sysroot            %{os2_w}/sysroot
+%os2_jobs               %(sysctl -n hw.ncpu)
+
+# ./configure for the system: programs that run on it, under /usr (which
+# the system maps onto UNIXROOT's drive).
+%os2_configure \
+  ./configure --host=aarch64-linux-musl --build=$(./config.guess 2>/dev/null || echo aarch64-apple-darwin) \\\
+    --prefix=/usr --sysconfdir=/etc --localstatedir=/var --disable-nls \\\
+    CC="%{os2_cc}" AR="%{os2_llvm}/llvm-ar" RANLIB="%{os2_llvm}/llvm-ranlib" \\\
+    NM="%{os2_llvm}/llvm-nm" STRIP="%{os2_llvm}/llvm-strip" \\\
+    CC_FOR_BUILD=/usr/bin/cc CFLAGS="-O2"
+
+# strip what was installed into the buildroot (the Mac's strip can't)
+%os2_strip \
+  find %{buildroot} -type f -perm -u+x -exec sh -c 'for f; do file "$f" | grep -q "ELF.*aarch64" && "%{os2_llvm}/llvm-strip" "$f"; done' _ {} +

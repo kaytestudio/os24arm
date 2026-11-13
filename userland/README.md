@@ -29,14 +29,21 @@ platform-specific are new code.
    UNIXROOT is the USB stick, D: (CONFIG.SYS `SET UNIXROOT=D:`): the Linux
    layer maps /usr, /etc, /bin, /var, /home, /lib, /opt, /sbin, /emx and
    kLIBC's /@unixroot/... onto it, so what's installed there stays.
-   - `userland/build-binutils.sh`: GNU binutils 2.44 (GPG-checked tarball),
-     static, native aarch64-linux-musl, under /usr - ld's default load
-     address patched to the kernel's user window (0x60000000), so
-     `as x.s -o x.o; ld x.o -o x` makes a program this system runs.
-   - `userland/build-rpms.sh`: `userland/rpm/<name>.spec` -> RPMs with the
-     Mac's rpmbuild (format 4, xz payload, linux/aarch64, no Mac-side strip
-     or automatic dependencies - what busybox's rpm reads); make-stick.sh
-     puts them in \OS2\RPMS.
+   - Packages are built by rpmbuild (Homebrew's rpm 6) from
+     `userland/rpm/<name>.spec`: `%prep` unpacks the release tarball and
+     applies the patches next to the spec, `%build` cross-compiles with
+     the system's toolchain (`%{os2_configure}`, `%{os2_cc}`, ... in
+     `userland/rpm/macros.os2warp`), `%install` into the buildroot.
+     `userland/build-rpms.sh [name]` downloads each Source once, checks it
+     against `userland/rpm/sources` (SHA-256, and the GNU signature), and
+     runs `rpmbuild -ba`: build/userland/rpms/*.rpm and SRPMS/*.src.rpm.
+     The macros make what busybox's rpm reads (format 4, xz payload,
+     linux/aarch64, the /usr layout, no Mac strip, debuginfo or automatic
+     dependencies, a neutral build host); make-stick.sh puts the RPMs in
+     \OS2\RPMS.
+   - `binutils.spec`: GNU binutils 2.44, static, native aarch64-linux-musl;
+     `binutils-2.44-os2warp-ld-base.patch` makes ld link at the kernel's
+     user window (0x60000000), so `as x.s -o x.o; ld x.o -o x` runs here.
    - On the system, `rpm` (userland/rootfs/rpm, busybox's rpm underneath,
      a database in /var/lib/rpm): `rpm -i binutils` (a file, or a name from
      \OS2\RPMS), `-U`, `-e`, `-q`, `-qa`, `-qi`, `-ql`, `-qp[il]`.
