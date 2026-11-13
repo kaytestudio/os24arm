@@ -2441,6 +2441,13 @@ static s64 sys_execve(lx_u64 upath, lx_u64 uargv, lx_u64 uenvp)
     int argc, envc;
     if ((r = copy_in_argv(uargv, &used, &argc)) || (r = copy_in_argv(uenvp, &used, &envc)))
         return r;
+    /* no /bin/sh here: system(), popen(), make's recipes get busybox's */
+    vfs_stat_t shst;
+    if (vfs_stat(path, &shst) != VFS_OK) {
+        uint32_t pl = (uint32_t)kstrlen(path);
+        if (pl >= 7 && streq(path + pl - 7, "/bin/sh") && vfs_stat(SYSTEM_BUSYBOX, &shst) == VFS_OK)
+            kstrncpy(path, SYSTEM_BUSYBOX, VFS_PATH_MAX);   /* argv[0] stays "sh" */
+    }
     if ((r = shebang(path, &used, &argc, envc)) < 0) return r;
     mmu_as_t *as, *old = cur->g->as;
     lx_u64 entry, sp, top;

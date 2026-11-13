@@ -33,6 +33,9 @@ tar xjf "$DJV_TAR" -C "$SYS/fonts" --strip-components=2 \
 cp -R "$ROOT"/userland/rootfs/* "$SYS"/
 if [ -d "$W/xkb-data" ]; then cp -R "$W/xkb-data" "$SYS/xkb"; fi   # keyboard layouts
 if [ -f "$W/Compose" ]; then cp "$W/Compose" "$SYS/Compose"; fi    # dead keys, compose
+# UNIXROOT's /bin/sh (the stick is UNIXROOT): busybox's sh, through a
+# launcher - make, system() and popen() check that it's there
+if [ -f "$W/tests/applet" ]; then mkdir -p "$STAGE/bin"; cp "$W/tests/applet" "$STAGE/bin/sh"; fi
 # the UNIXROOT packages (userland/build-rpms.sh), for RPM -i NAME
 if ls "$W"/rpms/*.rpm >/dev/null 2>&1; then mkdir -p "$SYS/RPMS"; cp "$W"/rpms/*.rpm "$SYS/RPMS"/; fi
 python3 "$ROOT/scripts/mkhpfs.py" "$IMG" --size 128M --from "$STAGE" --hidden OS2 --mbr >/dev/null

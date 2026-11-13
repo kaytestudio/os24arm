@@ -2,3 +2,4 @@
 # userland/build-rpms.sh before rpmbuild sees it.
 #   file  sha256  [url of a detached signature, checked against the GNU keyring]
 binutils-2.44.tar.xz  ce2017e059d63e67ddb9240e9d4ec49c2893605035cd60e92ad53177f4377237  https://ftp.gnu.org/gnu/binutils/binutils-2.44.tar.xz.sig
+make-4.4.1.tar.gz  dd16fb1d67bfab79a72f5e8390735c49e3e8e70b4945a15ab1f81ddb78658fb3  https://ftp.gnu.org/gnu/make/make-4.4.1.tar.gz.sig
