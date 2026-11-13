@@ -631,8 +631,8 @@ static void system_shutdown(void)
     for (;;) __asm__ volatile("wfi");                 /* no PSCI: stay halted */
 }
 
-/* DESKTOP [layout [variant]]: the Wayland desktop (dwl, userland/rootfs/
- * dwl.sh) from the USB stick - mounted at \h first if it isn't: the first
+/* DESKTOP [layout [variant]]: the Wayland desktop - the Workplace Shell
+ * (userland/wps, userland/rootfs/wps.sh), or dwl (dwl.sh) - from the USB stick - mounted at \h first if it isn't: the first
  * USB volume with dwl.sh on it. Back here when dwl quits (Alt+Shift+Q). */
 static void cmd_desktop(int argc, char **argv)
 {
@@ -671,12 +671,14 @@ static void cmd_desktop(int argc, char **argv)
             return;
         }
     }
-    char *av[6] = { "/h/OS2/busybox", "sh", "/h/OS2/dwl.sh", 0, 0, 0 };
+    /* the Workplace Shell (wps.sh) when the stick has it, else dwl */
+    char *script = vfs_stat("/h/OS2/wps.sh", &st) == VFS_OK ? "/h/OS2/wps.sh" : "/h/OS2/dwl.sh";
+    char *av[6] = { "/h/OS2/busybox", "sh", script, 0, 0, 0 };
     int ac = 3;
     for (int i = 1; i < argc && ac < 5; i++) av[ac++] = argv[i];
     for (char *c = av[3]; c && *c; c++) if (*c >= 'A' && *c <= 'Z') *c += 32;   /* layouts: lower case */
-    kprintf("\nStarting the desktop - Alt+Shift+Enter or Alt+O: OS/2 Command Prompt,\n"
-            "Alt+P: programs, Alt+Shift+Q: back to this console\n");
+    kprintf("\nStarting the desktop - Alt+O: OS/2 Command Prompt, Alt+P: programs,\n"
+            "Ctrl+Esc: Window List, Alt+Shift+Q: back to this console\n");
     int status = linux_run("/h/OS2/busybox", ac, av);
     if (linux_shutdown_pending()) system_shutdown();
     if (status != 0) kprintf("\nThe desktop ended unexpectedly (status %d)\n", status);

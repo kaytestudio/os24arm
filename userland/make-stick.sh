@@ -3,7 +3,8 @@
 # in \OS2, a hidden system folder (DIR shows it only with /A): the
 # programs in build/userland/bin/* (busybox, dwl, foot, fuzzel, ...), the
 # test programs and os2cmd, userland/rootfs/* (dwl.sh, env.sh, foot.ini,
-# ...), a font (DejaVu Sans Mono, in fonts/) and keyboard layouts
+# ...), fonts (DejaVu Sans Mono for the terminals, DejaVu Sans for the
+# Workplace Shell, in fonts/) and keyboard layouts
 # (xkeyboard-config, in xkb/, from userland/build-libs.sh). The rest of the
 # stick is the user's.
 #   userland/make-stick.sh [image]     (default build/userland/stick.img)
@@ -27,7 +28,8 @@ trap 'rm -rf "$STAGE"' EXIT
 SYS="$STAGE/OS2"
 mkdir -p "$SYS/fonts"
 tar xjf "$DJV_TAR" -C "$SYS/fonts" --strip-components=2 \
-    "dejavu-fonts-ttf-$DJV/ttf/DejaVuSansMono.ttf" "dejavu-fonts-ttf-$DJV/ttf/DejaVuSansMono-Bold.ttf"
+    "dejavu-fonts-ttf-$DJV/ttf/DejaVuSansMono.ttf" "dejavu-fonts-ttf-$DJV/ttf/DejaVuSansMono-Bold.ttf" \
+    "dejavu-fonts-ttf-$DJV/ttf/DejaVuSans.ttf" "dejavu-fonts-ttf-$DJV/ttf/DejaVuSans-Bold.ttf"
 [ -d "$W/bin" ] && cp "$W"/bin/* "$SYS"/
 [ -d "$W/tests" ] && find "$W/tests" -maxdepth 1 -type f -perm -u+x -exec cp {} "$SYS"/ \;
 cp -R "$ROOT"/userland/rootfs/* "$SYS"/

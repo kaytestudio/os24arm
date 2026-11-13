@@ -194,9 +194,9 @@ platform-specific are new code.
    xkeyboard-config is missing, `tinywl -s` without a shell, cage without
    VT switching or XWayland - and `wlclient`, a small xdg-shell client.
    foot uses fcft, freetype and fontconfig (`build-libs.sh`) with DejaVu
-   Sans Mono, and busybox as its shell. `userland/make-stick.sh` puts it
+   Sans Mono, and busybox as its shell (the Workplace Shell uses DejaVu Sans). `userland/make-stick.sh` puts it
    all on an HPFS stick image with `userland/rootfs/` (`env.sh`,
-   `desktop.sh`, `dwl.sh`, `fonts.conf`, `foot.ini`, `fuzzel.ini`, and
+   `desktop.sh`, `dwl.sh`, `wps.sh`, `fonts.conf`, `foot.ini`, `fuzzel.ini`, and
    `applications/*.desktop` - what the launcher offers).
 
    Try it: `scripts/run-vm.sh --wayland --hvf` (`--hvf`: native speed
@@ -206,13 +206,33 @@ platform-specific are new code.
    `...\PMSHELL.EXE`; `CMD.EXE` keeps the console; a key on the console
    while it waits for the stick does too). By hand: `DESKTOP [layout
    [variant]]` (e.g. `pt`, `de nodeadkeys`; default `us`) - it mounts the
-   stick at `\h` and starts dwl (`dwl.sh`). The user
+   stick at `\h` and starts the Workplace Shell (`wps.sh`; dwl, `dwl.sh`,
+   when the stick has no wps). The user
    sees an OS/2 system: every terminal is an OS/2 Command Prompt (foot's
-   `shell=` is `/h/OS2/os2cmd`; the first window, Alt+Shift+Enter and Alt+O
-   open one), Alt+P lists OS/2 Command Prompt, System Monitor and Text
-   Editor, and the compositor's and terminals' own output goes to
-   `/tmp/desktop.log` rather than the console. Alt+J/K moves the focus,
-   Alt+Shift+C closes a window, Alt+Shift+Q goes back to the console.
+   `shell=` is `/h/OS2/os2cmd`; Alt+Shift+Enter and Alt+O open one), Alt+P
+   lists OS/2 Command Prompt, System Monitor and Text Editor, and the
+   compositor's and terminals' own output goes to `/tmp/desktop.log`
+   rather than the console. Alt+Shift+Q goes back to the console.
+
+   The Workplace Shell (`userland/wps`, built by `userland/build-wps.sh`)
+   is a wlroots compositor in C++17, linked with the system's own libc++
+   (the `libcxx-devel` and `llvm` packages), in the style of OS/2 Warp 4:
+   the blue desktop with its objects (OS/2 System, Drives, Command Prompt,
+   Drive D, Programs, Window List; Shut Down bottom right - double-click
+   one, right-click the desktop for the system menu), the WarpCenter
+   along the top (system menu, Window List, Command Prompt, Drives,
+   Programs, the active window, the clock), and an OS/2 frame on every
+   window (server-side decoration: a 3D border to resize by, a title bar
+   to move by - blue when active, double-click maximizes, right-click a
+   menu - the system menu icon (double-click closes) and hide, maximize
+   and close buttons). Folders open as Icon View windows of the real
+   directories (UNIXROOT's and the system's folders stay hidden):
+   double-click a folder to open it, a program to run it in a prompt, a
+   file to edit it; the Folder menu has Open parent, Refresh and Close.
+   Ctrl+Esc is the Window List (hidden windows too), Alt+Tab the next
+   window, Alt+F4 closes. The pictures are drawn by the compositor
+   (pixman; the icons are its own), the text by fcft with DejaVu Sans.
+   With dwl instead: Alt+J/K moves the focus, Alt+Shift+C closes a window.
    Shut Down (Alt+P) or SHUTDOWN in a prompt ends the programs, unmounts
    every drive cleanly (HPFS marked clean) and powers off - closing QEMU's
    window instead leaves the stick marked dirty; the next MOUNT checks it
