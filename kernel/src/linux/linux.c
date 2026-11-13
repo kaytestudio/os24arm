@@ -98,6 +98,7 @@ extern void      fb_flush(int x, int y, int w, int h) __attribute__((weak));
 extern void      fb_get_info(int *w, int *h, int *bpp) __attribute__((weak));
 extern int       usbkbd_poll_raw(int *usage, int *down) __attribute__((weak));
 extern void      usbkbd_grab(int on) __attribute__((weak));
+extern void      usbkbd_raw_open(int on) __attribute__((weak));
 typedef struct { int absolute, x, y, dx, dy, wheel; unsigned buttons; } usbmouse_ev_t;
 extern int       usbmouse_poll(usbmouse_ev_t *ev) __attribute__((weak));
 
@@ -1366,7 +1367,10 @@ static void file_put(file_t *f)
     case F_PROC:   if (f->pbuf) mmu_frames_free(f->pbuf, 1); f->pbuf = 0; break;
     case F_MEMFD:  mem_put(f->mem); break;
     case F_SOCK:   sock_release(f->sock); break;
-    case F_EVDEV:  if (f->vfd == 0 && f->count && usbkbd_grab) usbkbd_grab(0); break;
+    case F_EVDEV:
+        if (f->vfd == 0 && f->count && usbkbd_grab) usbkbd_grab(0);
+        if (f->vfd == 0 && usbkbd_raw_open) usbkbd_raw_open(0);
+        break;
     case F_CONSOLE:
         if (f->tty != &console_tty && --f->tty->slaves == 0) {
             f->tty->slave_gone = 1;
@@ -3923,6 +3927,7 @@ static s64 sys_openat(int dirfd, lx_u64 up, lx_u64 flags)
             if (devs[i].kind == F_EVDEV) {
                 f->vfd = path[16] - '0';                /* event0 / event1 */
                 evh[f->vfd] = evt[f->vfd];             /* start with nothing old */
+                if (f->vfd == 0 && usbkbd_raw_open) usbkbd_raw_open(1);
             }
             kstrncpy(f->path, path, sizeof f->path);
             return fd_new(f, cl);

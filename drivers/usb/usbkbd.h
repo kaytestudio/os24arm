@@ -19,5 +19,9 @@ int usbkbd_getc(void);                /* next byte, or -1 */
  * starts empty). Used by the Linux evdev device (/dev/input/event0). */
 int  usbkbd_poll_raw(int *usage, int *down);
 void usbkbd_grab(int on);
+/* A reader of raw events comes (1) or goes (0): they're only recorded
+ * while there is one, and each new one starts with an empty queue (no
+ * keys typed earlier, for the console). */
+void usbkbd_raw_open(int on);
 
 #endif /* DRIVERS_USB_USBKBD_H */

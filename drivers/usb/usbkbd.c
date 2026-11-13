@@ -115,10 +115,11 @@ static void send_leds(void)
 #define RAWQ 128
 static uint16_t rawq[RAWQ];
 static uint32_t rawh, rawt;
-static int grabbed;
+static int grabbed, raw_readers;
 
 static void raw(uint8_t usage, int down)
 {
+    if (!raw_readers) return;                          /* nobody listening: keep no history */
     uint32_t next = (rawt + 1) % RAWQ;
     if (next == rawh) rawh = (rawh + 1) % RAWQ;      /* full: drop the oldest */
     rawq[rawt] = (uint16_t)(usage | (down ? 0x100 : 0));
@@ -133,6 +134,13 @@ int usbkbd_poll_raw(int *usage, int *down)
     *down = (rawq[rawh] & 0x100) != 0;
     rawh = (rawh + 1) % RAWQ;
     return 1;
+}
+
+void usbkbd_raw_open(int on)
+{
+    raw_readers += on ? 1 : -1;
+    if (raw_readers < 0) raw_readers = 0;
+    rawh = rawt = 0;                                   /* start from now */
 }
 
 void usbkbd_grab(int on)
