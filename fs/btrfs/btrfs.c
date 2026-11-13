@@ -41,6 +41,7 @@ static int btrfs_stat(vfs_mount_t *mnt, const char *path, vfs_stat_t *st);
 static int btrfs_unlink(vfs_mount_t *mnt, const char *path);
 static int btrfs_mkdir(vfs_mount_t *mnt, const char *path);
 static int btrfs_rename(vfs_mount_t *mnt, const char *old, const char *nw);
+static int btrfs_statfs(vfs_mount_t *mnt, vfs_statfs_t *st);
 
 static vfs_fs_t btrfs_fs_ops = {
     .name     = "btrfs",
@@ -58,6 +59,7 @@ static vfs_fs_t btrfs_fs_ops = {
     .unlink   = btrfs_unlink,
     .mkdir    = btrfs_mkdir,
     .rename   = btrfs_rename,
+    .statfs   = btrfs_statfs,
 };
 
 /* ── Key helpers ─────────────────────────────────────────────────────────── */
@@ -836,4 +838,19 @@ int btrfs_init(const char *params)
 vfs_fs_t *btrfs_get_fs(void)
 {
     return &btrfs_fs_ops;
+}
+
+/* Size and use: the superblock's total_bytes / bytes_used. */
+static int btrfs_statfs(vfs_mount_t *mnt, vfs_statfs_t *st)
+{
+    btrfs_mount_t *bmnt = (btrfs_mount_t *)mnt->priv;
+    static uint8_t sb_raw[4096];
+    if (btrfs_read_phys(bmnt->dev, BTRFS_SUPER_OFFSET, sb_raw, sizeof(sb_raw)) != VFS_OK)
+        return VFS_ERR_IO;
+    const btrfs_super_t *sb = (const btrfs_super_t *)sb_raw;
+    uint64_t bs = sb->sectorsize ? sb->sectorsize : 4096;
+    st->bsize = bs;
+    st->blocks = sb->total_bytes / bs;
+    st->bfree = sb->total_bytes > sb->bytes_used ? (sb->total_bytes - sb->bytes_used) / bs : 0;
+    return VFS_OK;
 }

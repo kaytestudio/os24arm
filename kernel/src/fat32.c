@@ -955,6 +955,18 @@ static int fat32_vfs_closedir(vfs_mount_t *mnt, void *dpriv)
     return VFS_OK;
 }
 
+static int fat32_vfs_statfs(vfs_mount_t *mnt, vfs_statfs_t *st)
+{
+    fat32_mount_t *m = (fat32_mount_t *)mnt->priv;
+    __UINT64_TYPE__ free = 0;
+    for (uint32_t c = 2; c < m->total_clusters + 2; c++)
+        if (fat_get(m, c) == FAT32_FREE) free++;
+    st->bsize = m->bytes_per_cluster;
+    st->blocks = m->total_clusters;
+    st->bfree = free;
+    return VFS_OK;
+}
+
 /* ── VFS driver struct ────────────────────────────────────────────────────── */
 
 vfs_fs_t vfs_fat32_fs = {
@@ -973,6 +985,7 @@ vfs_fs_t vfs_fat32_fs = {
     .opendir  = fat32_vfs_opendir,
     .readdir  = fat32_vfs_readdir,
     .closedir = fat32_vfs_closedir,
+    .statfs   = fat32_vfs_statfs,
 };
 
 /* ── Driver init ──────────────────────────────────────────────────────────── */

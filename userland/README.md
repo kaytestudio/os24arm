@@ -84,7 +84,9 @@ platform-specific are new code.
    `stat`, `version`, `cpuinfo`, `mounts`; per process `stat`, `status`,
    `statm`, `cmdline`, `comm`, `exe`, `fd/`; and `sysinfo` - enough for
    busybox `ps`, `top`, `free`, `uptime`, `df` (CPU time: the 10 ms tick
-   charges the process it interrupts; `statfs` sizes are placeholders).
+   charges the process it interrupts). `statfs` reports each volume's
+   real size and free space (the VFS `statfs` hook: FAT, HPFS, btrfs,
+   ramfs) and each volume has its own `st_dev`.
    Test: `proctest`.
    Terminals: the console and pseudo-terminals (`/dev/ptmx`, `/dev/pts/N`)
    share one line discipline - Linux termios (`TCGETS`/`TCSETS*`;

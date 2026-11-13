@@ -1905,6 +1905,30 @@ static int hpfs_close(vfs_mount_t *mnt, void *fpriv)
     return m ? tracked(m, w0, r) : r;
 }
 
+/* Free sectors: the bitmap bands (one 2 KB bitmap per 8 MB, listed by
+ * the superblock), read now - works for read-only mounts too. */
+static int hpfs_statfs(vfs_mount_t *mnt, vfs_statfs_t *st)
+{
+    hpfs_mount_t *m = mnt->priv;
+    static uint8_t sb[512], list[2048], bm[2048];
+    if (rd(m, SB_LSN, 1, sb) != 0) return VFS_EIO;
+    uint32_t nb = (m->n_sectors + BAND_SECTORS - 1) / BAND_SECTORS;
+    if (nb > 512 || rd(m, le32(sb + 24), 4, list) != 0) return VFS_EIO;
+    __UINT64_TYPE__ free = 0;
+    for (uint32_t b = 0; b < nb; b++) {
+        uint32_t lsn = le32(list + 4 * b);
+        if (!lsn || lsn + 4 > m->n_sectors || rd(m, lsn, 4, bm) != 0) return VFS_EIO;
+        for (uint32_t i = 0; i < BAND_SECTORS; i++) {
+            if (b * BAND_SECTORS + i >= m->n_sectors) break;
+            if ((bm[i / 8] >> (i % 8)) & 1) free++;
+        }
+    }
+    st->bsize = 512;
+    st->blocks = m->n_sectors;
+    st->bfree = free;
+    return VFS_OK;
+}
+
 vfs_fs_t vfs_hpfs_fs = {
     .name     = "hpfs",
     .mount    = hpfs_mount_op,
@@ -1921,6 +1945,7 @@ vfs_fs_t vfs_hpfs_fs = {
     .opendir  = hpfs_opendir,
     .readdir  = hpfs_readdir,
     .closedir = hpfs_closedir,
+    .statfs   = hpfs_statfs,
 };
 
 /* ── Probe / IFS init ─────────────────────────────────────────────────── */

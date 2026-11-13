@@ -3772,6 +3772,7 @@ static void proc_gen(const char *path, pbuf_t *p)
             pb_u(p, freq() / 500000); pb_s(p, ".00\nFeatures\t: fp asimd\nCPU implementer\t: ");
             pb_u(p, midr >> 24); pb_s(p, "\nCPU part\t: "); pb_u(p, (midr >> 4) & 0xFFF); pb_s(p, "\n\n");
         } else if (!kstrcmp(leaf, "mounts")) {
+            pb_s(p, "proc /proc proc rw 0 0\ndevtmpfs /dev devtmpfs rw 0 0\n");
             const char *mp, *fs;
             for (int i = 0; vfs_mount_info(i, &mp, &fs) == VFS_OK; i++) {
                 pb_s(p, fs); pb_c(p, ' '); pb_s(p, mp); pb_c(p, ' '); pb_s(p, fs); pb_s(p, " rw 0 0\n");
@@ -4277,6 +4278,13 @@ static s64 sys_fstatat(int dirfd, lx_u64 up, lx_u64 stp, lx_u64 flags, int by_fd
         else if ((r = vfs_stat(path, &vs)) != VFS_OK) return verr(r);
     }
     fill_stat((uint8_t *)(uintptr_t)stp, &vs, kind, size);
+    /* st_dev: one per volume (df finds a path's mount by it) */
+    const char *dp = by_fd ? fd_get((lx_u64)dirfd)->path : path;
+    lx_u64 dev = !kstrncmp(dp, "/proc", 5) && (!dp[5] || dp[5] == '/') ? 0x100
+               : !kstrncmp(dp, "/dev", 4) && (!dp[4] || dp[4] == '/') ? 0x101
+               : !dp[0] ? 0x102                                    /* pipes, sockets, ... */
+               : (lx_u64)(vfs_mount_index(dp) + 1);
+    *(lx_u64 *)(uintptr_t)stp = dev;
     return 0;
 }
 
@@ -4542,17 +4550,43 @@ static s64 linux_syscall(linux_tf_t *tf)
         return r == VFS_OK ? 0 : verr(r);
     }
     case 37: return -EPERM;                             /* linkat: no hard links (callers fall back) */
-    case 43: case 44: {                                 /* statfs, fstatfs */
-        if (tf->x[8] == 44 && !fd_get(a0)) return -EBADF;
+    case 43: case 44: {                                 /* statfs(path), fstatfs(fd) */
+        char path[VFS_PATH_MAX];
+        if (tf->x[8] == 44) {
+            file_t *f = fd_get(a0);
+            if (!f) return -EBADF;
+            kstrncpy(path, f->path[0] ? f->path : "/dev", sizeof path);
+        } else {
+            int r = user_path(AT_FDCWD, a0, path);
+            if (r) return r;
+        }
         if (!uok(a1, 120, 1)) return -EFAULT;
-        int64_t *b = (int64_t *)(uintptr_t)a1;
+        s64 *b = (s64 *)(uintptr_t)a1;
         kmemset(b, 0, 120);
-        b[0] = 0x858458f6;                              /* f_type: RAMFS_MAGIC (no fs is special here) */
-        b[1] = 4096;                                    /* f_bsize */
-        b[2] = 65536; b[3] = 32768; b[4] = 32768;       /* f_blocks, f_bfree, f_bavail */
-        b[5] = 4096; b[6] = 2048;                       /* f_files, f_ffree */
         b[8] = 255;                                     /* f_namelen */
-        b[9] = 4096;                                    /* f_frsize */
+        if (!kstrncmp(path, "/proc", 5) && (!path[5] || path[5] == '/')) {
+            b[0] = 0x9fa0; b[1] = b[9] = 4096;          /* PROC_SUPER_MAGIC, empty */
+            return 0;
+        }
+        if (!kstrncmp(path, "/dev", 4) && (!path[4] || path[4] == '/')) {
+            b[0] = 0x01021994; b[1] = b[9] = 4096;      /* TMPFS_MAGIC (devtmpfs) */
+            return 0;
+        }
+        vfs_statfs_t vs;
+        const char *fs = "";
+        int r = vfs_statfs(path, &vs, &fs);
+        if (r == VFS_ERR_NOMOUNT) return -ENOENT;
+        static const struct { const char *name; s64 magic; } magic[] = {
+            { "fat", 0x4d44 }, { "hpfs", 0xf995e849 }, { "btrfs", 0x9123683e },
+            { "ramfs", 0x858458f6 }, { "ext4", 0xef53 }, { "f2fs", 0xf2f52010 },
+        };
+        for (unsigned i = 0; i < sizeof magic / sizeof magic[0]; i++)
+            if (streq(fs, magic[i].name)) b[0] = magic[i].magic;
+        if (r != VFS_OK) { b[1] = b[9] = 4096; return 0; }   /* the driver can't tell: empty */
+        b[1] = b[9] = (s64)vs.bsize;                    /* f_bsize, f_frsize */
+        b[2] = (s64)vs.blocks;                          /* f_blocks */
+        b[3] = b[4] = (s64)vs.bfree;                    /* f_bfree, f_bavail */
+        b[5] = 65536; b[6] = 65536;                     /* f_files, f_ffree: no inode limits */
         return 0;
     }
     case 45: {                                          /* truncate */

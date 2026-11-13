@@ -64,6 +64,11 @@ typedef struct vfs_fs       vfs_fs_t;
 typedef struct vfs_dirent   vfs_dirent_t;
 typedef struct vfs_stat     vfs_stat_t;
 
+/* A volume's size and free space, in blocks of bsize bytes. */
+typedef struct {
+    __UINT64_TYPE__ bsize, blocks, bfree;
+} vfs_statfs_t;
+
 /* ── Filesystem operations ───────────────────────────────────────────────── */
 
 struct vfs_fs {
@@ -90,6 +95,9 @@ struct vfs_fs {
     int (*opendir) (vfs_mount_t *mnt, const char *path, void **dpriv);
     int (*readdir) (vfs_mount_t *mnt, void *dpriv, vfs_dirent_t *ent);
     int (*closedir)(vfs_mount_t *mnt, void *dpriv);
+
+    /* Optional: size and free space (df) */
+    int (*statfs)  (vfs_mount_t *mnt, vfs_statfs_t *st);
 };
 
 /* ── Mount point ─────────────────────────────────────────────────────────── */
@@ -168,6 +176,11 @@ int vfs_seek(int fd, int32_t offset, int whence);
 
 /* Metadata operations */
 int vfs_stat(const char *path, vfs_stat_t *st);
+/* The volume path is on: size and free space, and its file system's name
+ * (fsname may be NULL). VFS_ERR_INVAL if its driver can't tell. */
+int vfs_statfs(const char *path, vfs_statfs_t *st, const char **fsname);
+/* Which mount slot holds path (a stable number while mounted), or -1. */
+int vfs_mount_index(const char *path);
 int vfs_unlink(const char *path);
 int vfs_rename(const char *old, const char *nw);
 int vfs_mkdir(const char *path);

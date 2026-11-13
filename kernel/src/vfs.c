@@ -241,6 +241,21 @@ int vfs_stat(const char *path, vfs_stat_t *st)
     return mnt->fs->stat(mnt, relative_path(mnt, path), st);
 }
 
+int vfs_mount_index(const char *path)
+{
+    vfs_mount_t *mnt = find_mount(path);
+    return mnt ? (int)(mnt - mounts) : -1;
+}
+
+int vfs_statfs(const char *path, vfs_statfs_t *st, const char **fsname)
+{
+    vfs_mount_t *mnt = find_mount(path);
+    if (!mnt) return VFS_ERR_NOMOUNT;
+    if (fsname) *fsname = mnt->fs->name;
+    if (!mnt->fs->statfs) return VFS_ERR_INVAL;
+    return mnt->fs->statfs(mnt, st);
+}
+
 int vfs_unlink(const char *path)
 {
     vfs_mount_t *mnt = find_mount(path);

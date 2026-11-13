@@ -8,7 +8,8 @@
  * temporary files); the DOS shell can use it too (DIR \TMP).
  *
  * Limits: RAMFS_NODES files + directories in all, names up to 63 bytes
- * (case-sensitive), files up to 512 pages (2 MB) each.
+ * (case-sensitive), files up to 1 GB each (a two-level page table: a frame
+ * of 512 pointers to frames of 512 page pointers).
  */
 
 #include "ramfs.h"
@@ -18,7 +19,8 @@
 #define RAMFS_NODES   128
 #define RAMFS_NAME    64
 #define PAGE          4096u
-#define MAX_PAGES     512u                 /* one frame of page pointers */
+#define PPF           512u                 /* pointers per frame */
+#define MAX_PAGES     (PPF * PPF)          /* 1 GB */
 
 typedef struct {
     int       used;
@@ -28,7 +30,7 @@ typedef struct {
     int       unlinked;                    /* removed while open */
     char      name[RAMFS_NAME];
     uint32_t  size;
-    uint8_t **pages;                       /* MAX_PAGES entries, or NULL */
+    uint8_t ***pages;                      /* PPF tables of PPF page pointers, or NULL */
     uint16_t  mdate, mtime;
 } rnode_t;
 
@@ -39,6 +41,33 @@ typedef struct {
     int      used;
     int      dir_next;                     /* readdir cursor (node index) */
 } rhandle_t;
+
+/* Modification time, DOS style (what vfs_stat_t carries), from the RTC. */
+extern uint32_t kernel_time_seconds(void) __attribute__((weak));
+
+static void touch(rnode_t *n)
+{
+    if (!kernel_time_seconds) return;
+    uint32_t t = kernel_time_seconds(), days = t / 86400, sec = t % 86400;
+    uint32_t y = 1970;
+    for (;;) {
+        uint32_t len = (y % 4 == 0) ? 366 : 365;
+        if (days < len) break;
+        days -= len;
+        y++;
+    }
+    static const uint8_t ml[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    uint32_t m = 0;
+    while (m < 12) {
+        uint32_t l = ml[m] + (m == 1 && y % 4 == 0);
+        if (days < l) break;
+        days -= l;
+        m++;
+    }
+    if (y < 1980) return;
+    n->mdate = (uint16_t)(((y - 1980) << 9) | ((m + 1) << 5) | (days + 1));
+    n->mtime = (uint16_t)(((sec / 3600) << 11) | (((sec / 60) % 60) << 5) | ((sec % 60) / 2));
+}
 
 static int same(const char *a, const char *b, uint32_t n)
 {
@@ -124,18 +153,38 @@ static int new_node(int parent, const char *leaf, int is_dir)
                 n++;
             }
             nodes[i].name[n] = 0;
+            touch(&nodes[i]);
             return i;
         }
     return VFS_ERR_NOSPACE;
 }
 
+/* Page pi of a file: its frame (allocated if create), or NULL. */
+static uint8_t *page_at(rnode_t *n, uint32_t pi, int create)
+{
+    if (pi >= MAX_PAGES) return 0;
+    if (!n->pages && (!create || !(n->pages = ramfs_alloc()))) return 0;
+    uint8_t **t = n->pages[pi / PPF];
+    if (!t && (!create || !(t = n->pages[pi / PPF] = ramfs_alloc()))) return 0;
+    if (!t[pi % PPF] && create) t[pi % PPF] = ramfs_alloc();
+    return t[pi % PPF];
+}
+
 static void truncate_to(rnode_t *n, uint32_t size)
 {
+    uint32_t keep = (size + PAGE - 1) / PAGE;          /* pages to keep */
     if (n->pages)
-        for (uint32_t p = (size + PAGE - 1) / PAGE; p < MAX_PAGES; p++)
-            if (n->pages[p]) { ramfs_free(n->pages[p]); n->pages[p] = 0; }
-    if (size < n->size && n->pages && size % PAGE && n->pages[size / PAGE])
-        kmemset(n->pages[size / PAGE] + size % PAGE, 0, PAGE - size % PAGE);
+        for (uint32_t ti = 0; ti < PPF; ti++) {
+            uint8_t **t = n->pages[ti];
+            if (!t) continue;
+            for (uint32_t k = 0; k < PPF; k++) {
+                uint32_t pi = ti * PPF + k;
+                if (pi >= keep && t[k]) { ramfs_free(t[k]); t[k] = 0; }
+            }
+            if (ti * PPF >= keep) { ramfs_free(t); n->pages[ti] = 0; }
+        }
+    uint8_t *last = size % PAGE ? page_at(n, size / PAGE, 0) : 0;
+    if (size < n->size && last) kmemset(last + size % PAGE, 0, PAGE - size % PAGE);
     n->size = size;
 }
 
@@ -143,6 +192,7 @@ static void free_node(int i)
 {
     truncate_to(&nodes[i], 0);
     if (nodes[i].pages) ramfs_free(nodes[i].pages);
+    nodes[i].pages = 0;
     nodes[i].used = 0;
 }
 
@@ -192,7 +242,7 @@ static int r_read(vfs_mount_t *mnt, void *fpriv, void *buf, uint32_t len, uint32
         uint32_t off = h->pos % PAGE, k = PAGE - off;
         if (k > len - done) k = len - done;
         if (k > n->size - h->pos) k = n->size - h->pos;
-        uint8_t *pg = n->pages ? n->pages[h->pos / PAGE] : 0;
+        uint8_t *pg = page_at(n, h->pos / PAGE, 0);
         if (pg) kmemcpy((uint8_t *)buf + done, pg + off, k);
         else kmemset((uint8_t *)buf + done, 0, k);
         done += k;
@@ -209,19 +259,19 @@ static int r_write(vfs_mount_t *mnt, void *fpriv, const void *buf, uint32_t len,
     rnode_t *n = &nodes[h->node];
     *actual = 0;
     if (h->append) h->pos = n->size;
-    if (!n->pages && !(n->pages = ramfs_alloc())) return VFS_ERR_NOSPACE;
     uint32_t done = 0;
     while (done < len) {
         uint32_t pi = h->pos / PAGE, off = h->pos % PAGE, k = PAGE - off;
-        if (pi >= MAX_PAGES) break;
         if (k > len - done) k = len - done;
-        if (!n->pages[pi] && !(n->pages[pi] = ramfs_alloc())) break;
-        kmemcpy(n->pages[pi] + off, (const uint8_t *)buf + done, k);
+        uint8_t *pg = page_at(n, pi, 1);
+        if (!pg) break;
+        kmemcpy(pg + off, (const uint8_t *)buf + done, k);
         done += k;
         h->pos += k;
         if (h->pos > n->size) n->size = h->pos;
     }
     *actual = done;
+    if (done) touch(n);
     return done || !len ? VFS_OK : VFS_ERR_NOSPACE;
 }
 
@@ -343,12 +393,23 @@ static int r_closedir(vfs_mount_t *mnt, void *dpriv)
     return VFS_OK;
 }
 
+/* Files take page frames from the pool everything else uses too. */
+static int r_statfs(vfs_mount_t *mnt, vfs_statfs_t *st)
+{
+    (void)mnt;
+    st->bsize = PAGE;
+    st->blocks = (MMU_POOL_END - MMU_POOL_BASE) / PAGE;
+    st->bfree = mmu_frames_free_count();
+    return VFS_OK;
+}
+
 vfs_fs_t vfs_ramfs = {
     .name = "ramfs",
     .mount = r_mount, .unmount = r_unmount,
     .open = r_open, .close = r_close, .read = r_read, .write = r_write, .seek = r_seek,
     .stat = r_stat, .unlink = r_unlink, .rename = r_rename, .mkdir = r_mkdir,
     .opendir = r_opendir, .readdir = r_readdir, .closedir = r_closedir,
+    .statfs = r_statfs,
 };
 
 int ramfs_truncate(const char *path_in_mount, uint32_t size)
