@@ -65,6 +65,11 @@ int dos_shell_dispatch(int argc, char **argv);
  * NULL (as CMD.EXE does) if there's nothing else to do meanwhile.
  */
 typedef void (*dos_idle_fn)(void);
+
+/* A VFS path the way DOS shows it: "/h/fonts" -> "C:\h\fonts". */
+void dos_display_path(const char *vfs_path, char *out, int out_size);
+/* The command prompt for the current directory: "[C:\h]> ". */
+void dos_prompt(char *out, int out_size);
 int dos_read_line(const char *prompt, char *buffer, int max_len, dos_idle_fn idle);
 
 #endif /* DOS_H */

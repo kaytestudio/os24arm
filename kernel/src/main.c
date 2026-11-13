@@ -278,10 +278,10 @@ static void cmd_help(void)
     uart_puts("  MD        - Create a directory (alias: MKDIR)\r\n");
     uart_puts("  RD        - Remove a directory (alias: RMDIR)\r\n");
     uart_puts("  CD        - Show/change current directory (alias: CHDIR)\r\n");
-    uart_puts("  VOL       - Display volume label\r\n");
+    uart_puts("  VOL       - Volume label and file system [path]\r\n");
     uart_puts("  ATTRIB    - Display file attributes\r\n");
-    uart_puts("  CHKDSK    - Check disk (not supported, read-only drivers)\r\n");
-    uart_puts("  FORMAT    - Format disk (not supported, read-only drivers)\r\n");
+    uart_puts("  CHKDSK    - Volume size and free space [path]\r\n");
+    uart_puts("  FORMAT    - (not available: volumes are made on the host)\r\n");
     uart_puts("  ECHO      - Display message\r\n");
     uart_puts("  CLS       - Clear screen\r\n");
     uart_puts("  DOSKEY    - Enable command history/macros (arrows, F7/F8/F9,\r\n");
@@ -305,18 +305,27 @@ static void cmd_help(void)
     uart_puts("\r\n");
 }
 
+/* MEM: the kernel heap (a bump allocator) and the page-frame pool that
+ * Linux programs, the RAM disk and kernel stacks allocate from. */
+extern void mem_get_stats(uintptr_t *used, uintptr_t *total);
+unsigned long mmu_frames_free_count(void);
+unsigned long mmu_frames_total_count(void);
+unsigned long ramfs_frames(void);
+
 static void cmd_mem(void)
 {
-    uart_puts("\r\n");
-    uart_puts("Memory Information:\r\n");
-    uart_puts("  Heap start: ");
-    uart_puthex(HEAP_START);
-    uart_puts("\r\n");
-    uart_puts("  Heap size:  ");
-    uart_puthex(HEAP_SIZE);
-    uart_puts(" (8 MB)\r\n");
-    uart_puts("  Status:     Active\r\n");
-    uart_puts("\r\n");
+    uintptr_t used, total;
+    mem_get_stats(&used, &total);
+    unsigned long ft = mmu_frames_total_count(), ff = mmu_frames_free_count();
+    unsigned long rd = ramfs_frames();
+    kprintf("\nMemory:\n");
+    kprintf("  Kernel heap  %8u KB of %u KB used (at 0x%x)\n",
+            (unsigned)(used / 1024), (unsigned)(total / 1024), (unsigned)HEAP_START);
+    kprintf("  Page frames  %8u KB of %u KB free (4 KB pages)\n", (unsigned)(ff * 4), (unsigned)(ft * 4));
+    kprintf("    RAM disk   %8u KB\n", (unsigned)(rd * 4));
+    kprintf("    other use  %8u KB (programs, stacks, buffers)\n",
+            (unsigned)((ft - ff > rd ? ft - ff - rd : 0) * 4));
+    kprintf("\n");
 }
 
 static void cmd_ifs(void)
@@ -682,7 +691,9 @@ static void kernel_shell(void)
     uart_puts("\r\n");
 
     for (;;) {
-        dos_read_line("[C:\\]> ", buffer, sizeof(buffer), kernel_shell_idle);
+        char prompt[VFS_PATH_MAX + 8];
+        dos_prompt(prompt, sizeof prompt);
+        dos_read_line(prompt, buffer, sizeof(buffer), kernel_shell_idle);
 
         /* A DOSKEY macro using $T comes back as multiple '\n'-separated
          * commands - run each one in turn. */

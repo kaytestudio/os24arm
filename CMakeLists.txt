@@ -886,7 +886,7 @@ add_lx_dll(DOSCALLS
         DosOpen DosClose DosRead DosWrite DosChgFilePtr
         DosFindFirst DosFindNext DosFindClose
         DosQueryPathInfo DosDelete DosMove DosCreateDir DosDeleteDir
-        DosSetCurrentDir DosQueryCurrentDir DosResolvePath
+        DosSetCurrentDir DosQueryCurrentDir DosResolvePath DosQueryFSInfoPath
         vfs_to_os2_error os2_to_vfs_attrs vfs_to_os2_attrs
         KernThunkStackTo16 KernThunkStackTo32 KernThunkStackTo64
         KernSerialize16BitDD KernUnSerialize16BitDD

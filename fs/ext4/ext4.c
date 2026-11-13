@@ -680,10 +680,8 @@ static int ext4_probe(blkdev_t *dev)
 
 int ext4_init(const char *params)
 {
-    uart_puts("DEBUG: Entering ext4_init\r\n");
 
     if (params && params[0]) {
-        uart_puts("DEBUG: ext4_init has params\r\n");
         parse_cache_option(params);
     }
 
@@ -701,7 +699,6 @@ int ext4_init(const char *params)
     }
     if (!dev) {
         kprintf("[EXT4] No block device found; not mounting\n");
-        uart_puts("DEBUG: ext4_init complete\r\n");
         return 0;
     }
 
@@ -709,18 +706,15 @@ int ext4_init(const char *params)
      * is a quiet skip rather than a "Bad superblock magic" error. */
     if (!ext4_probe(dev)) {
         kprintf("[EXT4] %s is not ext4; not mounting\n", dev->name);
-        uart_puts("DEBUG: ext4_init complete\r\n");
         return 0;
     }
 
     int r = vfs_mount(mount_point, ext4_get_fs(), dev);
     if (r != VFS_OK) {
         kprintf("[EXT4] Mount failed: %d\n", r);
-        uart_puts("DEBUG: ext4_init complete\r\n");
         return 0; /* not fatal to boot */
     }
 
-    uart_puts("DEBUG: ext4_init complete\r\n");
     return 0;
 }
 

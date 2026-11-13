@@ -36,6 +36,7 @@ APIRET (*DosSetCurrentDir)(const char *dirname) = 0;
 APIRET (*DosQueryCurrentDir)(char *buffer, uint32_t buffer_len) = 0;
 
 void (*DosResolvePath)(const char *in, char *out, uint32_t out_size) = 0;
+APIRET (*DosQueryFSInfoPath)(const char *path, FSINFOPATH *info) = 0;
 
 static lx_dll_t g_doscalls;
 
@@ -79,6 +80,7 @@ int os2_api_import_init(void)
     RESOLVE(DosSetCurrentDir, "DosSetCurrentDir");
     RESOLVE(DosQueryCurrentDir, "DosQueryCurrentDir");
     RESOLVE(DosResolvePath, "DosResolvePath");
+    RESOLVE(DosQueryFSInfoPath, "DosQueryFSInfoPath");
 
     return 0;
 }

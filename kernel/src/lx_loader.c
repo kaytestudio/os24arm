@@ -11,6 +11,7 @@
  */
 
 #include "lx_loader.h"
+#include "lx_services.h"
 #include "vfs.h"
 #include "uart.h"
 #include "kprintf.h"
@@ -107,7 +108,17 @@ typedef unsigned long uint64_t;
 #define LX_MAX_OBJECTS   16
 #define LX_MAX_PAGES     32768
 
-typedef int (*lx_entry_fn)(void);
+typedef int (*lx_entry_fn)(const struct lx_services *svc);
+
+/* Console input for LX programs: the kernel's uart_getc()/uart_ready()
+ * already merge the USB keyboard in; an LX program's own uart.c can't. */
+static int lx_kbd_ready(void) { return uart_ready(); }
+static int lx_kbd_getc(void)  { return uart_ready() ? (unsigned char)uart_getc() : -1; }
+static const struct lx_services lx_svc = {
+    .version = LX_SERVICES_VERSION,
+    .kbd_ready = lx_kbd_ready,
+    .kbd_getc = lx_kbd_getc,
+};
 
 /* ARM64 self-modifying-code cache maintenance: pages were just written as
  * data (vfs_read/plain stores) but are about to be executed as
@@ -270,7 +281,7 @@ int lx_exec_image(const void *image, uint32_t image_size)
             (void *)LX_LOAD_BASE, (void *)LX_DATA_LOAD_BASE, hdr->eip);
 
     lx_entry_fn entry = (lx_entry_fn)((uint8_t *)LX_LOAD_BASE + hdr->eip);
-    return entry();
+    return entry(&lx_svc);
 }
 
 int lx_exec_file(const char *path)

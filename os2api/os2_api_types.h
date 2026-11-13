@@ -110,6 +110,15 @@ typedef struct {
     uint16_t  attributes;
 } FILESTATUS;
 
+/* Volume information for the drive a path is on (DosQueryFSInfoPath) */
+typedef struct {
+    unsigned long long total_bytes;
+    unsigned long long free_bytes;
+    uint32_t  unit_bytes;        /* allocation unit (cluster/sector/block) */
+    char      fsname[16];        /* "hpfs", "fat", "btrfs", ... */
+    char      label[32];         /* "" if none */
+} FSINFOPATH;
+
 /* File find buffer (for DosFindFirst/DosFindNext) */
 typedef struct {
     uint16_t  creation_date;

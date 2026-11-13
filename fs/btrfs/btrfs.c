@@ -816,13 +816,11 @@ static int btrfs_rename(vfs_mount_t *mnt, const char *old, const char *nw)
 int btrfs_init(const char *params)
 {
     (void)params;
-    uart_puts("DEBUG: Entering btrfs_init\r\n");
 
     blkdev_t *dev = blkdev_get_by_name("disk0p2");
     if (!dev) dev = blkdev_get_by_name("C");
     if (!dev) {
         kprintf("[BTRFS] No block device found; not mounting\n");
-        uart_puts("DEBUG: btrfs_init complete\r\n");
         return 0;
     }
 
@@ -831,7 +829,6 @@ int btrfs_init(const char *params)
         kprintf("[BTRFS] Mount failed: %d\n", r);
     }
 
-    uart_puts("DEBUG: btrfs_init complete\r\n");
     return 0;
 }
 
@@ -852,5 +849,9 @@ static int btrfs_statfs(vfs_mount_t *mnt, vfs_statfs_t *st)
     st->bsize = bs;
     st->blocks = sb->total_bytes / bs;
     st->bfree = sb->total_bytes > sb->bytes_used ? (sb->total_bytes - sb->bytes_used) / bs : 0;
+    for (int i = 0; i < (int)sizeof st->label - 1 && sb->label[i]; i++) {
+        st->label[i] = sb->label[i];
+        st->label[i + 1] = 0;
+    }
     return VFS_OK;
 }

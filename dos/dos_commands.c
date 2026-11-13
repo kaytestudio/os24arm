@@ -51,6 +51,56 @@ static void print_dos_error(const char *cmd, APIRET rc)
 }
 
 
+/* ── Paths as DOS shows them ─────────────────────────────────────────────── */
+
+void dos_display_path(const char *vfs_path, char *out, int out_size)
+{
+    int n = 0;
+    if (out_size < 4) { if (out_size > 0) out[0] = '\0'; return; }
+    out[n++] = 'C';
+    out[n++] = ':';
+    if (*vfs_path != '/' && *vfs_path != '\\') out[n++] = '\\';
+    for (const char *c = vfs_path; *c && n < out_size - 1; c++)
+        out[n++] = (*c == '/') ? '\\' : *c;
+    out[n] = '\0';
+}
+
+void dos_prompt(char *out, int out_size)
+{
+    char cwd[VFS_PATH_MAX], shown[VFS_PATH_MAX + 4];
+    if (DosQueryCurrentDir(cwd, sizeof cwd) != NO_ERROR) strcpy(cwd, "/");
+    dos_display_path(cwd, shown, sizeof shown);
+    int n = 0;
+    if (out_size < 8) { if (out_size > 0) out[0] = '\0'; return; }
+    out[n++] = '[';
+    for (const char *c = shown; *c && n < out_size - 4; c++) out[n++] = *c;
+    out[n++] = ']';
+    out[n++] = '>';
+    out[n++] = ' ';
+    out[n] = '\0';
+}
+
+/* "1234567" -> "1,234,567" (DIR, CHKDSK) */
+static void put_grouped(unsigned long long v)
+{
+    char d[32];
+    int n = 0;
+    do { d[n++] = (char)('0' + v % 10); v /= 10; } while (v);
+    while (n > 0) {
+        uart_putc(d[--n]);
+        if (n > 0 && n % 3 == 0) uart_putc(',');
+    }
+}
+
+/* Index just past the last '\' or '/' in path (0 if none). */
+static int base_index(const char *path)
+{
+    int b = 0;
+    for (int i = 0; path[i]; i++)
+        if (path[i] == '\\' || path[i] == '/') b = i + 1;
+    return b;
+}
+
 /* ── ECHO ─────────────────────────────────────────────────────────────────── */
 
 /* ECHO text            prints it
@@ -1092,14 +1142,33 @@ static int  ed_f8_active, ed_f8_offset;
 
 /* Repaints the input field after ed_buf/ed_len/ed_cursor changed, given
  * the on-screen state (old_len, old_cursor) from just before the change. */
+/* What the terminal shows after the prompt (its first old_len bytes are
+ * valid whenever ed_redraw() is called): only the part from the first
+ * changed character on is rewritten, so typing at the end of the line
+ * echoes just that character. */
+static char ed_shown[DOSKEY_LINE_MAX];
+
 static void ed_redraw(int old_len, int old_cursor)
 {
-    for (int i = 0; i < old_cursor; i++) uart_putc('\b');
-    for (int i = 0; i < ed_len; i++) uart_putc(ed_buf[i]);
+    int same = 0;
+    while (same < old_len && same < ed_len && ed_shown[same] == ed_buf[same]) same++;
+
+    if (same == old_len && same == ed_len) {      /* only the cursor moved */
+        for (int i = old_cursor; i > ed_cursor; i--) uart_putc('\b');
+        for (int i = old_cursor; i < ed_cursor; i++) uart_putc(ed_buf[i]);
+        return;
+    }
+
+    if (old_cursor > same)
+        for (int i = old_cursor; i > same; i--) uart_putc('\b');
+    else
+        for (int i = old_cursor; i < same; i++) uart_putc(ed_buf[i]);   /* unchanged text */
+    for (int i = same; i < ed_len; i++) uart_putc(ed_buf[i]);
     int pad = old_len - ed_len;
     for (int i = 0; i < pad; i++) uart_putc(' ');
     for (int i = 0; i < pad; i++) uart_putc('\b');
     for (int i = ed_len; i > ed_cursor; i--) uart_putc('\b');
+    memcpy(ed_shown, ed_buf, ed_len);
 }
 
 static void ed_load_history(int browse)
@@ -1205,6 +1274,7 @@ int dos_read_line(const char *prompt, char *buffer, int max_len, dos_idle_fn idl
                     }
                     uart_puts(prompt);
                     for (int i = 0; i < ed_len; i++) uart_putc(ed_buf[i]);
+                    memcpy(ed_shown, ed_buf, ed_len);
                     for (int i = ed_len; i > ed_cursor; i--) uart_putc('\b');
                     break;
                 }
@@ -1253,6 +1323,8 @@ int dos_read_line(const char *prompt, char *buffer, int max_len, dos_idle_fn idl
                     }
                     uart_puts(prompt);
                     for (int i = 0; i < ed_len; i++) uart_putc(ed_buf[i]);
+                    memcpy(ed_shown, ed_buf, ed_len);
+                    for (int i = ed_len; i > ed_cursor; i--) uart_putc('\b');
                     break;
                 }
                 case KEY_ESC_ALONE:
@@ -1360,8 +1432,10 @@ void dos_dir(int argc, char **argv)
         }
     }
 
+    char shown[VFS_PATH_MAX + 4];
+    dos_display_path(resolved, shown, sizeof shown);
     uart_puts("\r\n Directory of ");
-    uart_puts(resolved);
+    uart_puts(shown);
     uart_puts("\r\n\r\n");
 
     HDIR hdir;
@@ -1401,7 +1475,14 @@ void dos_dir(int argc, char **argv)
     kprintf("%u", file_count);
     uart_puts(" file(s), ");
     kprintf("%u", dir_count);
-    uart_puts(" dir(s)\r\n\r\n");
+    uart_puts(" dir(s)");
+    FSINFOPATH fi;
+    if (DosQueryFSInfoPath(resolved, &fi) == NO_ERROR) {
+        uart_puts(", ");
+        put_grouped(fi.free_bytes);
+        uart_puts(" bytes free");
+    }
+    uart_puts("\r\n\r\n");
 }
 
 /* ── TYPE ────────────────────────────────────────────────────────────────── */
@@ -1450,7 +1531,21 @@ void dos_copy(int argc, char **argv)
         return;
     }
 
-    rc = DosOpen(argv[2], &dst, &action, 0, 0, 0, O_WRONLY | O_CREAT | O_TRUNC);
+    /* COPY file dir: the copy goes into dir, under the same name. */
+    char target[VFS_PATH_MAX];
+    const char *dest = argv[2];
+    FILESTATUS ds;
+    if (DosQueryPathInfo(dest, 1, &ds, sizeof ds) == NO_ERROR &&
+        (ds.attributes & VFS_ATTR_DIR)) {
+        int n = 0, dl = (int)strlen(dest), b = base_index(argv[1]);
+        for (int i = 0; i < dl && n < (int)sizeof target - 2; i++) target[n++] = dest[i];
+        if (n > 0 && target[n - 1] != '\\' && target[n - 1] != '/') target[n++] = '\\';
+        for (const char *c = argv[1] + b; *c && n < (int)sizeof target - 1; c++) target[n++] = *c;
+        target[n] = '\0';
+        dest = target;
+    }
+
+    rc = DosOpen(dest, &dst, &action, 0, 0, 0, O_WRONLY | O_CREAT | O_TRUNC);
     if (rc != NO_ERROR) {
         DosClose(src);
         print_dos_error("COPY", rc);
@@ -1543,7 +1638,19 @@ void dos_ren(int argc, char **argv)
         return;
     }
 
-    APIRET rc = DosMove(argv[1], argv[2]);
+    /* As in DOS, the new name is just a name: the file stays in its
+     * directory (REN \h\a.txt b.txt renames \h\a.txt to \h\b.txt). */
+    if (base_index(argv[2]) != 0) {
+        uart_puts("\r\nREN: the new name can't include a path\r\n");
+        return;
+    }
+    char target[VFS_PATH_MAX];
+    int b = base_index(argv[1]), n = 0;
+    for (int i = 0; i < b && n < (int)sizeof target - 1; i++) target[n++] = argv[1][i];
+    for (const char *c = argv[2]; *c && n < (int)sizeof target - 1; c++) target[n++] = *c;
+    target[n] = '\0';
+
+    APIRET rc = DosMove(argv[1], target);
     if (rc != NO_ERROR) {
         print_dos_error("REN", rc);
     } else {
@@ -1591,9 +1698,11 @@ void dos_cd(int argc, char **argv)
 {
     if (argc < 2) {
         char buf[VFS_PATH_MAX];
+        char shown[VFS_PATH_MAX + 4];
         APIRET rc = DosQueryCurrentDir(buf, sizeof(buf));
+        if (rc == NO_ERROR) dos_display_path(buf, shown, sizeof shown);
         uart_puts("\r\n");
-        uart_puts(rc == NO_ERROR ? buf : "(unknown)");
+        uart_puts(rc == NO_ERROR ? shown : "(unknown)");
         uart_puts("\r\n");
         return;
     }
@@ -1608,9 +1717,21 @@ void dos_cd(int argc, char **argv)
 
 void dos_vol(int argc, char **argv)
 {
-    (void)argc; (void)argv;
-    uart_puts("\r\n Volume in drive C is OS2WARP\r\n");
-    uart_puts(" Volume Serial Number is 0000-0001\r\n\r\n");
+    const char *path = (argc > 1) ? argv[1] : ".";
+    FSINFOPATH fi;
+    APIRET rc = DosQueryFSInfoPath(path, &fi);
+    if (rc != NO_ERROR && !fi.fsname[0]) { print_dos_error("VOL", rc); return; }
+
+    char resolved[VFS_PATH_MAX], shown[VFS_PATH_MAX + 4];
+    DosResolvePath(path, resolved, sizeof resolved);
+    dos_display_path(resolved, shown, sizeof shown);
+    uart_puts("\r\n Volume ");
+    uart_puts(shown);
+    if (fi.label[0]) { uart_puts(" is "); uart_puts(fi.label); }
+    else uart_puts(" has no label");
+    uart_puts(" (");
+    uart_puts(fi.fsname[0] ? fi.fsname : "unknown");
+    uart_puts(")\r\n\r\n");
 }
 
 /* ── ATTRIB ──────────────────────────────────────────────────────────────── */
@@ -1641,16 +1762,41 @@ void dos_attrib(int argc, char **argv)
 
 /* ── CHKDSK / FORMAT ─────────────────────────────────────────────────────── */
 
+/* CHKDSK [path]: the volume's size and free space. There's no repair
+ * pass - the drivers check their structures as they mount. */
 void dos_chkdsk(int argc, char **argv)
 {
-    (void)argc; (void)argv;
-    uart_puts("\r\nCHKDSK: not supported - filesystem drivers in this build are read-only\r\n");
+    const char *path = (argc > 1) ? argv[1] : ".";
+    FSINFOPATH fi;
+    APIRET rc = DosQueryFSInfoPath(path, &fi);
+    if (rc != NO_ERROR) { print_dos_error("CHKDSK", rc); return; }
+
+    uart_puts("\r\nThe type of file system is ");
+    uart_puts(fi.fsname);
+    uart_puts(".\r\n");
+    if (fi.label[0]) { uart_puts("Volume label is "); uart_puts(fi.label); uart_puts(".\r\n"); }
+    uart_puts("\r\n");
+    put_grouped(fi.total_bytes);
+    uart_puts(" bytes total disk space.\r\n");
+    put_grouped(fi.total_bytes - fi.free_bytes);
+    uart_puts(" bytes in use.\r\n");
+    put_grouped(fi.free_bytes);
+    uart_puts(" bytes available on disk.\r\n\r\n");
+    put_grouped(fi.unit_bytes);
+    uart_puts(" bytes in each allocation unit.\r\n");
+    if (fi.unit_bytes) {
+        put_grouped(fi.total_bytes / fi.unit_bytes);
+        uart_puts(" total allocation units on disk.\r\n");
+        put_grouped(fi.free_bytes / fi.unit_bytes);
+        uart_puts(" available allocation units on disk.\r\n");
+    }
 }
 
 void dos_format(int argc, char **argv)
 {
     (void)argc; (void)argv;
-    uart_puts("\r\nFORMAT: not supported - filesystem drivers in this build are read-only\r\n");
+    uart_puts("\r\nFORMAT: not available - volumes are created on the host "
+              "(see userland/make-stick.sh for HPFS)\r\n");
 }
 
 /* ── Shell dispatcher ────────────────────────────────────────────────────── */

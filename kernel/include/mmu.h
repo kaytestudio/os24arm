@@ -79,6 +79,7 @@ int  mmu_user_mapped(unsigned long va, unsigned long len, int prot);
 void         *mmu_frames_alloc(unsigned long n);
 void          mmu_frames_free(void *p, unsigned long n);
 unsigned long mmu_frames_free_count(void);
+unsigned long mmu_frames_total_count(void);
 /* Single frames are reference counted (mmu_frames_alloc returns them with
  * one reference; the last mmu_frame_put frees). */
 void          mmu_frame_get(void *frame);

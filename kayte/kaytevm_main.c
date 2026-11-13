@@ -30,6 +30,7 @@
  * memory (bytecode, strings, variables).
  */
 
+#include "lx_services.h"
 #include "dos.h"
 #include "uart.h"
 #include "kprintf.h"
@@ -513,7 +514,7 @@ static void vm_run(kayte_vm_t *vm)
     }
 }
 
-int main(void)
+int main(const struct lx_services *svc)
 {
     HFILE h;
     uint32_t action, total, got;
@@ -524,6 +525,7 @@ int main(void)
     int32_t i;
 
     mem_init(KAYTEVM_HEAP_START, KAYTEVM_HEAP_SIZE);
+    uart_set_input_services(svc);   /* the kernel's USB keyboard too */
 
     uart_puts("\r\nOS/2 Warp ARM64 - KAYTEVM\r\n");
 

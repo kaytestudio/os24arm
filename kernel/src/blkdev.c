@@ -21,12 +21,10 @@ static int blkdev_count = 0;
 
 int blkdev_register(blkdev_t *dev)
 {
-    uart_puts("DEBUG: Entering blkdev_register\r\n");
     if (blkdev_count >= MAX_BLKDEVS) return -1;
     blkdevs[blkdev_count++] = dev;
     kprintf("[BLKDEV] Registered: %s (%u sectors)\n",
             dev->name, (unsigned)dev->num_sectors);
-    uart_puts("DEBUG: blkdev_register complete\r\n");
     return 0;
 }
 
@@ -205,7 +203,6 @@ void virtio_blk_init(void)
 
 void blk_init(void)
 {
-    uart_puts("DEBUG: Entering blk_init\r\n");
 
     // Arrays are already zeroed by boot.S BSS clearing
     blkdev_count = 0;
@@ -221,7 +218,6 @@ void blk_init(void)
      * disk's protective MBR is ignored by mbr_probe(). */
     mbr_probe(blkdev_get_by_name("disk0"));
 
-    uart_puts("DEBUG: blk_init complete\r\n");
 }
 void blkdev_init(void)
 {

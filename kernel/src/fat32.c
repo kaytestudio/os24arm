@@ -964,6 +964,22 @@ static int fat32_vfs_statfs(vfs_mount_t *mnt, vfs_statfs_t *st)
     st->bsize = m->bytes_per_cluster;
     st->blocks = m->total_clusters;
     st->bfree = free;
+    /* The label is in the boot sector's extended BPB (offset 43 on FAT16,
+     * 71 on FAT32), space-padded; "NO NAME" means none. */
+    static uint8_t boot[SECTOR_SIZE];
+    if (blk_read(m->dev, 0, 1, boot) == 0 && boot[m->fat_bits == 16 ? 38 : 66] == 0x29) {
+        const uint8_t *l = boot + (m->fat_bits == 16 ? 43 : 71);
+        int n = 11;
+        while (n > 0 && l[n - 1] == ' ') n--;
+        for (int i = 0; i < n; i++) st->label[i] = (l[i] >= 32 && l[i] < 127) ? (char)l[i] : '?';
+        st->label[n] = 0;
+        {
+            static const char none[] = "NO NAME";
+            int same = n == 7;
+            for (int i = 0; same && i < 7; i++) same = st->label[i] == none[i];
+            if (same) st->label[0] = 0;
+        }
+    }
     return VFS_OK;
 }
 

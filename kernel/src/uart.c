@@ -4,8 +4,21 @@
 #ifdef HAVE_USB
 #include "usbkbd.h"
 #else
-static inline int usbkbd_ready(void) { return 0; }
-static inline int usbkbd_getc(void)  { return -1; }
+/* LX programs: the kernel passes its keyboard in an lx_services table. */
+#include "lx_services.h"
+static const struct lx_services *input_svc;
+void uart_set_input_services(const struct lx_services *svc)
+{
+    input_svc = (svc && svc->version >= 1) ? svc : 0;
+}
+static inline int usbkbd_ready(void)
+{
+    return input_svc && input_svc->kbd_ready && input_svc->kbd_ready();
+}
+static inline int usbkbd_getc(void)
+{
+    return (input_svc && input_svc->kbd_getc) ? input_svc->kbd_getc() : -1;
+}
 #endif
 
 #define UART_BASE   0x09000000UL

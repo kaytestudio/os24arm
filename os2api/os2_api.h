@@ -46,6 +46,11 @@ APIRET DosQueryCurrentDir(char *buffer, uint32_t buffer_len);
  */
 void DosResolvePath(const char *in, char *out, uint32_t out_size);
 
+/* Size, free space, file system and label of the volume a path is on.
+ * Not in IBM's DOSCALLS (DosQueryFSInfo takes a drive number; this VFS
+ * has mount points instead of drive letters). */
+APIRET DosQueryFSInfoPath(const char *path, FSINFOPATH *info);
+
 /* ── Helper Functions ────────────────────────────────────────────────── */
 
 /** Convert a VFS_ERR_* code to an OS/2 ERROR_* code */

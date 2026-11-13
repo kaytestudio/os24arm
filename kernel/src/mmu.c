@@ -184,6 +184,7 @@ void mmu_frames_free(void *p, unsigned long n)
 }
 
 unsigned long mmu_frames_free_count(void) { return pool_free; }
+unsigned long mmu_frames_total_count(void) { return POOL_PAGES; }
 
 static long frame_index(unsigned long pa)
 {

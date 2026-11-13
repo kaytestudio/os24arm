@@ -64,9 +64,11 @@ typedef struct vfs_fs       vfs_fs_t;
 typedef struct vfs_dirent   vfs_dirent_t;
 typedef struct vfs_stat     vfs_stat_t;
 
-/* A volume's size and free space, in blocks of bsize bytes. */
+/* A volume's size and free space, in blocks of bsize bytes, and its
+ * label ("" if the driver doesn't report one). */
 typedef struct {
     __UINT64_TYPE__ bsize, blocks, bfree;
+    char label[32];
 } vfs_statfs_t;
 
 /* ── Filesystem operations ───────────────────────────────────────────────── */

@@ -124,8 +124,34 @@ void DosResolvePath(const char *in, char *out, uint32_t out_size)
         tmp[n] = '\0';
     }
 
+    /* Normalize: collapse "//", drop "." and resolve ".." components, so
+     * the current directory and paths shown to the user stay canonical
+     * ("CD .." from /h/fonts gives /h, not /h/fonts/..). */
+    char norm[VFS_PATH_MAX];
+    uint32_t m = 0;
+    const char *p = tmp;
+    while (*p) {
+        while (*p == '/') p++;
+        if (!*p) break;
+        const char *e = p;
+        while (*e && *e != '/') e++;
+        uint32_t len = (uint32_t)(e - p);
+        if (len == 1 && p[0] == '.') {
+            /* skip */
+        } else if (len == 2 && p[0] == '.' && p[1] == '.') {
+            while (m > 0 && norm[m - 1] != '/') m--;   /* drop last component */
+            if (m > 0) m--;                            /* and its '/' */
+        } else if (m + 1 + len < sizeof(norm)) {
+            norm[m++] = '/';
+            for (uint32_t k = 0; k < len; k++) norm[m++] = p[k];
+        }
+        p = e;
+    }
+    if (m == 0) norm[m++] = '/';
+    norm[m] = '\0';
+
     uint32_t i = 0;
-    while (tmp[i] && i < out_size - 1) { out[i] = tmp[i]; i++; }
+    while (norm[i] && i < out_size - 1) { out[i] = norm[i]; i++; }
     out[i] = '\0';
 }
 
@@ -152,6 +178,29 @@ APIRET DosQueryCurrentDir(char *buffer, uint32_t buffer_len)
     uint32_t n = (uint32_t)strlen(current_dir);
     if (n >= buffer_len) return ERROR_BUFFER_OVERFLOW;
     strncpy(buffer, current_dir, buffer_len);
+    return NO_ERROR;
+}
+
+APIRET DosQueryFSInfoPath(const char *path, FSINFOPATH *info)
+{
+    if (!info) return ERROR_INVALID_PARAMETER;
+    os2_api_ensure_init();
+
+    char resolved[VFS_PATH_MAX];
+    DosResolvePath(path ? path : "", resolved, sizeof(resolved));
+
+    vfs_statfs_t st;
+    const char *fs = 0;
+    memset(info, 0, sizeof(*info));
+    int r = vfs_statfs(resolved, &st, &fs);
+    if (fs) {
+        strncpy(info->fsname, fs, sizeof(info->fsname) - 1);
+    }
+    if (r != VFS_OK) return vfs_to_os2_error(r);
+    info->unit_bytes = (uint32_t)st.bsize;
+    info->total_bytes = st.bsize * st.blocks;
+    info->free_bytes = st.bsize * st.bfree;
+    strncpy(info->label, st.label, sizeof(info->label) - 1);
     return NO_ERROR;
 }
 

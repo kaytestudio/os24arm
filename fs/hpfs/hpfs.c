@@ -1926,6 +1926,10 @@ static int hpfs_statfs(vfs_mount_t *mnt, vfs_statfs_t *st)
     st->bsize = 512;
     st->blocks = m->n_sectors;
     st->bfree = free;
+    for (int i = 0; i < (int)sizeof st->label - 1 && m->label[i]; i++) {
+        st->label[i] = m->label[i];
+        st->label[i + 1] = 0;
+    }
     return VFS_OK;
 }
 

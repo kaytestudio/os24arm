@@ -103,13 +103,11 @@ static int alloc_dfd(void)
 
 void vfs_init(void)
 {
-    uart_puts("DEBUG: vfs_init starting\r\n");
 
     // Arrays (mounts, files, dirs) are already zeroed by boot.S BSS clearing
     // Just initialize the global counter
     mount_count = 0;
 
-    uart_puts("DEBUG: vfs_init complete\r\n");
 }
 /* ── Mount management ────────────────────────────────────────────────────── */
 
@@ -253,6 +251,7 @@ int vfs_statfs(const char *path, vfs_statfs_t *st, const char **fsname)
     if (!mnt) return VFS_ERR_NOMOUNT;
     if (fsname) *fsname = mnt->fs->name;
     if (!mnt->fs->statfs) return VFS_ERR_INVAL;
+    st->label[0] = '\0';
     return mnt->fs->statfs(mnt, st);
 }
 

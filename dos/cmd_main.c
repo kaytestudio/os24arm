@@ -29,6 +29,7 @@
 #include "os2_api_import.h"
 #include "uart.h"
 #include "string.h"
+#include "lx_services.h"
 
 #define CMD_LINE_MAX 256
 
@@ -56,9 +57,30 @@ static int cmd_tokenize(char *str, char **tokens, int max_tokens)
     return count;
 }
 
-int main(void)
+/* Case-insensitive match of a command word against an upper-case name. */
+static int is_cmd(const char *w, const char *e)
+{
+    for (; *e; w++, e++)
+        if ((*w >= 'a' && *w <= 'z' ? *w - 32 : *w) != *e) return 0;
+    return *w == '\0';
+}
+
+static void cmd_help(void)
+{
+    uart_puts("\r\nCMD.EXE commands:\r\n"
+              "  DIR, TYPE, COPY, DEL/ERASE, REN/RENAME, MD/MKDIR, RD/RMDIR,\r\n"
+              "  CD/CHDIR, VOL, ATTRIB, CHKDSK, FORMAT, COMP, FC, ECHO, CLS,\r\n"
+              "  DOSKEY, DEBUG, VER, HELP, EXIT (back to the kernel shell)\r\n"
+              "Files are reached through DOSCALLS.DLL, which mounts the boot\r\n"
+              "disk itself: volumes MOUNTed in the kernel shell aren't seen here.\r\n\r\n");
+}
+
+int main(const struct lx_services *svc)
 {
     char buffer[CMD_LINE_MAX];
+
+    /* The kernel's keyboard (USB) as a second console input. */
+    uart_set_input_services(svc);
 
     /* Resolves DosOpen/DosRead/... against the embedded DOSCALLS.DLL
      * (see os2api/os2_api_import.h) - it mounts its own storage lazily,
@@ -76,7 +98,9 @@ int main(void)
     uart_puts("Type DOSKEY to enable command history/macros\r\n\r\n");
 
     for (;;) {
-        dos_read_line("[C:\\]> ", buffer, sizeof(buffer), NULL);
+        char prompt[VFS_PATH_MAX + 8];
+        dos_prompt(prompt, sizeof prompt);
+        dos_read_line(prompt, buffer, sizeof(buffer), NULL);
 
         /* A DOSKEY macro using $T comes back as multiple '\n'-separated
          * commands - run each one in turn. */
@@ -87,7 +111,18 @@ int main(void)
             if (*seg) {
                 char *argv[16];
                 int argc = cmd_tokenize(seg, argv, 16);
-                if (argc > 0 && !dos_shell_dispatch(argc, argv)) {
+                /* EXIT: the kernel called us like a function - return to
+                 * its shell (dos_exit() halts, which is right only for
+                 * the built-in shell). */
+                if (argc > 0 && is_cmd(argv[0], "EXIT")) {
+                    uart_puts("\r\n");
+                    return 0;
+                }
+                if (argc > 0 && is_cmd(argv[0], "VER")) {
+                    uart_puts("\r\nOS/2 Warp Version 4.52 (ARM64 Edition) - CMD.EXE\r\n\r\n");
+                } else if (argc > 0 && (is_cmd(argv[0], "HELP") || is_cmd(argv[0], "?"))) {
+                    cmd_help();
+                } else if (argc > 0 && !dos_shell_dispatch(argc, argv)) {
                     uart_puts("Bad command or file name: ");
                     uart_puts(argv[0]);
                     uart_puts("\r\n");
