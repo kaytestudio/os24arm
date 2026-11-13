@@ -110,7 +110,11 @@ extern int       usbmouse_poll(usbmouse_ev_t *ev) __attribute__((weak));
 #define BRK_LIMIT       0x63000000UL
 #define STACK_BOTTOM    0x63000000UL           /* 16 MB stack, demand paged */
 #define STACK_EAGER     (64UL * 1024)          /* mapped at exec (argv, envp, auxv) */
-#define MMAP_BASE       MMU_HI_BASE
+/* Programs too big for the user window (clang, lld: tens of MB) are linked
+ * at the bottom of the high region instead; mmap() hands out what's above. */
+#define IMAGE_HI_BASE   MMU_HI_BASE
+#define IMAGE_HI_SIZE   (512UL << 20)
+#define MMAP_BASE       (MMU_HI_BASE + IMAGE_HI_SIZE)
 #define MMAP_LIMIT      (MMU_HI_BASE + MMU_HI_SIZE)
 #define MAX_VMAS        256
 #define MAX_FDS         64
@@ -414,6 +418,7 @@ static int     next_pid = 1;
 static lx_u64  rng;
 static int     pollq;                  /* channel: "something may be ready" */
 static uint8_t page_prot[PAGES];       /* loader: combined segment permissions */
+static uint8_t page_prot_hi[IMAGE_HI_SIZE / PAGE];   /* ... of a program in the high region */
 static char    argbuf[ARGBUF];         /* execve: argv / envp copied in */
 
 static lx_u64 ticks(void) { lx_u64 v; __asm__ volatile("isb\n\tmrs %0, cntvct_el0" : "=r"(v)); return v; }
@@ -1940,8 +1945,23 @@ static int load_elf(mmu_as_t *as, const char *path, lx_u64 *entry, lx_u64 *phdr_
     *phnum = n;
     *phdr_va = 0;
 
+    /* Where it's linked: the user window (most programs, at 0x60000000), or
+     * - for big ones - the image area at the bottom of the high region
+     * (all its segments there). */
+    lx_u64 base = MMU_USER_BASE, limit = BRK_LIMIT;
+    uint8_t *prot_tab = page_prot;
+    for (uint32_t i = 0; i < n; i++) {
+        const uint8_t *p = ph + 56 * i;
+        if (*(uint32_t *)p == 1 && *(lx_u64 *)(p + 16) >= IMAGE_HI_BASE) {
+            base = IMAGE_HI_BASE;
+            limit = IMAGE_HI_BASE + IMAGE_HI_SIZE;
+            prot_tab = page_prot_hi;
+            break;
+        }
+    }
+
     /* Pass 1: check the segments and combine permissions per page. */
-    kmemset(page_prot, 0, sizeof page_prot);
+    kmemset(prot_tab, 0, base == MMU_USER_BASE ? sizeof page_prot : sizeof page_prot_hi);
     lx_u64 top = 0;
     for (uint32_t i = 0; i < n; i++) {
         const uint8_t *p = ph + 56 * i;
@@ -1950,18 +1970,18 @@ static int load_elf(mmu_as_t *as, const char *path, lx_u64 *entry, lx_u64 *phdr_
         lx_u64 fsz = *(lx_u64 *)(p + 32), msz = *(lx_u64 *)(p + 40);
         if (type == 6) *phdr_va = va;                    /* PT_PHDR */
         if (type != 1) continue;                         /* PT_LOAD */
-        if (va < MMU_USER_BASE || va + msz > BRK_LIMIT || va + msz < va || fsz > msz) {
-            kprintf("[PROG]   %s: segment 0x%x+0x%x outside 0x%x..0x%x - link it with "
-                    "--image-base=0x%x (userland/build-tests.sh)\n", path, (unsigned)va,
-                    (unsigned)msz, (unsigned)MMU_USER_BASE, (unsigned)BRK_LIMIT,
-                    (unsigned)MMU_USER_BASE);
+        if (va < base || va + msz > limit || va + msz < va || fsz > msz) {
+            kprintf("[PROG]   %s: segment %p+0x%x outside %p..%p - link it with "
+                    "--image-base=0x%x (or, if it's big, %p)\n", path, (void *)va,
+                    (unsigned)msz, (void *)base, (void *)limit,
+                    (unsigned)MMU_USER_BASE, (void *)IMAGE_HI_BASE);
             goto out;
         }
         if (off == 0 && !*phdr_va) *phdr_va = va + phoff;
         int prot = (fl & 4 ? MMU_PROT_READ : 0) | (fl & 2 ? MMU_PROT_WRITE : 0) |
                    (fl & 1 ? MMU_PROT_EXEC : 0);
         for (lx_u64 a = va & ~(PAGE - 1); a < va + msz; a += PAGE) {
-            uint8_t *pp = &page_prot[(a - MMU_USER_BASE) / PAGE];
+            uint8_t *pp = &prot_tab[(a - base) / PAGE];
             *pp |= (uint8_t)prot;
             if ((*pp & MMU_PROT_WRITE) && (*pp & MMU_PROT_EXEC)) {
                 kprintf("[PROG]   %s: a page would be writable and executable - refusing\n", path);
@@ -1974,8 +1994,8 @@ static int load_elf(mmu_as_t *as, const char *path, lx_u64 *entry, lx_u64 *phdr_
 
     /* Pass 2: map writable (fresh, zeroed frames), copy file contents. */
     err = -ENOMEM;
-    for (lx_u64 a = MMU_USER_BASE; a < top; a += PAGE)
-        if (page_prot[(a - MMU_USER_BASE) / PAGE] &&
+    for (lx_u64 a = base; a < top; a += PAGE)
+        if (prot_tab[(a - base) / PAGE] &&
             mmu_as_map(as, a, PAGE, MMU_PROT_READ | MMU_PROT_WRITE))
             goto out;
     err = -EIO;
@@ -1986,11 +2006,11 @@ static int load_elf(mmu_as_t *as, const char *path, lx_u64 *entry, lx_u64 *phdr_
         if (fsz && read_at(vfd, off, (void *)(uintptr_t)va, (uint32_t)fsz) != 0) goto out;
     }
     /* Pass 3: final permissions. */
-    for (lx_u64 a = MMU_USER_BASE; a < top; a += PAGE) {
-        uint8_t pp = page_prot[(a - MMU_USER_BASE) / PAGE];
+    for (lx_u64 a = base; a < top; a += PAGE) {
+        uint8_t pp = prot_tab[(a - base) / PAGE];
         if (pp) mmu_as_protect(as, a, PAGE, pp | MMU_PROT_READ);
     }
-    if (*entry < MMU_USER_BASE || *entry >= top) { err = -ENOEXEC; goto out; }
+    if (*entry < base || *entry >= top) { err = -ENOEXEC; goto out; }
     *top_out = top;
     err = 0;
 out:
