@@ -1,0 +1,15 @@
+lld: AArch64 programs link at 0x60000000 by default, where the OS/2 Warp
+ARM64 kernel runs them (its user window), not at 0x200000 - so clang needs
+no -Wl,--image-base (which would also make "clang" alone try to link).
+
+--- a/lld/ELF/Arch/AArch64.cpp	2026-11-13 20:40:52
++++ b/lld/ELF/Arch/AArch64.cpp	2026-11-13 20:40:52
+@@ -145,7 +145,7 @@
+ 
+   // Align to the 2 MiB page size (known as a superpage or huge page).
+   // FreeBSD automatically promotes 2 MiB-aligned allocations.
+-  defaultImageBase = 0x200000;
++  defaultImageBase = 0x60000000;  // OS/2 Warp ARM64: the kernel's user window
+ 
+   needsThunks = true;
+ }

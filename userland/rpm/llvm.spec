@@ -10,13 +10,14 @@
 
 Name:           llvm
 Version:        23.1.5
-Release:        1.os2warp
+Release:        3.os2warp
 Summary:        LLVM: the clang C/C++ compiler and the lld linker
 License:        Apache-2.0 WITH LLVM-exception
 URL:            https://llvm.org/
 Source0:        https://github.com/llvm/llvm-project/releases/download/llvmorg-%{version}/llvm-project-%{version}.src.tar.xz
 Source1:        llvm-launcher.c
 Source2:        aarch64-unknown-linux-musl.cfg
+Patch0:         llvm-23.1.5-os2warp-lld-base.patch
 BuildArch:      aarch64
 AutoReqProv:    no
 
@@ -38,7 +39,7 @@ OS/2 Warp ARM64: the headers (/usr/include/c++/v1) and static libraries
 clang++ links C++ programs with.
 
 %prep
-%autosetup -n llvm-project-%{version}.src
+%autosetup -p1 -n llvm-project-%{version}.src
 
 %build
 SRC="$PWD"
@@ -138,6 +139,8 @@ install -m 644 stage-rt/usr/lib/libc++.a stage-rt/usr/lib/libc++abi.a \
 %{_bindir}/*
 /usr/lib/clang
 %config(noreplace) /etc/clang/aarch64-unknown-linux-musl.cfg
+# clang links every program with libunwind (its default unwinder), C too
+%{_libdir}/libunwind.a
 
 %files -n libcxx-devel
 %license libcxx/LICENSE.TXT
@@ -145,9 +148,13 @@ install -m 644 stage-rt/usr/lib/libc++.a stage-rt/usr/lib/libc++abi.a \
 %{_libdir}/libc++.a
 %{_libdir}/libc++abi.a
 %{_libdir}/libc++experimental.a
-%{_libdir}/libunwind.a
 
 %changelog
+* Fri Nov 13 2026 OS/2 Warp ARM64 build - 23.1.5-3.os2warp
+- libunwind.a in llvm, not libcxx-devel: every program links it.
+* Fri Nov 13 2026 OS/2 Warp ARM64 build - 23.1.5-2.os2warp
+- lld links at 0x60000000 by default (a patch): the config file is just
+  -static, and "clang" alone no longer tries to link.
 * Fri Nov 13 2026 OS/2 Warp ARM64 build - 23.1.5-1.os2warp
 - First package: clang + lld 23.1.5 (one multi-call program, launchers),
   compiler-rt, and libcxx-devel (libc++, libc++abi, libunwind).
