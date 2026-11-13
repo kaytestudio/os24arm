@@ -154,27 +154,25 @@ platform-specific are new code.
    Try it: `scripts/run-vm.sh --wayland --hvf` (`--hvf`: native speed
    with Apple's Hypervisor.framework; without it QEMU emulates (TCG),
    which the kernel's own hypervisor needs, and the desktop is slow),
-   `MOUNT usb0p1 \h`, then
-   `RUNELF \h\busybox sh /h/desktop.sh [layout [variant]]` (e.g. `pt`,
-   `de nodeadkeys`; default `us`) - foot in cage on the virtio-gpu
-   display, a busybox shell in it; `exit` ends the session. Or
-   `RUNELF \h\busybox sh /h/dwl.sh [layout]` (or just `DESKTOP [layout]`,
-   which mounts the stick first) - a tiling desktop:
-   Alt+P the launcher (terminal, vi, ...), Alt+Shift+Enter another
-   terminal, Alt+J/K moves the focus,
-   Alt+Shift+C closes a window, Alt+Shift+Q quits (see `dwl.sh`).
-   Alt+O (or "OS/2 Command Prompt" in the launcher) opens the kernel's
-   own OS/2 shell in a foot window: `userland/apps/os2cmd.c` relays to
-   `/dev/os2cmd`, which runs each line in the shell of
-   `kernel/src/main.c` - DIR, COPY, MOUNT, USB, MEM, ... on the same
-   mounts as the serial console's; each window starts in its current
-   directory and then keeps its own, like an OS/2 session. (RUN, RUNELF,
-   DEBUG, BASIC, UMOUNT and the like stay on the serial console.)
-   Names the OS/2 shell doesn't know run as Linux programs there, in its
+   then `DESKTOP [layout [variant]]` (e.g. `pt`, `de nodeadkeys`; default
+   `us`): it mounts the stick at `\h` and starts dwl (`dwl.sh`). The user
+   sees an OS/2 system: every terminal is an OS/2 Command Prompt (foot's
+   `shell=` is `/h/os2cmd`; the first window, Alt+Shift+Enter and Alt+O
+   open one), Alt+P lists OS/2 Command Prompt, System Monitor and Text
+   Editor, and the compositor's and terminals' own output goes to
+   `/tmp/desktop.log` rather than the console. Alt+J/K moves the focus,
+   Alt+Shift+C closes a window, Alt+Shift+Q goes back to the console.
+   (`RUNELF \h\busybox sh /h/desktop.sh` instead: one prompt in cage.)
+
+   `userland/apps/os2cmd.c` relays a terminal to `/dev/os2cmd`, which runs
+   each line in the shell of `kernel/src/main.c` - DIR, COPY, MOUNT, USB,
+   MEM, ... on the same mounts as the serial console's; each window starts
+   in its current directory and then keeps its own, like an OS/2 session.
+   (RUN, RUNELF, DEBUG, BASIC, UMOUNT and the like stay on the serial
+   console.) Names the OS/2 shell doesn't know run as programs, in its
    current directory (`ls -l`, `\h\cat x`, `vi`: files, `$PATH`, busybox
-   applets); `START prog` opens one in a new terminal window, `START /PM
-   prog` a graphical one. The other way round, `/h/os2cmd dir \h` in a
-   Linux shell runs one OS/2 command and prints its output.
+   applets); `START prog` opens one in a new window, `START /PM prog` a
+   graphical one. `/h/os2cmd dir \h` runs one OS/2 command from a script.
 
    Keyboard layouts: `build-libs.sh` stages xkeyboard-config 2.46's data
    and libX11's UTF-8 Compose table (dead keys, Multi_key); the stick has

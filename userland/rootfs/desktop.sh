@@ -1,8 +1,6 @@
-# desktop.sh - one terminal on the display: the cage kiosk compositor
-# running foot, with a busybox shell in it. From the OS/2 shell:
-#   MOUNT usb0p1 \h
-#   RUNELF \h\busybox sh /h/desktop.sh [layout [variant]]
-# e.g. desktop.sh pt, desktop.sh de nodeadkeys (default: us).
-# Exit the shell in foot to come back. (dwl.sh: several windows.)
+# desktop.sh - one OS/2 Command Prompt filling the display: the cage
+# kiosk compositor running foot. RUNELF \h\busybox sh /h/desktop.sh
+# [layout [variant]], e.g. desktop.sh pt, desktop.sh de nodeadkeys
+# (default: us). EXIT in the prompt comes back. (dwl.sh: several windows.)
 . /h/env.sh "$@"
-exec /h/cage -- /h/foot -c /h/foot.ini
+exec /h/cage -- /h/foot -c /h/foot.ini > /tmp/desktop.log 2>&1

@@ -17,10 +17,10 @@
 #   --wayland    a display window (virtio-gpu), USB keyboard + tablet, and a
 #                USB stick (HPFS, build/userland/stick.img, (re)made by
 #                userland/make-stick.sh when the programs change) with the
-#                Linux userland. At the prompt, DESKTOP [layout] starts the
-#                tiling desktop (it mounts the stick at \h); or MOUNT usb0p1 \h,
-#                RUNELF \h\busybox sh /h/desktop.sh   (foot terminal in cage)
-#                RUNELF \h\busybox sh /h/dwl.sh       (tiling: Alt+Shift+Enter)
+#                desktop programs. At the prompt, DESKTOP [layout] starts the
+#                desktop (it mounts the stick at \h): OS/2 Command Prompt
+#                windows (Alt+Shift+Enter), Alt+P for programs, Alt+Shift+Q
+#                back. For development: MOUNT usb0p1 \h, then
 #                RUNELF \h\busybox sh                 (a shell on the console)
 #                RUNELF \h\cage /h/wlclient           (Esc ends it)
 #   --hvf        run natively with Apple's Hypervisor.framework (-accel hvf

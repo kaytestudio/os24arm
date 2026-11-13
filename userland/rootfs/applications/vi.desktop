@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
-Name=Text editor (vi)
-Comment=busybox vi, in a terminal
+Name=Text Editor
+Comment=A vi editor
 Exec=/h/busybox vi
 Terminal=true
 Categories=Utility;TextEditor;

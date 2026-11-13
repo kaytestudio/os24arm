@@ -425,7 +425,7 @@ static void check_kstack(proc_t *p)
     if (!p || !p->kstack) return;
     for (int k = 0; k < 8; k++)
         if (((lx_u64 *)p->kstack)[k] != KSTACK_CANARY) {
-            kprintf("[LINUX]  FATAL: kernel stack overflow in thread %d\n", p->pid);
+            kprintf("[PROG]   FATAL: kernel stack overflow in thread %d\n", p->pid);
             for (;;) { }
         }
 }
@@ -1897,10 +1897,10 @@ static int load_elf(mmu_as_t *as, const char *path, lx_u64 *entry, lx_u64 *phdr_
     if (read_at(vfd, 0, eh, 64) != 0 || eh[0] != 0x7F || eh[1] != 'E' || eh[2] != 'L' ||
         eh[3] != 'F') goto out;
     if (eh[4] != 2 || eh[5] != 1 || *(uint16_t *)(eh + 18) != 183) {
-        kprintf("[LINUX]  %s: not a 64-bit little-endian AArch64 ELF\n", path); goto out;
+        kprintf("[PROG]   %s: not a 64-bit little-endian AArch64 ELF\n", path); goto out;
     }
     if (*(uint16_t *)(eh + 16) != 2) {
-        kprintf("[LINUX]  %s: not a static executable (ET_EXEC); dynamic linking comes later\n",
+        kprintf("[PROG]   %s: not a static executable (ET_EXEC); dynamic linking comes later\n",
                 path);
         goto out;
     }
@@ -1908,7 +1908,7 @@ static int load_elf(mmu_as_t *as, const char *path, lx_u64 *entry, lx_u64 *phdr_
     lx_u64 phoff = *(lx_u64 *)(eh + 32);
     uint16_t phent = *(uint16_t *)(eh + 54), n = *(uint16_t *)(eh + 56);
     if (phent != 56 || n == 0 || n > MAX_PHDRS || read_at(vfd, phoff, ph, n * 56u) != 0) {
-        kprintf("[LINUX]  %s: bad program headers\n", path); goto out;
+        kprintf("[PROG]   %s: bad program headers\n", path); goto out;
     }
     *phnum = n;
     *phdr_va = 0;
@@ -1924,7 +1924,7 @@ static int load_elf(mmu_as_t *as, const char *path, lx_u64 *entry, lx_u64 *phdr_
         if (type == 6) *phdr_va = va;                    /* PT_PHDR */
         if (type != 1) continue;                         /* PT_LOAD */
         if (va < MMU_USER_BASE || va + msz > BRK_LIMIT || va + msz < va || fsz > msz) {
-            kprintf("[LINUX]  %s: segment 0x%x+0x%x outside 0x%x..0x%x - link it with "
+            kprintf("[PROG]   %s: segment 0x%x+0x%x outside 0x%x..0x%x - link it with "
                     "--image-base=0x%x (userland/build-tests.sh)\n", path, (unsigned)va,
                     (unsigned)msz, (unsigned)MMU_USER_BASE, (unsigned)BRK_LIMIT,
                     (unsigned)MMU_USER_BASE);
@@ -1937,7 +1937,7 @@ static int load_elf(mmu_as_t *as, const char *path, lx_u64 *entry, lx_u64 *phdr_
             uint8_t *pp = &page_prot[(a - MMU_USER_BASE) / PAGE];
             *pp |= (uint8_t)prot;
             if ((*pp & MMU_PROT_WRITE) && (*pp & MMU_PROT_EXEC)) {
-                kprintf("[LINUX]  %s: a page would be writable and executable - refusing\n", path);
+                kprintf("[PROG]   %s: a page would be writable and executable - refusing\n", path);
                 goto out;
             }
         }
@@ -2607,7 +2607,7 @@ static int deliver_signal(linux_tf_t *tf)
         sigact_t act = *sa;
         if (sa->flags & SA_RESETHAND) kmemset(sa, 0, sizeof *sa);
         if (setup_frame(tf, sig, &act)) {
-            kprintf("[LINUX]  pid %d: no room on the stack for a signal frame - killed\n", cur->pid);
+            kprintf("[PROG]   pid %d: no room on the stack for a signal frame - killed\n", cur->pid);
             do_exit_group(SIGSEGV);
         }
         return 1;
@@ -5043,7 +5043,7 @@ static s64 linux_syscall(linux_tf_t *tf)
                                      ((s64 *)(uintptr_t)a3)[0] * 1000 +
                                      ((s64 *)(uintptr_t)a3)[1] / 1000000 : 0, a4, a5);
     default:
-        kprintf("[LINUX]  pid %d: unimplemented syscall %u (pc 0x%x)\n", cur->pid,
+        kprintf("[PROG]   pid %d: unimplemented syscall %u (pc 0x%x)\n", cur->pid,
                 (unsigned)tf->x[8], (unsigned)(tf->elr & 0xFFFFFFFF));
         return -ENOSYS;
     }
@@ -5128,7 +5128,7 @@ void linux_el0_trap(linux_tf_t *tf)
     const char *what = ec == 0x24 ? "data abort" : ec == 0x20 ? "instruction abort" :
                        ec == 0x22 ? "PC alignment fault" : ec == 0x26 ? "SP alignment fault" :
                        ec == 0x00 ? "undefined instruction" : "exception";
-    kprintf("[LINUX]  pid %d: %s at pc %p, address %p (ESR 0x%x, lr %p, sp %p) - killed (%s)\n",
+    kprintf("[PROG]   pid %d: %s at pc %p, address %p (ESR 0x%x, lr %p, sp %p) - killed (%s)\n",
             cur->pid, what, (void *)(uintptr_t)tf->elr, (void *)(uintptr_t)far, (unsigned)esr,
             (void *)(uintptr_t)tf->x[30], (void *)(uintptr_t)tf->sp, ec == 0x00 ? "SIGILL" : "SIGSEGV");
     do_exit_group(ec == 0x00 ? SIGILL : SIGSEGV);
@@ -5137,9 +5137,12 @@ void linux_el0_trap(linux_tf_t *tf)
 /* ── Entry from the shell ─────────────────────────────────────────────── */
 int linux_run(const char *path, int argc, char **argv)
 {
-    if (cur) { kprintf("[LINUX]  already running\n"); return -1; }
+    if (cur) { kprintf("[PROG]   already running\n"); return -1; }
     static int tmp_mounted;
-    if (!tmp_mounted && vfs_mount("/tmp", &vfs_ramfs, 0) == VFS_OK)   /* over any /tmp below */
+    vfs_quiet = 1;
+    int tmp_ok = !tmp_mounted && vfs_mount("/tmp", &vfs_ramfs, 0) == VFS_OK;
+    vfs_quiet = 0;
+    if (tmp_ok)                                                         /* over any /tmp below */
         tmp_mounted = 1;
     static const char *const envp[] = { "PATH=/", "HOME=/", "TERM=vt100", "LANG=C",
                                         "XDG_RUNTIME_DIR=/tmp", 0 };
@@ -5164,7 +5167,7 @@ int linux_run(const char *path, int argc, char **argv)
     group_t *ig = init ? group_alloc() : 0;
     if (!ig) {
         if (init) proc_discard(init);
-        kprintf("[LINUX]  out of memory\n");
+        kprintf("[PROG]   out of memory\n");
         return -1;
     }
     init->g = ig;
@@ -5175,7 +5178,7 @@ int linux_run(const char *path, int argc, char **argv)
     int r = exec_image(path, argbuf, argc, envc, &as, &entry, &sp, &top);
     mmu_as_activate(0);
     if (r) {
-        kprintf("[LINUX]  %s: can't run (errno %d)\n", path, -r);
+        kprintf("[PROG]   %s: can't run (errno %d)\n", path, -r);
         proc_discard(init);
         ig->state = G_FREE;
         next_pid = 1;
@@ -5245,14 +5248,14 @@ int linux_run(const char *path, int argc, char **argv)
     mmu_as_activate(0);
     next_pid = 1;
     for (int i = 0; i < MAX_FILES; i++)
-        if (files[i].refs) { kprintf("[LINUX]  leaked open file %d\n", i); files[i].refs = 1; file_put(&files[i]); }
+        if (files[i].refs) { kprintf("[PROG]   leaked open file %d\n", i); files[i].refs = 1; file_put(&files[i]); }
     for (int i = 0; i < MAX_SOCKS; i++)
-        if (socks[i].used) { kprintf("[LINUX]  leaked socket %d\n", i); sock_free(&socks[i]); }
+        if (socks[i].used) { kprintf("[PROG]   leaked socket %d\n", i); sock_free(&socks[i]); }
     for (int i = 0; i < MAX_SHM; i++)                   /* shared memory nobody unlinked */
         if (shm_names[i].m) shm_unlink_index(i);
     frames_kept += (long)ramfs_frames() - (long)ram0;   /* files in /tmp stay */
     if ((long)mmu_frames_free_count() + frames_kept != (long)free0)
-        kprintf("[LINUX]  warning: %d page frames not returned\n",
+        kprintf("[PROG]   warning: %d page frames not returned\n",
                 (int)((long)free0 - frames_kept - (long)mmu_frames_free_count()));
     return (status & 0x7F) ? 128 + (status & 0x7F) : (status >> 8) & 0xFF;
 }

@@ -114,6 +114,9 @@ void vfs_init(void)
 /* Slots never move once used: open files and directories keep pointers to
  * their mount (files[].mnt, dirs[].mnt), so unmounting frees a slot in
  * place and mounting reuses the first free one. */
+/* Set around mounts the user didn't ask for (the programs' /tmp). */
+int vfs_quiet;
+
 int vfs_mount(const char *mountpoint, vfs_fs_t *fs, void *fs_priv)
 {
     int slot = -1;
@@ -139,7 +142,7 @@ int vfs_mount(const char *mountpoint, vfs_fs_t *fs, void *fs_priv)
     }
 
     if (slot == mount_count) mount_count++;
-    kprintf("[VFS]  Mounted '%s' as '%s'\n", fs->name, mountpoint);
+    if (!vfs_quiet) kprintf("[VFS]  Mounted '%s' as '%s'\n", fs->name, mountpoint);
     return VFS_OK;
 }
 

@@ -261,7 +261,7 @@ static void start(char **argv, int argc)
     int k = 0;
     static char foot[512];
     if (!pm) {                                        /* foot -c foot.ini path [name] args */
-        if (!find_program("foot", foot, sizeof foot)) { puts("\nSTART: no terminal (foot)"); return; }
+        if (!find_program("foot", foot, sizeof foot)) { puts("\nSTART: no terminal program on this system"); return; }
         exe = foot;
         full[k++] = foot;
         if (is_file("/h/foot.ini")) { full[k++] = "-c"; full[k++] = "/h/foot.ini"; }

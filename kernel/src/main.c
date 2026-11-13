@@ -299,9 +299,8 @@ static void cmd_help(void)
     uart_puts("              /HISTORY, /MACROS, name=text)\r\n");
     uart_puts("  MEM       - Display memory information\r\n");
     uart_puts("  USB       - List USB devices (USBD)\r\n");
-    uart_puts("  RUNELF    - RUNELF \\path\\prog [args]: run a static Linux AArch64 program\r\n");
     uart_puts("  MOUNT     - MOUNT dev \\DIR: mount an HPFS/FAT volume (e.g. usb0p1)\r\n");
-    uart_puts("  DESKTOP   - The Wayland desktop from the USB stick [layout [variant]]\r\n");
+    uart_puts("  DESKTOP   - The graphical desktop [keyboard layout [variant]]\r\n");
     uart_puts("  UMOUNT    - UMOUNT \\DIR: unmount it\r\n");
     uart_puts("  IFS       - List loaded filesystem drivers\r\n");
     uart_puts("  RUN       - Load and run an OS/2 LX .EXE (e.g. RUN CMD.EXE)\r\n");
@@ -581,10 +580,10 @@ static void cmd_desktop(int argc, char **argv)
     int ac = 3;
     for (int i = 1; i < argc && ac < 5; i++) av[ac++] = argv[i];
     for (char *c = av[3]; c && *c; c++) if (*c >= 'A' && *c <= 'Z') *c += 32;   /* layouts: lower case */
-    kprintf("\nStarting the desktop - Alt+O: OS/2 prompt, Alt+P: launcher, "
-            "Alt+Shift+Enter: terminal, Alt+Shift+Q: back here\n");
+    kprintf("\nStarting the desktop - Alt+Shift+Enter or Alt+O: OS/2 Command Prompt,\n"
+            "Alt+P: programs, Alt+Shift+Q: back to this console\n");
     int status = linux_run("/h/busybox", ac, av);
-    if (status != 0) kprintf("[LINUX]  the desktop exited with status %d\n", status);
+    if (status != 0) kprintf("\nThe desktop ended unexpectedly (status %d)\n", status);
 }
 
 /* ── Command dispatcher ──────────────────────────────────────────────────── */
@@ -625,7 +624,7 @@ static void execute_command(char *cmdline)
         argv[1] = path;
         kprintf("\n");
         int st = linux_run(path, argc - 1, argv + 1);
-        if (st >= 0) kprintf("[LINUX]  %s exited with status %d\n", path, st);
+        if (st >= 0) kprintf("[PROG]   %s exited with status %d\n", path, st);
     }
     else if (my_strcmp(argv[0], "MOUNT") == 0) {
         cmd_mount(argc, argv);
@@ -707,10 +706,8 @@ void os2_session_leave(char *cwd)
 
 void os2_shell_banner(void)
 {
-    uart_puts("\r\nOS/2 Command Prompt - the kernel's shell\r\n");
-    uart_puts("Type HELP for the commands, EXIT to close the window.\r\n");
-    uart_puts("Linux programs run too (busybox ls, \\h\\wlclient, ...);\r\n");
-    uart_puts("START prog opens one in a new window, START /PM a graphical one.\r\n\r\n");
+    uart_puts("\r\nOS/2 Command Prompt\r\n");
+    uart_puts("Type HELP for the commands, EXIT to close the window.\r\n\r\n");
 }
 
 void os2_shell_prompt(void)
@@ -754,9 +751,9 @@ void os2_shell_line(const char *line)
             else if (my_strcmp(word, "EXIT") == 0)
                 uart_puts(": close the window (or press Ctrl+D)\r\n");
             else if (my_strcmp(word, "DESKTOP") == 0)
-                uart_puts(": this is the desktop - Alt+Shift+Q goes back to the kernel shell\r\n");
+                uart_puts(": the desktop is running - Alt+Shift+Q closes it\r\n");
             else
-                uart_puts(" can only be used in the kernel's own shell (serial console)\r\n");
+                uart_puts(" is only available at the system console\r\n");
             return;
         }
     execute_command(buffer);
@@ -843,7 +840,7 @@ static void kernel_shell(void)
     uart_puts("Type HELP for available commands\r\n");
     uart_puts("Type IFS to list loaded filesystem drivers\r\n");
     uart_puts("Type BASIC to start BASIC interpreter\r\n");
-    uart_puts("Type DESKTOP to start the Wayland desktop (USB stick, display)\r\n");
+    uart_puts("Type DESKTOP to start the graphical desktop\r\n");
     uart_puts("Type DOSKEY to enable command history/macros (see HELP)\r\n");
     uart_puts("\r\n");
 
