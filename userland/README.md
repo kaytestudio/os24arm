@@ -24,6 +24,26 @@ a standard `aarch64-linux-musl` cross toolchain (clang + lld + a musl
 sysroot built here), and only the parts that are genuinely hardware- or
 platform-specific are new code.
 
+
+7. **UNIXROOT packages, as RPMs** *(binutils installs, assembles and links)*.
+   UNIXROOT is the USB stick, D: (CONFIG.SYS `SET UNIXROOT=D:`): the Linux
+   layer maps /usr, /etc, /bin, /var, /home, /lib, /opt, /sbin, /emx and
+   kLIBC's /@unixroot/... onto it, so what's installed there stays.
+   - `userland/build-binutils.sh`: GNU binutils 2.44 (GPG-checked tarball),
+     static, native aarch64-linux-musl, under /usr - ld's default load
+     address patched to the kernel's user window (0x60000000), so
+     `as x.s -o x.o; ld x.o -o x` makes a program this system runs.
+   - `userland/build-rpms.sh`: `userland/rpm/<name>.spec` -> RPMs with the
+     Mac's rpmbuild (format 4, xz payload, linux/aarch64, no Mac-side strip
+     or automatic dependencies - what busybox's rpm reads); make-stick.sh
+     puts them in \OS2\RPMS.
+   - On the system, `rpm` (userland/rootfs/rpm, busybox's rpm underneath,
+     a database in /var/lib/rpm): `rpm -i binutils` (a file, or a name from
+     \OS2\RPMS), `-U`, `-e`, `-q`, `-qa`, `-qi`, `-ql`, `-qp[il]`.
+   - From the OS/2 prompt, arguments that are OS/2 paths (D:\x.s, src\x.c)
+     reach programs as the paths they can open; `#!` scripts run (an
+     interpreter that isn't there is busybox's applet of that name).
+
 ## Stages
 
 1. **EL0 + Linux syscall ABI + static ELF loader** *(done)*.

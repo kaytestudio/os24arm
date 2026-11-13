@@ -205,7 +205,15 @@ static int resolve(char **argv, int argc, char *path, size_t size, char **run, i
         run[k++] = argv[0];                            /* busybox picks the applet by argv[0] */
     }
     /* path is what to execve; run[] its argv */
-    for (int i = 1; i < argc && k < max - 1; i++) run[k++] = argv[i];
+    /* Arguments that are OS/2 paths ("D:\\x.s", "src\\x.c", "\\x") become
+     * the paths the program can open; others are passed as typed. */
+    static char conv[64][512];
+    for (int i = 1; i < argc && k < max - 1; i++) {
+        const char *a = argv[i];
+        int dos = (((a[0] | 0x20) >= 'a' && (a[0] | 0x20) <= 'z') && a[1] == ':') || strchr(a, '\\');
+        if (dos && i < 64 && os2_resolve(a, conv[i], sizeof conv[i]) == 0) run[k++] = conv[i];
+        else run[k++] = argv[i];
+    }
     run[k] = NULL;
     return 1;
 }

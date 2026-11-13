@@ -1821,8 +1821,12 @@ static s64 sys_mmap(lx_u64 addr, lx_u64 len, lx_u64 prot, lx_u64 flags, s64 fd, 
             lx_u64 pos = off;
             got = mem_rw(f->mem, &pos, (uint8_t *)(uintptr_t)at, len, 0);
         } else {
+            /* through the descriptor - its file offset must not move
+             * (busybox rpm maps the headers, then reads on) */
+            int here = vfs_seek(f->vfd, 0, SEEK_CUR);
             got = vfs_seek(f->vfd, (int32_t)off, SEEK_SET) < 0 ? -EINVAL
                   : vfs_read(f->vfd, (void *)(uintptr_t)at, (uint32_t)len);
+            if (here >= 0) vfs_seek(f->vfd, here, SEEK_SET);
             if (got < 0 && got != -EINVAL) got = verr((int)got);
         }
         if (got < 0) { mmu_as_unmap(g->as, at, size); return got; }
@@ -4749,6 +4753,7 @@ static s64 linux_syscall(linux_tf_t *tf)
         if (!r) r = user_path((int)a2, a3, n);
         if (r) return r;
         vfs_stat_t so, sn;
+        if (vfs_mount_index(o) != vfs_mount_index(n)) return -18;   /* EXDEV: mv copies */
         int have_new = vfs_stat(n, &sn) == VFS_OK;
         if (tf->x[8] == 276 && (a4 & 1) && have_new) return -EEXIST;   /* RENAME_NOREPLACE */
         r = vfs_rename(o, n);

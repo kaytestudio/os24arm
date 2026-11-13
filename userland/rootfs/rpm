@@ -1,0 +1,87 @@
+#!/bin/sh
+# rpm - the package manager for UNIXROOT (D:): busybox's rpm unpacks the
+# packages; this keeps the database, in /var/lib/rpm/<name>/ (nevr: the
+# installed name-version-release, files: what it installed, info: its
+# description), so packages can be listed, upgraded and removed.
+#
+#   rpm -i PACKAGE...     install (a file, or a name: \OS2\RPMS\<name>-*.rpm)
+#   rpm -U PACKAGE...     upgrade, or install
+#   rpm -e NAME...        remove
+#   rpm -q NAME...        is it installed?      rpm -qa   every package
+#   rpm -qi NAME          its description       rpm -ql NAME   its files
+#   rpm -qp[il] FILE      a package file (not installed)
+# Packages are made on the Mac by userland/build-rpms.sh.
+BB=/h/OS2/busybox
+DB=/var/lib/rpm
+REPO=/h/OS2/RPMS
+
+die() { echo "rpm: $*" >&2; exit 1; }
+
+# a package argument: a file, or a name found in the system's RPMS folder
+pkgfile() {
+    if [ -f "$1" ]; then echo "$1"; return; fi
+    for f in "$REPO/$1"-[0-9]*.rpm "$REPO/$1"; do
+        [ -f "$f" ] && { echo "$f"; return; }
+    done
+    die "$1: no such package file (and none in $REPO)"
+}
+
+pkgname() { $BB rpm -qpi "$1" | sed -n 's/^Name *: //p'; }
+
+install_one() {   # file, upgrade(0/1)
+    f="$(pkgfile "$1")" || exit 1
+    name="$(pkgname "$f")"
+    [ -n "$name" ] || die "$1: not a package"
+    new="$($BB rpm -qp "$f")"
+    old=""
+    if [ -d "$DB/$name" ]; then
+        old="$(cat "$DB/$name/nevr")"
+        [ "$2" = 1 ] || die "package $old is already installed (rpm -U upgrades)"
+        [ "$old" = "$new" ] && { echo "$new: already installed"; return; }
+    fi
+    $BB rpm -qpl "$f" > "$DB/.files.$$" || die "$f: can't read the file list"
+    $BB rpm -i "$f" || { rm -f "$DB/.files.$$"; die "$f: installation failed"; }
+    if [ -n "$old" ]; then          # upgrade: what the old one had and the new one hasn't
+        grep -vxF -f "$DB/.files.$$" "$DB/$name/files" | while read -r p; do
+            [ -f "$p" ] && rm -f "$p"
+        done
+    fi
+    mkdir -p "$DB/$name"
+    mv "$DB/.files.$$" "$DB/$name/files"
+    echo "$new" > "$DB/$name/nevr"
+    $BB rpm -qpi "$f" > "$DB/$name/info"
+    if [ -n "$old" ]; then echo "$old upgraded to $new"; else echo "$new installed"; fi
+}
+
+erase_one() {
+    [ -d "$DB/$1" ] || die "package $1 is not installed"
+    nevr="$(cat "$DB/$1/nevr")"
+    while read -r p; do
+        if [ -f "$p" ]; then rm -f "$p"; fi
+    done < "$DB/$1/files"
+    # its directories, deepest first, when they're empty now
+    sort -r "$DB/$1/files" | while read -r p; do
+        [ -d "$p" ] && rmdir "$p" 2>/dev/null
+    done
+    rm -rf "$DB/$1"
+    echo "$nevr removed"
+}
+
+[ $# -ge 1 ] || { sed -n '9,16p' "$0" | cut -c3-; exit 1; }
+mkdir -p "$DB" 2>/dev/null
+op="$1"; shift
+case "$op" in
+    -i|-ivh|-iv) [ $# -ge 1 ] || die "-i: which package?"; for p; do install_one "$p" 0; done ;;
+    -U|-Uvh|-Uv) [ $# -ge 1 ] || die "-U: which package?"; for p; do install_one "$p" 1; done ;;
+    -e)          [ $# -ge 1 ] || die "-e: which package?"; for p; do erase_one "$p"; done ;;
+    -qa)         for d in "$DB"/*/; do [ -f "$d/nevr" ] && cat "$d/nevr"; done | sort ;;
+    -q)          rc=0; for p; do
+                     if [ -f "$DB/$p/nevr" ]; then cat "$DB/$p/nevr"
+                     else echo "package $p is not installed"; rc=1; fi
+                 done; exit $rc ;;
+    -qi)         for p; do [ -f "$DB/$p/info" ] || die "package $p is not installed"; cat "$DB/$p/info"; done ;;
+    -ql)         for p; do [ -f "$DB/$p/files" ] || die "package $p is not installed"; cat "$DB/$p/files"; done ;;
+    -qp|-qpi|-qpl|-qpc|-qpd|-qip|-qlp)
+                 for p; do $BB rpm "$op" "$(pkgfile "$p")"; done ;;
+    *)           die "unknown option $op (rpm alone lists them)" ;;
+esac
