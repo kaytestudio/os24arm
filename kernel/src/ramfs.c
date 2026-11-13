@@ -101,6 +101,7 @@ static void init(void)
     inited = 1;
     nodes[0].used = 1;
     nodes[0].is_dir = 1;
+    touch(&nodes[0]);                                  /* the root's date: when first mounted */
 }
 
 /* path relative to the mount ("/", "/a/b") -> node, or -1; *parent and
