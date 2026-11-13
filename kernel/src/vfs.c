@@ -317,3 +317,25 @@ int vfs_closedir(int dfd)
     dirs[di].used = false;
     return r;
 }
+void vfs_unix_to_dos(unsigned long long t, uint16_t *date, uint16_t *time)
+{
+    *date = *time = 0;
+    unsigned long long days = t / 86400, secs = t % 86400;
+    uint32_t y = 1970;
+    for (;;) {
+        uint32_t yd = (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) ? 366 : 365;
+        if (days < yd) break;
+        days -= yd;
+        if (++y > 2107) return;
+    }
+    if (y < 1980) return;
+    static const uint8_t mdays[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    uint32_t mo = 0;
+    for (; mo < 11; mo++) {
+        uint32_t md = mdays[mo] + (mo == 1 && (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)));
+        if (days < md) break;
+        days -= md;
+    }
+    *date = (uint16_t)(((y - 1980) << 9) | ((mo + 1) << 5) | (days + 1));
+    *time = (uint16_t)(((secs / 3600) << 11) | (((secs / 60) % 60) << 5) | ((secs % 60) / 2));
+}

@@ -378,6 +378,8 @@ static void fill_findbuf(FILEFINDBUF *buf, const vfs_stat_t *st, const char *nam
     buf->file_size = st->size;
     buf->alloc_size = st->size;
     buf->attributes = vfs_to_os2_attrs(st->attrs);
+    buf->write_date = st->mdate;
+    buf->write_time = st->mtime;
 
     uint32_t n = (uint32_t)strlen(name);
     if (n > sizeof(buf->name) - 1) n = sizeof(buf->name) - 1;
@@ -505,6 +507,9 @@ APIRET DosDelete(const char *filename)
     os2_api_ensure_init();
     char resolved[VFS_PATH_MAX];
     DosResolvePath(filename, resolved, sizeof(resolved));
+    /* DEL removes files only; directories go with RD (DosDeleteDir). */
+    vfs_stat_t st;
+    if (vfs_stat(resolved, &st) == VFS_OK && (st.attrs & VFS_ATTR_DIR)) return ERROR_ACCESS_DENIED;
     int r = vfs_unlink(resolved);
     return vfs_to_os2_error(r);
 }
@@ -531,12 +536,16 @@ APIRET DosCreateDir(const char *dirname)
 
 APIRET DosDeleteDir(const char *dirname)
 {
-    /* The VFS has no dedicated rmdir op; unlink is the closest available
-     * primitive, and every current filesystem driver is read-only anyway. */
+    /* The VFS has no separate rmdir: unlink removes an empty directory
+     * (and answers VFS_ERR_BUSY for one that isn't). */
     os2_api_ensure_init();
     char resolved[VFS_PATH_MAX];
     DosResolvePath(dirname, resolved, sizeof(resolved));
-    int r = vfs_unlink(resolved);
+    vfs_stat_t st;
+    int r = vfs_stat(resolved, &st);
+    if (r != VFS_OK) return vfs_to_os2_error(r);
+    if (!(st.attrs & VFS_ATTR_DIR)) return ERROR_PATH_NOT_FOUND;
+    r = vfs_unlink(resolved);
     return vfs_to_os2_error(r);
 }
 

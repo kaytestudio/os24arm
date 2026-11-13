@@ -30,11 +30,31 @@
 #include "vfs.h"
 #include "kio.h"
 
+
 /* ── Byte-order helpers (all FAT structures are little-endian) ────────────── */
 
 static uint16_t le16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1]<<8)); }
 static uint32_t le32(const uint8_t *p) { return (uint32_t)(p[0]|(p[1]<<8)|(p[2]<<16)|(p[3]<<24)); }
 static void put_le16(uint8_t *p, uint16_t v) { p[0]=v&0xFF; p[1]=(v>>8)&0xFF; }
+
+/* Wall clock (kernel/src/main.c: the PL031 RTC); absent in LX builds. */
+extern uint32_t kernel_time_seconds(void) __attribute__((weak));
+
+/* Sets a directory entry's write (and, if create, creation/access) time. */
+static void fat_stamp(fat32_dirent_t *de, int create)
+{
+    if (!kernel_time_seconds) return;
+    uint16_t d, t;
+    vfs_unix_to_dos(kernel_time_seconds(), &d, &t);
+    /* (packed: byte stores, since alignment checking is on) */
+    put_le16((uint8_t *)&de->wrt_date, d);
+    put_le16((uint8_t *)&de->wrt_time, t);
+    put_le16((uint8_t *)&de->acc_date, d);
+    if (create) {
+        put_le16((uint8_t *)&de->crt_date, d);
+        put_le16((uint8_t *)&de->crt_time, t);
+    }
+}
 static void put_le32(uint8_t *p, uint32_t v)
 {
     p[0]=v&0xFF; p[1]=(v>>8)&0xFF; p[2]=(v>>16)&0xFF; p[3]=(v>>24)&0xFF;
@@ -564,6 +584,7 @@ static int fat32_vfs_open(vfs_mount_t *mnt, const char *path, int flags, void **
         de.attr = FAT32_ATTR_ARCHIVE;
         set_dirent_cluster(m, &de, new_cluster);
         de.file_size = 0;
+        fat_stamp(&de, 1);
         fat32_write_dirent(m, slot_cluster, slot_idx, &de);
 
         dir_cluster = slot_cluster;
@@ -614,6 +635,10 @@ static int fat32_vfs_close(vfs_mount_t *mnt, void *fpriv)
     fat32_read_dirent(f->mnt, f->dir_cluster, f->dir_entry_idx, &de);
     de.file_size = f->file_size;
     set_dirent_cluster(f->mnt, &de, f->first_cluster);
+    if (f->written) {
+        fat_stamp(&de, 0);
+        de.attr |= FAT32_ATTR_ARCHIVE;
+    }
     fat32_write_dirent(f->mnt, f->dir_cluster, f->dir_entry_idx, &de);
     kmemset(f, 0, sizeof(*f));
     return VFS_OK;
@@ -673,6 +698,7 @@ static int fat32_vfs_write(vfs_mount_t *mnt, void *fpriv,
     (void)mnt;
     fat32_file_t *f = (fat32_file_t *)fpriv;
     fat32_mount_t *m = f->mnt;
+    f->written = 1;
 
     if (!(f->flags & (O_WRONLY | O_RDWR))) return VFS_EROFS;
 
@@ -873,6 +899,7 @@ static int fat32_vfs_mkdir(vfs_mount_t *mnt, const char *path)
     str_to_fat32_name(dname, de.name, de.ext);
     de.attr = FAT32_ATTR_DIR;
     set_dirent_cluster(m, &de, nc);
+    fat_stamp(&de, 1);
     fat32_write_dirent(m, slot_cluster, slot_idx, &de);
 
     /* Write . and .. entries */

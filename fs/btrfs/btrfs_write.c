@@ -665,6 +665,18 @@ static void split_path(const char *path, char *parent_out, uint32_t parent_out_s
     }
 }
 
+/* Wall clock (kernel/src/main.c: the PL031 RTC); absent in LX builds. */
+extern uint32_t kernel_time_seconds(void) __attribute__((weak));
+
+/* A btrfs_timespec (sec: le64, nsec: le32) for now; left alone without a clock. */
+static void stamp_now(uint8_t ts[12])
+{
+    if (!kernel_time_seconds) return;
+    uint64_t t = kernel_time_seconds();
+    for (int i = 0; i < 8; i++) ts[i] = (uint8_t)(t >> (8 * i));
+    for (int i = 8; i < 12; i++) ts[i] = 0;
+}
+
 static void build_inode_item(btrfs_inode_item_t *out, uint32_t mode, uint64_t size, uint32_t nlink, uint64_t generation)
 {
     memset(out, 0, sizeof(*out));
@@ -674,6 +686,10 @@ static void build_inode_item(btrfs_inode_item_t *out, uint32_t mode, uint64_t si
     out->nbytes = size;
     out->nlink = nlink;
     out->mode = mode;
+    stamp_now(out->atime);
+    stamp_now(out->ctime);
+    stamp_now(out->mtime);
+    stamp_now(out->otime);
 }
 
 static int insert_dir_entry(btrfs_mount_t *mnt, uint64_t parent_ino, const char *name, int name_len,
@@ -787,6 +803,8 @@ int btrfs_write_data(btrfs_file_t *f, const void *buf, uint32_t len, uint32_t *a
     f->inode.size += len;
     f->inode.nbytes += len;
     f->inode.generation = mnt->generation;
+    stamp_now(f->inode.mtime);
+    stamp_now(f->inode.ctime);
     btrfs_key_t ikey = {f->ino, BTRFS_INODE_ITEM_KEY, 0};
     r = btrfs_do_fs_op(mnt, ikey, &f->inode, sizeof(f->inode), BTW_UPDATE);
     if (r != VFS_OK) return r;
@@ -801,7 +819,14 @@ int btrfs_do_unlink(btrfs_mount_t *mnt, const char *path)
     uint64_t ino; btrfs_inode_item_t inode;
     int r = btrfs_resolve_path(mnt, path, &ino, &inode);
     if (r != VFS_OK) return r;
-    if ((inode.mode & BTRFS_S_IFMT) == BTRFS_S_IFDIR) return VFS_ERR_ISDIR;
+    if ((inode.mode & BTRFS_S_IFMT) == BTRFS_S_IFDIR) {
+        /* Directories go only when empty (RD); never the root. */
+        uint64_t pos = 0, child; uint8_t type;
+        if (ino == BTRFS_FIRST_FREE_OBJECTID || path[0] == '\0' || (path[0] == '/' && !path[1]))
+            return VFS_ERR_BUSY;
+        if (btrfs_dir_step(mnt, ino, &pos, NULL, 0, &child, &type, NULL, NULL) == VFS_OK)
+            return VFS_ERR_BUSY;
+    }
 
     char parent_path[VFS_PATH_MAX];
     const char *base; int base_len;

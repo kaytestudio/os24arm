@@ -121,6 +121,7 @@ typedef struct {
     uint32_t  dir_cluster;
     uint32_t  dir_entry_idx;
     int       flags;
+    int       written;         /* stamp the entry's write time on close */
 } fat32_file_t;
 
 /* Open dir private data */

@@ -787,6 +787,9 @@ static int btrfs_stat(vfs_mount_t *mnt, const char *path, vfs_stat_t *st)
 
     st->size = (inode.size > 0xFFFFFFFFu) ? 0xFFFFFFFFu : (uint32_t)inode.size;
     st->attrs = ((inode.mode & BTRFS_S_IFMT) == BTRFS_S_IFDIR) ? VFS_ATTR_DIR : 0;
+    uint64_t mt = 0;
+    for (int i = 7; i >= 0; i--) mt = (mt << 8) | inode.mtime[i];   /* btrfs_timespec.sec, LE */
+    vfs_unix_to_dos(mt, &st->mdate, &st->mtime);
     return VFS_OK;
 }
 

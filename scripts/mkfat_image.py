@@ -11,7 +11,9 @@ works the same on macOS and Linux.
 Usage: mkfat_image.py <output.img> <size_bytes> [--label NAME] [name:hostfile ...]
 Example: mkfat_image.py boot.img 4194304 --label BOOT BOOTINFO.TXT:bootinfo.txt
 """
+import os
 import struct
+import time
 import sys
 
 SECTOR = 512
@@ -30,9 +32,19 @@ def name83(name):
     return base.encode().ljust(8) + ext.encode().ljust(3)
 
 
+def _dos_stamp():
+    """The build time (or SOURCE_DATE_EPOCH) as DOS (date, time) words."""
+    t = time.gmtime(int(os.environ.get("SOURCE_DATE_EPOCH", time.time())))
+    if t.tm_year < 1980:
+        return 0, 0
+    return (((t.tm_year - 1980) << 9) | (t.tm_mon << 5) | t.tm_mday,
+            (t.tm_hour << 11) | (t.tm_min << 5) | (t.tm_sec // 2))
+
+
 def dirent(name11, attr, cluster, size):
-    return name11 + struct.pack('<BBBHHHHHHHI', attr, 0, 0, 0, 0, 0,
-                                0, 0, 0, cluster, size)
+    d, t = _dos_stamp()
+    return name11 + struct.pack('<BBBHHHHHHHI', attr, 0, 0, t, d, d,
+                                0, t, d, cluster, size)
 
 
 def build_fat16(total_sectors, label, files):

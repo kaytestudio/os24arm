@@ -181,6 +181,8 @@ int vfs_stat(const char *path, vfs_stat_t *st);
 /* The volume path is on: size and free space, and its file system's name
  * (fsname may be NULL). VFS_ERR_INVAL if its driver can't tell. */
 int vfs_statfs(const char *path, vfs_statfs_t *st, const char **fsname);
+/* Seconds since 1970 -> DOS date/time words (both 0 outside 1980-2107). */
+void vfs_unix_to_dos(unsigned long long t, uint16_t *date, uint16_t *time);
 /* Which mount slot holds path (a stable number while mounted), or -1. */
 int vfs_mount_index(const char *path);
 int vfs_unlink(const char *path);

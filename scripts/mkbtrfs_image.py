@@ -13,7 +13,9 @@ since btrfs.c never verifies them (confirmed by reading its mount path).
 Usage: mkbtrfs_image.py <output.img> <size_bytes> [name:hostfile ...]
 Example: mkbtrfs_image.py c_partition.img 8388608 CMD.EXE:build/CMD.EXE
 """
+import os
 import struct
+import time
 import sys
 
 NODESIZE = 4096
@@ -67,13 +69,18 @@ def pack_key(objectid, type_, offset):
     return struct.pack(KEY_FMT, objectid, type_, offset)
 
 
+# Every inode is stamped with the build time (or SOURCE_DATE_EPOCH, for
+# reproducible images), so DIR shows dates.
+STAMP = struct.pack("<QI", int(os.environ.get("SOURCE_DATE_EPOCH", time.time())), 0)
+
+
 def zero_inode(mode, size):
     return struct.pack(INODE_FMT,
                         1, 1, size, 0, 0,          # generation,transid,size,nbytes,block_group
                         1, 0, 0, mode,               # nlink,uid,gid,mode
                         0, 0, 0,                     # rdev,flags,sequence
                         b"\x00" * 32,
-                        b"\x00" * 12, b"\x00" * 12, b"\x00" * 12, b"\x00" * 12)
+                        STAMP, STAMP, STAMP, STAMP)  # atime, ctime, mtime, otime
 
 
 def build_leaf(addr, owner, items):

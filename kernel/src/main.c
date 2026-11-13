@@ -271,7 +271,12 @@ static void cmd_help(void)
     uart_puts("  VER       - Display OS version\r\n");
     uart_puts("  DIR       - List directory contents\r\n");
     uart_puts("  TYPE      - Display file contents\r\n");
-    uart_puts("  COPY      - Copy a file\r\n");
+    uart_puts("  COPY      - Copy files (wildcards; into a directory)\r\n");
+    uart_puts("  MOVE      - Move files (rename, or copy across volumes)\r\n");
+    uart_puts("  TREE      - Directory tree [path] [/F lists files]\r\n");
+    uart_puts("  FIND      - Lines containing text [/I /C /N /V] \"text\" files\r\n");
+    uart_puts("  MORE      - Show a file a screen at a time\r\n");
+    uart_puts("  DATE      - Show the date (TIME: the time)\r\n");
     uart_puts("  COMP      - Byte-compare two files\r\n");
     uart_puts("  FC        - Line-compare two files\r\n");
     uart_puts("  DEL       - Delete a file (alias: ERASE)\r\n");

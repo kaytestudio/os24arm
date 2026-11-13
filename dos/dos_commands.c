@@ -80,16 +80,48 @@ void dos_prompt(char *out, int out_size)
     out[n] = '\0';
 }
 
-/* "1234567" -> "1,234,567" (DIR, CHKDSK) */
-static void put_grouped(unsigned long long v)
+/* "1234567" -> "1,234,567" (DIR, CHKDSK); returns its length. */
+static int fmt_grouped(unsigned long long v, char *out)
 {
     char d[32];
-    int n = 0;
+    int n = 0, k = 0;
     do { d[n++] = (char)('0' + v % 10); v /= 10; } while (v);
     while (n > 0) {
-        uart_putc(d[--n]);
-        if (n > 0 && n % 3 == 0) uart_putc(',');
+        out[k++] = d[--n];
+        if (n > 0 && n % 3 == 0) out[k++] = ',';
     }
+    out[k] = '\0';
+    return k;
+}
+
+static void put_grouped(unsigned long long v)
+{
+    char b[32];
+    fmt_grouped(v, b);
+    uart_puts(b);
+}
+
+/* Right-aligned in width columns. */
+static void put_grouped_w(unsigned long long v, int width)
+{
+    char b[32];
+    int n = fmt_grouped(v, b);
+    for (; n < width; n++) uart_putc(' ');
+    uart_puts(b);
+}
+
+/* DOS date/time words as "11-13-26  10:17a" (blank when unknown). */
+static void put_dos_datetime(uint16_t d, uint16_t t)
+{
+    if (!d) { uart_puts("                "); return; }
+    unsigned h = t >> 11, h12 = h % 12 ? h % 12 : 12;
+    kprintf("%02u-%02u-%02u  %2u:%02u%c", (d >> 5) & 15, d & 31, (1980 + (d >> 9)) % 100,
+            h12, (t >> 5) & 63, h < 12 ? 'a' : 'p');
+}
+
+static int has_wild(const char *s)
+{
+    return strchr(s, '*') || strchr(s, '?');
 }
 
 /* Index just past the last '\' or '/' in path (0 if none). */
@@ -99,6 +131,85 @@ static int base_index(const char *path)
     for (int i = 0; path[i]; i++)
         if (path[i] == '\\' || path[i] == '/') b = i + 1;
     return b;
+}
+
+/* dir + '\' + name into out (dir may be "" or end in a separator). */
+static void join_path(char *out, int size, const char *dir, int dir_len, const char *name)
+{
+    int n = 0;
+    for (int i = 0; i < dir_len && n < size - 1; i++) out[n++] = dir[i];
+    if (n > 0 && out[n - 1] != '\\' && out[n - 1] != '/' && n < size - 1) out[n++] = '\\';
+    for (const char *c = name; *c && n < size - 1; c++) out[n++] = *c;
+    out[n] = '\0';
+}
+
+/* Is path an existing directory? */
+static int is_dir(const char *path)
+{
+    FILESTATUS st;
+    return DosQueryPathInfo(path, 1, &st, sizeof st) == NO_ERROR && (st.attributes & VFS_ATTR_DIR);
+}
+
+/* Calls fn for each file (not directory) spec names: one file, or every
+ * match of a * / ? pattern. Returns the number of files, or -rc. */
+typedef int (*file_fn)(const char *path, const char *name, void *ctx);
+static int for_each_file(const char *spec, file_fn fn, void *ctx)
+{
+    int b = base_index(spec);
+    if (!has_wild(spec)) {
+        FILESTATUS st;
+        APIRET rc = DosQueryPathInfo(spec, 1, &st, sizeof st);
+        if (rc != NO_ERROR) return -(int)rc;
+        if (st.attributes & VFS_ATTR_DIR) return -(int)ERROR_ACCESS_DENIED;
+        fn(spec, spec + b, ctx);
+        return 1;
+    }
+    HDIR hdir;
+    FILEFINDBUF ffb;
+    uint32_t count = 1;
+    int n = 0;
+    APIRET rc = DosFindFirst(spec, &hdir, 0, &ffb, sizeof ffb, &count);
+    if (rc != NO_ERROR) return -(int)(rc == ERROR_NO_MORE_FILES ? ERROR_FILE_NOT_FOUND : rc);
+    while (rc == NO_ERROR && count) {
+        if (!(ffb.attributes & VFS_ATTR_DIR)) {
+            char path[VFS_PATH_MAX];
+            join_path(path, sizeof path, spec, b, ffb.name);
+            if (fn(path, ffb.name, ctx) < 0) break;
+            n++;
+        }
+        rc = DosFindNext(hdir, &ffb, sizeof ffb, &count);
+    }
+    DosFindClose(hdir);
+    return n ? n : -(int)ERROR_FILE_NOT_FOUND;
+}
+
+/* copy_one()'s own error: source and target are the same file. */
+#define COPY_ONTO_ITSELF 0xFFFFu
+
+/* Copies one file; adds its size to *bytes. */
+static APIRET copy_one(const char *from, const char *to, unsigned long long *bytes)
+{
+    char a[VFS_PATH_MAX], b[VFS_PATH_MAX];
+    DosResolvePath(from, a, sizeof a);
+    DosResolvePath(to, b, sizeof b);
+    if (strcmp(a, b) == 0) return COPY_ONTO_ITSELF;
+
+    HFILE src, dst;
+    uint32_t action, got, written;
+    APIRET rc = DosOpen(from, &src, &action, 0, 0, 0, O_RDONLY);
+    if (rc != NO_ERROR) return rc;
+    rc = DosOpen(to, &dst, &action, 0, 0, 0, O_WRONLY | O_CREAT | O_TRUNC);
+    if (rc != NO_ERROR) { DosClose(src); return rc; }
+    static char buf[4096];
+    while ((rc = DosRead(src, buf, sizeof buf, &got)) == NO_ERROR && got > 0) {
+        rc = DosWrite(dst, buf, got, &written);
+        if (rc != NO_ERROR) break;
+        if (written != got) { rc = ERROR_NOT_ENOUGH_MEMORY; break; }   /* disk full */
+        *bytes += written;
+    }
+    DosClose(src);
+    DosClose(dst);
+    return rc;
 }
 
 /* ── ECHO ─────────────────────────────────────────────────────────────────── */
@@ -1409,9 +1520,15 @@ void dos_exit(int argc, char **argv)
 
 /* ── DIR ─────────────────────────────────────────────────────────────────── */
 
+/* DIR [path or pattern] [/W] */
 void dos_dir(int argc, char **argv)
 {
-    const char *arg = (argc > 1) ? argv[1] : "*";
+    const char *arg = "*";
+    int wide = 0;
+    for (int i = 1; i < argc; i++) {
+        if (argv[i][0] == '/' && (argv[i][1] | 0x20) == 'w' && !argv[i][2]) wide = 1;
+        else arg = argv[i];
+    }
 
     char resolved[VFS_PATH_MAX];
     DosResolvePath(arg, resolved, sizeof(resolved));
@@ -1432,8 +1549,18 @@ void dos_dir(int argc, char **argv)
         }
     }
 
-    char shown[VFS_PATH_MAX + 4];
-    dos_display_path(resolved, shown, sizeof shown);
+    /* Header: the volume, then the directory (the pattern's parent). */
+    FSINFOPATH fi;
+    int have_fi = DosQueryFSInfoPath(resolved, &fi) == NO_ERROR;
+    char dir[VFS_PATH_MAX], shown[VFS_PATH_MAX + 4];
+    int b = base_index(resolved);
+    int dl = b > 1 ? b - 1 : b;                 /* parent: "/h/x" -> "/h", "/x" -> "/" */
+    memcpy(dir, resolved, dl);
+    dir[dl] = '\0';
+    dos_display_path(dir, shown, sizeof shown);
+    uart_puts("\r\n Volume in drive C ");
+    if (have_fi && fi.label[0]) { uart_puts("is "); uart_puts(fi.label); }
+    else uart_puts("has no label");
     uart_puts("\r\n Directory of ");
     uart_puts(shown);
     uart_puts("\r\n\r\n");
@@ -1452,34 +1579,39 @@ void dos_dir(int argc, char **argv)
         return;
     }
 
-    uint32_t file_count = 0, dir_count = 0;
+    uint32_t file_count = 0, dir_count = 0, col = 0;
+    unsigned long long bytes = 0;
     do {
+        int isdir = (ffb.attributes & VFS_ATTR_DIR) != 0;
+        if (isdir) dir_count++;
+        else { file_count++; bytes += ffb.file_size; }
+        if (wide) {
+            int n = (int)strlen(ffb.name) + (isdir ? 2 : 0);
+            if (isdir) uart_putc('[');
+            uart_puts(ffb.name);
+            if (isdir) uart_putc(']');
+            if (++col == 5) { uart_puts("\r\n"); col = 0; }
+            else for (; n < 16; n++) uart_putc(' ');
+            if (n >= 16 && col) uart_putc(' ');
+            continue;
+        }
+        put_dos_datetime(ffb.write_date, ffb.write_time);
+        if (isdir) uart_puts("     <DIR>    ");
+        else put_grouped_w(ffb.file_size, 14);
         uart_puts("  ");
         uart_puts(ffb.name);
-
-        if (ffb.attributes & VFS_ATTR_DIR) {
-            uart_puts("\t<DIR>");
-            dir_count++;
-        } else {
-            uart_puts("\t");
-            kprintf("%u", ffb.file_size);
-            uart_puts(" bytes");
-            file_count++;
-        }
         uart_puts("\r\n");
     } while (DosFindNext(hdir, &ffb, sizeof(ffb), &count) == NO_ERROR);
 
     DosFindClose(hdir);
+    if (wide && col) uart_puts("\r\n");
 
-    uart_puts("\r\n");
-    kprintf("%u", file_count);
-    uart_puts(" file(s), ");
-    kprintf("%u", dir_count);
-    uart_puts(" dir(s)");
-    FSINFOPATH fi;
-    if (DosQueryFSInfoPath(resolved, &fi) == NO_ERROR) {
-        uart_puts(", ");
-        put_grouped(fi.free_bytes);
+    kprintf("%9u file(s)", file_count);
+    put_grouped_w(bytes, 15);
+    uart_puts(" bytes used\r\n");
+    kprintf("%9u dir(s) ", dir_count);
+    if (have_fi) {
+        put_grouped_w(fi.free_bytes, 15);
         uart_puts(" bytes free");
     }
     uart_puts("\r\n\r\n");
@@ -1515,65 +1647,79 @@ void dos_type(int argc, char **argv)
 
 /* ── COPY ────────────────────────────────────────────────────────────────── */
 
-void dos_copy(int argc, char **argv)
+struct xfer {
+    const char *dest;          /* a directory, or the target file name */
+    int dest_is_dir, move;
+    unsigned files, failed;
+    unsigned long long bytes;
+};
+
+static int xfer_one(const char *path, const char *name, void *ctx)
 {
-    if (argc < 3) {
-        uart_puts("\r\nUsage: COPY source dest\r\n");
-        return;
-    }
-
-    HFILE src, dst;
-    uint32_t action;
-
-    APIRET rc = DosOpen(argv[1], &src, &action, 0, 0, 0, O_RDONLY);
-    if (rc != NO_ERROR) {
-        print_dos_error("COPY", rc);
-        return;
-    }
-
-    /* COPY file dir: the copy goes into dir, under the same name. */
+    struct xfer *x = ctx;
     char target[VFS_PATH_MAX];
-    const char *dest = argv[2];
-    FILESTATUS ds;
-    if (DosQueryPathInfo(dest, 1, &ds, sizeof ds) == NO_ERROR &&
-        (ds.attributes & VFS_ATTR_DIR)) {
-        int n = 0, dl = (int)strlen(dest), b = base_index(argv[1]);
-        for (int i = 0; i < dl && n < (int)sizeof target - 2; i++) target[n++] = dest[i];
-        if (n > 0 && target[n - 1] != '\\' && target[n - 1] != '/') target[n++] = '\\';
-        for (const char *c = argv[1] + b; *c && n < (int)sizeof target - 1; c++) target[n++] = *c;
-        target[n] = '\0';
-        dest = target;
-    }
+    if (x->dest_is_dir) join_path(target, sizeof target, x->dest, (int)strlen(x->dest), name);
+    else join_path(target, sizeof target, "", 0, x->dest);
 
-    rc = DosOpen(dest, &dst, &action, 0, 0, 0, O_WRONLY | O_CREAT | O_TRUNC);
+    APIRET rc = ERROR_NOT_SUPPORTED;
+    if (x->move) {
+        FILESTATUS st;
+        if (DosQueryPathInfo(target, 1, &st, sizeof st) != NO_ERROR)
+            rc = DosMove(path, target);             /* same volume: a rename */
+        if (rc == ERROR_INVALID_PARAMETER || rc == ERROR_NOT_SUPPORTED) {
+            /* another volume (or the target exists): copy, then delete */
+            unsigned long long b = 0;
+            rc = copy_one(path, target, &b);
+            if (rc == NO_ERROR) rc = DosDelete(path);
+            x->bytes += b;
+        }
+    } else {
+        rc = copy_one(path, target, &x->bytes);
+    }
+    uart_puts(path);
     if (rc != NO_ERROR) {
-        DosClose(src);
-        print_dos_error("COPY", rc);
+        x->failed++;
+        if (rc == COPY_ONTO_ITSELF) {
+            uart_puts(" - the file cannot be copied onto itself\r\n");
+            return 0;
+        }
+        uart_puts(" - ");
+        print_dos_error(x->move ? "MOVE" : "COPY", rc);
+        return 0;
+    }
+    uart_puts("\r\n");
+    x->files++;
+    return 0;
+}
+
+static void copy_or_move(int argc, char **argv, int move)
+{
+    const char *cmd = move ? "MOVE" : "COPY";
+    if (argc < 2) {
+        kprintf("\nUsage: %s source [destination]   (wildcards * and ? allowed)\n", cmd);
         return;
     }
-
-    char buf[512];
-    uint32_t total = 0;
-    uint32_t got;
-    while (DosRead(src, buf, sizeof(buf), &got) == NO_ERROR && got > 0) {
-        uint32_t written;
-        rc = DosWrite(dst, buf, got, &written);
-        if (rc != NO_ERROR) {
-            print_dos_error("COPY", rc);
-            break;
-        }
-        total += written;
+    struct xfer x = { argc > 2 ? argv[2] : ".", 0, move, 0, 0, 0 };
+    x.dest_is_dir = is_dir(x.dest);
+    if (!x.dest_is_dir && has_wild(argv[1])) {
+        kprintf("\n%s: with wildcards the destination must be a directory\n", cmd);
+        return;
     }
-
-    DosClose(src);
-    DosClose(dst);
-
-    if (rc == NO_ERROR) {
-        uart_puts("\r\n");
-        kprintf("%u", total);
-        uart_puts(" bytes copied\r\n");
-    }
+    uart_puts("\r\n");
+    int n = for_each_file(argv[1], xfer_one, &x);
+    if (n < 0) { print_dos_error(cmd, (APIRET)-n); return; }
+    kprintf("%9u file(s) %s", x.files, move ? "moved" : "copied");
+    if (x.bytes) { uart_puts(" ("); put_grouped(x.bytes); uart_puts(" bytes)"); }
+    if (x.failed) kprintf(", %u failed", x.failed);
+    uart_puts("\r\n");
 }
+
+/* COPY source [dest]: dest may be a directory (or omitted: the current
+ * one); source may be a * / ? pattern. */
+void dos_copy(int argc, char **argv) { copy_or_move(argc, argv, 0); }
+
+/* MOVE source [dest]: a rename on the same volume, else copy + delete. */
+void dos_move(int argc, char **argv) { copy_or_move(argc, argv, 1); }
 
 /* ── DEL ─────────────────────────────────────────────────────────────────── */
 
@@ -1685,7 +1831,21 @@ void dos_rd(int argc, char **argv)
     }
 
     APIRET rc = DosDeleteDir(argv[1]);
-    if (rc != NO_ERROR) {
+    if (rc != NO_ERROR && rc != ERROR_PATH_NOT_FOUND && rc != ERROR_FILE_NOT_FOUND) {
+        /* Drivers differ in how they refuse a non-empty directory. */
+        char pat[VFS_PATH_MAX];
+        HDIR hdir;
+        FILEFINDBUF ffb;
+        uint32_t count = 1;
+        join_path(pat, sizeof pat, argv[1], (int)strlen(argv[1]), "*");
+        if (DosFindFirst(pat, &hdir, 0, &ffb, sizeof ffb, &count) == NO_ERROR) {
+            DosFindClose(hdir);
+            rc = ERROR_SHARING_VIOLATION;
+        }
+    }
+    if (rc == ERROR_SHARING_VIOLATION) {
+        uart_puts("\r\nRD: the directory is not empty (or is the current one)\r\n");
+    } else if (rc != NO_ERROR) {
         print_dos_error("RD", rc);
     } else {
         uart_puts("\r\nDirectory removed\r\n");
@@ -1805,6 +1965,270 @@ void dos_format(int argc, char **argv)
               "(see userland/make-stick.sh for HPFS)\r\n");
 }
 
+/* ── TREE ────────────────────────────────────────────────────────────────── */
+
+static unsigned tree_dirs, tree_files;
+static void tree_walk(char *path, int plen, char *prefix, int depth, int files);
+
+static void tree_emit(char *path, int plen, const char *name, int isdir, int last,
+                      char *prefix, int depth, int files)
+{
+    uart_puts(prefix);
+    uart_puts(last ? "\xE2\x94\x94\xE2\x94\x80\xE2\x94\x80 " : "\xE2\x94\x9C\xE2\x94\x80\xE2\x94\x80 ");
+    uart_puts(name);
+    uart_puts("\r\n");
+    if (!isdir) { tree_files++; return; }
+    tree_dirs++;
+    if (depth >= 12) return;                    /* each level holds a search handle */
+    int n = plen, pl = (int)strlen(prefix);
+    path[n++] = '\\';
+    for (const char *c = name; *c && n < VFS_PATH_MAX - 3; c++) path[n++] = *c;
+    path[n] = '\0';
+    if (pl < 120) {
+        strcpy(prefix + pl, last ? "    " : "\xE2\x94\x82   ");
+        tree_walk(path, n, prefix, depth + 1, files);
+        prefix[pl] = '\0';
+    }
+    path[plen] = '\0';
+}
+
+static void tree_walk(char *path, int plen, char *prefix, int depth, int files)
+{
+    path[plen] = '\\';
+    path[plen + 1] = '*';
+    path[plen + 2] = '\0';
+    HDIR hdir;
+    FILEFINDBUF ffb;
+    uint32_t count = 1;
+    APIRET rc = DosFindFirst(path, &hdir, 0, &ffb, sizeof ffb, &count);
+    path[plen] = '\0';
+    if (rc != NO_ERROR) return;
+
+    char pending[VFS_NAME_MAX + 1];
+    int have = 0, pending_dir = 0;
+    while (rc == NO_ERROR && count) {
+        int isdir = (ffb.attributes & VFS_ATTR_DIR) != 0;
+        int dot = ffb.name[0] == '.' && (!ffb.name[1] || (ffb.name[1] == '.' && !ffb.name[2]));
+        if ((isdir || files) && !dot) {
+            if (have) tree_emit(path, plen, pending, pending_dir, 0, prefix, depth, files);
+            strcpy(pending, ffb.name);
+            pending_dir = isdir;
+            have = 1;
+        }
+        rc = DosFindNext(hdir, &ffb, sizeof ffb, &count);
+    }
+    DosFindClose(hdir);
+    if (have) tree_emit(path, plen, pending, pending_dir, 1, prefix, depth, files);
+}
+
+/* TREE [path] [/F]: the directories under path (and their files, /F). */
+void dos_tree(int argc, char **argv)
+{
+    const char *arg = ".";
+    int files = 0;
+    for (int i = 1; i < argc; i++) {
+        if (argv[i][0] == '/' && (argv[i][1] | 0x20) == 'f') files = 1;
+        else arg = argv[i];
+    }
+    static char path[VFS_PATH_MAX + 4];
+    static char prefix[160];
+    DosResolvePath(arg, path, VFS_PATH_MAX);
+    if (!is_dir(path)) { print_dos_error("TREE", ERROR_PATH_NOT_FOUND); return; }
+    int n = (int)strlen(path);
+    if (n == 1) n = 0;                          /* root: "/" + "\*" -> "\*" */
+    char shown[VFS_PATH_MAX + 4];
+    dos_display_path(n ? path : "/", shown, sizeof shown);
+    uart_puts("\r\n");
+    uart_puts(shown);
+    uart_puts("\r\n");
+    tree_dirs = tree_files = 0;
+    prefix[0] = '\0';
+    tree_walk(path, n, prefix, 0, files);
+    kprintf("\n%u director%s", tree_dirs, tree_dirs == 1 ? "y" : "ies");
+    if (files) kprintf(", %u file%s", tree_files, tree_files == 1 ? "" : "s");
+    uart_puts("\r\n");
+}
+
+/* ── FIND ────────────────────────────────────────────────────────────────── */
+
+struct find_opts {
+    const char *needle;
+    int ignore_case, count_only, numbers, invert;
+    unsigned total;
+};
+
+static int find_has(const char *line, const char *needle, int icase)
+{
+    for (const char *p = line; ; p++) {
+        const char *a = p, *b = needle;
+        while (*a && *b) {
+            char x = *a, y = *b;
+            if (icase) {
+                if (x >= 'a' && x <= 'z') x -= 32;
+                if (y >= 'a' && y <= 'z') y -= 32;
+            }
+            if (x != y) break;
+            a++; b++;
+        }
+        if (!*b) return 1;
+        if (!*p) return 0;
+    }
+}
+
+static int find_in_file(const char *path, const char *name, void *ctx)
+{
+    (void)name;
+    struct find_opts *o = ctx;
+    HFILE h;
+    uint32_t action;
+    APIRET rc = DosOpen(path, &h, &action, 0, 0, 0, O_RDONLY);
+    if (rc != NO_ERROR) { print_dos_error("FIND", rc); return 0; }
+    char shown[VFS_PATH_MAX + 4], resolved[VFS_PATH_MAX];
+    DosResolvePath(path, resolved, sizeof resolved);
+    dos_display_path(resolved, shown, sizeof shown);
+    uart_puts("\r\n---------- ");
+    uart_puts(shown);
+    if (!o->count_only) uart_puts("\r\n");
+
+    fc_reader_t r;
+    fc_reader_init(&r, h);
+    static char line[512];
+    unsigned lineno = 0, hits = 0;
+    while (fc_read_line(&r, line, sizeof line)) {
+        lineno++;
+        if (find_has(line, o->needle, o->ignore_case) == !o->invert) {
+            hits++;
+            if (o->count_only) continue;
+            if (o->numbers) kprintf("[%u]", lineno);
+            uart_puts(line);
+            uart_puts("\r\n");
+        }
+    }
+    DosClose(h);
+    if (o->count_only) kprintf(": %u\n", hits);
+    o->total += hits;
+    return 0;
+}
+
+/* FIND [/I] [/C] [/N] [/V] "text" file...  (files may use * and ?) */
+void dos_find(int argc, char **argv)
+{
+    struct find_opts o = { 0, 0, 0, 0, 0, 0 };
+    static char needle[256];
+    int i = 1;
+    for (; i < argc && argv[i][0] == '/'; i++) {
+        switch (argv[i][1] | 0x20) {
+            case 'i': o.ignore_case = 1; break;
+            case 'c': o.count_only = 1; break;
+            case 'n': o.numbers = 1; break;
+            case 'v': o.invert = 1; break;
+            default: kprintf("\nFIND: unknown switch %s\n", argv[i]); return;
+        }
+    }
+    /* The shell splits at spaces: put a "quoted text" back together. */
+    if (i < argc) {
+        int n = 0;
+        const char *a = argv[i];
+        int quoted = a[0] == '"';
+        if (quoted) a++;
+        for (;;) {
+            for (; *a && n < (int)sizeof needle - 2; a++) needle[n++] = *a;
+            i++;
+            if (!quoted || (n > 0 && needle[n - 1] == '"') || i >= argc) break;
+            needle[n++] = ' ';
+            a = argv[i];
+        }
+        if (quoted && n > 0 && needle[n - 1] == '"') n--;
+        needle[n] = '\0';
+        o.needle = needle;
+    }
+    if (!o.needle || i >= argc) {
+        uart_puts("\r\nUsage: FIND [/I] [/C] [/N] [/V] \"text\" file...\r\n");
+        return;
+    }
+    for (; i < argc; i++) {
+        int n = for_each_file(argv[i], find_in_file, &o);
+        if (n < 0) print_dos_error("FIND", (APIRET)-n);
+    }
+}
+
+/* ── MORE ────────────────────────────────────────────────────────────────── */
+
+/* MORE file: a screen (24 lines) at a time; any key continues, Q quits. */
+void dos_more(int argc, char **argv)
+{
+    if (argc < 2) { uart_puts("\r\nUsage: MORE file\r\n"); return; }
+    HFILE h;
+    uint32_t action;
+    APIRET rc = DosOpen(argv[1], &h, &action, 0, 0, 0, O_RDONLY);
+    if (rc != NO_ERROR) { print_dos_error("MORE", rc); return; }
+    fc_reader_t r;
+    fc_reader_init(&r, h);
+    static char line[512];
+    int rows = 0;
+    uart_puts("\r\n");
+    while (fc_read_line(&r, line, sizeof line)) {
+        int len = 0;                            /* screen columns: UTF-8 characters */
+        for (const char *c = line; *c; c++) len += (*c & 0xC0) != 0x80;
+        int need = len ? (len + 79) / 80 : 1;
+        if (rows + need > 23) {
+            uart_puts("-- More --");
+            char c = read_char(NULL);
+            uart_puts("\r          \r");
+            if (c == 'q' || c == 'Q' || c == 0x03) break;
+            rows = 0;
+        }
+        uart_puts(line);
+        uart_puts("\r\n");
+        rows += need;
+    }
+    DosClose(h);
+}
+
+/* ── DATE / TIME ─────────────────────────────────────────────────────────── */
+
+/* QEMU virt's PL031 real-time clock: seconds since 1970 (UTC). */
+static unsigned long rtc_seconds(void)
+{
+    return *(volatile uint32_t *)0x09010000UL;
+}
+
+void dos_date(int argc, char **argv)
+{
+    (void)argv;
+    unsigned long t = rtc_seconds();
+    unsigned long days = t / 86400;
+    /* 1970-01-01 was a Thursday */
+    static const char *wd[7] = { "Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed" };
+    {
+        /* same arithmetic as the file systems' timestamps */
+        unsigned long y = 1970, dd = days;
+        for (;;) {
+            unsigned long yd = (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) ? 366 : 365;
+            if (dd < yd) break;
+            dd -= yd; y++;
+        }
+        static const uint8_t md[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+        unsigned mo = 0;
+        for (; mo < 11; mo++) {
+            unsigned l = md[mo] + (mo == 1 && (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)));
+            if (dd < l) break;
+            dd -= l;
+        }
+        kprintf("\nThe current date is: %s %02u-%02u-%u\n", wd[days % 7], mo + 1, (unsigned)dd + 1, (unsigned)y);
+    }
+    if (argc > 1) uart_puts("DATE: the clock can't be set here - it follows the host's\r\n");
+}
+
+void dos_time(int argc, char **argv)
+{
+    (void)argv;
+    unsigned long s = rtc_seconds() % 86400;
+    kprintf("\nThe current time is: %2u:%02u:%02u (UTC)\n",
+            (unsigned)(s / 3600), (unsigned)(s / 60 % 60), (unsigned)(s % 60));
+    if (argc > 1) uart_puts("TIME: the clock can't be set here - it follows the host's\r\n");
+}
+
 /* ── Shell dispatcher ────────────────────────────────────────────────────── */
 
 static void dos_str_toupper(char *s)
@@ -1846,6 +2270,24 @@ int dos_shell_dispatch(int argc, char **argv)
     }
     else if (strcmp(argv[0], "COPY") == 0) {
         dos_copy(argc, argv);
+    }
+    else if (strcmp(argv[0], "MOVE") == 0) {
+        dos_move(argc, argv);
+    }
+    else if (strcmp(argv[0], "TREE") == 0) {
+        dos_tree(argc, argv);
+    }
+    else if (strcmp(argv[0], "FIND") == 0) {
+        dos_find(argc, argv);
+    }
+    else if (strcmp(argv[0], "MORE") == 0) {
+        dos_more(argc, argv);
+    }
+    else if (strcmp(argv[0], "DATE") == 0) {
+        dos_date(argc, argv);
+    }
+    else if (strcmp(argv[0], "TIME") == 0) {
+        dos_time(argc, argv);
     }
     else if (strcmp(argv[0], "COMP") == 0) {
         dos_comp(argc, argv);

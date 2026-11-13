@@ -73,8 +73,9 @@ static int own_disks;    /* 1: DOSCALLS mounted its own copy of the boot disk */
 static void cmd_help(void)
 {
     uart_puts("\r\nCMD.EXE commands:\r\n"
-              "  DIR, TYPE, COPY, DEL/ERASE, REN/RENAME, MD/MKDIR, RD/RMDIR,\r\n"
-              "  CD/CHDIR, VOL, ATTRIB, CHKDSK, FORMAT, COMP, FC, ECHO, CLS,\r\n"
+              "  DIR, TYPE, MORE, COPY, MOVE, DEL/ERASE, REN/RENAME, MD/MKDIR,\r\n"
+              "  RD/RMDIR, CD/CHDIR, TREE, FIND, VOL, ATTRIB, CHKDSK, FORMAT,\r\n"
+              "  COMP, FC, ECHO, CLS, DATE, TIME,\r\n"
               "  DOSKEY, DEBUG, VER, HELP, EXIT (back to the kernel shell)\r\n");
     uart_puts(own_disks
         ? "Files: DOSCALLS.DLL's own copy of the boot disk (not started by\r\n"
@@ -105,7 +106,7 @@ int main(const struct lx_services *svc)
     own_disks = DosSetKernelServices(svc) != NO_ERROR;
 
     uart_puts("\r\nOS/2 Warp ARM64 - CMD.EXE\r\n");
-    uart_puts("Type a DOS command (DIR, TYPE, COPY, DEL, REN, MD, RD, CD, VOL, ATTRIB, CHKDSK, FORMAT)\r\n");
+    uart_puts("Type HELP for the list of commands, EXIT to return to the kernel shell\r\n");
     uart_puts("Type DOSKEY to enable command history/macros\r\n\r\n");
 
     for (;;) {
