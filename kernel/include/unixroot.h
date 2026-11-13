@@ -36,4 +36,7 @@ const char *unixroot_drive(void);
  * on a read-only-mounted root (e.g. ext4's current mkdir stub). */
 int unixroot_create_tree(void);
 
+/* CONFIG.SYS "SET key=value": copies value into out; 0, or -1 if absent. */
+int config_sys_value(const char *config_sys_text, const char *key, char *out, __SIZE_TYPE__ out_size);
+
 #endif /* UNIXROOT_H */

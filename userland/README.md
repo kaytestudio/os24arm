@@ -154,8 +154,11 @@ platform-specific are new code.
    Try it: `scripts/run-vm.sh --wayland --hvf` (`--hvf`: native speed
    with Apple's Hypervisor.framework; without it QEMU emulates (TCG),
    which the kernel's own hypervisor needs, and the desktop is slow),
-   then `DESKTOP [layout [variant]]` (e.g. `pt`, `de nodeadkeys`; default
-   `us`): it mounts the stick at `\h` and starts dwl (`dwl.sh`). The user
+   and the desktop starts by itself at boot (CONFIG.SYS `SET RUNWORKPLACE=`
+   `...\PMSHELL.EXE`; `CMD.EXE` keeps the console; a key on the console
+   while it waits for the stick does too). By hand: `DESKTOP [layout
+   [variant]]` (e.g. `pt`, `de nodeadkeys`; default `us`) - it mounts the
+   stick at `\h` and starts dwl (`dwl.sh`). The user
    sees an OS/2 system: every terminal is an OS/2 Command Prompt (foot's
    `shell=` is `/h/OS2/os2cmd`; the first window, Alt+Shift+Enter and Alt+O
    open one), Alt+P lists OS/2 Command Prompt, System Monitor and Text

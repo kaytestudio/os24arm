@@ -65,6 +65,11 @@ static int config_sys_get_value(const char *cfg, const char *key,
     return -1;
 }
 
+int config_sys_value(const char *cfg, const char *key, char *out, size_t out_size)
+{
+    return config_sys_get_value(cfg, key, out, out_size);
+}
+
 void unixroot_configure(const char *config_sys_text)
 {
     if (config_sys_get_value(config_sys_text, "UNIXROOT", g_drive, sizeof(g_drive)) != 0)

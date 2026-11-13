@@ -28,6 +28,10 @@
 #include "ramfs.h"
 
 
+/* CONFIG.SYS SET RUNWORKPLACE: PMSHELL.EXE/DESKTOP (and the default) start the
+ * desktop at boot, CMD.EXE/CMD the console - see desktop_at_boot() */
+static int run_desktop_at_boot = 1;
+
 /* Memory heap configuration */
 extern uint8_t _bss_end;
 #define HEAP_START  ((uintptr_t)&_bss_end + 0x1000u)
@@ -814,6 +818,7 @@ static bool usb_pointer_poll(void)
 }
 
 int  uart_ready(void);          /* uart.c (its header clashes with the local helpers above) */
+char uart_getc(void);
 void uart_idle_wait(void);
 
 static void kernel_shell_idle(void)
@@ -831,6 +836,31 @@ static void kernel_shell_idle(void)
     if (!uart_ready()) uart_idle_wait();   /* nothing typed: don't spin the CPU */
 }
 
+/* Boot straight into the desktop (CONFIG.SYS: SET RUNWORKPLACE): if
+ * there's a display, wait up to 5 s for the USB stick to show up, then
+ * DESKTOP. A key on the console meanwhile keeps the console. */
+static void desktop_at_boot(void)
+{
+    if (!run_desktop_at_boot) return;
+    if (!linux_display_ok() || !(virtio_gpu_available() || ramfb_available())) return;
+    uart_puts("\r\nStarting the desktop - press a key here to stay at the console\r\n");
+    for (int t = 0; t < 1000; t++) {                    /* 5 ms each */
+        if (uart_ready()) { (void)uart_getc(); uart_puts("Staying at the console.\r\n"); return; }
+        usbd_daemon();                                  /* USB enumeration, hot-plug */
+        int stick = 0;
+        for (int i = 0; ; i++) {
+            blkdev_t *d = blkdev_get_by_index(i);
+            if (!d) break;
+            if ((d->name[0] | 0x20) == 'u' && (d->name[1] | 0x20) == 's' && (d->name[2] | 0x20) == 'b')
+                stick = 1;
+        }
+        if (stick && t >= 100) break;                   /* (half a second to change your mind) */
+        uart_idle_wait();
+    }
+    char *av[1] = { "DESKTOP" };
+    cmd_desktop(1, av);
+}
+
 static void kernel_shell(void)
 {
     char buffer[256];
@@ -843,6 +873,8 @@ static void kernel_shell(void)
     uart_puts("Type DESKTOP to start the graphical desktop\r\n");
     uart_puts("Type DOSKEY to enable command history/macros (see HELP)\r\n");
     uart_puts("\r\n");
+
+    desktop_at_boot();
 
     for (;;) {
         char prompt[VFS_PATH_MAX + 8];
@@ -982,6 +1014,15 @@ void kernel_main(void)
             kprintf("[CFG]    CONFIG.SYS loaded from %s\n", cfg_path);
         } else {
             kprintf("[CFG]    CONFIG.SYS not found; using UNIXROOT defaults\n");
+        }
+
+        /* SET RUNWORKPLACE=DESKTOP (or no such line): the desktop starts
+         * at boot when there's a display; CMD (anything else): the console */
+        char rw[32];
+        if (cfg_text && config_sys_value(cfg_text, "RUNWORKPLACE", rw, sizeof rw) == 0) {
+            const char *leaf = rw;                 /* C:\OS2\PMSHELL.EXE -> PMSHELL.EXE */
+            for (const char *c = rw; *c; c++) if (*c == '\\' || *c == '/' || *c == ':') leaf = c + 1;
+            run_desktop_at_boot = !(name_eq_nocase(leaf, "CMD") || name_eq_nocase(leaf, "CMD.EXE"));
         }
 
         unixroot_configure(cfg_text);

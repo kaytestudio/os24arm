@@ -147,6 +147,8 @@ REM  WORKPLACE SHELL CONFIGURATION
 REM ───────────────────────────────────────────────────────────────────
 
 REM Workplace Shell initialization
+REM At boot, with a display: PMSHELL.EXE (or DESKTOP) starts the desktop;
+REM CMD.EXE (or CMD) stays at the command prompt. Alt+Shift+Q returns.
 SET RUNWORKPLACE=C:\OS2\PMSHELL.EXE
 
 REM Desktop configuration
