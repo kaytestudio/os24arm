@@ -6,3 +6,5 @@ make-4.4.1.tar.gz  dd16fb1d67bfab79a72f5e8390735c49e3e8e70b4945a15ab1f81ddb78658
 musl-1.2.5.tar.gz  a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4
 # (no signature on Savannah; the SHA-256 is the one Homebrew's tcc formula pins)
 tcc-0.9.27.tar.bz2  de23af78fca90ce32dff2dd45b3432b2334740bb9bb7b05bf60fdbfc396ceb9c
+# (the SHA-256 is the one Homebrew's llvm formula pins)
+llvm-project-23.1.5.src.tar.xz  fb50b1eac93ddeb3aa8dab4cfe324dff74f4a9c2bdee6160c9e36188f8d06a6e

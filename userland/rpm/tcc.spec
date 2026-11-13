@@ -45,7 +45,7 @@ PATH="$PWD/xbin:$PATH" ./configure --cross-prefix="$PWD/xbin/" --cc=cc --ar=ar \
     --cpu=aarch64 --config-musl --prefix=/usr --libdir=/usr/lib --tccdir=/usr/lib/tcc \
     --sysincludepaths=/usr/lib/tcc/include:/usr/include \
     --libpaths=/usr/lib/tcc:/usr/lib --crtprefix=/usr/lib \
-    --extra-cflags="-O2 -DCONFIG_TCC_OS2WARP" > configure.log
+    --extra-cflags="-O2 -DCONFIG_TCC_OS2WARP %{os2_prefix_map}" > configure.log
 PATH="$PWD/xbin:$PATH" make tcc
 
 %install

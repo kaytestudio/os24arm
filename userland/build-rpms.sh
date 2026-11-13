@@ -70,9 +70,13 @@ for n in "${names[@]}"; do
     echo "rpmbuild $n ..."
     rpmbuild -ba "${RPMARGS[@]}" "$spec" > "$TOP/$n.log" 2>&1 \
         || { tail -30 "$TOP/$n.log"; echo "(log: $TOP/$n.log)" >&2; exit 1; }
-    rm -f "$OUT/$n"-[0-9]*.rpm "$OUT/SRPMS/$n"-[0-9]*.src.rpm
+    # every binary package the spec makes (subpackages too), and the SRPM
     v="$(rpmspec -q --srpm --qf '%{VERSION}-%{RELEASE}' "${RPMARGS[@]}" "$spec" 2>/dev/null)"
-    cp "$TOP"/RPMS/*/"$n-$v".*.rpm "$OUT"/
+    rm -f "$OUT/SRPMS/$n"-[0-9]*.src.rpm
+    for p in $(rpmspec -q --qf '%{NAME}\n' "${RPMARGS[@]}" "$spec" 2>/dev/null); do
+        rm -f "$OUT/$p"-[0-9]*.rpm
+        cp "$TOP"/RPMS/*/"$p-$v".*.rpm "$OUT"/
+    done
     cp "$TOP/SRPMS/$n-$v.src.rpm" "$OUT/SRPMS"/
 done
 ls -l "$OUT" "$OUT/SRPMS"

@@ -1774,6 +1774,45 @@ static int vma_overlaps(group_t *g, lx_u64 start, lx_u64 end)
     return 0;
 }
 
+/* Writable shared mappings of a file (lld writes its output through one):
+ * the pages are a copy, like a private mapping, and go back to the file -
+ * through the open file the mapping holds (on HPFS a second writer would be
+ * refused), up to the length mapped - on msync, munmap (or a mapping over
+ * them), execve and exit. */
+#define MAX_FWB 32
+static struct {
+    group_t *g;                       /* NULL: free */
+    lx_u64   start, end, foff;        /* [start, end) holds the file from foff */
+    struct file *f;                   /* a reference */
+} fwb[MAX_FWB];
+
+/* Write back what [a, b) of g overlaps; drop: and forget it. Runs in g's
+ * address space (the pages are read where they are). */
+static void fwb_flush(group_t *g, lx_u64 a, lx_u64 b, int drop)
+{
+    for (int i = 0; i < MAX_FWB; i++) {
+        if (fwb[i].g != g || fwb[i].end <= a || fwb[i].start >= b) continue;
+        lx_u64 lo = fwb[i].start > a ? fwb[i].start : a, hi = fwb[i].end < b ? fwb[i].end : b;
+        int vfd = fwb[i].f->vfd, here = vfs_seek(vfd, 0, SEEK_CUR);
+        if (vfs_seek(vfd, (int32_t)(fwb[i].foff + (lo - fwb[i].start)), SEEK_SET) >= 0)
+            vfs_write(vfd, (const void *)(uintptr_t)lo, (uint32_t)(hi - lo));
+        if (here >= 0) vfs_seek(vfd, here, SEEK_SET);
+        if (!drop) continue;
+        if (lo == fwb[i].start && hi == fwb[i].end) { file_put(fwb[i].f); fwb[i].g = 0; continue; }
+        if (lo == fwb[i].start) { fwb[i].foff += hi - fwb[i].start; fwb[i].start = hi; continue; }
+        if (hi == fwb[i].end) { fwb[i].end = lo; continue; }
+        for (int k = 0; k < MAX_FWB; k++)              /* the middle: two regions */
+            if (!fwb[k].g) {
+                fwb[k] = fwb[i];
+                fwb[k].foff += hi - fwb[i].start;
+                fwb[k].start = hi;
+                fwb[k].f->refs++;
+                break;
+            }
+        fwb[i].end = lo;
+    }
+}
+
 /* mmap: an area; pages come on first touch. Private file mappings are
  * copied in at once; the framebuffer is mapped at once. */
 static s64 sys_mmap(lx_u64 addr, lx_u64 len, lx_u64 prot, lx_u64 flags, s64 fd, lx_u64 off)
@@ -1789,12 +1828,13 @@ static s64 sys_mmap(lx_u64 addr, lx_u64 len, lx_u64 prot, lx_u64 flags, s64 fd, 
         if (!f) return -EBADF;
         if (f->kind != F_FILE && f->kind != F_MEMFD && f->kind != F_FB) return -ENODEV;
         if (f->kind == F_FB && !(flags & MAP_SHARED)) return -EINVAL;
-        if (f->kind == F_FILE && (flags & MAP_SHARED) && (p & MMU_PROT_WRITE)) return -ENOSYS;
+
     }
     lx_u64 size = page_up(len), at;
     if (flags & (MAP_FIXED | MAP_FIXED_NOREPLACE)) {
         if ((addr & (PAGE - 1)) || !mmu_user_range(addr, addr + size)) return -EINVAL;
         if ((flags & MAP_FIXED_NOREPLACE) && vma_overlaps(g, addr, addr + size)) return -EEXIST;
+        fwb_flush(g, addr, addr + size, 1);
         if (vma_remove(g, addr, addr + size)) return -ENOMEM;
         mmu_as_unmap(g->as, addr, size);
         at = addr;
@@ -1842,12 +1882,24 @@ static s64 sys_mmap(lx_u64 addr, lx_u64 len, lx_u64 prot, lx_u64 flags, s64 fd, 
         mmu_as_unmap(g->as, at, size);
         return -ENOMEM;
     }
+    if (f && f->kind == F_FILE && (flags & MAP_SHARED) && (p & MMU_PROT_WRITE)) {
+        int i = 0;
+        while (i < MAX_FWB && fwb[i].g) i++;
+        if (i == MAX_FWB) { vma_remove(g, at, at + size); mmu_as_unmap(g->as, at, size); return -ENOMEM; }
+        fwb[i].g = g;
+        fwb[i].start = at;
+        fwb[i].end = at + len;                         /* the file's bytes, not the page tail */
+        fwb[i].foff = off;
+        fwb[i].f = f;
+        f->refs++;
+    }
     return (s64)at;
 }
 
 static s64 sys_munmap(lx_u64 a, lx_u64 len)
 {
     if ((a & (PAGE - 1)) || !len || !mmu_user_range(a, a + page_up(len))) return -EINVAL;
+    fwb_flush(cur->g, a, a + page_up(len), 1);
     if (vma_remove(cur->g, a, a + page_up(len))) return -ENOMEM;
     mmu_as_unmap(cur->g->as, a, page_up(len));
     return 0;
@@ -2169,6 +2221,7 @@ static int futex_wake(mmu_as_t *as, lx_u64 addr, int n, uint32_t bits)
 /* The last thread of a process is gone: files, memory, zombie, SIGCHLD. */
 static void group_finish(group_t *g)
 {
+    fwb_flush(g, 0, ~0ULL, 1);                         /* shared file mappings: to their files */
     for (int i = 0; i < MAX_FDS; i++) if (g->fd[i]) fd_close(cur, i);
     for (int i = 0; i < MAX_GROUPS; i++)               /* orphans go to pid 1 */
         if (groups[i].state != G_FREE && groups[i].ppid == g->pid) groups[i].ppid = 1;
@@ -2469,6 +2522,7 @@ static s64 sys_execve(lx_u64 upath, lx_u64 uargv, lx_u64 uenvp)
             kstrncpy(path, SYSTEM_BUSYBOX, VFS_PATH_MAX);   /* argv[0] stays "sh" */
     }
     if ((r = shebang(path, &used, &argc, envc)) < 0) return r;
+    fwb_flush(cur->g, 0, ~0ULL, 1);                   /* shared file mappings go with the image */
     mmu_as_t *as, *old = cur->g->as;
     lx_u64 entry, sp, top;
     if ((r = exec_image(path, argbuf, argc, envc, &as, &entry, &sp, &top))) return r;
@@ -4215,19 +4269,37 @@ static s64 do_truncate(file_t *f, const char *path, s64 len)
         int r = ramfs_truncate(rel, (uint32_t)len);
         return r == VFS_OK ? 0 : verr(r);
     }
-    /* Other file systems: only truncating to the current size, or to 0
-     * through a reopen with O_TRUNC. */
+    /* Other file systems (no truncate operation): growing appends zeros
+     * (LLVM sizes its output files so), to 0 is a reopen with O_TRUNC;
+     * shrinking to another size isn't possible. */
+    const char *p = f ? f->path : path;
     vfs_stat_t vs;
-    int r = vfs_stat(f ? f->path : path, &vs);
+    int r = vfs_stat(p, &vs);
     if (r != VFS_OK) return verr(r);
     if ((lx_u64)len == vs.size) return 0;
-    if (len == 0 && !f) {
-        int vf = vfs_open(path, O_WRONLY | O_TRUNC);
+    if (len > 0x7FFFFFFF) return -EFBIG;
+    if (len == 0) {
+        int vf = vfs_open(p, O_WRONLY | O_TRUNC);
         if (vf < 0) return verr(vf);
         vfs_close(vf);
+        if (f) vfs_seek(f->vfd, 0, SEEK_SET);           /* (its old position is past the end) */
         return 0;
     }
-    return -EINVAL;
+    if ((lx_u64)len < vs.size) return -EINVAL;
+    static const uint8_t zeros[4096];
+    int vf = f ? f->vfd : vfs_open(p, O_WRONLY);
+    if (vf < 0) return verr(vf);
+    int here = f ? vfs_seek(vf, 0, SEEK_CUR) : 0;
+    r = vfs_seek(vf, (int32_t)vs.size, SEEK_SET) < 0 ? -EIO : 0;
+    for (lx_u64 left = (lx_u64)len - vs.size; !r && left; ) {
+        uint32_t n = left > sizeof zeros ? sizeof zeros : (uint32_t)left;
+        int w = vfs_write(vf, zeros, n);
+        if (w <= 0) r = w < 0 ? verr(w) : -ENOSPC;
+        else left -= (uint32_t)w;
+    }
+    if (f) vfs_seek(vf, here, SEEK_SET);
+    else vfs_close(vf);
+    return r;
 }
 
 static s64 dev_read(file_t *f, uint8_t *b, lx_u64 n)
@@ -4506,6 +4578,14 @@ static s64 sys_fstatat(int dirfd, lx_u64 up, lx_u64 stp, lx_u64 flags, int by_fd
                : !dp[0] ? 0x102                                    /* pipes, sockets, ... */
                : (lx_u64)(vfs_mount_index(dp) + 1);
     *(lx_u64 *)(uintptr_t)stp = dev;
+    /* st_ino: one per file - programs that compare inodes (clang's file
+     * manager, cp, tar) took every file for the same one when it was 0.
+     * No hard links here, so the path names the file: its FNV-1a hash
+     * (a pipe or socket without a path: its file_t). */
+    lx_u64 ino = 0xcbf29ce484222325ULL;
+    if (dp[0]) for (const char *c = dp; *c; c++) ino = (ino ^ (uint8_t)*c) * 0x100000001b3ULL;
+    else ino ^= (lx_u64)(uintptr_t)(by_fd ? fd_get((lx_u64)dirfd) : 0);
+    *(lx_u64 *)((uintptr_t)stp + 8) = ino ? ino : 1;
     return 0;
 }
 
@@ -5143,7 +5223,8 @@ static s64 linux_syscall(linux_tf_t *tf)
     case 221: return sys_execve(a0, a1, a2);
     case 222: return sys_mmap(a0, a1, a2, a3, (s64)a4, a5);
     case 226: return sys_mprotect(a0, a1, a2);
-    case 227: case 228: case 229: case 233: return 0;  /* msync, mlock, munlock, madvise */
+    case 227: fwb_flush(cur->g, a0, a0 + page_up(a1), 0); return 0;   /* msync */
+    case 228: case 229: case 233: return 0;            /* mlock, munlock, madvise */
     case 260: return sys_wait4((s64)a0, a1, a2);
     case 95: return sys_waitid(a0, (s64)a1, a2, a3);
     case 223: return fd_get(a0) ? 0 : -EBADF;           /* fadvise64: advice taken */

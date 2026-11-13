@@ -1797,7 +1797,8 @@ static int hpfs_rename_do(vfs_mount_t *mnt, const char *old, const char *nw)
     if (!valid_name(nn, nl)) return VFS_EINVAL;
     hpfs_info_t info, other;
     if ((r = lookup(m, od, on, ol, &info)) != VFS_OK) return r;
-    if (fnode_busy(m, info.fnode, 1)) return VFS_ERR_BUSY;
+    /* (an open file may be renamed - as on Unix, where programs write a
+     * temporary file and rename it into place: its handles follow below) */
     int same = lookup(m, nd, nn, nl, &other) == VFS_OK;
     if (same && other.fnode != info.fnode) return VFS_EINVAL;         /* exists */
     if (info.attr & VFS_ATTR_DIR) {                /* not into itself */
@@ -1835,6 +1836,15 @@ static int hpfs_rename_do(vfs_mount_t *mnt, const char *old, const char *nw)
     for (uint32_t i = 0; i < nl && i < 15; i++) fn[13 + i] = (uint8_t)nn[i];
     put32(fn + 28, nd);
     if (wr(m, info.fnode, 1, fn) != 0) return VFS_EIO;
+    /* open handles on it update their entry (size, time) at close by
+     * directory and name: the new ones */
+    for (int i = 0; i < MAX_FILES; i++)
+        if (files[i].m == m && files[i].fnode_lsn == info.fnode) {
+            files[i].dir_fnode = nd;
+            uint32_t k = 0;
+            for (; k < nl && k < VFS_NAME_MAX; k++) files[i].name[k] = nn[k];
+            files[i].name[k] = 0;
+        }
     if ((info.attr & VFS_ATTR_DIR) && od != nd) {
         uint32_t root = dir_root_dnode(m, info.fnode);
         static uint8_t rdn[HPFS_DNODE_SIZE];

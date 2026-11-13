@@ -23,7 +23,7 @@ compiler on the system (tcc) needs to build static programs.
 %build
 CC="%{os2_llvm}/clang --target=aarch64-linux-musl" \
 AR="%{os2_llvm}/llvm-ar" RANLIB="%{os2_llvm}/llvm-ranlib" \
-CFLAGS="-O2 -fno-stack-protector -mno-outline-atomics" LDFLAGS="-fuse-ld=lld" \
+CFLAGS="-O2 -fno-stack-protector -mno-outline-atomics %{os2_prefix_map}" LDFLAGS="-fuse-ld=lld" \
     ./configure --target=aarch64-linux-musl --prefix=/usr --syslibdir=/lib \
                 --disable-shared --enable-static
 make -j%{os2_jobs}

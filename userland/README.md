@@ -54,6 +54,17 @@ platform-specific are new code.
      0x60000000, the AArch64 relocations clang uses in libc.a, the GOT of
      a static program filled in, libc after libtcc1.a. With musl-devel,
      `tcc hello.c -o hello` on the system makes a program that runs.
+   - `llvm.spec`: LLVM 23.1.5 - clang (C, C++) and lld on the system.
+     rpmbuild builds the C++ runtimes for aarch64-linux-musl first
+     (compiler-rt builtins and crt objects, libunwind, libc++abi, libc++;
+     the `libcxx-devel` subpackage), then clang + lld against them as one
+     static multi-call `llvm` (78 MB, linked in the kernel's image area at
+     0x1_0000_0000 - too big for the user window) with Homebrew's tblgen
+     tools (the same version). `llvm-launcher.c` stands in for the
+     symlinks (clang, clang++, cc, c++, ld.lld, llvm-ar, ...);
+     `/etc/clang/aarch64-unknown-linux-musl.cfg` makes programs static at
+     0x60000000. With musl-devel (and libcxx-devel for C++), `clang hi.c
+     -o hi` and `clang++ -O2 x.cpp -o x` build programs that run here.
    - On the system, `rpm` (userland/rootfs/rpm, busybox's rpm underneath,
      a database in /var/lib/rpm): `rpm -i binutils` (a file, or a name from
      \OS2\RPMS), `-U`, `-e`, `-q`, `-qa`, `-qi`, `-ql`, `-qp[il]`.

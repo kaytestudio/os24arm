@@ -49,6 +49,10 @@
 %os2_sysroot            %{os2_w}/sysroot
 %os2_jobs               %(sysctl -n hw.ncpu)
 
+# __FILE__ (asserts) would carry the Mac's build directory into the
+# programs: it becomes /usr/src
+%os2_prefix_map         -ffile-prefix-map=%{_builddir}=/usr/src
+
 # ./configure for the system: programs that run on it, under /usr (which
 # the system maps onto UNIXROOT's drive).
 %os2_configure \
@@ -56,7 +60,7 @@
     --prefix=/usr --sysconfdir=/etc --localstatedir=/var --disable-nls \\\
     CC="%{os2_cc}" AR="%{os2_llvm}/llvm-ar" RANLIB="%{os2_llvm}/llvm-ranlib" \\\
     NM="%{os2_llvm}/llvm-nm" STRIP="%{os2_llvm}/llvm-strip" \\\
-    CC_FOR_BUILD=/usr/bin/cc CFLAGS="-O2"
+    CC_FOR_BUILD=/usr/bin/cc CFLAGS="-O2 %{os2_prefix_map}"
 
 # strip what was installed into the buildroot (the Mac's strip can't)
 %os2_strip \

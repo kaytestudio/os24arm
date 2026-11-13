@@ -38,5 +38,5 @@ if [ -f "$W/Compose" ]; then cp "$W/Compose" "$SYS/Compose"; fi    # dead keys, 
 if [ -f "$W/tests/applet" ]; then mkdir -p "$STAGE/bin"; cp "$W/tests/applet" "$STAGE/bin/sh"; fi
 # the UNIXROOT packages (userland/build-rpms.sh), for RPM -i NAME
 if ls "$W"/rpms/*.rpm >/dev/null 2>&1; then mkdir -p "$SYS/RPMS"; cp "$W"/rpms/*.rpm "$SYS/RPMS"/; fi
-python3 "$ROOT/scripts/mkhpfs.py" "$IMG" --size 128M --from "$STAGE" --hidden OS2 --mbr >/dev/null
+python3 "$ROOT/scripts/mkhpfs.py" "$IMG" --size 512M --from "$STAGE" --hidden OS2 --mbr >/dev/null
 echo "made $IMG ($(ls "$SYS" | wc -l | tr -d ' ') entries in \\OS2)"
