@@ -8,8 +8,12 @@
 #include <spawn.h>
 #include <sched.h>
 #include <sys/wait.h>
+#include <sys/time.h>
+#include <time.h>
 
 extern char **environ;
+static volatile int alarms;
+static void on_alarm(int s) { (void)s; alarms++; }
 static int fails;
 #define CHECK(c, ...) do { if (c) printf("ok    " __VA_ARGS__); \
                            else { printf("FAIL  " __VA_ARGS__); fails++; } putchar('\n'); } while (0)
@@ -111,6 +115,27 @@ int main(int argc, char **argv)
     int sum = 0, cnt = 0;
     while ((w = wait(&st)) > 0) { sum += WEXITSTATUS(st); cnt++; }
     CHECK(cnt == 5 && sum == 60, "5 children, statuses sum %d", sum);
+
+    /* waitid: peek with WNOWAIT, then reap */
+    if ((p = fork()) == 0) _exit(9);
+    siginfo_t si;
+    memset(&si, 0, sizeof si);
+    int r1 = waitid(P_PID, p, &si, WEXITED | WNOWAIT);
+    int peek = si.si_pid == p && si.si_code == CLD_EXITED && si.si_status == 9;
+    memset(&si, 0, sizeof si);
+    int r2 = waitid(P_ALL, 0, &si, WEXITED);
+    CHECK(r1 == 0 && peek && r2 == 0 && si.si_pid == p && waitpid(-1, &st, WNOHANG) == -1,
+          "waitid: WNOWAIT peeks, then reaps (status %d)", si.si_status);
+
+    /* setitimer: SIGALRM, periodic */
+    signal(SIGALRM, on_alarm);
+    struct itimerval it = { { 0, 20000 }, { 0, 20000 } };
+    setitimer(ITIMER_REAL, &it, 0);
+    struct timespec d = { 0, 150000000 };
+    while (nanosleep(&d, &d) == -1) { }
+    memset(&it, 0, sizeof it);
+    setitimer(ITIMER_REAL, &it, 0);
+    CHECK(alarms >= 4 && alarms <= 9, "setitimer: %d SIGALRMs in 150 ms (20 ms period)", alarms);
 
     printf("procs: %s (%d failures)\n", fails ? "FAILED" : "all passed", fails);
     return fails;

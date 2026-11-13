@@ -365,6 +365,7 @@ typedef struct group {
     char     cwd[VFS_PATH_MAX];
     char     exe[VFS_PATH_MAX];    /* /proc/self/exe */
     int      pgid, sid;            /* process group, session */
+    lx_u64   itimer_next, itimer_interval;   /* ITIMER_REAL (ticks; 0 = off) -> SIGALRM */
     struct tty *ctty;              /* controlling terminal */
 } group_t;
 
@@ -429,6 +430,8 @@ static void switch_to(proc_t *next)
 }
 
 /* Wake sleepers whose deadline has passed. */
+static void send_sig_group(struct group *g, int sig, int from);
+
 static void check_deadlines(void)
 {
     lx_u64 now = ticks();
@@ -437,6 +440,13 @@ static void check_deadlines(void)
             procs[i].state = P_RUN;
             procs[i].wchan = 0;
         }
+    for (int i = 0; i < MAX_GROUPS; i++) {             /* interval timers: SIGALRM */
+        group_t *g = &groups[i];
+        if (g->state != G_LIVE || !g->itimer_next || now < g->itimer_next) continue;
+        g->itimer_next = g->itimer_interval ? g->itimer_next + g->itimer_interval : 0;
+        if (g->itimer_next && g->itimer_next <= now) g->itimer_next = now + g->itimer_interval;
+        send_sig_group(g, 14, 0);
+    }
 }
 
 static proc_t *pick_runnable(proc_t *after)
@@ -2348,6 +2358,43 @@ static s64 sys_wait4(s64 pid, lx_u64 ustatus, lx_u64 options)
         }
         if (!any) return -ECHILD;
         if (options & WNOHANG) return 0;
+        if (sig_interrupt()) return -EINTR;
+        sleep_on(cur->g);
+    }
+}
+
+/* waitid(idtype, id, siginfo *, options): P_ALL 0, P_PID 1, P_PGID 2;
+ * WEXITED (4) only - no stops; WNOHANG 1, WNOWAIT 0x01000000 (leave it). */
+static s64 sys_waitid(lx_u64 idtype, s64 id, lx_u64 uinfo, lx_u64 options)
+{
+    if (idtype > 2 || !(options & 4)) return -EINVAL;
+    if (uinfo && !uok(uinfo, 128, 1)) return -EFAULT;
+    for (;;) {
+        int any = 0;
+        for (int i = 0; i < MAX_GROUPS; i++) {
+            group_t *c = &groups[i];
+            if (c->state == G_FREE || c->ppid != cur->g->pid || c == cur->g) continue;
+            if (idtype == 1 && c->pid != id) continue;
+            if (idtype == 2 && c->pgid != (id ? id : cur->g->pgid)) continue;
+            any = 1;
+            if (c->state != G_ZOMBIE) continue;
+            if (uinfo) {
+                int32_t *si = (int32_t *)(uintptr_t)uinfo;
+                kmemset(si, 0, 128);
+                si[0] = SIGCHLD;                           /* si_signo */
+                int killed = (c->wstatus & 0x7F) != 0;
+                si[2] = killed ? 2 : 1;                    /* si_code: CLD_KILLED / CLD_EXITED */
+                si[4] = c->pid;                            /* si_pid */
+                si[6] = killed ? (c->wstatus & 0x7F) : (c->wstatus >> 8) & 0xFF;   /* si_status */
+            }
+            if (!(options & 0x01000000)) { c->state = G_FREE; reap_dead(); }
+            return 0;
+        }
+        if (!any) return -ECHILD;
+        if (options & 1) {                                 /* WNOHANG: nothing yet */
+            if (uinfo) kmemset((void *)(uintptr_t)uinfo, 0, 128);
+            return 0;
+        }
         if (sig_interrupt()) return -EINTR;
         sleep_on(cur->g);
     }
@@ -4371,6 +4418,29 @@ static s64 linux_syscall(linux_tf_t *tf)
     case 226: return sys_mprotect(a0, a1, a2);
     case 227: case 228: case 229: case 233: return 0;  /* msync, mlock, munlock, madvise */
     case 260: return sys_wait4((s64)a0, a1, a2);
+    case 95: return sys_waitid(a0, (s64)a1, a2, a3);
+    case 223: return fd_get(a0) ? 0 : -EBADF;           /* fadvise64: advice taken */
+    case 102: case 103: {                               /* getitimer, setitimer (ITIMER_REAL) */
+        group_t *g = cur->g;
+        lx_u64 uold = tf->x[8] == 102 ? a1 : a2;
+        if (a0 != 0) return a0 <= 2 ? 0 : -EINVAL;     /* VIRTUAL/PROF: not kept */
+        if (uold) {                                     /* struct itimerval { interval, value } */
+            if (!uok(uold, 32, 1)) return -EFAULT;
+            s64 *o = (s64 *)(uintptr_t)uold;
+            lx_u64 now = ticks();
+            ticks_to_ts(g->itimer_interval, o);
+            ticks_to_ts(g->itimer_next > now ? g->itimer_next - now : 0, o + 2);
+            o[1] /= 1000; o[3] /= 1000;                /* timeval: microseconds */
+        }
+        if (tf->x[8] == 102 || !a1) return 0;
+        if (!uok(a1, 32, 0)) return -EFAULT;
+        const s64 *n = (const s64 *)(uintptr_t)a1;
+        if (n[0] < 0 || n[1] < 0 || n[1] >= 1000000 || n[2] < 0 || n[3] < 0 || n[3] >= 1000000)
+            return -EINVAL;
+        g->itimer_interval = dur_ticks(n[0], n[1] * 1000);
+        g->itimer_next = (n[2] || n[3]) ? ticks() + dur_ticks(n[2], n[3] * 1000) : 0;
+        return 0;
+    }
     case 261: {                                         /* prlimit64: report "unlimited" */
         if (a3) {
             if (!uok(a3, 16, 1)) return -EFAULT;

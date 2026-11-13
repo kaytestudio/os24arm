@@ -181,3 +181,86 @@ env -u PKG_CONFIG_PATH meson setup "$W/b-foot" "$FOOT_SRC" \
 ninja -C "$W/b-foot" foot >/dev/null
 cp "$W/b-foot/foot" "$OUT/foot"
 echo "  foot"
+
+# ── dwl (tiling compositor), patched like cage ──────────────────────────
+DWL_VER=0.8
+DWL_SHA256=3080087e7f613bf6a350934231fd9ed478d04cd2a2f30da8a96cdf2066f59412
+DWL_URL="https://codeberg.org/dwl/dwl/archive/v$DWL_VER.tar.gz"
+DWL_TGZ="$W/dl/dwl-$DWL_VER.tar.gz"
+DWL_SRC="$W/src/dwl-$DWL_VER"
+if [ ! -f "$DWL_TGZ" ]; then
+    echo "Downloading $DWL_URL"
+    curl -sSfL -o "$DWL_TGZ.part" "$DWL_URL" && mv "$DWL_TGZ.part" "$DWL_TGZ"
+fi
+echo "$DWL_SHA256  $DWL_TGZ" | shasum -a 256 -c - >/dev/null \
+    || { echo "SHA-256 mismatch for $DWL_TGZ" >&2; rm -f "$DWL_TGZ"; exit 1; }
+if [ ! -d "$DWL_SRC" ]; then
+    mkdir -p "$DWL_SRC.tmp" && tar xzf "$DWL_TGZ" -C "$DWL_SRC.tmp" --strip-components=1
+    mv "$DWL_SRC.tmp" "$DWL_SRC"
+fi
+DG="$GEN/dwl"
+rm -rf "$DG"; mkdir -p "$DG"
+cp "$DWL_SRC"/*.c "$DWL_SRC"/*.h "$DG"/
+WP="$SR/share/wayland-protocols"
+"$SCANNER" enum-header "$WP/staging/cursor-shape/cursor-shape-v1.xml" "$DG/cursor-shape-v1-protocol.h"
+"$SCANNER" enum-header "$WP/unstable/pointer-constraints/pointer-constraints-unstable-v1.xml" \
+    "$DG/pointer-constraints-unstable-v1-protocol.h"
+"$SCANNER" enum-header "$DWL_SRC/protocols/wlr-layer-shell-unstable-v1.xml" "$DG/wlr-layer-shell-unstable-v1-protocol.h"
+"$SCANNER" server-header "$DWL_SRC/protocols/wlr-output-power-management-unstable-v1.xml" \
+    "$DG/wlr-output-power-management-unstable-v1-protocol.h"
+"$SCANNER" server-header "$WP/stable/xdg-shell/xdg-shell.xml" "$DG/xdg-shell-protocol.h"
+python3 - "$DG" "$DWL_SRC/config.def.h" <<'PY'
+import re, sys
+d = sys.argv[1]
+def patch(f, pairs):
+    p = d + "/" + f
+    s = open(p).read()
+    for a, b in pairs:
+        assert s.count(a) == 1, "dwl %s changed upstream: %s" % (f, a[:60])
+        s = s.replace(a, b)
+    open(p, "w").write(s)
+patch("dwl.c", [
+    ("#include <libinput.h>\n", ""),
+    ("#include <wlr/backend/libinput.h>\n", '#include "os2_backend.h"\n'),
+    ("	wlr_session_change_vt(session, arg->ui);", "	(void)arg; /* os2: no VT switching */"),
+    ("	execl(\"/bin/sh\", \"/bin/sh\", \"-c\", startup_cmd, NULL);".replace("\t", "\t\t\t"),
+     "			/* os2: no /bin/sh - the shell in $SHELL (busybox) */\n"
+     "			execl(getenv(\"SHELL\") ? getenv(\"SHELL\") : \"/bin/sh\", \"sh\", \"-c\", startup_cmd, NULL);"),
+    ("	context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);\n",
+     "	context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);\n"
+     "	if (!context) /* os2: no /usr/share/X11/xkb */\n"
+     "		context = xkb_context_new(XKB_CONTEXT_NO_DEFAULT_INCLUDES);\n"),
+])
+# pointer configuration goes through libinput: not here
+s = open(d + "/dwl.c").read()
+a = s.index("	struct libinput_device *device;\n")
+b = s.index("	wlr_cursor_attach_input_device(cursor, &pointer->base);", a)
+s = s[:a] + "	/* os2: pointer settings go through libinput, which isn't used here */\n" + s[b:]
+# the keymap: built-in fallback when xkeyboard-config is missing
+k = re.search(r"\tif \(!\(keymap = xkb_keymap_new_from_names\(context, &xkb_rules,\n\t\t\t\tXKB_KEYMAP_COMPILE_NO_FLAGS\)\)\)", s)
+assert k, "dwl.c keymap code changed upstream"
+s = s[:k.start()] + ("\tif (!(keymap = xkb_keymap_new_from_names(context, &xkb_rules,\n"
+                     "\t\t\t\tXKB_KEYMAP_COMPILE_NO_FLAGS))\n"
+                     "\t\t\t&& !(keymap = xkb_keymap_new_from_string(context, wlr_os2_fallback_keymap(),\n"
+                     "\t\t\t\tXKB_KEYMAP_FORMAT_TEXT_V1, XKB_KEYMAP_COMPILE_NO_FLAGS)))") + s[k.end():]
+# the backend
+a = "	if (!(backend = wlr_backend_autocreate(event_loop, &session)))"
+assert s.count(a) == 1, "dwl.c backend code changed upstream"
+s = s.replace(a, "	if (!(backend = wlr_os2_backend_create(event_loop, NULL, NULL, NULL))\n"
+                 "			&& !(backend = wlr_backend_autocreate(event_loop, &session)))")
+open(d + "/dwl.c", "w").write(s)
+# config.h: the defaults, minus the libinput trackpad settings, with foot
+c = open(sys.argv[2]).read()
+a, b = c.index("/* Trackpad */"), c.index("button_map = LIBINPUT_CONFIG_TAP_MAP_LRM;")
+c = c[:a] + c[c.index("\n", b) + 1:]
+t = 'static const char *termcmd[] = { "foot", NULL };'
+assert c.count(t) == 1
+c = c.replace(t, 'static const char *termcmd[] = { "/h/foot", "-c", "/h/foot.ini", NULL };')
+open(d + "/config.h", "w").write(c)
+PY
+# shellcheck disable=SC2046,SC2086
+"$CC" "${FLAGS[@]}" -std=c11 -D_POSIX_C_SOURCE=200809L -DVERSION="\"$DWL_VER (os2warp)\"" \
+    -Wno-unused-function -Wno-sign-compare -I"$DG" -o "$OUT/dwl" "$DG/dwl.c" "$DG/util.c" \
+    "$ROOT/userland/wlr-os2/os2_backend.c" \
+    $(PKG_CONFIG_LIBDIR="$SR/lib/pkgconfig:$SR/share/pkgconfig" pkg-config --static --cflags --libs $PKGS)
+echo "  dwl"

@@ -19,6 +19,7 @@
 #                userland/make-stick.sh when the programs change) with the
 #                Linux userland. At the prompt, MOUNT usb0p1 \h, then
 #                RUNELF \h\busybox sh /h/desktop.sh   (foot terminal in cage)
+#                RUNELF \h\busybox sh /h/dwl.sh       (tiling: Alt+Shift+Enter)
 #                RUNELF \h\busybox sh                 (a shell on the console)
 #                RUNELF \h\cage /h/wlclient           (Esc ends it)
 #   --hvf        run natively with Apple's Hypervisor.framework (-accel hvf
@@ -51,7 +52,7 @@ while [ $# -gt 0 ]; do
         --usb)      USB_OPT=(-device qemu-xhci -device usb-kbd) ;;
         --wayland)  WAYLAND=1 ;;
         --hvf)      HVF=1 ;;
-        -h|--help)  sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)  sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "Unknown option: $1 (see --help)" >&2; exit 1 ;;
     esac
     shift

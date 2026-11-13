@@ -129,16 +129,17 @@ platform-specific are new code.
    isn't installed.
    Tests: `wlrtest` (headless backend, scene graph, xdg-shell client,
    output pixels checked), `evtest` (prints evdev events).
-6. **Compositors and a terminal** *(tinywl, cage and foot run)*.
+6. **Compositors and a terminal** *(tinywl, cage, dwl and foot run)*.
    `userland/build-compositor.sh` builds wlroots' `tinywl`, the `cage`
-   kiosk compositor (0.2.1) and the `foot` terminal (1.28.0), the first
-   two patched at build time - os2 backend, the built-in keymap when
+   kiosk compositor (0.2.1), the `dwl` tiling compositor (0.8, without
+   libinput's pointer settings) and the `foot` terminal (1.28.0), the
+   compositors patched at build time - os2 backend, the built-in keymap when
    xkeyboard-config is missing, `tinywl -s` without a shell, cage without
    VT switching or XWayland - and `wlclient`, a small xdg-shell client.
    foot uses fcft, freetype and fontconfig (`build-libs.sh`) with DejaVu
    Sans Mono, and busybox as its shell. `userland/make-stick.sh` puts it
-   all on an HPFS stick image with `userland/rootfs/` (`desktop.sh`,
-   `fonts.conf`, `foot.ini`).
+   all on an HPFS stick image with `userland/rootfs/` (`env.sh`,
+   `desktop.sh`, `dwl.sh`, `fonts.conf`, `foot.ini`).
 
    Try it: `scripts/run-vm.sh --wayland --hvf` (`--hvf`: native speed
    with Apple's Hypervisor.framework; without it QEMU emulates (TCG),
@@ -146,7 +147,10 @@ platform-specific are new code.
    `MOUNT usb0p1 \h`, then
    `RUNELF \h\busybox sh /h/desktop.sh [layout [variant]]` (e.g. `pt`,
    `de nodeadkeys`; default `us`) - foot in cage on the virtio-gpu
-   display, a busybox shell in it; `exit` ends the session.
+   display, a busybox shell in it; `exit` ends the session. Or
+   `RUNELF \h\busybox sh /h/dwl.sh [layout]` - a tiling desktop:
+   Alt+Shift+Enter opens another terminal, Alt+J/K moves the focus,
+   Alt+Shift+C closes a window, Alt+Shift+Q quits (see `dwl.sh`).
 
    Keyboard layouts: `build-libs.sh` stages xkeyboard-config 2.46's data
    and libX11's UTF-8 Compose table (dead keys, Multi_key); the stick has
