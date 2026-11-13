@@ -775,6 +775,8 @@ static int fat32_vfs_stat(vfs_mount_t *mnt, const char *path, vfs_stat_t *st)
     st->attrs = (de.attr & FAT32_ATTR_DIR)    ? VFS_ATTR_DIR    : 0;
     st->attrs|= (de.attr & FAT32_ATTR_RDONLY) ? VFS_ATTR_RDONLY : 0;
     st->attrs|= (de.attr & FAT32_ATTR_HIDDEN) ? VFS_ATTR_HIDDEN : 0;
+    st->attrs|= (de.attr & FAT32_ATTR_SYSTEM) ? VFS_ATTR_SYSTEM : 0;
+    st->attrs|= (de.attr & FAT32_ATTR_ARCHIVE) ? VFS_ATTR_ARCHIVE : 0;
     st->mdate = de.wrt_date;
     st->mtime = de.wrt_time;
     return VFS_OK;

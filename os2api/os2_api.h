@@ -51,6 +51,11 @@ void DosResolvePath(const char *in, char *out, uint32_t out_size);
  * has mount points instead of drive letters). */
 APIRET DosQueryFSInfoPath(const char *path, FSINFOPATH *info);
 
+/* Programs the kernel starts: work on the kernel's own file systems and
+ * start in its current directory (see kernel/include/lx_services.h). */
+struct lx_services;
+APIRET DosSetKernelServices(const struct lx_services *svc);
+
 /* ── Helper Functions ────────────────────────────────────────────────── */
 
 /** Convert a VFS_ERR_* code to an OS/2 ERROR_* code */

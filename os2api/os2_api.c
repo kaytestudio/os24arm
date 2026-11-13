@@ -45,12 +45,49 @@ extern void mem_init(uintptr_t start, size_t size);
 static int g_os2_api_initialized = 0;
 #endif /* !OS2_API_SKIP_LAZY_INIT */
 
+#ifndef OS2_API_SKIP_LAZY_INIT
+/* When the kernel starts the program, it hands over its own VFS
+ * (DosSetKernelServices below): every vfs_* call in this file then goes
+ * to the kernel's mounts instead of this DLL's private copy. */
+#include "lx_services.h"
+#include "lx_vfs.h"
+static const struct lx_vfs_ops *kvfs;
+
+static int os2_vfs_open(const char *p, int f) { return kvfs ? kvfs->open(p, f) : vfs_open(p, f); }
+static int os2_vfs_close(int fd) { return kvfs ? kvfs->close(fd) : vfs_close(fd); }
+static int os2_vfs_read(int fd, void *b, uint32_t n) { return kvfs ? kvfs->read(fd, b, n) : vfs_read(fd, b, n); }
+static int os2_vfs_write(int fd, const void *b, uint32_t n) { return kvfs ? kvfs->write(fd, b, n) : vfs_write(fd, b, n); }
+static int os2_vfs_seek(int fd, int32_t o, int w) { return kvfs ? kvfs->seek(fd, o, w) : vfs_seek(fd, o, w); }
+static int os2_vfs_stat(const char *p, vfs_stat_t *st) { return kvfs ? kvfs->stat(p, st) : vfs_stat(p, st); }
+static int os2_vfs_statfs(const char *p, vfs_statfs_t *st, const char **fs)
+{ return kvfs ? kvfs->statfs(p, st, fs) : vfs_statfs(p, st, fs); }
+static int os2_vfs_unlink(const char *p) { return kvfs ? kvfs->unlink(p) : vfs_unlink(p); }
+static int os2_vfs_rename(const char *a, const char *b) { return kvfs ? kvfs->rename(a, b) : vfs_rename(a, b); }
+static int os2_vfs_mkdir(const char *p) { return kvfs ? kvfs->mkdir(p) : vfs_mkdir(p); }
+static int os2_vfs_opendir(const char *p) { return kvfs ? kvfs->opendir(p) : vfs_opendir(p); }
+static int os2_vfs_readdir(int d, vfs_dirent_t *e) { return kvfs ? kvfs->readdir(d, e) : vfs_readdir(d, e); }
+static int os2_vfs_closedir(int d) { return kvfs ? kvfs->closedir(d) : vfs_closedir(d); }
+#define vfs_open     os2_vfs_open
+#define vfs_close    os2_vfs_close
+#define vfs_read     os2_vfs_read
+#define vfs_write    os2_vfs_write
+#define vfs_seek     os2_vfs_seek
+#define vfs_stat     os2_vfs_stat
+#define vfs_statfs   os2_vfs_statfs
+#define vfs_unlink   os2_vfs_unlink
+#define vfs_rename   os2_vfs_rename
+#define vfs_mkdir    os2_vfs_mkdir
+#define vfs_opendir  os2_vfs_opendir
+#define vfs_readdir  os2_vfs_readdir
+#define vfs_closedir os2_vfs_closedir
+#endif
+
 static void os2_api_ensure_init(void)
 {
 #ifdef OS2_API_SKIP_LAZY_INIT
     return;
 #else
-    if (g_os2_api_initialized) return;
+    if (g_os2_api_initialized || kvfs) return;
     g_os2_api_initialized = 1;
 
     mem_init(OS2_API_HEAP_START, OS2_API_HEAP_SIZE);
@@ -169,6 +206,27 @@ APIRET DosSetCurrentDir(const char *dirname)
 
     strncpy(current_dir, resolved, sizeof(current_dir) - 1);
     current_dir[sizeof(current_dir) - 1] = '\0';
+    return NO_ERROR;
+}
+
+/* Use the kernel's file systems and start in the caller's directory
+ * (called by programs the kernel started - see lx_services.h). In the
+ * kernel's own build this is a no-op: it already is the kernel's VFS. */
+APIRET DosSetKernelServices(const struct lx_services *svc)
+{
+#ifndef OS2_API_SKIP_LAZY_INIT
+    if (!svc || svc->version < 2 || !svc->vfs) return ERROR_NOT_SUPPORTED;
+    kvfs = svc->vfs;
+    if (svc->cwd && svc->cwd[0] == '/') {
+        vfs_stat_t st;
+        if (vfs_stat(svc->cwd, &st) == VFS_OK && (st.attrs & VFS_ATTR_DIR)) {
+            strncpy(current_dir, svc->cwd, sizeof(current_dir) - 1);
+            current_dir[sizeof(current_dir) - 1] = '\0';
+        }
+    }
+#else
+    (void)svc;
+#endif
     return NO_ERROR;
 }
 

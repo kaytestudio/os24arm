@@ -15,10 +15,10 @@
  * Wrapped as a genuine OS/2 LX KAYTEVM.EXE (see the KAYTEVM_EXE build
  * target in the top-level CMakeLists.txt), loadable by the kernel's
  * built-in LX loader the same way CMD.EXE/HELLO.EXE are: `RUN KAYTEVM.EXE`.
- * The loader's entry point takes no arguments (int(*)(void), see
- * kernel/src/lx_loader.c) so there's no way to pass a filename in -
- * KAYTEVM.EXE always runs a fixed file, KAYTE.BC, resolved relative to
- * its (root) current directory.
+ * The loader's entry point gets only the kernel's service table (see
+ * kernel/include/lx_services.h), no arguments, so there's no way to pass
+ * a filename in - KAYTEVM.EXE always runs a fixed file, KAYTE.BC, from
+ * the current directory it inherits, or else from the root.
  *
  * DosOpen/DosRead/DosClose here are resolved through DOSCALLS.DLL - a
  * real OS/2 LX DLL that KAYTEVM.EXE embeds a build-time copy of
@@ -533,8 +533,11 @@ int main(const struct lx_services *svc)
         uart_puts("KAYTEVM: failed to load DOSCALLS.DLL\r\n");
         return 1;
     }
+    DosSetKernelServices(svc);   /* the kernel's file systems */
 
     rc = DosOpen(KAYTE_BYTECODE_FILE, &h, &action, 0, 0, 0, O_RDONLY);
+    if (rc != NO_ERROR)
+        rc = DosOpen("\\" KAYTE_BYTECODE_FILE, &h, &action, 0, 0, 0, O_RDONLY);
     if (rc != NO_ERROR) {
         kprintf("KAYTEVM: could not open %s (error %u)\n", KAYTE_BYTECODE_FILE, (unsigned)rc);
         return 1;

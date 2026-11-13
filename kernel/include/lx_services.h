@@ -8,12 +8,17 @@
 #ifndef LX_SERVICES_H
 #define LX_SERVICES_H
 
-#define LX_SERVICES_VERSION 1
+#define LX_SERVICES_VERSION 2
+
+struct lx_vfs_ops;                 /* lx_vfs.h */
 
 struct lx_services {
     unsigned int version;          /* LX_SERVICES_VERSION */
     int (*kbd_ready)(void);        /* nonzero if kbd_getc() has a byte */
     int (*kbd_getc)(void);         /* next byte, or -1 */
+    /* version 2: */
+    const struct lx_vfs_ops *vfs;  /* the kernel's file systems (mounts included) */
+    const char *cwd;               /* the starting program's current directory */
 };
 
 /* kernel/src/uart.c (non-kernel builds): extra console input source. */

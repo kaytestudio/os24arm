@@ -1750,13 +1750,19 @@ void dos_attrib(int argc, char **argv)
         return;
     }
 
+    /* As OS/2's ATTRIB: archive, read-only, hidden, system, then the
+     * full name (D marks a directory). */
+    char resolved[VFS_PATH_MAX], shown[VFS_PATH_MAX + 4];
+    DosResolvePath(argv[1], resolved, sizeof resolved);
+    dos_display_path(resolved, shown, sizeof shown);
     uart_puts("\r\n");
-    uart_puts((st.attributes & VFS_ATTR_DIR)    ? "D" : " ");
-    uart_puts((st.attributes & VFS_ATTR_RDONLY) ? "R" : " ");
-    uart_puts((st.attributes & VFS_ATTR_HIDDEN) ? "H" : " ");
-    uart_puts((st.attributes & VFS_ATTR_SYSTEM) ? "S" : " ");
-    uart_puts("  ");
-    uart_puts(argv[1]);
+    uart_puts((st.attributes & VFS_ATTR_ARCHIVE) ? "A" : " ");
+    uart_puts((st.attributes & VFS_ATTR_RDONLY)  ? "R" : " ");
+    uart_puts((st.attributes & VFS_ATTR_HIDDEN)  ? "H" : " ");
+    uart_puts((st.attributes & VFS_ATTR_SYSTEM)  ? "S" : " ");
+    uart_puts((st.attributes & VFS_ATTR_DIR)     ? "D" : " ");
+    uart_puts("    ");
+    uart_puts(shown);
     uart_puts("\r\n");
 }
 

@@ -96,26 +96,23 @@ static int parse_ifs_line(const char *line, char *name, char *params)
 
 void ifs_loader_init(void)
 {
-    uart_puts("DEBUG: Entering ifs_loader_init\r\n");
 
     // ifs_drivers array is already zeroed by boot.S BSS clearing
     // Just initialize the counter
     ifs_count = 0;
 
-    uart_puts("DEBUG: ifs_loader_init complete\r\n");
 }
 
 int ifs_register_builtin(const char *name, ifs_init_fn init_fn, vfs_fs_t *fs_ops)
 {
-    uart_puts("DEBUG: Entering ifs_register_builtin\r\n");
 
     if (ifs_count >= IFS_MAX_DRIVERS) {
-        uart_puts("DEBUG: Too many IFS drivers\r\n");
+        uart_puts("[IFS]    Too many IFS drivers\r\n");
         return -1;
     }
 
     if (!name || !init_fn || !fs_ops) {
-        uart_puts("DEBUG: Invalid driver parameters\r\n");
+        uart_puts("[IFS]    Invalid driver parameters\r\n");
         return -1;
     }
 
@@ -128,7 +125,6 @@ int ifs_register_builtin(const char *name, ifs_init_fn init_fn, vfs_fs_t *fs_ops
 
     ifs_count++;
 
-    uart_puts("DEBUG: ifs_register_builtin complete\r\n");
     return 0;
 }
 

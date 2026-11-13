@@ -23,6 +23,7 @@
 #include "usb.h"
 #include "usbd.h"
 #include "usbmouse.h"
+#include "ramfs.h"
 
 
 /* Memory heap configuration */
@@ -305,12 +306,13 @@ static void cmd_help(void)
     uart_puts("\r\n");
 }
 
+static int ramfs_ifs_init(const char *params) { (void)params; return 0; }
+
 /* MEM: the kernel heap (a bump allocator) and the page-frame pool that
  * Linux programs, the RAM disk and kernel stacks allocate from. */
 extern void mem_get_stats(uintptr_t *used, uintptr_t *total);
 unsigned long mmu_frames_free_count(void);
 unsigned long mmu_frames_total_count(void);
-unsigned long ramfs_frames(void);
 
 static void cmd_mem(void)
 {
@@ -722,7 +724,6 @@ void kernel_main(void)
 
     mem_init(HEAP_START, HEAP_SIZE);
     uart_puts("[MEM]    Allocator    : initialized\r\n");
-    uart_puts("DEBUG: After mem_init\r\n");  // ← Add these
 
     scheduler_init();
     uart_puts("[SCHED]  Scheduler    : initialized\r\n");
@@ -731,14 +732,11 @@ void kernel_main(void)
         uart_puts("[HYP]    EL2 hypervisor : ready (type VM TEST)\r\n");
     else if (hyp_boot_el == 2)
         uart_puts("[HYP]    EL2 hypervisor : bring-up FAILED\r\n");
-    uart_puts("DEBUG: After scheduler_init\r\n");  // ← Add these
 
     uart_puts("[IPC]    Semaphores   : stub\r\n");
-    uart_puts("DEBUG: Before vfs_init\r\n");  // ← Add these
 
     uart_puts("[VFS]    Initializing VFS and filesystem drivers...\r\n");
     vfs_init();  // ← Call vfs_init first
-    uart_puts("DEBUG: After vfs_init - MADE IT HERE!\r\n");  // ← Then print debug
 
     uart_puts("[BLK]    Initializing block devices...\r\n");
     blk_init();
@@ -776,6 +774,10 @@ void kernel_main(void)
     } else {
         uart_puts("[IFS]    ERROR: Failed to register btrfs driver\r\n");
     }
+
+    /* RAMFS has nothing to probe: Linux programs get it on /tmp. */
+    if (ifs_register_builtin("RAMFS", ramfs_ifs_init, &vfs_ramfs) != 0)
+        uart_puts("[IFS]    ERROR: Failed to register RAMFS driver\r\n");
 
     /* For now, manually initialize all three with default parameters; each
      * looks for its own block device and no-ops if it isn't present. FAT

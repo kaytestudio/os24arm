@@ -12,9 +12,11 @@
 
 #include "lx_loader.h"
 #include "lx_services.h"
+#include "lx_vfs.h"
 #include "vfs.h"
 #include "uart.h"
 #include "kprintf.h"
+#include "string.h"
 #include "os2_api.h"
 
 extern void *mem_alloc(size_t size);
@@ -114,10 +116,19 @@ typedef int (*lx_entry_fn)(const struct lx_services *svc);
  * already merge the USB keyboard in; an LX program's own uart.c can't. */
 static int lx_kbd_ready(void) { return uart_ready(); }
 static int lx_kbd_getc(void)  { return uart_ready() ? (unsigned char)uart_getc() : -1; }
-static const struct lx_services lx_svc = {
+static const struct lx_vfs_ops lx_vfs = {
+    .open = vfs_open, .close = vfs_close, .read = vfs_read, .write = vfs_write,
+    .seek = vfs_seek, .stat = vfs_stat, .statfs = vfs_statfs,
+    .unlink = vfs_unlink, .rename = vfs_rename, .mkdir = vfs_mkdir,
+    .opendir = vfs_opendir, .readdir = vfs_readdir, .closedir = vfs_closedir,
+};
+static char lx_cwd[VFS_PATH_MAX];
+static struct lx_services lx_svc = {
     .version = LX_SERVICES_VERSION,
     .kbd_ready = lx_kbd_ready,
     .kbd_getc = lx_kbd_getc,
+    .vfs = &lx_vfs,
+    .cwd = lx_cwd,
 };
 
 /* ARM64 self-modifying-code cache maintenance: pages were just written as
@@ -281,6 +292,7 @@ int lx_exec_image(const void *image, uint32_t image_size)
             (void *)LX_LOAD_BASE, (void *)LX_DATA_LOAD_BASE, hdr->eip);
 
     lx_entry_fn entry = (lx_entry_fn)((uint8_t *)LX_LOAD_BASE + hdr->eip);
+    if (DosQueryCurrentDir(lx_cwd, sizeof lx_cwd) != NO_ERROR) strcpy(lx_cwd, "/");
     return entry(&lx_svc);
 }
 

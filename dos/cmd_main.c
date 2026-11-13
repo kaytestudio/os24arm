@@ -19,10 +19,13 @@
  * top-level CMakeLists.txt) that CMD.EXE embeds a build-time copy of
  * (os2api/doscalls_embed.S.in) and loads via the kernel's built-in DLL
  * loader (kernel/src/lx_dll_loader.c) - see os2api/os2_api_import.h/.c.
- * The DLL owns its own private vfs.c/blkdev.c/ext4.c/btrfs.c state
- * (entirely disconnected from whatever the kernel or another program
- * already mounted) and mounts it lazily, on whichever Dos* call touches
- * storage first.
+ * Started by the kernel, CMD.EXE hands the DLL the kernel's VFS from
+ * the lx_services table it gets at entry (DosSetKernelServices), so it
+ * works on the kernel's own drives - volumes MOUNTed in the kernel shell
+ * included - and starts in the shell's current directory; the kernel's
+ * keyboard (USB) comes through the same table. Only without that table
+ * does the DLL fall back to its own private vfs.c/blkdev.c/ext4.c/
+ * btrfs.c copy of the boot disk, mounted lazily on first use.
  */
 
 #include "dos.h"
@@ -65,14 +68,18 @@ static int is_cmd(const char *w, const char *e)
     return *w == '\0';
 }
 
+static int own_disks;    /* 1: DOSCALLS mounted its own copy of the boot disk */
+
 static void cmd_help(void)
 {
     uart_puts("\r\nCMD.EXE commands:\r\n"
               "  DIR, TYPE, COPY, DEL/ERASE, REN/RENAME, MD/MKDIR, RD/RMDIR,\r\n"
               "  CD/CHDIR, VOL, ATTRIB, CHKDSK, FORMAT, COMP, FC, ECHO, CLS,\r\n"
-              "  DOSKEY, DEBUG, VER, HELP, EXIT (back to the kernel shell)\r\n"
-              "Files are reached through DOSCALLS.DLL, which mounts the boot\r\n"
-              "disk itself: volumes MOUNTed in the kernel shell aren't seen here.\r\n\r\n");
+              "  DOSKEY, DEBUG, VER, HELP, EXIT (back to the kernel shell)\r\n");
+    uart_puts(own_disks
+        ? "Files: DOSCALLS.DLL's own copy of the boot disk (not started by\r\n"
+          "the kernel), so volumes MOUNTed in the kernel shell aren't seen.\r\n\r\n"
+        : "Files: the kernel's drives, including volumes MOUNTed in its shell.\r\n\r\n");
 }
 
 int main(const struct lx_services *svc)
@@ -92,6 +99,10 @@ int main(const struct lx_services *svc)
         uart_puts("\r\nOS/2 Warp ARM64 - CMD.EXE: failed to load DOSCALLS.DLL\r\n");
         return 1;
     }
+
+    /* Work on the kernel's file systems (and start in its directory)
+     * rather than DOSCALLS' private copy of the boot disk. */
+    own_disks = DosSetKernelServices(svc) != NO_ERROR;
 
     uart_puts("\r\nOS/2 Warp ARM64 - CMD.EXE\r\n");
     uart_puts("Type a DOS command (DIR, TYPE, COPY, DEL, REN, MD, RD, CD, VOL, ATTRIB, CHKDSK, FORMAT)\r\n");

@@ -49,6 +49,8 @@ extern APIRET (*DosQueryCurrentDir)(char *buffer, uint32_t buffer_len);
 
 extern void (*DosResolvePath)(const char *in, char *out, uint32_t out_size);
 extern APIRET (*DosQueryFSInfoPath)(const char *path, FSINFOPATH *info);
+struct lx_services;
+extern APIRET (*DosSetKernelServices)(const struct lx_services *svc);
 
 /* Loads the embedded DOSCALLS.DLL (see os2api/doscalls_embed.S.in) and
  * resolves every pointer above against its exports. Callers (cmd_main.c,
