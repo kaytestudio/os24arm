@@ -3914,6 +3914,12 @@ extern void (*console_capture)(char c);               /* kernel/src/uart.c */
 void os2_shell_banner(void);                           /* kernel/src/main.c */
 void os2_shell_prompt(void);
 void os2_shell_line(const char *line);
+void os2_session_enter(char *cwd);
+void os2_session_leave(char *cwd);
+
+/* A session's current directory: kept at the end of its output buffer. */
+#define OS2_OUT_MAX (OS2_BUF - VFS_PATH_MAX)
+static char *os2_cwd(file_t *f) { return f->pbuf + OS2_OUT_MAX; }
 
 static file_t *os2_cap_file;
 static uint32_t os2_cap_limit;
@@ -3928,7 +3934,7 @@ static void os2_cap(char c)
 
 static void os2_out(file_t *f, const char *s)
 {
-    while (*s && f->plen < OS2_BUF) f->pbuf[f->plen++] = *s++;
+    while (*s && f->plen < OS2_BUF - VFS_PATH_MAX) f->pbuf[f->plen++] = *s++;
 }
 
 /* Runs line (NULL: the banner) with its output captured into f. */
@@ -3936,16 +3942,19 @@ static void os2_run(file_t *f, const char *line)
 {
     f->plen = 0;
     f->pos = 0;
+    if (!line) os2_cwd(f)[0] = '\0';                  /* new session: the shell's directory */
+    os2_session_enter(os2_cwd(f));
     os2_cap_file = f;
-    os2_cap_limit = OS2_BUF - VFS_PATH_MAX - 64;       /* room for the note and the prompt */
+    os2_cap_limit = OS2_OUT_MAX - VFS_PATH_MAX - 64;   /* room for the note and the prompt */
     os2_cap_cut = 0;
     console_capture = os2_cap;
     if (line) os2_shell_line(line);
     else os2_shell_banner();
     if (os2_cap_cut) os2_out(f, "\r\n[output cut short]\r\n");
-    os2_cap_limit = OS2_BUF;
+    os2_cap_limit = OS2_OUT_MAX;
     os2_shell_prompt();
     console_capture = 0;
+    os2_session_leave(os2_cwd(f));
 }
 
 /* ── File system calls ────────────────────────────────────────────────── */

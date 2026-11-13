@@ -167,7 +167,8 @@ platform-specific are new code.
    own OS/2 shell in a foot window: `userland/apps/os2cmd.c` relays to
    `/dev/os2cmd`, which runs each line in the shell of
    `kernel/src/main.c` - DIR, COPY, MOUNT, USB, MEM, ... on the same
-   mounts and current directory as the serial console's. (RUN, RUNELF,
+   mounts as the serial console's; each window starts in its current
+   directory and then keeps its own, like an OS/2 session. (RUN, RUNELF,
    DEBUG, BASIC, UMOUNT and the like stay on the serial console.)
    Names the OS/2 shell doesn't know run as Linux programs there, in its
    current directory (`ls -l`, `\h\cat x`, `vi`: files, `$PATH`, busybox

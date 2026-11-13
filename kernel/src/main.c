@@ -680,6 +680,31 @@ static void execute_command(char *cmdline)
  * What reads the keyboard itself or takes over the machine can't run
  * from inside a Linux program; UMOUNT could pull files from under the
  * running programs (they demand-page their code from the volume). */
+/* Each /dev/os2cmd session (window) has its own current directory, as
+ * OS/2 sessions do: it starts in this shell's, and is swapped in around
+ * each of its commands. */
+APIRET DosQueryCurrentDir(char *buffer, uint32_t buffer_len);   /* os2api */
+APIRET DosSetCurrentDir(const char *dirname);
+static char os2_saved_cwd[VFS_PATH_MAX];
+
+void os2_session_enter(char *cwd)
+{
+    if (DosQueryCurrentDir(os2_saved_cwd, sizeof os2_saved_cwd) != NO_ERROR)
+        kstrncpy(os2_saved_cwd, "/", sizeof os2_saved_cwd);
+    if (!cwd[0]) {
+        kstrncpy(cwd, os2_saved_cwd, VFS_PATH_MAX);
+    } else if (DosSetCurrentDir(cwd) != NO_ERROR) {      /* gone (unmounted?) */
+        kstrncpy(cwd, "/", VFS_PATH_MAX);
+        DosSetCurrentDir("/");
+    }
+}
+
+void os2_session_leave(char *cwd)
+{
+    if (DosQueryCurrentDir(cwd, VFS_PATH_MAX) != NO_ERROR) kstrncpy(cwd, "/", VFS_PATH_MAX);
+    DosSetCurrentDir(os2_saved_cwd);
+}
+
 void os2_shell_banner(void)
 {
     uart_puts("\r\nOS/2 Command Prompt - the kernel's shell\r\n");
@@ -699,7 +724,7 @@ void os2_shell_line(const char *line)
 {
     static const char *const refused[] = {
         "RUN", "RUNELF", "RUNTEST", "BASIC", "DEBUG", "GUI", "VM", "MORE",
-        "DOSKEY", "UMOUNT", "UNMOUNT", "EXIT",
+        "DOSKEY", "UMOUNT", "UNMOUNT", "EXIT", "DESKTOP",
     };
     char buffer[256], word[16];
     int n = 0;
@@ -728,6 +753,8 @@ void os2_shell_line(const char *line)
                 uart_puts(": line editing and history are the terminal's here\r\n");
             else if (my_strcmp(word, "EXIT") == 0)
                 uart_puts(": close the window (or press Ctrl+D)\r\n");
+            else if (my_strcmp(word, "DESKTOP") == 0)
+                uart_puts(": this is the desktop - Alt+Shift+Q goes back to the kernel shell\r\n");
             else
                 uart_puts(" can only be used in the kernel's own shell (serial console)\r\n");
             return;
