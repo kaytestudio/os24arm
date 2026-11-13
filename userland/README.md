@@ -225,10 +225,17 @@ platform-specific are new code.
    window (server-side decoration: a 3D border to resize by, a title bar
    to move by - blue when active, double-click maximizes, right-click a
    menu - the system menu icon (double-click closes) and hide, maximize
-   and close buttons). Folders open as Icon View windows of the real
-   directories (UNIXROOT's and the system's folders stay hidden):
-   double-click a folder to open it, a program to run it in a prompt, a
-   file to edit it; the Folder menu has Open parent, Refresh and Close.
+   and close buttons). Folders open as windows of the real directories
+   (UNIXROOT's and the system's folders stay hidden), with a menu bar -
+   Folder (Open parent, Refresh now, Close), Edit (Select all), View
+   (Icon, Tree and Details views), Selected (Open, Open as Tree view,
+   Properties), Help - and a scroll bar. Double-click a folder to open
+   it, a program to run it in a prompt, a file to edit it; an OS/2 (LX)
+   program says to RUN it at the system console (the LX loader runs
+   there only, so far). Right-click an object for its menu. Keys in a
+   folder: arrows, Home/End, Page Up/Down, Enter opens, Backspace the
+   parent, F5 refreshes, F10 the menu bar (arrows, Enter, Esc); in a
+   Tree view Right/+ expands and Left/- collapses.
    Ctrl+Esc is the Window List (hidden windows too), Alt+Tab the next
    window, Alt+F4 closes. The pictures are drawn by the compositor
    (pixman; the icons are its own), the text by fcft with DejaVu Sans.

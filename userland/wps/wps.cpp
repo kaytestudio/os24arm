@@ -223,6 +223,13 @@ static void disc(pixman_image_t *im, int cx, int cy, int r, uint32_t c)
     }
 }
 
+/* a rectangle with a black edge */
+static void boxed(pixman_image_t *im, int x, int y, int w, int h, uint32_t inside)
+{
+    fill(im, x, y, w, h, C_DARK);
+    fill(im, x + 1, y + 1, w - 2, h - 2, inside);
+}
+
 /* draws icon i at (x, y), s pixels square (32 on the desktop, 16 in title bars) */
 static void draw_icon(pixman_image_t *im, int i, int x, int y, int s)
 {
@@ -235,17 +242,15 @@ static void draw_icon(pixman_image_t *im, int i, int x, int y, int s)
         fill(im, x + S(3), y + S(10), S(26), S(2), 0xFFF8E098);             /* light edge */
         break;
     case I_FILE: case I_TEXT:
-        fill(im, x + S(7), y + S(3), S(18), S(26), C_DARK);
-        fill(im, x + S(8), y + S(4), S(16), S(24), C_WHITE);
-        fill(im, x + S(19), y + S(4), S(5), S(5), 0xFFC0C0C0);              /* folded corner */
+        boxed(im, x + S(7), y + S(3), S(18), S(26), C_WHITE);
+        fill(im, x + S(7) + S(18) - 1 - S(5), y + S(3) + 1, S(5), S(5), 0xFFC0C0C0);   /* folded corner */
         if (i == I_TEXT)
             for (int l = 0; l < 5; l++) fill(im, x + S(10), y + S(11 + 3 * l), S(12), 1, C_SHADOW);
         break;
     case I_PROGRAM:
-        fill(im, x + S(3), y + S(5), S(26), S(22), C_DARK);
-        fill(im, x + S(4), y + S(6), S(24), S(20), C_FACE);
-        fill(im, x + S(5), y + S(7), S(22), S(4), C_TITLE);
-        fill(im, x + S(5), y + S(12), S(22), S(13), C_WHITE);
+        boxed(im, x + S(3), y + S(5), S(26), S(22), C_FACE);
+        fill(im, x + S(3) + 2, y + S(5) + 2, S(26) - 4, std::max(2, S(4)), C_TITLE);
+        fill(im, x + S(3) + 2, y + S(5) + 3 + std::max(2, S(4)), S(26) - 4, S(22) - 5 - std::max(2, S(4)), C_WHITE);
         break;
     case I_PROMPT:
         fill(im, x + S(2), y + S(4), S(28), S(24), C_FACE);
@@ -293,13 +298,22 @@ static void draw_icon(pixman_image_t *im, int i, int x, int y, int s)
 }
 
 /* ── objects: what an icon stands for ───────────────────────────────── */
-enum Action { A_NONE, A_FOLDER, A_RUN, A_EDIT, A_SCRIPT, A_PROMPT, A_PROGRAMS, A_WINLIST,
+enum Action { A_NONE, A_FOLDER, A_RUN, A_OS2RUN, A_EDIT, A_SCRIPT, A_PROMPT, A_PROGRAMS, A_WINLIST,
               A_SHUTDOWN };
 struct Object {
     std::string label;
     int icon;
     Action action;
     std::string path;                /* A_FOLDER: a directory or "::system"/"::drives" */
+    long long size = -1;             /* files: for the Details view */
+    time_t mtime = 0;
+};
+
+/* a folder in a Tree view */
+struct Node {
+    std::string path, name;
+    int depth;
+    bool open, kids;
 };
 
 /* ── windows ────────────────────────────────────────────────────────── */
@@ -307,7 +321,7 @@ struct Window;
 struct Tag { enum K { DESK, BAR, WIN, MENU } k; Window *w; };
 
 struct Window {
-    enum Kind { XDG, FOLDER, WINLIST } kind;
+    enum Kind { XDG, FOLDER, WINLIST, INFO } kind;
     Tag tag{ Tag::WIN, this };
     wlr_scene_tree *tree = nullptr;
     Picture frame;
@@ -320,8 +334,14 @@ struct Window {
     Listener map, unmap, commit, destroy, title, req_move, req_resize, req_max, req_min, req_full;
     /* FOLDER */
     std::string path, name;
-    std::vector<Object> objects;
-    int sel = -1, scroll = 0;
+    enum View { ICON, TREE, DETAILS } view = ICON;
+    std::vector<Object> objects;                  /* ICON, DETAILS */
+    std::vector<Node> nodes;                      /* TREE */
+    int sel = -1, scroll = 0;                     /* scroll: in rows */
+    bool all = false;                             /* Edit > Select all */
+    /* INFO (Properties, About) */
+    std::string info_title;
+    std::vector<std::string> lines;
     /* WINLIST */
     int lsel = -1;
 
@@ -331,9 +351,11 @@ struct Window {
 };
 
 struct Menu {
-    struct Item { std::string label; std::function<void()> run; };
+    struct Item { std::string label; std::function<void()> run; bool enabled = true; bool checked = false; };
     std::vector<Item> items;
     int x = 0, y = 0, w = 0, h = 0, hover = -1;
+    Window *owner = nullptr;                      /* a folder's menu bar menu: */
+    int bar = -1;                                 /* which one */
     Picture pic;
     Tag tag{ Tag::MENU, nullptr };
 };
@@ -371,7 +393,7 @@ struct Server {
     int cascade = 0;
 
     /* pointer grabs */
-    enum Mode { NONE, MOVE, RESIZE } mode = NONE;
+    enum Mode { NONE, MOVE, RESIZE, THUMB } mode = NONE;
     Window *grab = nullptr;
     uint32_t grab_edges = 0;
     double gx, gy;
@@ -406,10 +428,13 @@ static std::vector<std::string> terminal(bool hold = false)
     return v;
 }
 
-static void open_folder(const std::string &path, const std::string &name);
+static void open_folder(const std::string &path, const std::string &name, int view = 0);
+static void close_menu();
 static void toggle_winlist();
 static void focus(Window *w);
 
+static std::string dos_path(const std::string &p);
+static void os2_program(const Object &o);
 static void run_object(const Object &o)
 {
     switch (o.action) {
@@ -419,6 +444,7 @@ static void run_object(const Object &o)
     case A_WINLIST:  toggle_winlist(); break;
     case A_SHUTDOWN: spawn({ sys("os2cmd"), "SHUTDOWN" }); break;
     case A_RUN:    { auto v = terminal(true); v.push_back(o.path); spawn(v); break; }
+    case A_OS2RUN:   os2_program(o); break;     /* (the LX loader: the console's) */
     case A_SCRIPT: { auto v = terminal(true); v.push_back(sys("busybox")); v.push_back("sh");
                      v.push_back(o.path); spawn(v); break; }
     case A_EDIT:   { auto v = terminal(); v.push_back(sys("busybox")); v.push_back("vi");
@@ -463,7 +489,11 @@ static std::vector<Object> folder_objects(const std::string &path)
         std::string p = (path == "/" ? "" : path) + "/" + n;
         struct stat st;
         if (stat(p.c_str(), &st) != 0) continue;
-        if (S_ISDIR(st.st_mode)) { dirs.push_back({ n, I_FOLDER, A_FOLDER, p }); continue; }
+        if (S_ISDIR(st.st_mode)) {
+            dirs.push_back({ n, I_FOLDER, A_FOLDER, p });
+            dirs.back().mtime = st.st_mtime;
+            continue;
+        }
         char head[4] = { 0 };
         int fd = open(p.c_str(), O_RDONLY);
         if (fd >= 0) { if (read(fd, head, 4) < 0) head[0] = 0; close(fd); }
@@ -472,11 +502,15 @@ static std::vector<Object> folder_objects(const std::string &path)
             return n.size() > l && strcasecmp(n.c_str() + n.size() - l, x) == 0;
         };
         if (!memcmp(head, "\x7f" "ELF", 4)) files.push_back({ n, I_PROGRAM, A_RUN, p });
+        else if (!memcmp(head, "MZ", 2) || !memcmp(head, "LX", 2))
+            files.push_back({ n, I_PROGRAM, A_OS2RUN, p });         /* an OS/2 program: the kernel's RUN */
         else if ((head[0] == '#' && head[1] == '!') || ends(".sh")) files.push_back({ n, I_PROGRAM, A_SCRIPT, p });
         else if (ends(".txt") || ends(".c") || ends(".h") || ends(".cpp") || ends(".s") || ends(".md") ||
                  ends(".ini") || ends(".sys") || ends("makefile"))
             files.push_back({ n, I_TEXT, A_EDIT, p });
         else files.push_back({ n, I_FILE, A_EDIT, p });
+        files.back().size = st.st_size;
+        files.back().mtime = st.st_mtime;
     }
     closedir(d);
     auto by = [](const Object &a, const Object &b) { return strcasecmp(a.label.c_str(), b.label.c_str()) < 0; };
@@ -489,8 +523,9 @@ static std::vector<Object> folder_objects(const std::string &path)
 
 std::string Window::titleText() const
 {
-    if (kind == FOLDER) return name + " - Icon View";
+    if (kind == FOLDER) return name + (view == TREE ? " - Tree View" : view == DETAILS ? " - Details View" : " - Icon View");
     if (kind == WINLIST) return "Window List";
+    if (kind == INFO) return info_title;
     if (top && top->title && *top->title) return top->title;
     if (top && top->app_id && *top->app_id) return top->app_id;
     return "(untitled)";
@@ -598,6 +633,7 @@ static void draw_button(pixman_image_t *im, int x, int y, int kind)
 
 static void draw_folder_content(Window *w, pixman_image_t *im, int ox, int oy);
 static void draw_winlist_content(Window *w, pixman_image_t *im, int ox, int oy);
+static void draw_info_content(Window *w, pixman_image_t *im, int ox, int oy);
 
 static void draw_window(Window *w)
 {
@@ -623,39 +659,10 @@ static void draw_window(Window *w)
     draw_button(im, btn_x(w, 2), B + 1, HIT_HIDE);
     if (w->kind == Window::FOLDER) draw_folder_content(w, im, B, B + T);
     else if (w->kind == Window::WINLIST) draw_winlist_content(w, im, B, B + T);
+    else if (w->kind == Window::INFO) draw_info_content(w, im, B, B + T);
     else fill(im, B, B + T, w->cw, w->ch, C_WHITE);       /* under the client */
     w->frame.show(w->tree, pb, &w->tag);
     wlr_scene_node_lower_to_bottom(&w->frame.node->node);
-}
-
-/* folder: a menu bar, then a grid of icons */
-static const int CELL_W = 88, CELL_H = 66;
-static int folder_cols(const Window *w) { return std::max(1, (w->cw - 8) / CELL_W); }
-static int folder_rows_visible(const Window *w) { return std::max(1, (w->ch - MENUBAR - 4) / CELL_H); }
-
-static void draw_folder_content(Window *w, pixman_image_t *im, int ox, int oy)
-{
-    fill(im, ox, oy, w->cw, MENUBAR, C_FACE);
-    text_draw(im, TEXT_UI, ox + 8, oy + MENUBAR / 2 + text_ascent(TEXT_UI) / 2 - 1, "Folder", C_TEXT, 0);
-    fill(im, ox, oy + MENUBAR - 1, w->cw, 1, C_SHADOW);
-    int ty = oy + MENUBAR;
-    fill(im, ox, ty, w->cw, w->ch - MENUBAR, C_FOLDERBG);
-    pixman_region32_t clip;
-    pixman_region32_init_rect(&clip, ox, ty, w->cw, w->ch - MENUBAR);
-    pixman_image_set_clip_region32(im, &clip);
-    int cols = folder_cols(w);
-    for (size_t i = 0; i < w->objects.size(); i++) {
-        int r = (int)i / cols - w->scroll, c = (int)i % cols;
-        if (r < 0) continue;
-        int x = ox + 4 + c * CELL_W, y = ty + 6 + r * CELL_H;
-        if (y > oy + w->ch) break;
-        draw_icon(im, w->objects[i].icon, x + (CELL_W - 32) / 2, y, 32);
-        draw_label(im, x + CELL_W / 2, y + 36, w->objects[i].label, (int)i == w->sel, false);
-    }
-    pixman_image_set_clip_region32(im, nullptr);
-    pixman_region32_fini(&clip);
-    if (w->objects.empty())
-        text_draw(im, TEXT_UI, ox + 12, ty + 24, "(empty)", C_SHADOW, 0);
 }
 
 static std::vector<Window *> listed_windows()
@@ -684,6 +691,245 @@ static void draw_winlist_content(Window *w, pixman_image_t *im, int ox, int oy)
 }
 
 static void redraw_winlist() { if (S.winlist) draw_window(S.winlist); }
+
+/* ── folders: a menu bar, then the view (Icon, Tree or Details) and a
+ *    scroll bar; coordinates here are inside the window's content ───── */
+static const int CELL_W = 88, CELL_H = 66, SB = 16, TROW = 20;
+static const char *menubar_labels[] = { "Folder", "Edit", "View", "Selected", "Help" };
+static const int MENUBAR_N = 5;
+
+static int menubar_x(int i)
+{
+    int x = 8;
+    for (int k = 0; k < i; k++) x += text_width(TEXT_UI, menubar_labels[k]) + 18;
+    return x;
+}
+
+static int menubar_at(int cx)
+{
+    for (int i = 0; i < MENUBAR_N; i++) {
+        int x = menubar_x(i);
+        if (cx >= x - 7 && cx < x + text_width(TEXT_UI, menubar_labels[i]) + 9) return i;
+    }
+    return -1;
+}
+
+static int view_w(const Window *w) { return w->cw - SB; }
+static int view_h(const Window *w) { return w->ch - MENUBAR; }
+static int folder_cols(const Window *w) { return std::max(1, (view_w(w) - 8) / CELL_W); }
+static int row_h(const Window *w) { return w->view == Window::ICON ? CELL_H : TROW; }
+static int head_h(const Window *w) { return w->view == Window::DETAILS ? TROW : 0; }
+static int item_count(const Window *w) { return (int)(w->view == Window::TREE ? w->nodes.size() : w->objects.size()); }
+static int item_row(const Window *w, int i) { return w->view == Window::ICON ? i / folder_cols(w) : i; }
+static int rows_total(const Window *w)
+{
+    int n = item_count(w);
+    return w->view == Window::ICON ? (n + folder_cols(w) - 1) / folder_cols(w) : n;
+}
+static int rows_visible(const Window *w) { return std::max(1, (view_h(w) - head_h(w) - 6) / row_h(w)); }
+static int scroll_max(const Window *w) { return std::max(0, rows_total(w) - rows_visible(w)); }
+static void clamp_scroll(Window *w) { w->scroll = std::clamp(w->scroll, 0, scroll_max(w)); }
+
+static void ensure_visible(Window *w, int i)
+{
+    if (i < 0) return;
+    int r = item_row(w, i);
+    if (r < w->scroll) w->scroll = r;
+    if (r >= w->scroll + rows_visible(w)) w->scroll = r - rows_visible(w) + 1;
+    clamp_scroll(w);
+}
+
+/* the scroll bar's trough and thumb (content y) */
+static void sb_geometry(const Window *w, int *ty, int *th, int *my, int *mh)
+{
+    *ty = MENUBAR + SB;
+    *th = std::max(1, view_h(w) - 2 * SB);
+    int tot = rows_total(w), vis = rows_visible(w);
+    if (tot <= vis) { *my = *ty; *mh = *th; return; }
+    *mh = std::max(12, *th * vis / tot);
+    *my = *ty + (*th - *mh) * w->scroll / (tot - vis);
+}
+
+static void arrow(pixman_image_t *im, int cx, int cy, bool up, uint32_t c)
+{
+    for (int k = 0; k < 4; k++) fill(im, cx - k, up ? cy - 2 + k : cy + 1 - k, 2 * k + 1, 1, c);
+}
+
+static void draw_scrollbar(Window *w, pixman_image_t *im, int ox, int oy)
+{
+    int x = ox + view_w(w), y = oy + MENUBAR, h = view_h(w);
+    bool live = rows_total(w) > rows_visible(w);
+    uint32_t ac = live ? C_DARK : C_SHADOW;
+    fill(im, x, y, SB, h, 0xFFE4E4E4);
+    fill(im, x, y, SB, SB, C_FACE);
+    bevel(im, x, y, SB, SB, true, 1);
+    arrow(im, x + SB / 2, y + SB / 2, true, ac);
+    fill(im, x, y + h - SB, SB, SB, C_FACE);
+    bevel(im, x, y + h - SB, SB, SB, true, 1);
+    arrow(im, x + SB / 2, y + h - SB / 2, false, ac);
+    if (live) {
+        int ty, th, my, mh;
+        sb_geometry(w, &ty, &th, &my, &mh);
+        fill(im, x, oy + my, SB, mh, C_FACE);
+        bevel(im, x, oy + my, SB, mh, true, 1);
+    }
+}
+
+static void draw_menubar(Window *w, pixman_image_t *im, int ox, int oy)
+{
+    fill(im, ox, oy, w->cw, MENUBAR, C_FACE);
+    int open = S.menu && S.menu->owner == w ? S.menu->bar : -1;
+    for (int i = 0; i < MENUBAR_N; i++) {
+        int x = ox + menubar_x(i), tw = text_width(TEXT_UI, menubar_labels[i]);
+        if (i == open) fill(im, x - 6, oy + 1, tw + 12, MENUBAR - 3, C_SEL);
+        text_draw(im, TEXT_UI, x, oy + MENUBAR / 2 + text_ascent(TEXT_UI) / 2 - 1, menubar_labels[i],
+                  i == open ? C_WHITE : C_TEXT, 0);
+    }
+    fill(im, ox, oy + MENUBAR - 1, w->cw, 1, C_SHADOW);
+}
+
+static bool selected(const Window *w, int i) { return w->all || i == w->sel; }
+
+static void draw_icon_view(Window *w, pixman_image_t *im, int ox, int oy)
+{
+    int cols = folder_cols(w);
+    for (int i = 0; i < (int)w->objects.size(); i++) {
+        int r = i / cols - w->scroll, c = i % cols;
+        if (r < 0) continue;
+        int x = ox + 4 + c * CELL_W, y = oy + 6 + r * CELL_H;
+        if (y > oy + view_h(w)) break;
+        draw_icon(im, w->objects[i].icon, x + (CELL_W - 32) / 2, y, 32);
+        draw_label(im, x + CELL_W / 2, y + 36, w->objects[i].label, selected(w, i), false);
+    }
+}
+
+/* the tree: a +/- box for folders with folders in them, dotted lines */
+static int tree_x(int depth) { return 8 + depth * 20; }
+static bool later_sibling(const Window *w, int i)
+{
+    for (size_t j = i + 1; j < w->nodes.size(); j++) {
+        if (w->nodes[j].depth < w->nodes[i].depth) return false;
+        if (w->nodes[j].depth == w->nodes[i].depth) return true;
+    }
+    return false;
+}
+static void dots_h(pixman_image_t *im, int x0, int x1, int y) { for (int x = x0; x < x1; x += 2) fill(im, x, y, 1, 1, C_SHADOW); }
+static void dots_v(pixman_image_t *im, int x, int y0, int y1) { for (int y = y0 + (y0 & 1); y < y1; y += 2) fill(im, x, y, 1, 1, C_SHADOW); }
+
+static void draw_tree_view(Window *w, pixman_image_t *im, int ox, int oy)
+{
+    for (int i = w->scroll; i < (int)w->nodes.size(); i++) {
+        const Node &n = w->nodes[i];
+        int y = oy + 3 + (i - w->scroll) * TROW;
+        if (y > oy + view_h(w)) break;
+        int mid = y + TROW / 2, bx = ox + tree_x(n.depth);
+        if (n.depth > 0) {
+            int px = ox + tree_x(n.depth - 1) + 4;               /* the parent's column */
+            dots_v(im, px, y, later_sibling(w, i) ? y + TROW : mid);
+            dots_h(im, px, bx + 12, mid);
+            for (int a = i - 1, d = n.depth - 1; a >= 0 && d > 0; a--)   /* the ancestors' columns */
+                if (w->nodes[a].depth == d) {
+                    if (later_sibling(w, a)) dots_v(im, ox + tree_x(d - 1) + 4, y, y + TROW);
+                    d--;
+                }
+        }
+        if (n.kids) {
+            fill(im, bx, mid - 4, 9, 9, C_DARK);
+            fill(im, bx + 1, mid - 3, 7, 7, C_WHITE);
+            fill(im, bx + 2, mid, 5, 1, C_DARK);
+            if (!n.open) fill(im, bx + 4, mid - 2, 1, 5, C_DARK);
+        }
+        int icon = n.path.rfind("::", 0) == 0 ? (n.path == "::drives" ? I_DRIVES : I_SYSTEM)
+                 : (n.path == "/" || n.path == "/h") ? I_DRIVE : I_FOLDER;
+        draw_icon(im, icon, bx + 14, mid - 8, 16);
+        int tx = bx + 34, tw = text_width(TEXT_UI, n.name.c_str());
+        bool sel = i == w->sel;
+        if (sel) fill(im, tx - 2, y + 1, tw + 4, TROW - 2, C_SEL);
+        text_draw(im, TEXT_UI, tx, mid + text_ascent(TEXT_UI) / 2 - 1, n.name.c_str(), sel ? C_WHITE : C_TEXT,
+                  ox + view_w(w) - 2);
+    }
+}
+
+/* the Details view's columns: icon, title, size, last write */
+static void details_cols(const Window *w, int *title, int *size, int *date)
+{
+    *date = std::max(150, view_w(w) - 112);
+    *size = std::max(110, *date - 86);
+    *title = 30;
+}
+
+static std::string when(time_t t)
+{
+    if (!t) return "";
+    struct tm tm;
+    localtime_r(&t, &tm);
+    char b[32];
+    strftime(b, sizeof b, "%m-%d-%y  %H:%M", &tm);
+    return b;
+}
+
+static std::string bytes(long long n)
+{
+    if (n < 0) return "";
+    std::string s = std::to_string(n);
+    for (int i = (int)s.size() - 3; i > 0; i -= 3) s.insert(i, ",");
+    return s;
+}
+
+static void draw_details_view(Window *w, pixman_image_t *im, int ox, int oy)
+{
+    int tc, sc, dc;
+    details_cols(w, &tc, &sc, &dc);
+    int base = text_ascent(TEXT_UI) / 2 - 1 + TROW / 2;
+    struct { int x, w; const char *t; } head[] = {
+        { 0, tc, "Icon" }, { tc, sc - tc, "Title" }, { sc, dc - sc, "Size" }, { dc, view_w(w) - dc, "Last write" } };
+    for (auto &h : head) {
+        fill(im, ox + h.x, oy, h.w, TROW, C_FACE);
+        bevel(im, ox + h.x, oy, h.w, TROW, true, 1);
+        text_draw(im, TEXT_UI, ox + h.x + 5, oy + base, h.t, C_TEXT, ox + h.x + h.w - 2);
+    }
+    for (int i = w->scroll; i < (int)w->objects.size(); i++) {
+        const Object &o = w->objects[i];
+        int y = oy + TROW + 1 + (i - w->scroll) * TROW;
+        if (y > oy + view_h(w)) break;
+        bool sel = selected(w, i);
+        if (sel) fill(im, ox + tc, y, view_w(w) - tc, TROW, C_SEL);
+        uint32_t c = sel ? C_WHITE : C_TEXT;
+        draw_icon(im, o.icon, ox + 7, y + 2, 16);
+        text_draw(im, TEXT_UI, ox + tc + 5, y + base, o.label.c_str(), c, ox + sc - 4);
+        std::string sz = bytes(o.size), dt = when(o.mtime);
+        text_draw(im, TEXT_UI, ox + dc - 6 - text_width(TEXT_UI, sz.c_str()), y + base, sz.c_str(), c, 0);
+        text_draw(im, TEXT_UI, ox + dc + 5, y + base, dt.c_str(), c, ox + view_w(w) - 2);
+    }
+}
+
+static void draw_folder_content(Window *w, pixman_image_t *im, int ox, int oy)
+{
+    clamp_scroll(w);
+    draw_menubar(w, im, ox, oy);
+    int vy = oy + MENUBAR;
+    fill(im, ox, vy, view_w(w), view_h(w), C_FOLDERBG);
+    pixman_region32_t clip;
+    pixman_region32_init_rect(&clip, ox, vy, view_w(w), view_h(w));
+    pixman_image_set_clip_region32(im, &clip);
+    if (w->view == Window::TREE) draw_tree_view(w, im, ox, vy);
+    else if (w->view == Window::DETAILS) draw_details_view(w, im, ox, vy);
+    else draw_icon_view(w, im, ox, vy);
+    if (item_count(w) == 0)
+        text_draw(im, TEXT_UI, ox + 12, vy + head_h(w) + 24, "(empty)", C_SHADOW, 0);
+    pixman_image_set_clip_region32(im, nullptr);
+    pixman_region32_fini(&clip);
+    draw_scrollbar(w, im, ox, oy);
+}
+
+static void draw_info_content(Window *w, pixman_image_t *im, int ox, int oy)
+{
+    fill(im, ox, oy, w->cw, w->ch, C_FACE);
+    int y = oy + 12;
+    for (size_t i = 0; i < w->lines.size(); i++, y += ROW)
+        text_draw(im, i == 0 ? TEXT_BOLD : TEXT_UI, ox + 14, y + text_ascent(TEXT_UI), w->lines[i].c_str(), C_TEXT,
+                  ox + w->cw - 6);
+}
 
 /* ── window management ─────────────────────────────────────────────── */
 static void place(Window *w)
@@ -767,11 +1013,13 @@ static void toggle_maximize(Window *w)
 }
 
 /* internal windows: folders and the Window List */
-static Window *new_internal(Window::Kind k, int cw, int ch, Window **slot = nullptr)
+static Window *new_internal(Window::Kind k, int cw, int ch, Window **slot = nullptr,
+                            const std::function<void(Window *)> &init = nullptr)
 {
     Window *w = new Window();
     if (slot) *slot = w;                         /* (known before it's first drawn) */
     w->kind = k;
+    if (init) init(w);
     w->cw = cw; w->ch = ch;
     w->tree = wlr_scene_tree_create(S.t_wins);
     w->tree->node.data = &w->tag;
@@ -782,22 +1030,183 @@ static Window *new_internal(Window::Kind k, int cw, int ch, Window **slot = null
     return w;
 }
 
-static void open_folder(const std::string &path, const std::string &name)
+/* the Tree view: the folder, and the folders in it as they're opened */
+static bool has_subfolders(const std::string &path)
 {
+    if (path.rfind("::", 0) == 0) return true;
+    DIR *d = opendir(path.c_str());
+    if (!d) return false;
+    bool root = path == "/" || path == "/h", found = false;
+    while (dirent *e = readdir(d)) {
+        std::string n = e->d_name;
+        if (n.empty() || n[0] == '.' || (root && hidden_at_root(n))) continue;
+        if (e->d_type == DT_DIR) { found = true; break; }
+        if (e->d_type != DT_UNKNOWN) continue;
+        struct stat st;
+        std::string p = (path == "/" ? "" : path) + "/" + n;
+        if (stat(p.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) { found = true; break; }
+    }
+    closedir(d);
+    return found;
+}
+
+static std::vector<Node> subfolders(const std::string &path, int depth)
+{
+    std::vector<Node> v;
+    for (const Object &o : folder_objects(path))
+        if (o.action == A_FOLDER) v.push_back({ o.path, o.label, depth, false, has_subfolders(o.path) });
+    return v;
+}
+
+static void toggle_node(Window *w, int i)
+{
+    Node &n = w->nodes[i];
+    if (n.open) {
+        size_t j = i + 1;
+        while (j < w->nodes.size() && w->nodes[j].depth > n.depth) j++;
+        w->nodes.erase(w->nodes.begin() + i + 1, w->nodes.begin() + j);
+        n.open = false;
+    } else {
+        auto kids = subfolders(n.path, n.depth + 1);
+        w->nodes[i].open = true;
+        w->nodes[i].kids = !kids.empty();
+        w->nodes.insert(w->nodes.begin() + i + 1, kids.begin(), kids.end());
+    }
+}
+
+static void load_folder(Window *w)
+{
+    w->sel = -1;
+    w->all = false;
+    w->scroll = 0;
+    if (w->view == Window::TREE) {
+        w->nodes = { { w->path, w->name, 0, false, true } };
+        toggle_node(w, 0);
+    } else {
+        w->objects = folder_objects(w->path);
+    }
+}
+
+static void set_view(Window *w, Window::View v)
+{
+    w->view = v;
+    load_folder(w);
+    draw_window(w);
+    draw_bar();
+    redraw_winlist();
+}
+
+static void open_folder(const std::string &path, const std::string &name, int view_)
+{
+    Window::View view = (Window::View)view_;
     for (Window *w : S.windows)
-        if (w->kind == Window::FOLDER && w->path == path) { focus(w); return; }
+        if (w->kind == Window::FOLDER && w->path == path && w->view == view) { focus(w); return; }
     Window *w = new Window();
     w->kind = Window::FOLDER;
     w->path = path;
     w->name = name;
-    w->objects = folder_objects(path);
-    w->cw = 470; w->ch = 290;
+    w->view = view;
+    load_folder(w);
+    w->cw = view == Window::TREE ? 300 : view == Window::DETAILS ? 520 : 470;
+    w->ch = view == Window::TREE ? 330 : 290;
     w->tree = wlr_scene_tree_create(S.t_wins);
     w->tree->node.data = &w->tag;
     w->mapped = true;
     S.windows.push_back(w);
     place(w);
     focus(w);
+}
+
+/* a folder's parent: the drive's parent is Drives */
+static void open_parent(Window *w)
+{
+    std::string p = w->path;
+    if (p.rfind("::", 0) == 0 || p == "/" || p == "/h") { open_folder("::drives", "Drives", w->view); return; }
+    size_t s = p.rfind('/');
+    std::string up = s == 0 ? "/" : p.substr(0, s);
+    std::string nm = up == "/" ? "Drive C" : up == "/h" ? "Drive D" : up.substr(up.rfind('/') + 1);
+    open_folder(up, nm, w->view);
+}
+
+/* /h/x/y is D:\x\y, /x is C:\x */
+static std::string dos_path(const std::string &p)
+{
+    if (p.rfind("::", 0) == 0) return "(on the desktop)";
+    std::string d = p == "/h" || p.rfind("/h/", 0) == 0 ? "D:" + p.substr(2) : "C:" + p;
+    for (char &c : d) if (c == '/') c = '\\';
+    if (d.size() == 2) d += "\\";
+    return d;
+}
+
+/* Properties, About: a window of lines */
+static void open_info(const std::string &title, std::vector<std::string> lines)
+{
+    int w = 200;
+    for (size_t i = 0; i < lines.size(); i++)
+        w = std::max(w, text_width(i == 0 ? TEXT_BOLD : TEXT_UI, lines[i].c_str()) + 32);
+    Window *iw = new_internal(Window::INFO, std::min(w, S.W - 40), (int)lines.size() * ROW + 24, nullptr,
+                              [&](Window *x) { x->info_title = title; x->lines = std::move(lines); });
+    iw->x = (S.W - iw->fw()) / 2;
+    iw->y = (S.H - iw->fh()) / 3;
+    wlr_scene_node_set_position(&iw->tree->node, iw->x, iw->y);
+}
+
+/* OS/2 (LX) programs are run by the kernel's loader, at the system console
+ * only, so far: says so */
+static void os2_program(const Object &o)
+{
+    open_info(o.label, {
+        o.label, "This is an OS/2 program (LX format).",
+        "OS/2 programs run at the system console for now:",
+        "    RUN " + dos_path(o.path),
+        "(Alt+Shift+Q goes back to the console.)" });
+}
+
+static void properties(Window *w)
+{
+    std::string name, path, type;
+    long long size = -1;
+    time_t mt = 0;
+    if (w->view == Window::TREE) {
+        if (w->sel < 0) return;
+        name = w->nodes[w->sel].name; path = w->nodes[w->sel].path; type = "Folder";
+    } else {
+        if (w->sel < 0) return;
+        const Object &o = w->objects[w->sel];
+        name = o.label; path = o.path; size = o.size; mt = o.mtime;
+        type = o.action == A_FOLDER ? "Folder" : o.action == A_RUN ? "Program" : o.action == A_OS2RUN ? "OS/2 program" : o.action == A_SCRIPT ? "Program (script)"
+             : o.icon == I_TEXT ? "Text file" : o.path.empty() ? "Object" : "File";
+    }
+    std::vector<std::string> l = { name, "Type:  " + type };
+    if (!path.empty()) l.push_back("Location:  " + dos_path(path));
+    if (size >= 0) l.push_back("Size:  " + bytes(size) + " bytes");
+    if (mt) l.push_back("Last write:  " + when(mt));
+    open_info(name + " - Properties", l);
+}
+
+static void about()
+{
+    open_info("Product Information", {
+        "Workplace Shell", "OS/2 Warp for ARM64",
+        "A Wayland compositor (wlroots, C++) in the style of OS/2 Warp 4.",
+        "", "Ctrl+Esc  Window List          Alt+Tab  next window",
+        "Alt+F4  close                     Alt+O  Command Prompt",
+        "Alt+P  Programs                   Alt+Shift+Q  quit to the console",
+        "Folders: arrows, Enter, Backspace (parent), F5 (refresh)",
+    });
+}
+
+/* opens what's selected (a double-click, Enter) */
+static void activate(Window *w, int i)
+{
+    if (i < 0) return;
+    if (w->view == Window::TREE) {
+        open_folder(w->nodes[i].path, w->nodes[i].name, Window::ICON);
+        return;
+    }
+    Object o = w->objects[i];                /* (the window may be redrawn meanwhile) */
+    if (o.action == A_FOLDER) open_folder(o.path, o.label, w->view);
+    else run_object(o);
 }
 
 static void toggle_winlist()
@@ -819,6 +1228,7 @@ static void forget(Window *w)
     if (it != S.windows.end()) S.windows.erase(it);
     if (S.grab == w) { S.grab = nullptr; S.mode = Server::NONE; }
     if (S.winlist == w) S.winlist = nullptr;
+    if (S.menu && S.menu->owner == w) { S.menu->owner = nullptr; close_menu(); }
     if (S.active == w) { S.active = nullptr; focus_next_visible(w); }
     redraw_winlist();
     draw_bar();
@@ -958,9 +1368,11 @@ static void new_deco(wlr_xdg_toplevel_decoration_v1 *d)
 static void close_menu()
 {
     if (!S.menu) return;
+    Window *owner = S.menu->owner;
     S.menu->pic.destroy();
     delete S.menu;
     S.menu = nullptr;
+    if (owner) draw_window(owner);                /* its menu bar */
 }
 
 static void draw_menu()
@@ -971,29 +1383,54 @@ static void draw_menu()
     fill(im, 0, 0, m->w, m->h, C_FACE);
     bevel(im, 0, 0, m->w, m->h, true, 2);
     for (size_t i = 0; i < m->items.size(); i++) {
+        const Menu::Item &it = m->items[i];
         int y = 3 + (int)i * ROW;
-        bool h = (int)i == m->hover;
+        if (it.label.empty()) { fill(im, 6, y + ROW / 2 - 1, m->w - 12, 1, C_SHADOW);
+                                fill(im, 6, y + ROW / 2, m->w - 12, 1, C_LIGHT); continue; }
+        bool h = (int)i == m->hover && it.enabled;
         if (h) fill(im, 3, y, m->w - 6, ROW, C_SEL);
-        text_draw(im, TEXT_UI, 12, y + text_ascent(TEXT_UI) + 2, m->items[i].label.c_str(), h ? C_WHITE : C_TEXT, 0);
+        uint32_t c = !it.enabled ? C_SHADOW : h ? C_WHITE : C_TEXT;
+        if (it.checked)                                        /* a check mark */
+            for (int k = 0; k < 7; k++) {
+                int cx = 6 + k, cy = y + ROW / 2 + (k < 3 ? k - 1 : 4 - k);
+                fill(im, cx, cy, 1, 2, c);
+            }
+        text_draw(im, TEXT_UI, 18, y + text_ascent(TEXT_UI) + 2, it.label.c_str(), c, 0);
     }
     m->pic.show(S.t_menu, pb, &m->tag);
     wlr_scene_node_set_position(&m->pic.node->node, m->x, m->y);
 }
 
-static void open_menu(int x, int y, std::vector<Menu::Item> items)
+static Menu *open_menu(int x, int y, std::vector<Menu::Item> items, Window *owner = nullptr, int bar = -1)
 {
     close_menu();
     Menu *m = new Menu();
     m->items = std::move(items);
+    m->owner = owner;
+    m->bar = bar;
     int w = 0;
     for (auto &it : m->items) w = std::max(w, text_width(TEXT_UI, it.label.c_str()));
-    m->w = w + 36;
+    m->w = w + 40;
     m->h = (int)m->items.size() * ROW + 6;
-    m->x = std::min(x, S.W - m->w);
-    m->y = std::min(y, S.H - m->h);
+    m->x = std::max(0, std::min(x, S.W - m->w));
+    m->y = std::max(0, std::min(y, S.H - m->h));
     S.menu = m;
     draw_menu();
+    if (owner) draw_window(owner);
+    return m;
 }
+
+/* runs item i, if it can be */
+static void menu_run(int i)
+{
+    Menu *m = S.menu;
+    if (!m || i < 0 || i >= (int)m->items.size() || !m->items[i].enabled || m->items[i].label.empty()) return;
+    auto run = m->items[i].run;
+    close_menu();
+    if (run) run();
+}
+
+static void menu_key(xkb_keysym_t sym);
 
 static void system_menu(int x, int y)
 {
@@ -1015,6 +1452,75 @@ static void window_menu(Window *w, int x, int y)
         { "Window List", [] { toggle_winlist(); } },
         { "Close", [w] { close_window(w); } },
     });
+}
+
+/* a folder's menu bar menus: Folder, Edit, View, Selected, Help */
+static std::vector<Menu::Item> folder_menu(Window *w, int which)
+{
+    bool any = w->sel >= 0 && !w->all;
+    bool folder = any && (w->view == Window::TREE || w->objects[w->sel].action == A_FOLDER);
+    switch (which) {
+    case 0: return {
+        { "Open parent", [w] { open_parent(w); } },
+        { "Refresh now", [w] { load_folder(w); draw_window(w); } },
+        { "", nullptr },
+        { "Close", [w] { close_window(w); } } };
+    case 1: return {
+        { "Select all", [w] { w->all = true; draw_window(w); }, w->view != Window::TREE && !w->objects.empty() },
+        { "Deselect all", [w] { w->all = false; w->sel = -1; draw_window(w); } } };
+    case 2: {
+        std::vector<Menu::Item> v = {
+            { "Icon view", [w] { set_view(w, Window::ICON); } },
+            { "Tree view", [w] { set_view(w, Window::TREE); } },
+            { "Details view", [w] { set_view(w, Window::DETAILS); } } };
+        v[w->view].checked = true;
+        return v; }
+    case 3: return {
+        { "Open", [w] { activate(w, w->sel); }, any },
+        { "Open as Tree view", [w] {
+              if (w->view == Window::TREE) open_folder(w->nodes[w->sel].path, w->nodes[w->sel].name, Window::TREE);
+              else open_folder(w->objects[w->sel].path, w->objects[w->sel].label, Window::TREE);
+          }, folder },
+        { "", nullptr },
+        { "Properties", [w] { properties(w); }, any } };
+    default: return {
+        { "Keys and mouse", [] { about(); } },
+        { "", nullptr },
+        { "Product information", [] { about(); } } };
+    }
+}
+
+static void open_folder_menu(Window *w, int which)
+{
+    open_menu(w->x + B + menubar_x(which) - 7, w->y + B + T + MENUBAR - 1, folder_menu(w, which), w, which);
+}
+
+static void menu_key(xkb_keysym_t sym)
+{
+    Menu *m = S.menu;
+    int n = (int)m->items.size();
+    auto step = [&](int d) {
+        int h = m->hover;
+        for (int k = 0; k < n; k++) {
+            h = ((h < 0 ? (d > 0 ? -1 : 0) : h) + d + n) % n;
+            if (!m->items[h].label.empty() && m->items[h].enabled) break;
+        }
+        m->hover = h;
+        draw_menu();
+    };
+    switch (sym) {
+    case XKB_KEY_Escape: close_menu(); break;
+    case XKB_KEY_Down: step(1); break;
+    case XKB_KEY_Up: step(-1); break;
+    case XKB_KEY_Return: case XKB_KEY_KP_Enter: menu_run(m->hover); break;
+    case XKB_KEY_Left: case XKB_KEY_Right:
+        if (m->owner && m->bar >= 0) {
+            Window *w = m->owner;
+            int b = (m->bar + (sym == XKB_KEY_Right ? 1 : MENUBAR_N - 1)) % MENUBAR_N;
+            open_folder_menu(w, b);
+        }
+        break;
+    }
 }
 
 /* ── pointer ────────────────────────────────────────────────────────── */
@@ -1074,24 +1580,72 @@ static bool double_click(uint32_t time, const void *target, int index)
     return dbl;
 }
 
-static int folder_index_at(Window *w, int cx, int cy)
+/* which item is at (cx, cy) in a folder's content; *box: on a Tree +/- box */
+static int folder_item_at(Window *w, int cx, int cy, bool *box)
 {
-    int ty = cy - MENUBAR - 6;
-    if (ty < 0 || cx < 4) return -1;
-    int c = (cx - 4) / CELL_W, r = ty / CELL_H + w->scroll;
-    if (c >= folder_cols(w)) return -1;
-    int i = r * folder_cols(w) + c;
-    return i < (int)w->objects.size() ? i : -1;
+    *box = false;
+    if (cx < 0 || cx >= view_w(w) || cy < MENUBAR) return -1;
+    int vy = cy - MENUBAR;
+    switch (w->view) {
+    case Window::ICON: {
+        int ty = vy - 6;
+        if (ty < 0 || cx < 4) return -1;
+        int c = (cx - 4) / CELL_W, r = ty / CELL_H + w->scroll;
+        if (c >= folder_cols(w)) return -1;
+        int i = r * folder_cols(w) + c;
+        return i < (int)w->objects.size() ? i : -1;
+    }
+    case Window::TREE: {
+        if (vy < 3) return -1;
+        int i = (vy - 3) / TROW + w->scroll;
+        if (i >= (int)w->nodes.size()) return -1;
+        int bx = tree_x(w->nodes[i].depth);
+        if (cx >= bx - 2 && cx < bx + 11) { *box = w->nodes[i].kids; return i; }
+        int tw = text_width(TEXT_UI, w->nodes[i].name.c_str());
+        return cx >= bx + 12 && cx < bx + 38 + tw ? i : -1;
+    }
+    case Window::DETAILS: {
+        if (vy < TROW + 1) return -1;
+        int i = (vy - TROW - 1) / TROW + w->scroll;
+        return i < (int)w->objects.size() ? i : -1;
+    }
+    }
+    return -1;
 }
 
-static void content_click(Window *w, int cx, int cy, uint32_t time)
+static void folder_click(Window *w, int cx, int cy, uint32_t time, bool right)
+{
+    if (cx >= view_w(w)) {                                   /* the scroll bar */
+        int ty, th, my, mh, page = std::max(1, rows_visible(w) - (w->view == Window::ICON ? 0 : 1));
+        sb_geometry(w, &ty, &th, &my, &mh);
+        if (cy < ty) w->scroll--;
+        else if (cy >= ty + th) w->scroll++;
+        else if (cy < my) w->scroll -= page;
+        else if (cy >= my + mh) w->scroll += page;
+        else if (scroll_max(w) > 0) {                         /* the thumb: drag it */
+            S.grab = w; S.mode = Server::THUMB;
+            S.gy = S.cursor->y; S.gch = w->scroll;
+        }
+        clamp_scroll(w);
+        draw_window(w);
+        return;
+    }
+    bool box;
+    int i = folder_item_at(w, cx, cy, &box);
+    if (box) { toggle_node(w, i); w->sel = i; draw_window(w); return; }
+    bool dbl = !right && double_click(time, w, i);
+    w->sel = i;
+    w->all = false;
+    draw_window(w);
+    int sx = w->x + B + cx, sy = w->y + B + T + cy;
+    if (right) open_menu(sx, sy, folder_menu(w, i >= 0 ? 3 : 2), w);
+    else if (dbl) activate(w, i);
+}
+
+static void content_click(Window *w, int cx, int cy, uint32_t time, bool right)
 {
     if (w->kind == Window::FOLDER) {
-        int i = folder_index_at(w, cx, cy);
-        bool dbl = double_click(time, w, i);
-        w->sel = i;
-        draw_window(w);
-        if (dbl && i >= 0) run_object(w->objects[i]);
+        folder_click(w, cx, cy, time, right);
     } else if (w->kind == Window::WINLIST) {
         auto list = listed_windows();
         int i = (cy - 4 - ROW) / ROW;
@@ -1111,6 +1665,16 @@ static void pointer_motion(uint32_t time)
         w->x = S.gwx + (int)(lx - S.gx);
         w->y = std::max(BAR - T, S.gwy + (int)(ly - S.gy));
         wlr_scene_node_set_position(&w->tree->node, w->x, w->y);
+        return;
+    }
+    if (S.mode == Server::THUMB && S.grab) {
+        Window *w = S.grab;
+        int ty, th, my, mh;
+        sb_geometry(w, &ty, &th, &my, &mh);
+        int room = std::max(1, th - mh);
+        w->scroll = S.gch + (int)((ly - S.gy) * scroll_max(w) / room);
+        clamp_scroll(w);
+        draw_window(w);
         return;
     }
     if (S.mode == Server::RESIZE && S.grab) {
@@ -1134,6 +1698,11 @@ static void pointer_motion(uint32_t time)
         int h = (mx >= 0 && mx < S.menu->w && my >= 3 && my < S.menu->h - 3) ? (my - 3) / ROW : -1;
         if (h >= (int)S.menu->items.size()) h = -1;
         if (h != S.menu->hover) { S.menu->hover = h; draw_menu(); }
+        if (Window *w = S.menu->owner; w && S.menu->bar >= 0) {     /* along the menu bar */
+            int fx = (int)lx - w->x - B, fy = (int)ly - w->y - B - T;
+            int b = fy >= 0 && fy < MENUBAR ? menubar_at(fx) : -1;
+            if (b >= 0 && b != S.menu->bar) open_folder_menu(w, b);
+        }
     }
     Hit h = hit_at(lx, ly);
     if (h.surface) {
@@ -1160,18 +1729,17 @@ static void pointer_button(wlr_pointer_button_event *e)
         return;
     }
     bool right = e->button == 0x111;                    /* BTN_RIGHT */
+    Window *menu_owner = nullptr;                       /* (a click on its label again: closed) */
+    int menu_bar = -1;
     if (S.menu) {
         Menu *m = S.menu;
         int mx = (int)lx - m->x, my = (int)ly - m->y;
         if (mx >= 0 && mx < m->w && my >= 0 && my < m->h) {
-            int i = (my - 3) / ROW;
-            if (i >= 0 && i < (int)m->items.size()) {
-                auto run = m->items[i].run;
-                close_menu();
-                run();
-            }
+            if (my >= 3) menu_run((my - 3) / ROW);
             return;
         }
+        menu_owner = m->owner;
+        menu_bar = m->bar;
         close_menu();
     }
     Hit h = hit_at(lx, ly);
@@ -1212,23 +1780,13 @@ static void pointer_button(wlr_pointer_button_event *e)
         case HIT_CLOSE: close_window(w); break;
         case HIT_MAX: toggle_maximize(w); break;
         case HIT_HIDE: hide(w); break;
-        case HIT_MENUBAR:
-            if (fx - B < 60)
-                open_menu(w->x + B, w->y + B + T + MENUBAR, {
-                    { "Open parent", [w] {
-                        std::string p = w->path;
-                        if (p.rfind("::", 0) == 0 || p == "/" || p == "/h") { open_folder("::drives", "Drives"); return; }
-                        size_t s = p.rfind('/');
-                        std::string up = s == 0 ? "/" : p.substr(0, s);
-                        std::string nm = up == "/" ? "Drive C" : up == "/h" ? "Drive D" : up.substr(up.rfind('/') + 1);
-                        open_folder(up, nm);
-                    } },
-                    { "Refresh", [w] { w->objects = folder_objects(w->path); w->sel = -1; w->scroll = 0; draw_window(w); } },
-                    { "Close", [w] { close_window(w); } },
-                });
+        case HIT_MENUBAR: {
+            int b = menubar_at(fx - B);
+            if (b >= 0 && !(menu_owner == w && menu_bar == b)) open_folder_menu(w, b);
             break;
+        }
         case HIT_CONTENT:
-            content_click(w, fx - B, fy - B - T, e->time_msec);
+            content_click(w, fx - B, fy - B - T, e->time_msec, right);
             break;
         }
         return;
@@ -1261,15 +1819,72 @@ static void pointer_axis(wlr_pointer_axis_event *e)
     }
     if (h.tag && h.tag->k == Tag::WIN && h.tag->w->kind == Window::FOLDER) {
         Window *w = h.tag->w;
-        int rows = ((int)w->objects.size() + folder_cols(w) - 1) / folder_cols(w);
-        int max = std::max(0, rows - folder_rows_visible(w));
-        w->scroll = std::clamp(w->scroll + (e->delta > 0 ? 1 : -1), 0, max);
+        w->scroll += e->delta > 0 ? 1 : e->delta < 0 ? -1 : 0;
+        clamp_scroll(w);
         draw_window(w);
     }
 }
 
 /* ── keyboard ───────────────────────────────────────────────────────── */
 struct Keyboard { wlr_keyboard *kb; Listener key, mods, destroy; };
+
+/* keys for the compositor's own windows (folders, Window List, info) */
+static bool internal_key(Window *w, xkb_keysym_t sym)
+{
+    if (w->kind == Window::INFO) {
+        if (sym == XKB_KEY_Return || sym == XKB_KEY_KP_Enter || sym == XKB_KEY_Escape) { close_window(w); return true; }
+        return false;
+    }
+    if (w->kind == Window::WINLIST) {
+        auto list = listed_windows();
+        int n = (int)list.size();
+        switch (sym) {
+        case XKB_KEY_Up: w->lsel = std::max(0, w->lsel - 1); break;
+        case XKB_KEY_Down: w->lsel = std::min(n - 1, w->lsel + 1); break;
+        case XKB_KEY_Return: case XKB_KEY_KP_Enter:
+            if (w->lsel >= 0 && w->lsel < n) focus(list[w->lsel]);
+            return true;
+        case XKB_KEY_Escape: close_window(w); return true;
+        default: return false;
+        }
+        draw_window(w);
+        return true;
+    }
+    if (w->kind != Window::FOLDER) return false;
+    int n = item_count(w), cols = w->view == Window::ICON ? folder_cols(w) : 1;
+    int page = cols * std::max(1, rows_visible(w) - 1), s = w->sel;
+    bool tree = w->view == Window::TREE;
+    switch (sym) {
+    case XKB_KEY_F10: open_folder_menu(w, 0); return true;
+    case XKB_KEY_F5: load_folder(w); draw_window(w); return true;
+    case XKB_KEY_BackSpace: open_parent(w); return true;
+    case XKB_KEY_Return: case XKB_KEY_KP_Enter: activate(w, w->sel); return true;
+    case XKB_KEY_Up: s = s < 0 ? 0 : s - cols; break;
+    case XKB_KEY_Down: s = s < 0 ? 0 : s + cols; break;
+    case XKB_KEY_Home: s = 0; break;
+    case XKB_KEY_End: s = n - 1; break;
+    case XKB_KEY_Prior: s = s < 0 ? 0 : s - page; break;
+    case XKB_KEY_Next: s = s < 0 ? 0 : s + page; break;
+    case XKB_KEY_Left: case XKB_KEY_minus: case XKB_KEY_KP_Subtract:
+        if (!tree) { s = s < 0 ? 0 : s - 1; break; }
+        if (s >= 0 && w->nodes[s].open) { toggle_node(w, s); break; }
+        while (s > 0 && w->nodes[s - 1].depth >= w->nodes[s].depth) s--;     /* to the parent */
+        if (s > 0) s--;
+        break;
+    case XKB_KEY_Right: case XKB_KEY_plus: case XKB_KEY_KP_Add:
+        if (!tree) { s = s < 0 ? 0 : s + 1; break; }
+        if (s >= 0 && w->nodes[s].kids && !w->nodes[s].open) toggle_node(w, s);
+        break;
+    default: return false;
+    }
+    if (n == 0) return true;
+    n = item_count(w);
+    w->sel = std::clamp(s, 0, n - 1);
+    w->all = false;
+    ensure_visible(w, w->sel);
+    draw_window(w);
+    return true;
+}
 
 static bool binding(uint32_t mods, xkb_keysym_t sym)
 {
@@ -1317,7 +1932,8 @@ static void new_keyboard(wlr_input_device *dev)
             int n = xkb_state_key_get_syms(k->kb->xkb_state, e->keycode + 8, &syms);
             uint32_t mods = wlr_keyboard_get_modifiers(k->kb);
             for (int i = 0; i < n; i++) if (binding(mods, syms[i])) return;
-            if (S.menu && syms && n && syms[0] == XKB_KEY_Escape) { close_menu(); return; }
+            if (S.menu && n) { menu_key(syms[0]); return; }
+            if (S.active && !S.active->top && n && internal_key(S.active, syms[0])) return;
         }
         wlr_seat_set_keyboard(S.seat, k->kb);
         wlr_seat_keyboard_notify_key(S.seat, e->time_msec, e->keycode, e->state);
