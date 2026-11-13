@@ -4,7 +4,7 @@
  *
  *   os2cmd                an interactive OS/2 prompt (the desktop's Alt+O)
  *   os2cmd COMMAND ...    run one OS/2 command, print its output, exit
- *                         (e.g. "/h/os2cmd dir \h" from a busybox shell)
+ *                         (e.g. "/h/OS2/os2cmd dir \h" from a script)
  *
  * Every line goes to /dev/os2cmd (kernel/src/linux/linux.c), where the
  * kernel's own OS/2 command interpreter (kernel/src/main.c) runs it - DIR,
@@ -264,7 +264,9 @@ static void start(char **argv, int argc)
         if (!find_program("foot", foot, sizeof foot)) { puts("\nSTART: no terminal program on this system"); return; }
         exe = foot;
         full[k++] = foot;
-        if (is_file("/h/foot.ini")) { full[k++] = "-c"; full[k++] = "/h/foot.ini"; }
+        static char ini[512];                          /* foot.ini: next to foot */
+        snprintf(ini, sizeof ini, "%.*s/foot.ini", (int)(strrchr(foot, '/') - foot), foot);
+        if (is_file(ini)) { full[k++] = "-c"; full[k++] = ini; }
         full[k++] = path;
         if (strcmp(run[0], path)) full[k++] = run[0];  /* busybox: the applet, or sh */
         for (int i = 1; run[i] && k < 71; i++) full[k++] = run[i];

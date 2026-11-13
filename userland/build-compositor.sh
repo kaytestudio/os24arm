@@ -255,12 +255,12 @@ a, b = c.index("/* Trackpad */"), c.index("button_map = LIBINPUT_CONFIG_TAP_MAP_
 c = c[:a] + c[c.index("\n", b) + 1:]
 t = 'static const char *termcmd[] = { "foot", NULL };'
 assert c.count(t) == 1
-c = c.replace(t, 'static const char *termcmd[] = { "/h/foot", "-c", "/h/foot.ini", NULL };')
+c = c.replace(t, 'static const char *termcmd[] = { "/h/OS2/foot", "-c", "/h/OS2/foot.ini", NULL };')
 m = 'static const char *menucmd[] = { "wmenu-run", NULL };'
 assert c.count(m) == 1
-c = c.replace(m, 'static const char *menucmd[] = { "/h/fuzzel", "--config", "/h/fuzzel.ini", NULL };\n'
+c = c.replace(m, 'static const char *menucmd[] = { "/h/OS2/fuzzel", "--config", "/h/OS2/fuzzel.ini", NULL };\n'
                  '/* Alt+O: the kernel\'s OS/2 command prompt (userland/apps/os2cmd.c) */\n'
-                 'static const char *os2cmd[] = { "/h/foot", "-c", "/h/foot.ini", "/h/os2cmd", NULL };')
+                 'static const char *os2cmd[] = { "/h/OS2/foot", "-c", "/h/OS2/foot.ini", "/h/OS2/os2cmd", NULL };')
 k = '\t{ MODKEY,                    XKB_KEY_p,           spawn,            {.v = menucmd} },\n'
 assert c.count(k) == 1 and "XKB_KEY_o," not in c, "dwl config.def.h keys changed upstream"
 c = c.replace(k, k + '\t{ MODKEY,                    XKB_KEY_o,           spawn,            {.v = os2cmd} },\n')

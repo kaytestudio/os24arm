@@ -108,6 +108,7 @@ struct vfs_mount {
     char        mountpoint[VFS_PATH_MAX];
     vfs_fs_t   *fs;
     void       *priv;  /* Filesystem-private data (e.g., fat32_mount_t*) */
+    int         quiet; /* mounted under vfs_quiet: not in the shell's MOUNT list */
 };
 
 /* ── File descriptor ─────────────────────────────────────────────────────── */
@@ -182,6 +183,8 @@ int vfs_stat(const char *path, vfs_stat_t *st);
  * (fsname may be NULL). VFS_ERR_INVAL if its driver can't tell. */
 int vfs_statfs(const char *path, vfs_statfs_t *st, const char **fsname);
 extern int vfs_quiet;   /* nonzero: vfs_mount() says nothing */
+/* Was mount number index made under vfs_quiet (the system's own)? */
+int vfs_mount_quiet(int index);
 /* Seconds since 1970 -> DOS date/time words (both 0 outside 1980-2107). */
 void vfs_unix_to_dos(unsigned long long t, uint16_t *date, uint16_t *time);
 /* Which mount slot holds path (a stable number while mounted), or -1. */

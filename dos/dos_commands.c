@@ -171,7 +171,7 @@ static int for_each_file(const char *spec, file_fn fn, void *ctx)
     APIRET rc = DosFindFirst(spec, &hdir, 0, &ffb, sizeof ffb, &count);
     if (rc != NO_ERROR) return -(int)(rc == ERROR_NO_MORE_FILES ? ERROR_FILE_NOT_FOUND : rc);
     while (rc == NO_ERROR && count) {
-        if (!(ffb.attributes & VFS_ATTR_DIR)) {
+        if (!(ffb.attributes & (VFS_ATTR_DIR | VFS_ATTR_HIDDEN | VFS_ATTR_SYSTEM))) {
             char path[VFS_PATH_MAX];
             join_path(path, sizeof path, spec, b, ffb.name);
             if (fn(path, ffb.name, ctx) < 0) break;
@@ -1520,13 +1520,17 @@ void dos_exit(int argc, char **argv)
 
 /* ── DIR ─────────────────────────────────────────────────────────────────── */
 
-/* DIR [path or pattern] [/W] */
+/* Hidden or system: left out of DIR, TREE and wildcards unless asked (/A). */
+#define ATTR_HIDE (VFS_ATTR_HIDDEN | VFS_ATTR_SYSTEM)
+
+/* DIR [path or pattern] [/W] [/A: hidden and system entries too] */
 void dos_dir(int argc, char **argv)
 {
     const char *arg = "*";
-    int wide = 0;
+    int wide = 0, all = 0;
     for (int i = 1; i < argc; i++) {
         if (argv[i][0] == '/' && (argv[i][1] | 0x20) == 'w' && !argv[i][2]) wide = 1;
+        else if (argv[i][0] == '/' && (argv[i][1] | 0x20) == 'a') all = 1;
         else arg = argv[i];
     }
 
@@ -1582,6 +1586,7 @@ void dos_dir(int argc, char **argv)
     uint32_t file_count = 0, dir_count = 0, col = 0;
     unsigned long long bytes = 0;
     do {
+        if ((ffb.attributes & ATTR_HIDE) && !all) continue;
         int isdir = (ffb.attributes & VFS_ATTR_DIR) != 0;
         if (isdir) dir_count++;
         else { file_count++; bytes += ffb.file_size; }
@@ -1760,7 +1765,7 @@ void dos_del(int argc, char **argv)
         APIRET rc = DosFindFirst(argv[1], &hdir, 0, &ffb, sizeof ffb, &count);
         if (rc != NO_ERROR) { print_dos_error("DEL", rc); return; }
         while (rc == NO_ERROR && count) {
-            if (!(ffb.attributes & VFS_ATTR_DIR)) {
+            if (!(ffb.attributes & (VFS_ATTR_DIR | VFS_ATTR_HIDDEN | VFS_ATTR_SYSTEM))) {
                 uint32_t k = dl;
                 if (dl + ffb.name_len >= sizeof dir) { failed++; goto next; }
                 for (uint32_t j = 0; j < ffb.name_len; j++) dir[k++] = ffb.name[j];
@@ -1981,6 +1986,7 @@ void dos_format(int argc, char **argv)
 /* ── TREE ────────────────────────────────────────────────────────────────── */
 
 static unsigned tree_dirs, tree_files;
+static int tree_all;                            /* /A: hidden and system too */
 static void tree_walk(char *path, int plen, char *prefix, int depth, int files);
 
 static void tree_emit(char *path, int plen, const char *name, int isdir, int last,
@@ -2022,7 +2028,7 @@ static void tree_walk(char *path, int plen, char *prefix, int depth, int files)
     while (rc == NO_ERROR && count) {
         int isdir = (ffb.attributes & VFS_ATTR_DIR) != 0;
         int dot = ffb.name[0] == '.' && (!ffb.name[1] || (ffb.name[1] == '.' && !ffb.name[2]));
-        if ((isdir || files) && !dot) {
+        if ((isdir || files) && !dot && (tree_all || !(ffb.attributes & (VFS_ATTR_HIDDEN | VFS_ATTR_SYSTEM)))) {
             if (have) tree_emit(path, plen, pending, pending_dir, 0, prefix, depth, files);
             strcpy(pending, ffb.name);
             pending_dir = isdir;
@@ -2034,13 +2040,16 @@ static void tree_walk(char *path, int plen, char *prefix, int depth, int files)
     if (have) tree_emit(path, plen, pending, pending_dir, 1, prefix, depth, files);
 }
 
-/* TREE [path] [/F]: the directories under path (and their files, /F). */
+/* TREE [path] [/F] [/A]: the directories under path (and their files,
+ * /F; hidden and system ones too, /A). */
 void dos_tree(int argc, char **argv)
 {
     const char *arg = ".";
     int files = 0;
+    tree_all = 0;
     for (int i = 1; i < argc; i++) {
         if (argv[i][0] == '/' && (argv[i][1] | 0x20) == 'f') files = 1;
+        else if (argv[i][0] == '/' && (argv[i][1] | 0x20) == 'a') tree_all = 1;
         else arg = argv[i];
     }
     static char path[VFS_PATH_MAX + 4];

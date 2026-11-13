@@ -463,7 +463,7 @@ static void cmd_mount(int argc, char **argv)
         kprintf("\nMounted:\n");
         const char *mp, *fs;
         for (int i = 0; vfs_mount_info(i, &mp, &fs) == VFS_OK; i++)
-            kprintf("  %-12s %s\n", mp, fs);
+            if (!vfs_mount_quiet(i)) kprintf("  %-12s %s\n", mp, fs);
         kprintf("Block devices:\n");
         for (int i = 0; ; i++) {
             blkdev_t *d = blkdev_get_by_index(i);
@@ -547,13 +547,13 @@ static void cmd_desktop(int argc, char **argv)
         kprintf("\nDESKTOP: no display (start QEMU with scripts/run-vm.sh --wayland)\n");
         return;
     }
-    if (vfs_stat("/h/dwl.sh", &st) != VFS_OK) {
+    if (vfs_stat("/h/OS2/dwl.sh", &st) != VFS_OK) {
         if (vfs_stat("/h", &st) == VFS_OK) {
-            kprintf("\nDESKTOP: \\h is mounted but has no dwl.sh (see userland/make-stick.sh)\n");
+            kprintf("\nDESKTOP: \\h is mounted but has no desktop on it (see userland/make-stick.sh)\n");
             return;
         }
         /* partitions (usb0p1) before whole disks (usb0) */
-        for (int pass = 0; pass < 2 && vfs_stat("/h/dwl.sh", &st) != VFS_OK; pass++)
+        for (int pass = 0; pass < 2 && vfs_stat("/h/OS2/dwl.sh", &st) != VFS_OK; pass++)
             for (int i = 0; ; i++) {
                 blkdev_t *d = blkdev_get_by_index(i);
                 if (!d) break;
@@ -564,25 +564,25 @@ static void cmd_desktop(int argc, char **argv)
                 if (part != (pass == 0)) continue;
                 char *mv[3] = { "MOUNT", (char *)n, "\\h" };
                 cmd_mount(3, mv);
-                if (vfs_stat("/h/dwl.sh", &st) == VFS_OK) break;
+                if (vfs_stat("/h/OS2/dwl.sh", &st) == VFS_OK) break;
                 if (vfs_stat("/h", &st) == VFS_OK) {        /* mounted, but not the stick */
                     char *uv[2] = { "UMOUNT", "\\h" };
                     cmd_umount(2, uv);
                 }
             }
-        if (vfs_stat("/h/dwl.sh", &st) != VFS_OK) {
+        if (vfs_stat("/h/OS2/dwl.sh", &st) != VFS_OK) {
             kprintf("\nDESKTOP: no USB stick with the desktop on it (userland/make-stick.sh;\n"
                     "         scripts/run-vm.sh --wayland attaches build/userland/stick.img)\n");
             return;
         }
     }
-    char *av[6] = { "/h/busybox", "sh", "/h/dwl.sh", 0, 0, 0 };
+    char *av[6] = { "/h/OS2/busybox", "sh", "/h/OS2/dwl.sh", 0, 0, 0 };
     int ac = 3;
     for (int i = 1; i < argc && ac < 5; i++) av[ac++] = argv[i];
     for (char *c = av[3]; c && *c; c++) if (*c >= 'A' && *c <= 'Z') *c += 32;   /* layouts: lower case */
     kprintf("\nStarting the desktop - Alt+Shift+Enter or Alt+O: OS/2 Command Prompt,\n"
             "Alt+P: programs, Alt+Shift+Q: back to this console\n");
-    int status = linux_run("/h/busybox", ac, av);
+    int status = linux_run("/h/OS2/busybox", ac, av);
     if (status != 0) kprintf("\nThe desktop ended unexpectedly (status %d)\n", status);
 }
 

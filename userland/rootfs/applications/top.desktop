@@ -2,6 +2,6 @@
 Type=Application
 Name=System Monitor
 Comment=The running programs, CPU and memory use
-Exec=/h/busybox top
+Exec=/h/OS2/busybox top
 Terminal=true
 Categories=System;Monitor;

@@ -2,6 +2,6 @@
 Type=Application
 Name=Text Editor
 Comment=A vi editor
-Exec=/h/busybox vi
+Exec=/h/OS2/busybox vi
 Terminal=true
 Categories=Utility;TextEditor;

@@ -69,6 +69,7 @@ SB_MAGIC = (0xF995E849, 0xFA53E9C5)
 SP_MAGIC = (0xF9911849, 0xFA5229C5)
 
 DE_FIRST, DE_DOWN, DE_LAST = 0x01, 0x04, 0x08
+ATTR_HIDDEN, ATTR_SYSTEM = 0x02, 0x04
 ATTR_DIR, ATTR_ARCHIVE, ATTR_NOT83 = 0x10, 0x20, 0x40
 BP_INTERNAL, BP_FNODE_PARENT = 0x80, 0x20
 DNODE_HDR = 20
@@ -154,6 +155,7 @@ def fnode(name, up, size, btree, is_dir):
 class Builder:
     def __init__(self, vol, stamp, ea=False, fill=75):
         self.ea = ea
+        self.hidden = ()
         self.fill = fill
         self.v = vol
         self.stamp = stamp
@@ -293,6 +295,7 @@ class Builder:
         return lsn
 
     def add_dir(self, path, name, parent, me=None):
+        top = parent is None                           # the root directory
         if me is None:
             me = self.v.alloc(1)
         if parent is None:
@@ -307,6 +310,8 @@ class Builder:
                 lsn, size, attr = self.add_file(full, child, me)
             if not is_83(child):
                 attr |= ATTR_NOT83
+            if top and child in self.hidden:           # top level: --hidden NAME
+                attr |= ATTR_HIDDEN | ATTR_SYSTEM
             kids.append((child, 0, attr, lsn, size))
         names = [hpfs_key(k[0]) for k in kids]
         if len(set(names)) != len(names):
@@ -323,6 +328,8 @@ def main():
     ap.add_argument('--size', type=size_arg, default=8 << 20)
     ap.add_argument('--from', dest='src')
     ap.add_argument('--label', default='OS2HPFS')
+    ap.add_argument('--hidden', action='append', default=[], metavar='NAME',
+                    help='mark this top-level file or directory hidden + system (repeatable)')
     ap.add_argument('--fragment', type=int, default=0)
     ap.add_argument('--hotfix', action='store_true',
                     help='simulate a bad sector: move one data sector of the biggest file '
@@ -356,6 +363,7 @@ def main():
     v.dband, v.dband_slots, v.dband_used = dir_band, 16, [0] * 16
 
     b = Builder(v, stamp, a.ea, a.fill)
+    b.hidden = set(a.hidden)
     root = v.alloc(1)
     b.add_dir(a.src, '', None, root)
 

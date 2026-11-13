@@ -157,7 +157,7 @@ platform-specific are new code.
    then `DESKTOP [layout [variant]]` (e.g. `pt`, `de nodeadkeys`; default
    `us`): it mounts the stick at `\h` and starts dwl (`dwl.sh`). The user
    sees an OS/2 system: every terminal is an OS/2 Command Prompt (foot's
-   `shell=` is `/h/os2cmd`; the first window, Alt+Shift+Enter and Alt+O
+   `shell=` is `/h/OS2/os2cmd`; the first window, Alt+Shift+Enter and Alt+O
    open one), Alt+P lists OS/2 Command Prompt, System Monitor and Text
    Editor, and the compositor's and terminals' own output goes to
    `/tmp/desktop.log` rather than the console. Alt+J/K moves the focus,
@@ -172,7 +172,13 @@ platform-specific are new code.
    console.) Names the OS/2 shell doesn't know run as programs, in its
    current directory (`ls -l`, `\h\cat x`, `vi`: files, `$PATH`, busybox
    applets); `START prog` opens one in a new window, `START /PM prog` a
-   graphical one. `/h/os2cmd dir \h` runs one OS/2 command from a script.
+   graphical one. `/h/OS2/os2cmd dir \h` runs one OS/2 command from a script.
+
+   Everything the desktop needs lives in `\h\OS2`, a hidden system folder
+   (`make-stick.sh`, `mkhpfs.py --hidden`): DIR, TREE, DEL and wildcard
+   COPY leave hidden and system entries out unless given `/A`, so the
+   stick looks empty but for the user's own files; `CD \h\OS2` still
+   works. The programs' RAM `/tmp` isn't in the MOUNT list.
 
    Keyboard layouts: `build-libs.sh` stages xkeyboard-config 2.46's data
    and libX11's UTF-8 Compose table (dead keys, Multi_key); the stick has

@@ -133,6 +133,7 @@ int vfs_mount(const char *mountpoint, vfs_fs_t *fs, void *fs_priv)
     kstrncpy(mnt->mountpoint, mountpoint, VFS_PATH_MAX);
     mnt->fs   = fs;
     mnt->priv = fs_priv;
+    mnt->quiet = vfs_quiet;
 
     int r = fs->mount(mnt);
     if (r != VFS_OK) {
@@ -160,6 +161,16 @@ int vfs_unmount(const char *mountpoint)
         return VFS_OK;
     }
     return VFS_ERR_NOMOUNT;
+}
+
+int vfs_mount_quiet(int index)
+{
+    int n = 0;
+    for (int i = 0; i < mount_count; i++) {
+        if (!mounts[i].fs) continue;
+        if (n++ == index) return mounts[i].quiet;
+    }
+    return 0;
 }
 
 int vfs_mount_info(int index, const char **mountpoint, const char **fsname)

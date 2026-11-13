@@ -43,7 +43,7 @@ static void reset(void) { outn = 0; out[0] = 0; }
 int main(int argc, char **argv)
 {
     setvbuf(stdout, 0, _IOLBF, 0);
-    const char *bb = argc > 1 ? argv[1] : "/h/busybox";
+    const char *bb = argc > 1 ? argv[1] : "/h/OS2/busybox";
     master = posix_openpt(O_RDWR | O_NOCTTY | O_CLOEXEC);
     CHECK(master >= 0 && grantpt(master) == 0 && unlockpt(master) == 0, "posix_openpt/grantpt/unlockpt");
     char *name = ptsname(master);

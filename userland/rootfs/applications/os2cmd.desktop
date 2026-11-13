@@ -2,6 +2,6 @@
 Type=Application
 Name=OS/2 Command Prompt
 Comment=DIR, COPY, MOUNT, START, ... (also Alt+Shift+Enter or Alt+O)
-Exec=/h/foot -c /h/foot.ini /h/os2cmd
+Exec=/h/OS2/foot -c /h/OS2/foot.ini /h/OS2/os2cmd
 Terminal=false
 Categories=System;TerminalEmulator;
