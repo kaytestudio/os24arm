@@ -158,7 +158,8 @@ platform-specific are new code.
    `RUNELF \h\busybox sh /h/desktop.sh [layout [variant]]` (e.g. `pt`,
    `de nodeadkeys`; default `us`) - foot in cage on the virtio-gpu
    display, a busybox shell in it; `exit` ends the session. Or
-   `RUNELF \h\busybox sh /h/dwl.sh [layout]` - a tiling desktop:
+   `RUNELF \h\busybox sh /h/dwl.sh [layout]` (or just `DESKTOP [layout]`,
+   which mounts the stick first) - a tiling desktop:
    Alt+P the launcher (terminal, vi, ...), Alt+Shift+Enter another
    terminal, Alt+J/K moves the focus,
    Alt+Shift+C closes a window, Alt+Shift+Q quits (see `dwl.sh`).

@@ -130,6 +130,10 @@ static uint16_t fw_cfg_find_file(const char *name)
     return 0;
 }
 
+static bool ramfb_on;
+
+bool ramfb_available(void) { return ramfb_on; }
+
 bool ramfb_init(void *fb_addr, uint32_t width, uint32_t height, uint32_t stride)
 {
     uint16_t sel = fw_cfg_find_file("etc/ramfb");
@@ -155,5 +159,6 @@ bool ramfb_init(void *fb_addr, uint32_t width, uint32_t height, uint32_t stride)
 
     kprintf("[FB] ramfb configured: %ux%u @ 0x%p (QEMU will now display this buffer)\r\n",
             width, height, fb_addr);
+    ramfb_on = true;
     return true;
 }

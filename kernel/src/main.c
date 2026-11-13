@@ -11,6 +11,8 @@
 #include "kio.h"
 #include "basic.h"
 #include "gui/framebuffer.h"
+#include "gui/virtio_gpu.h"
+#include "gui/ramfb.h"
 #include "gui/wayland.h"
 #include "gui/virtio_input.h"
 #include "dos.h"
@@ -299,6 +301,7 @@ static void cmd_help(void)
     uart_puts("  USB       - List USB devices (USBD)\r\n");
     uart_puts("  RUNELF    - RUNELF \\path\\prog [args]: run a static Linux AArch64 program\r\n");
     uart_puts("  MOUNT     - MOUNT dev \\DIR: mount an HPFS/FAT volume (e.g. usb0p1)\r\n");
+    uart_puts("  DESKTOP   - The Wayland desktop from the USB stick [layout [variant]]\r\n");
     uart_puts("  UMOUNT    - UMOUNT \\DIR: unmount it\r\n");
     uart_puts("  IFS       - List loaded filesystem drivers\r\n");
     uart_puts("  RUN       - Load and run an OS/2 LX .EXE (e.g. RUN CMD.EXE)\r\n");
@@ -534,6 +537,56 @@ static void cmd_umount(int argc, char **argv)
     kprintf("\n%s unmounted\n", path);
 }
 
+/* DESKTOP [layout [variant]]: the Wayland desktop (dwl, userland/rootfs/
+ * dwl.sh) from the USB stick - mounted at \h first if it isn't: the first
+ * USB volume with dwl.sh on it. Back here when dwl quits (Alt+Shift+Q). */
+static void cmd_desktop(int argc, char **argv)
+{
+    vfs_stat_t st;
+    /* the framebuffer also works in plain memory: insist on a real display */
+    if (!linux_display_ok() || !(virtio_gpu_available() || ramfb_available())) {
+        kprintf("\nDESKTOP: no display (start QEMU with scripts/run-vm.sh --wayland)\n");
+        return;
+    }
+    if (vfs_stat("/h/dwl.sh", &st) != VFS_OK) {
+        if (vfs_stat("/h", &st) == VFS_OK) {
+            kprintf("\nDESKTOP: \\h is mounted but has no dwl.sh (see userland/make-stick.sh)\n");
+            return;
+        }
+        /* partitions (usb0p1) before whole disks (usb0) */
+        for (int pass = 0; pass < 2 && vfs_stat("/h/dwl.sh", &st) != VFS_OK; pass++)
+            for (int i = 0; ; i++) {
+                blkdev_t *d = blkdev_get_by_index(i);
+                if (!d) break;
+                const char *n = d->name;
+                if ((n[0] | 0x20) != 'u' || (n[1] | 0x20) != 's' || (n[2] | 0x20) != 'b') continue;
+                int part = 0;
+                for (const char *c = n + 3; *c; c++) if (*c == 'p') part = 1;
+                if (part != (pass == 0)) continue;
+                char *mv[3] = { "MOUNT", (char *)n, "\\h" };
+                cmd_mount(3, mv);
+                if (vfs_stat("/h/dwl.sh", &st) == VFS_OK) break;
+                if (vfs_stat("/h", &st) == VFS_OK) {        /* mounted, but not the stick */
+                    char *uv[2] = { "UMOUNT", "\\h" };
+                    cmd_umount(2, uv);
+                }
+            }
+        if (vfs_stat("/h/dwl.sh", &st) != VFS_OK) {
+            kprintf("\nDESKTOP: no USB stick with the desktop on it (userland/make-stick.sh;\n"
+                    "         scripts/run-vm.sh --wayland attaches build/userland/stick.img)\n");
+            return;
+        }
+    }
+    char *av[6] = { "/h/busybox", "sh", "/h/dwl.sh", 0, 0, 0 };
+    int ac = 3;
+    for (int i = 1; i < argc && ac < 5; i++) av[ac++] = argv[i];
+    for (char *c = av[3]; c && *c; c++) if (*c >= 'A' && *c <= 'Z') *c += 32;   /* layouts: lower case */
+    kprintf("\nStarting the desktop - Alt+O: OS/2 prompt, Alt+P: launcher, "
+            "Alt+Shift+Enter: terminal, Alt+Shift+Q: back here\n");
+    int status = linux_run("/h/busybox", ac, av);
+    if (status != 0) kprintf("[LINUX]  the desktop exited with status %d\n", status);
+}
+
 /* ── Command dispatcher ──────────────────────────────────────────────────── */
 
 static void execute_command(char *cmdline)
@@ -576,6 +629,9 @@ static void execute_command(char *cmdline)
     }
     else if (my_strcmp(argv[0], "MOUNT") == 0) {
         cmd_mount(argc, argv);
+    }
+    else if (my_strcmp(argv[0], "DESKTOP") == 0) {
+        cmd_desktop(argc, argv);
     }
     else if (my_strcmp(argv[0], "UMOUNT") == 0 || my_strcmp(argv[0], "UNMOUNT") == 0) {
         cmd_umount(argc, argv);
@@ -760,6 +816,7 @@ static void kernel_shell(void)
     uart_puts("Type HELP for available commands\r\n");
     uart_puts("Type IFS to list loaded filesystem drivers\r\n");
     uart_puts("Type BASIC to start BASIC interpreter\r\n");
+    uart_puts("Type DESKTOP to start the Wayland desktop (USB stick, display)\r\n");
     uart_puts("Type DOSKEY to enable command history/macros (see HELP)\r\n");
     uart_puts("\r\n");
 

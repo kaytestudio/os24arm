@@ -1480,6 +1480,13 @@ static int fb_geom(int *w, int *h, lx_u64 *size)
     return 0;
 }
 
+int linux_display_ok(void)
+{
+    int w, h;
+    lx_u64 size;
+    return fb_geom(&w, &h, &size) == 0;
+}
+
 static s64 fb_ioctl(lx_u64 req, lx_u64 arg)
 {
     int w, h;

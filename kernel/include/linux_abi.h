@@ -24,6 +24,8 @@ typedef struct {
  * loaded (the reason is printed).
  */
 int linux_run(const char *path, int argc, char **argv);
+/* Is there a display for /dev/fb0 (a virtio-gpu)? Sets it up if needed. */
+int linux_display_ok(void);
 
 /* Called from el0_sync_entry / el0_irq_entry. */
 void linux_el0_trap(linux_tf_t *tf);

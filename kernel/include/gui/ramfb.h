@@ -24,5 +24,7 @@
  * "etc/ramfb" fw_cfg file found) or the DMA interface didn't respond.
  */
 bool ramfb_init(void *fb_addr, uint32_t width, uint32_t height, uint32_t stride);
+/* Did ramfb_init() find QEMU's ramfb (a display someone can see)? */
+bool ramfb_available(void);
 
 #endif /* GUI_RAMFB_H */
