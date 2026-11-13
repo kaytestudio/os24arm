@@ -403,6 +403,16 @@ int mmu_as_query(mmu_as_t *as, unsigned long va)
     return prot;
 }
 
+unsigned long mmu_as_resident(mmu_as_t *as)
+{
+    unsigned long n = 0;
+    if (!as) return 0;
+    for (unsigned t = 0; t < MMU_USER_L3S; t++)
+        if (as->l3[t])
+            for (int j = 0; j < 512; j++) if (as->l3[t][j] & 1) n++;
+    return n;
+}
+
 mmu_as_t *mmu_as_fork(mmu_as_t *parent)
 {
     mmu_as_t *as = mmu_as_create();

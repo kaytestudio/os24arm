@@ -79,8 +79,13 @@ platform-specific are new code.
    processes), shared anonymous mappings; `/dev/null`, `/dev/zero`,
    `/dev/urandom`; `/tmp` is a RAM file system (`kernel/src/ramfs.c`,
    `XDG_RUNTIME_DIR=/tmp`), `flock` always succeeds (one user). Not done:
-   datagram/seqpacket sockets, `/proc` (beyond `/proc/self/exe` and
-   `/proc/self/fd/N` links).
+   datagram/seqpacket sockets.
+   `/proc`: the process list, `self`, `meminfo`, `uptime`, `loadavg`,
+   `stat`, `version`, `cpuinfo`, `mounts`; per process `stat`, `status`,
+   `statm`, `cmdline`, `comm`, `exe`, `fd/`; and `sysinfo` - enough for
+   busybox `ps`, `top`, `free`, `uptime`, `df` (CPU time: the 10 ms tick
+   charges the process it interrupts; `statfs` sizes are placeholders).
+   Test: `proctest`.
    Terminals: the console and pseudo-terminals (`/dev/ptmx`, `/dev/pts/N`)
    share one line discipline - Linux termios (`TCGETS`/`TCSETS*`;
    canonical editing with VERASE/VKILL/VWERASE/VEOF, raw mode, ECHO,

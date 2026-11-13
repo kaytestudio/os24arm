@@ -63,6 +63,9 @@ void mmu_as_unmap(mmu_as_t *as, unsigned long va, unsigned long len);
 int  mmu_as_map_shared(mmu_as_t *as, unsigned long va, void *const *frames, unsigned long n,
                        int prot);
 
+/* Pages present in an address space (for /proc: RSS). */
+unsigned long mmu_as_resident(mmu_as_t *as);
+
 /* What's at va: -1 if nothing is mapped, else MMU_PROT_* bits. */
 int  mmu_as_query(mmu_as_t *as, unsigned long va);
 

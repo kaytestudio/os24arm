@@ -67,8 +67,11 @@
  * Terminals: the console and pseudo-terminals (/dev/ptmx, /dev/pts/N) are
  * tty_t's with one line discipline (termios: canonical editing, raw mode,
  * echo, signals to the foreground process group), window sizes, process
- * groups, sessions and controlling terminals. /proc/self/exe and
- * /proc/self/fd/N exist as links (readlink, and exe as a path).
+ * groups, sessions and controlling terminals.
+ *
+ * /proc: generated when opened - the process list, per-process stat,
+ * status, statm, cmdline, comm, exe and fd/, and meminfo, uptime,
+ * loadavg, stat, version, cpuinfo, mounts (enough for ps, top, free).
  *
  * Not yet: datagram sockets, futexes shared between processes, the rest
  * of /proc, dynamic linking.
@@ -131,6 +134,7 @@ extern int       usbmouse_poll(usbmouse_ev_t *ev) __attribute__((weak));
 
 /* errno */
 #define EPERM 1
+#define EACCES 13
 #define ENOENT 2
 #define ESRCH 3
 #define EINTR 4
@@ -237,7 +241,7 @@ extern int       usbmouse_poll(usbmouse_ev_t *ev) __attribute__((weak));
 typedef __INT64_TYPE__ s64;
 
 /* ── Objects behind file descriptors ──────────────────────────────────── */
-enum { F_FREE, F_CONSOLE /* a tty: the console or a pty's slave */, F_PTMX, F_FILE, F_DIR, F_PIPE_R, F_PIPE_W, F_NULL, F_ZERO, F_RANDOM,
+enum { F_FREE, F_CONSOLE /* a tty: the console or a pty's slave */, F_PTMX, F_PROC, F_PROCDIR, F_FILE, F_DIR, F_PIPE_R, F_PIPE_W, F_NULL, F_ZERO, F_RANDOM,
        F_EVENTFD, F_TIMERFD, F_SIGNALFD, F_EPOLL, F_MEMFD, F_SOCK, F_FB, F_EVDEV };
 
 typedef struct pipe {
@@ -326,6 +330,8 @@ typedef struct file {
     memobj_t *mem;
     sock_t  *sock;
     struct tty *tty;                  /* F_CONSOLE, F_PTMX */
+    char    *pbuf;                    /* F_PROC: the generated contents (one frame) */
+    uint32_t plen;
     char     path[VFS_PATH_MAX];
 } file_t;
 
@@ -366,6 +372,10 @@ typedef struct group {
     char     exe[VFS_PATH_MAX];    /* /proc/self/exe */
     int      pgid, sid;            /* process group, session */
     lx_u64   itimer_next, itimer_interval;   /* ITIMER_REAL (ticks; 0 = off) -> SIGALRM */
+    lx_u64   utime;                /* scheduler ticks (10 ms) spent running, all threads */
+    lx_u64   start;                /* counter value at fork/exec (/proc: start time) */
+    char     cmdline[256];         /* argv, NUL-separated (/proc/PID/cmdline) */
+    uint32_t cmdlen;
     struct tty *ctty;              /* controlling terminal */
 } group_t;
 
@@ -1353,6 +1363,7 @@ static void file_put(file_t *f)
         break;
     }
     case F_EPOLL:  f->ep->used = 0; break;
+    case F_PROC:   if (f->pbuf) mmu_frames_free(f->pbuf, 1); f->pbuf = 0; break;
     case F_MEMFD:  mem_put(f->mem); break;
     case F_SOCK:   sock_release(f->sock); break;
     case F_EVDEV:  if (f->vfd == 0 && f->count && usbkbd_grab) usbkbd_grab(0); break;
@@ -1410,7 +1421,7 @@ static void fd_close(proc_t *p, int i)
 }
 
 /* struct stat, AArch64 Linux layout (asm-generic). */
-enum { ST_VFS, ST_CHR, ST_FIFO, ST_SOCK, ST_ANON, ST_MEM };
+enum { ST_VFS, ST_CHR, ST_FIFO, ST_SOCK, ST_ANON, ST_MEM, ST_LNK };
 static void fill_stat(uint8_t *st, const vfs_stat_t *vs, uint32_t kind, lx_u64 size)
 {
     kmemset(st, 0, 128);
@@ -1420,7 +1431,8 @@ static void fill_stat(uint8_t *st, const vfs_stat_t *vs, uint32_t kind, lx_u64 s
     case ST_FIFO: mode = 0010000 | 0600; break;
     case ST_SOCK: mode = 0140000 | 0777; break;
     case ST_ANON: mode = 0600; break;
-    case ST_MEM:  mode = 0100000 | 0600; break;
+    case ST_MEM:  mode = 0100000 | 0644; break;
+    case ST_LNK:  mode = 0120000 | 0777; break;
     default:
         if (vs->attrs & VFS_ATTR_DIR) mode = 0040000 | 0755;
         else mode = 0100000 | ((vs->attrs & VFS_ATTR_RDONLY) ? 0444 : 0644);
@@ -2188,6 +2200,9 @@ static s64 sys_clone(lx_u64 flags, lx_u64 newsp, lx_u64 ptid, lx_u64 tls, lx_u64
         g->pgid = cur->g->pgid;
         g->sid = cur->g->sid;
         g->ctty = cur->g->ctty;
+        kmemcpy(g->cmdline, cur->g->cmdline, cur->g->cmdlen);
+        g->cmdlen = cur->g->cmdlen;
+        g->start = ticks();
     }
     c->g = g;
     g->nthreads++;
@@ -2268,6 +2283,22 @@ static s64 sys_futex(lx_u64 uaddr, lx_u64 op, lx_u64 val, lx_u64 uts, lx_u64 uad
     return -ENOSYS;
 }
 
+/* /proc/PID/cmdline: the first argc strings of an argv/envp block. */
+static void set_cmdline(group_t *g, const char *args, int argc)
+{
+    uint32_t n = 0;
+    const char *a = args;
+    for (int i = 0; i < argc; i++) {
+        uint32_t l = (uint32_t)kstrlen(a) + 1;
+        if (n + l > sizeof g->cmdline) break;
+        kmemcpy(g->cmdline + n, a, l);
+        n += l;
+        a += l;
+    }
+    g->cmdlen = n;
+    g->start = ticks();
+}
+
 /* Copy a NULL-terminated user array of strings into argbuf at *used. */
 static int copy_in_argv(lx_u64 uv, uint32_t *used, int *count)
 {
@@ -2320,6 +2351,7 @@ static s64 sys_execve(lx_u64 upath, lx_u64 uargv, lx_u64 uenvp)
     cur->g->as = as;
     cur->g->brk_start = cur->g->brk_cur = top;
     kstrncpy(cur->g->exe, path, sizeof cur->g->exe);
+    set_cmdline(cur->g, argbuf, argc);
     vma_clear(cur->g);                                  /* a fresh layout: the stack area */
     vma_t sv = { STACK_BOTTOM, USER_TOP, MMU_PROT_READ | MMU_PROT_WRITE, V_ANON, 0, 0 };
     vma_insert(cur->g, &sv);
@@ -3524,6 +3556,337 @@ static void shm_unlink_index(int i)
     mem_put(m);
 }
 
+/* ── /proc ────────────────────────────────────────────────────────────── */
+/* Enough of procfs for ps, top, free, uptime, df: /proc lists the
+ * processes, self, and meminfo, uptime, loadavg, stat, version, cpuinfo,
+ * mounts; /proc/PID has stat, status, statm, cmdline, comm, an exe link
+ * and fd/. A file's contents are made when it's opened (one page);
+ * directories are listed by getdents64. CPU time: the scheduler tick
+ * (10 ms = one USER_HZ jiffy) is charged to the process it interrupts. */
+enum { PR_NONE, PR_DIR, PR_FILE, PR_LINK };
+static lx_u64 busy_jiffies;
+static const char *const proc_top[] = { "meminfo", "uptime", "loadavg", "stat", "version",
+                                        "cpuinfo", "mounts", 0 };
+static const char *const proc_pid[] = { "stat", "status", "statm", "cmdline", "comm", 0 };
+
+typedef struct { char *b; uint32_t n, cap; } pbuf_t;
+static void pb_c(pbuf_t *p, char c) { if (p->n < p->cap) p->b[p->n++] = c; }
+static void pb_s(pbuf_t *p, const char *s) { while (*s) pb_c(p, *s++); }
+static void pb_u(pbuf_t *p, lx_u64 v)
+{
+    char t[24];
+    int i = 0;
+    do t[i++] = (char)('0' + v % 10); while (v /= 10);
+    while (i) pb_c(p, t[--i]);
+}
+static void pb_d(pbuf_t *p, s64 v) { if (v < 0) { pb_c(p, '-'); v = -v; } pb_u(p, (lx_u64)v); }
+static void pb_kb(pbuf_t *p, const char *name, lx_u64 kb)   /* "Name:   123 kB" */
+{
+    pb_s(p, name);
+    pb_c(p, ':');
+    for (int i = (int)kstrlen(name); i < 15; i++) pb_c(p, ' ');
+    char t[24]; int n = 0;
+    lx_u64 v = kb;
+    do { t[n++] = (char)('0' + v % 10); } while (v /= 10);
+    for (int i = n; i < 8; i++) pb_c(p, ' ');
+    while (n) pb_c(p, t[--n]);
+    pb_s(p, " kB\n");
+}
+
+static lx_u64 jiffies(void) { return ticks() / (freq() / 100); }
+
+static int is_num(const char *s, uint32_t len, int *out)
+{
+    int v = 0;
+    if (!len) return 0;
+    for (uint32_t i = 0; i < len; i++) {
+        if (s[i] < '0' || s[i] > '9') return 0;
+        v = v * 10 + (s[i] - '0');
+    }
+    *out = v;
+    return 1;
+}
+
+static int name_eq(const char *s, uint32_t len, const char *name)
+{
+    return kstrlen(name) == len && !kstrncmp(s, name, len);
+}
+
+/* What path is in /proc; *gp gets the process, *leaf the last name. */
+static int proc_parse(const char *path, group_t **gp, const char **leaf, int *fdn)
+{
+    const char *pre = "/proc";
+    for (int i = 0; pre[i]; i++) if (path[i] != pre[i]) return PR_NONE;
+    const char *s = path + 5;
+    if (!*s) return PR_DIR;
+    if (*s != '/') return PR_NONE;
+    s++;
+    const char *e = s;
+    while (*e && *e != '/') e++;
+    uint32_t len = (uint32_t)(e - s);
+    *leaf = s;
+    int pid;
+    group_t *g = 0;
+    if (name_eq(s, len, "self")) {
+        if (!*e) return PR_LINK;
+        g = cur->g;
+    } else if (is_num(s, len, &pid)) {
+        g = group_by_pid(pid);
+        if (!g) return PR_NONE;
+    } else {
+        if (*e) return PR_NONE;
+        for (int i = 0; proc_top[i]; i++) if (name_eq(s, len, proc_top[i])) return PR_FILE;
+        return PR_NONE;
+    }
+    *gp = g;
+    if (!*e) return PR_DIR;
+    s = e + 1;
+    e = s;
+    while (*e && *e != '/') e++;
+    len = (uint32_t)(e - s);
+    *leaf = s;
+    if (name_eq(s, len, "fd")) {
+        if (!*e) return PR_DIR;
+        int n;
+        if (!is_num(e + 1, (uint32_t)kstrlen(e + 1), &n) || n >= MAX_FDS || !g->fd[n]) return PR_NONE;
+        *fdn = n;
+        return PR_LINK;
+    }
+    if (*e) return PR_NONE;
+    if (name_eq(s, len, "exe")) return g->exe[0] ? PR_LINK : PR_NONE;
+    for (int i = 0; proc_pid[i]; i++) if (name_eq(s, len, proc_pid[i])) return PR_FILE;
+    return PR_NONE;
+}
+
+/* Where a /proc link points. */
+static const char *proc_link(const char *path, char *tmp)
+{
+    group_t *g = 0;
+    const char *leaf = 0;
+    int fdn = -1;
+    if (proc_parse(path, &g, &leaf, &fdn) != PR_LINK) return 0;
+    if (!g) {                                          /* /proc/self */
+        pbuf_t p = { tmp, 0, 23 };
+        pb_u(&p, (lx_u64)cur->g->pid);
+        tmp[p.n] = 0;
+        return tmp;
+    }
+    if (fdn < 0) return g->exe;
+    file_t *f = g->fd[fdn];
+    return f->path[0] ? f->path : f->kind == F_PIPE_R || f->kind == F_PIPE_W ? "pipe:[0]"
+         : f->kind == F_SOCK ? "socket:[0]" : "anon_inode:[unknown]";
+}
+
+static int g_threads(group_t *g, int *running)
+{
+    int n = 0;
+    *running = 0;
+    for (int i = 0; i < MAX_PROCS; i++)
+        if (alive(&procs[i]) && procs[i].g == g) {
+            n++;
+            if (procs[i].state == P_RUN) (*running)++;
+        }
+    return n;
+}
+
+static char g_state(group_t *g)
+{
+    int r;
+    if (g->state == G_ZOMBIE) return 'Z';
+    g_threads(g, &r);
+    return r || g == cur->g ? 'R' : 'S';
+}
+
+static lx_u64 g_vsize(group_t *g)
+{
+    lx_u64 v = g->brk_start > MMU_USER_BASE ? g->brk_start - MMU_USER_BASE : 0;
+    for (int i = 0; i < g->nvma; i++) v += g->vma[i].end - g->vma[i].start;
+    return v;
+}
+
+static const char *g_comm(group_t *g, char *tmp)
+{
+    const char *b = g->exe;
+    for (const char *c = g->exe; *c; c++) if (*c == '/') b = c + 1;
+    uint32_t n = 0;
+    while (b[n] && n < 15) { tmp[n] = b[n]; n++; }
+    tmp[n] = 0;
+    return tmp;
+}
+
+static void proc_gen(const char *path, pbuf_t *p)
+{
+    group_t *g = 0;
+    const char *leaf = 0;
+    int fdn = -1;
+    proc_parse(path, &g, &leaf, &fdn);
+    lx_u64 total_kb = (MMU_POOL_END - MMU_POOL_BASE) / 1024, free_kb = mmu_frames_free_count() * 4;
+    if (!g) {
+        if (!kstrcmp(leaf, "meminfo")) {
+            lx_u64 shm = 0;
+            for (int i = 0; i < MAX_MEMOBJS; i++)
+                if (memobjs[i].refs)
+                    for (uint32_t k = 0; k < memobjs[i].npages; k++) if (memobjs[i].pages[k]) shm += 4;
+            pb_kb(p, "MemTotal", total_kb);
+            pb_kb(p, "MemFree", free_kb);
+            pb_kb(p, "MemAvailable", free_kb);
+            pb_kb(p, "Buffers", 0);
+            pb_kb(p, "Cached", ramfs_frames() * 4);
+            pb_kb(p, "SwapCached", 0);
+            pb_kb(p, "SwapTotal", 0);
+            pb_kb(p, "SwapFree", 0);
+            pb_kb(p, "Shmem", shm);
+        } else if (!kstrcmp(leaf, "uptime")) {
+            lx_u64 j = jiffies(), idle = j > busy_jiffies ? j - busy_jiffies : 0;
+            pb_u(p, j / 100); pb_c(p, '.'); pb_c(p, (char)('0' + j / 10 % 10)); pb_c(p, (char)('0' + j % 10));
+            pb_c(p, ' ');
+            pb_u(p, idle / 100); pb_c(p, '.'); pb_c(p, (char)('0' + idle / 10 % 10)); pb_c(p, (char)('0' + idle % 10));
+            pb_c(p, '\n');
+        } else if (!kstrcmp(leaf, "loadavg")) {
+            int run = 0, all = 0, last = 0;
+            for (int i = 0; i < MAX_PROCS; i++)
+                if (alive(&procs[i])) { all++; if (procs[i].state == P_RUN) run++; if (procs[i].pid > last) last = procs[i].pid; }
+            pb_s(p, "0.00 0.00 0.00 ");
+            pb_u(p, (lx_u64)run); pb_c(p, '/'); pb_u(p, (lx_u64)all); pb_c(p, ' '); pb_u(p, (lx_u64)last); pb_c(p, '\n');
+        } else if (!kstrcmp(leaf, "stat")) {
+            lx_u64 j = jiffies(), idle = j > busy_jiffies ? j - busy_jiffies : 0;
+            int run = 0, ngroups = 0;
+            for (int i = 0; i < MAX_PROCS; i++) if (procs[i].state == P_RUN) run++;
+            for (int i = 0; i < MAX_GROUPS; i++) if (groups[i].state != G_FREE) ngroups++;
+            for (int cpu = -1; cpu < 1; cpu++) {
+                pb_s(p, cpu < 0 ? "cpu  " : "cpu0 ");
+                pb_u(p, busy_jiffies); pb_s(p, " 0 0 "); pb_u(p, idle); pb_s(p, " 0 0 0 0 0 0\n");
+            }
+            pb_s(p, "intr 0\nctxt 0\nbtime ");
+            time_init();
+            pb_d(p, rt0 - (s64)(t0 / freq())); pb_s(p, "\nprocesses ");
+            pb_u(p, (lx_u64)next_pid); pb_s(p, "\nprocs_running "); pb_u(p, (lx_u64)(run ? run : 1));
+            pb_s(p, "\nprocs_blocked 0\n");
+            (void)ngroups;
+        } else if (!kstrcmp(leaf, "version")) {
+            pb_s(p, "Linux version 6.1.0-os2warp-linux-abi (os2warp) #3 SMP\n");
+        } else if (!kstrcmp(leaf, "cpuinfo")) {
+            lx_u64 midr;
+            __asm__ volatile("mrs %0, midr_el1" : "=r"(midr));
+            pb_s(p, "processor\t: 0\nBogoMIPS\t: ");
+            pb_u(p, freq() / 500000); pb_s(p, ".00\nFeatures\t: fp asimd\nCPU implementer\t: ");
+            pb_u(p, midr >> 24); pb_s(p, "\nCPU part\t: "); pb_u(p, (midr >> 4) & 0xFFF); pb_s(p, "\n\n");
+        } else if (!kstrcmp(leaf, "mounts")) {
+            const char *mp, *fs;
+            for (int i = 0; vfs_mount_info(i, &mp, &fs) == VFS_OK; i++) {
+                pb_s(p, fs); pb_c(p, ' '); pb_s(p, mp); pb_c(p, ' '); pb_s(p, fs); pb_s(p, " rw 0 0\n");
+            }
+        }
+        return;
+    }
+    char comm[16];
+    int running, nth = g_threads(g, &running);
+    lx_u64 rss = g->as ? mmu_as_resident(g->as) : 0, vsz = g_vsize(g);
+    if (!kstrcmp(leaf, "stat")) {
+        tty_t *t = g->ctty;
+        int tty_nr = !t ? 0 : t == &console_tty ? (5 << 8) | 1 : (136 << 8) | t->index;
+        pb_u(p, (lx_u64)g->pid); pb_s(p, " ("); pb_s(p, g_comm(g, comm)); pb_s(p, ") ");
+        pb_c(p, g_state(g)); pb_c(p, ' ');
+        pb_d(p, g->ppid); pb_c(p, ' '); pb_d(p, g->pgid); pb_c(p, ' '); pb_d(p, g->sid); pb_c(p, ' ');
+        pb_d(p, tty_nr); pb_c(p, ' '); pb_d(p, t && t->pgrp ? t->pgrp : -1);
+        pb_s(p, " 0 0 0 0 0 ");                          /* flags, faults */
+        pb_u(p, g->utime); pb_s(p, " 0 0 0 20 0 ");      /* utime stime cutime cstime prio nice */
+        pb_u(p, (lx_u64)(nth ? nth : 1)); pb_s(p, " 0 ");
+        pb_u(p, g->start / (freq() / 100)); pb_c(p, ' ');
+        pb_u(p, vsz); pb_c(p, ' '); pb_u(p, rss);
+        pb_s(p, " 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n");
+    } else if (!kstrcmp(leaf, "statm")) {
+        pb_u(p, vsz / PAGE); pb_c(p, ' '); pb_u(p, rss); pb_s(p, " 0 0 0 "); pb_u(p, vsz / PAGE); pb_s(p, " 0\n");
+    } else if (!kstrcmp(leaf, "status")) {
+        static const char *const sn[] = { "R (running)", "S (sleeping)", "Z (zombie)" };
+        char st = g_state(g);
+        pb_s(p, "Name:\t"); pb_s(p, g_comm(g, comm));
+        pb_s(p, "\nState:\t"); pb_s(p, sn[st == 'R' ? 0 : st == 'S' ? 1 : 2]);
+        pb_s(p, "\nTgid:\t"); pb_u(p, (lx_u64)g->pid);
+        pb_s(p, "\nPid:\t"); pb_u(p, (lx_u64)g->pid);
+        pb_s(p, "\nPPid:\t"); pb_d(p, g->ppid);
+        pb_s(p, "\nUid:\t0\t0\t0\t0\nGid:\t0\t0\t0\t0\n");
+        pb_kb(p, "VmSize", vsz / 1024);
+        pb_kb(p, "VmRSS", rss * 4);
+        pb_s(p, "Threads:\t"); pb_u(p, (lx_u64)nth); pb_c(p, '\n');
+    } else if (!kstrcmp(leaf, "cmdline")) {
+        for (uint32_t i = 0; i < g->cmdlen; i++) pb_c(p, g->cmdline[i]);
+    } else if (!kstrcmp(leaf, "comm")) {
+        pb_s(p, g_comm(g, comm)); pb_c(p, '\n');
+    }
+}
+
+/* Entry idx of a /proc directory: 1 and its name/type, or 0 past the end. */
+static int proc_dirent(const char *path, int idx, char *name, int *dtype)
+{
+    group_t *g = 0;
+    const char *leaf = 0;
+    int fdn = -1, k = proc_parse(path, &g, &leaf, &fdn);
+    if (k != PR_DIR) return 0;
+    pbuf_t p = { name, 0, 63 };
+    if (!g) {                                          /* /proc */
+        for (int i = 0; i < MAX_GROUPS; i++) {
+            if (groups[i].state == G_FREE) continue;
+            if (idx-- == 0) { pb_u(&p, (lx_u64)groups[i].pid); name[p.n] = 0; *dtype = 4; return 1; }
+        }
+        if (idx-- == 0) { kstrncpy(name, "self", 8); *dtype = 10; return 1; }
+        for (int i = 0; proc_top[i]; i++)
+            if (idx-- == 0) { kstrncpy(name, proc_top[i], 16); *dtype = 8; return 1; }
+        return 0;
+    }
+    if (!kstrncmp(leaf, "fd", 2) && (leaf[2] == 0)) {  /* /proc/PID/fd */
+        for (int i = 0; i < MAX_FDS; i++) {
+            if (!g->fd[i]) continue;
+            if (idx-- == 0) { pb_u(&p, (lx_u64)i); name[p.n] = 0; *dtype = 10; return 1; }
+        }
+        return 0;
+    }
+    for (int i = 0; proc_pid[i]; i++)
+        if (idx-- == 0) { kstrncpy(name, proc_pid[i], 16); *dtype = 8; return 1; }
+    if (idx-- == 0) { kstrncpy(name, "exe", 8); *dtype = 10; return 1; }
+    if (idx-- == 0) { kstrncpy(name, "fd", 8); *dtype = 4; return 1; }
+    return 0;
+}
+
+static s64 proc_open(const char *path, lx_u64 flags)
+{
+    group_t *g = 0;
+    const char *leaf = 0;
+    int fdn = -1, k = proc_parse(path, &g, &leaf, &fdn);
+    char tmp[24], dir[32];
+    if (k == PR_LINK && !g) {                          /* /proc/self -> /proc/PID */
+        pbuf_t p = { dir, 0, 31 };
+        pb_s(&p, "/proc/");
+        pb_s(&p, proc_link(path, tmp));
+        dir[p.n] = 0;
+        path = dir;
+        k = PR_DIR;
+    }
+    if (k == PR_NONE) return -ENOENT;
+    if ((flags & L_O_ACCMODE) != 0) return -EACCES;
+    int cl = (flags & L_O_CLOEXEC) != 0;
+    if (k == PR_LINK) {                                /* fd/N: that file again; exe: the program */
+        if (fdn >= 0) {
+            file_t *f = g->fd[fdn];
+            f->refs++;
+            int r = fd_install(f, cl, 0);
+            if (r < 0) file_put(f);
+            return r;
+        }
+        return -ENOENT;                                /* (exe of another process: not here) */
+    }
+    file_t *f = file_new(k == PR_DIR ? F_PROCDIR : F_PROC);
+    if (!f) return -ENFILE;
+    kstrncpy(f->path, path, sizeof f->path);
+    if (k == PR_FILE) {
+        if (!(f->pbuf = mmu_frames_alloc(1))) { file_free(f); return -ENOMEM; }
+        pbuf_t p = { f->pbuf, 0, (uint32_t)PAGE };
+        proc_gen(path, &p);
+        f->plen = p.n;
+    }
+    return fd_new(f, cl);
+}
+
 /* ── File system calls ────────────────────────────────────────────────── */
 static s64 sys_openat(int dirfd, lx_u64 up, lx_u64 flags)
 {
@@ -3533,6 +3896,7 @@ static s64 sys_openat(int dirfd, lx_u64 up, lx_u64 flags)
     int cl = (flags & L_O_CLOEXEC) != 0;
     const char *sn = shm_name(path);
     if (sn) return shm_open_path(sn, flags);
+    if (!kstrncmp(path, "/proc", 5) && (!path[5] || path[5] == '/')) return proc_open(path, flags);
     /* /dev */
     static const struct { const char *name; int kind; } devs[] = {
         { "/dev/null", F_NULL }, { "/dev/zero", F_ZERO }, { "/dev/urandom", F_RANDOM },
@@ -3681,6 +4045,12 @@ static s64 sys_read(lx_u64 fd, lx_u64 buf, lx_u64 n)
     case F_DIR:     return -EISDIR;
     case F_NULL: case F_ZERO: case F_RANDOM: return dev_read(f, b, n);
     case F_EVDEV:   return ev_read(f, b, n);
+    case F_PROC: {
+        lx_u64 k = 0;
+        while (k < n && f->pos < f->plen) b[k++] = (uint8_t)f->pbuf[f->pos++];
+        return (s64)k;
+    }
+    case F_PROCDIR: return -EISDIR;
     case F_FB:      return -EINVAL;
     case F_MEMFD:   return mem_rw(f->mem, &f->pos, b, n, 0);
     case F_EPOLL:   return -EINVAL;
@@ -3806,6 +4176,13 @@ static s64 sys_lseek(lx_u64 fd, s64 off, lx_u64 whence)
         return (s64)f->pos;
     }
     if (f->kind == F_NULL || f->kind == F_ZERO || f->kind == F_RANDOM) return 0;
+    if (f->kind == F_PROC || f->kind == F_PROCDIR) {
+        s64 base = whence == 0 ? 0 : whence == 1 ? (s64)f->pos : (s64)f->plen;
+        if (base + off < 0) return -EINVAL;
+        f->pos = (lx_u64)(base + off);
+        if (f->kind == F_PROCDIR && !f->pos) f->dir_pos = 0;   /* rewinddir */
+        return (s64)f->pos;
+    }
     if (f->kind != F_FILE) return -ESPIPE;
     if (off > 0x7FFFFFFF || off < -0x7FFFFFFFLL) return -EINVAL;
     int r = vfs_seek(f->vfd, (int32_t)off, (int)whence);
@@ -3851,6 +4228,8 @@ static s64 sys_fstatat(int dirfd, lx_u64 up, lx_u64 stp, lx_u64 flags, int by_fd
         case F_SOCK: kind = ST_SOCK; break;
         case F_MEMFD: kind = ST_MEM; size = f->mem->size; break;
         case F_EVENTFD: case F_TIMERFD: case F_SIGNALFD: case F_EPOLL: kind = ST_ANON; break;
+        case F_PROC: kind = ST_MEM; size = 0; break;
+        case F_PROCDIR: vs.attrs = VFS_ATTR_DIR; break;
         default:
             if (f->path[0] == '/' && !f->path[1]) vs.attrs = VFS_ATTR_DIR;
             else {
@@ -3861,7 +4240,20 @@ static s64 sys_fstatat(int dirfd, lx_u64 up, lx_u64 stp, lx_u64 flags, int by_fd
     } else {
         int r = user_path(dirfd, up, path);
         if (r) return r;
-        if (path[0] == '/' && !path[1]) vs.attrs = VFS_ATTR_DIR;
+        group_t *pg = 0;
+        const char *pl = 0;
+        int pfd = -1, pk = !kstrncmp(path, "/proc", 5) && (!path[5] || path[5] == '/')
+                           ? proc_parse(path, &pg, &pl, &pfd) : -1;
+        if (pk == PR_LINK && !(flags & 0x100) && !pg) pk = PR_DIR;   /* /proc/self, followed */
+        if (pk == PR_LINK && !(flags & 0x100) && pfd < 0) {          /* exe, followed */
+            kstrncpy(path, pg->exe, sizeof path);
+            pk = -1;
+        }
+        if (pk == PR_NONE) return -ENOENT;
+        if (pk == PR_DIR) vs.attrs = VFS_ATTR_DIR;
+        else if (pk == PR_FILE) kind = ST_MEM;
+        else if (pk == PR_LINK) kind = ST_LNK;
+        else if (path[0] == '/' && !path[1]) vs.attrs = VFS_ATTR_DIR;
         else if (streq(path, "/dev") || streq(path, "/dev/shm") || streq(path, "/dev/input"))
             vs.attrs = VFS_ATTR_DIR;
         else if (streq(path, "/dev/fb0") || streq(path, "/dev/input/event0") ||
@@ -3892,6 +4284,29 @@ static s64 sys_getdents64(lx_u64 fd, lx_u64 buf, lx_u64 n)
 {
     file_t *f = fd_get(fd);
     if (!f) return -EBADF;
+    if (f->kind == F_PROCDIR) {                        /* "." "..", then what proc_dirent lists */
+        if (!uok(buf, n, 1)) return -EFAULT;
+        uint8_t *out = (uint8_t *)(uintptr_t)buf;
+        lx_u64 used = 0;
+        for (;;) {
+            char nm[64];
+            int dt = 4;
+            if (f->dir_pos < 2) kstrncpy(nm, f->dir_pos ? ".." : ".", sizeof nm);
+            else if (!proc_dirent(f->path, f->dir_pos - 2, nm, &dt)) break;
+            uint32_t nl = (uint32_t)kstrlen(nm), rec = (19 + nl + 1 + 7) & ~7u;
+            if (used + rec > n) { if (!used) return -EINVAL; break; }
+            uint8_t *d = out + used;
+            kmemset(d, 0, rec);
+            *(lx_u64 *)d = 1000 + (lx_u64)f->dir_pos;
+            *(s64 *)(d + 8) = f->dir_pos + 1;
+            *(uint16_t *)(d + 16) = (uint16_t)rec;
+            d[18] = (uint8_t)dt;
+            kmemcpy(d + 19, nm, nl);
+            used += rec;
+            f->dir_pos++;
+        }
+        return (s64)used;
+    }
     if (f->kind != F_DIR) return -ENOTDIR;
     if (!uok(buf, n, 1)) return -EFAULT;
     uint8_t *out = (uint8_t *)(uintptr_t)buf;
@@ -4168,6 +4583,10 @@ static s64 linux_syscall(linux_tf_t *tf)
         if ((p[0] == '/' && !p[1]) || streq(p, "/dev") || streq(p, "/dev/null") ||
             streq(p, "/dev/fb0") || streq(p, "/dev/input/event0") || streq(p, "/dev/input/event1"))
             return 0;
+        if (!kstrncmp(p, "/proc", 5) && (!p[5] || p[5] == '/')) {
+            group_t *pg = 0; const char *pl = 0; int pfd = -1;
+            return proc_parse(p, &pg, &pl, &pfd) != PR_NONE ? 0 : -ENOENT;
+        }
         return vfs_stat(p, &vs) == VFS_OK ? 0 : -ENOENT;
     }
     case 49: {                                          /* chdir */
@@ -4175,7 +4594,17 @@ static s64 linux_syscall(linux_tf_t *tf)
         vfs_stat_t vs;
         int r = user_path(AT_FDCWD, a0, p);
         if (r) return r;
-        if (!(p[0] == '/' && !p[1])) {
+        if (!kstrncmp(p, "/proc", 5) && (!p[5] || p[5] == '/')) {
+            group_t *pg = 0; const char *pl = 0; int pfd = -1;
+            int k = proc_parse(p, &pg, &pl, &pfd);
+            if (k == PR_LINK && !pg) {                  /* /proc/self */
+                char t[24];
+                kstrncpy(p, "/proc/", sizeof p);
+                kstrncpy(p + 6, proc_link("/proc/self", t), sizeof p - 7);
+                k = PR_DIR;
+            }
+            if (k != PR_DIR) return k == PR_NONE ? -ENOENT : -ENOTDIR;
+        } else if (!(p[0] == '/' && !p[1])) {
             if (vfs_stat(p, &vs) != VFS_OK) return -ENOENT;
             if (!(vs.attrs & VFS_ATTR_DIR)) return -ENOTDIR;
         }
@@ -4185,7 +4614,7 @@ static s64 linux_syscall(linux_tf_t *tf)
     case 50: {                                          /* fchdir */
         file_t *f = fd_get(a0);
         if (!f) return -EBADF;
-        if (f->kind != F_DIR) return -ENOTDIR;
+        if (f->kind != F_DIR && f->kind != F_PROCDIR) return -ENOTDIR;
         kstrncpy(cur->g->cwd, f->path, sizeof cur->g->cwd);
         return 0;
     }
@@ -4245,27 +4674,13 @@ static s64 linux_syscall(linux_tf_t *tf)
     case 72: return sys_pselect6(a0, a1, a2, a3, a4, a5);
     case 73: return sys_ppoll(a0, a1, a2, a3, a4);
     case 74: return sys_signalfd4((s64)(int32_t)a0, a1, a2, a3);
-    case 78: {                                          /* readlinkat: /proc/self/exe only */
+    case 78: {                                          /* readlinkat: /proc links only */
         char in[VFS_PATH_MAX], p2[VFS_PATH_MAX];
         int r = copy_in_str(in, a1, sizeof in);
         if (r) return r;
         if (norm_path(cur->g->cwd, in, p2)) return -EINVAL;
-        const char *target = 0;
-        if (streq(p2, "/proc/self/exe")) target = cur->g->exe;
-        const char *fdp = "/proc/self/fd/";
-        int isfd = 1;
-        for (int i = 0; fdp[i]; i++) if (p2[i] != fdp[i]) isfd = 0;
-        if (isfd && p2[14] >= '0' && p2[14] <= '9') {  /* /proc/self/fd/N: what it is */
-            int n = 0;
-            for (const char *c = p2 + 14; *c; c++) {
-                if (*c < '0' || *c > '9') return -ENOENT;
-                n = n * 10 + (*c - '0');
-            }
-            file_t *f = fd_get((lx_u64)n);
-            if (!f) return -ENOENT;
-            target = f->path[0] ? f->path : f->kind == F_PIPE_R || f->kind == F_PIPE_W ? "pipe:[0]"
-                   : f->kind == F_SOCK ? "socket:[0]" : "anon_inode:[unknown]";
-        }
+        char ltmp[24];
+        const char *target = proc_link(p2, ltmp);
         if (target) {
             lx_u64 n = kstrlen(target);
             if (n > a3) n = a3;
@@ -4370,6 +4785,20 @@ static s64 linux_syscall(linux_tf_t *tf)
             ((s64 *)(uintptr_t)a0)[0] = ts[0];
             ((s64 *)(uintptr_t)a0)[1] = ts[1] / 1000;
         }
+        return 0;
+    }
+    case 179: {                                         /* sysinfo */
+        if (!uok(a0, 112, 1)) return -EFAULT;
+        uint8_t *si = (uint8_t *)(uintptr_t)a0;
+        kmemset(si, 0, 112);
+        int n = 0;
+        for (int i = 0; i < MAX_GROUPS; i++) if (groups[i].state != G_FREE) n++;
+        *(s64 *)si = (s64)(jiffies() / 100);                                   /* uptime */
+        *(lx_u64 *)(si + 32) = MMU_POOL_END - MMU_POOL_BASE;                  /* totalram */
+        *(lx_u64 *)(si + 40) = mmu_frames_free_count() * PAGE;               /* freeram */
+        *(lx_u64 *)(si + 56) = ramfs_frames() * PAGE;                        /* bufferram */
+        *(uint16_t *)(si + 80) = (uint16_t)n;                                 /* procs */
+        *(uint32_t *)(si + 104) = 1;                                          /* mem_unit */
         return 0;
     }
     case 172: return cur->g->pid;                       /* getpid */
@@ -4495,7 +4924,11 @@ void linux_el0_irq(linux_tf_t *tf)
     __asm__ volatile("mrs %0, S3_0_C12_C12_0" : "=r"(intid));      /* ICC_IAR1_EL1 */
     intid &= 0xFFFFFF;
     if (intid >= 1020) return;                                     /* spurious */
-    if (intid == GICV3_PPI_PHYS_TIMER) tick_arm();                 /* (nothing else is routed) */
+    if (intid == GICV3_PPI_PHYS_TIMER) {                           /* (nothing else is routed) */
+        tick_arm();
+        cur->g->utime++;                                           /* /proc: a jiffy of CPU */
+        busy_jiffies++;
+    }
     if (console_tty.used) con_pump(&console_tty);                  /* typed keys, Ctrl-C */
     __asm__ volatile("msr S3_0_C12_C12_1, %0\n\tisb" :: "r"(intid)); /* ICC_EOIR1_EL1 */
     if (usbd_daemon) usbd_daemon();
@@ -4601,6 +5034,7 @@ int linux_run(const char *path, int argc, char **argv)
     vma_insert(init->g, &sv);
     kstrncpy(init->g->cwd, "/", sizeof init->g->cwd);
     kstrncpy(init->g->exe, path, sizeof init->g->exe);
+    set_cmdline(init->g, argbuf, argc);
     tty_defaults(&console_tty);
     console_tty.used = 1;
     console_tty.out = con_out;
