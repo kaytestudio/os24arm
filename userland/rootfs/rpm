@@ -67,7 +67,21 @@ erase_one() {
     echo "$nevr removed"
 }
 
-[ $# -ge 1 ] || { sed -n '9,16p' "$0" | cut -c3-; exit 1; }
+usage() {
+    cat <<'USAGE'
+rpm - packages for UNIXROOT (D:)
+  rpm -i PACKAGE...     install (a file, or a name from \OS2\RPMS: rpm -i llvm)
+  rpm -U PACKAGE...     upgrade, or install
+  rpm -e NAME...        remove
+  rpm -q NAME...        is it installed?
+  rpm -qa               every installed package
+  rpm -qi NAME          its description
+  rpm -ql NAME          its files
+  rpm -qp[il] FILE      a package file (not installed)
+Packages here: \OS2\RPMS (binutils, make, musl-devel, tcc, llvm, libcxx-devel)
+USAGE
+}
+[ $# -ge 1 ] || { usage; exit 1; }
 mkdir -p "$DB" 2>/dev/null
 op="$1"; shift
 case "$op" in
@@ -83,5 +97,6 @@ case "$op" in
     -ql)         for p; do [ -f "$DB/$p/files" ] || die "package $p is not installed"; cat "$DB/$p/files"; done ;;
     -qp|-qpi|-qpl|-qpc|-qpd|-qip|-qlp)
                  for p; do $BB rpm "$op" "$(pkgfile "$p")"; done ;;
+    -h|--help)   usage ;;
     *)           die "unknown option $op (rpm alone lists them)" ;;
 esac
