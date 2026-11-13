@@ -27,8 +27,13 @@ static inline int usbkbd_getc(void)
 #define UART_FR_RXFE (1u << 4)
 #define UART_FR_TXFF (1u << 5)
 
+/* When set, console output goes here instead of the UART: the OS/2
+ * shell's output for /dev/os2cmd (kernel/src/linux/linux.c). */
+void (*console_capture)(char c);
+
 void uart_putc(char c)
 {
+    if (console_capture) { console_capture(c); return; }
     while (UART_FR & UART_FR_TXFF)
         ;
     UART_DR = (uint32_t)(unsigned char)c;

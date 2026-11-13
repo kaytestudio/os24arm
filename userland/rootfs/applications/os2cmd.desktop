@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=OS/2 Command Prompt
+Comment=The kernel's OS/2 shell (DIR, COPY, MOUNT, USB, ...) in a terminal
+Exec=/h/foot -c /h/foot.ini /h/os2cmd
+Terminal=false
+Categories=System;TerminalEmulator;

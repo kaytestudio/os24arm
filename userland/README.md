@@ -162,6 +162,12 @@ platform-specific are new code.
    Alt+P the launcher (terminal, vi, ...), Alt+Shift+Enter another
    terminal, Alt+J/K moves the focus,
    Alt+Shift+C closes a window, Alt+Shift+Q quits (see `dwl.sh`).
+   Alt+O (or "OS/2 Command Prompt" in the launcher) opens the kernel's
+   own OS/2 shell in a foot window: `userland/apps/os2cmd.c` relays to
+   `/dev/os2cmd`, which runs each line in the shell of
+   `kernel/src/main.c` - DIR, COPY, MOUNT, USB, MEM, ... on the same
+   mounts and current directory as the serial console's. (RUN, RUNELF,
+   DEBUG, BASIC, UMOUNT and the like stay on the serial console.)
 
    Keyboard layouts: `build-libs.sh` stages xkeyboard-config 2.46's data
    and libX11's UTF-8 Compose table (dead keys, Multi_key); the stick has

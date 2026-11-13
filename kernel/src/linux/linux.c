@@ -103,6 +103,8 @@ typedef struct { int absolute, x, y, dx, dy, wheel; unsigned buttons; } usbmouse
 extern int       usbmouse_poll(usbmouse_ev_t *ev) __attribute__((weak));
 
 #define PAGE            4096UL
+#define OS2_FRAMES      16           /* /dev/os2cmd: 64 KB of output per command */
+#define OS2_BUF         (OS2_FRAMES * PAGE)
 #define USER_TOP        (MMU_USER_BASE + MMU_USER_SIZE)
 #define BRK_LIMIT       0x63000000UL
 #define STACK_BOTTOM    0x63000000UL           /* 16 MB stack, demand paged */
@@ -243,7 +245,8 @@ typedef __INT64_TYPE__ s64;
 
 /* ── Objects behind file descriptors ──────────────────────────────────── */
 enum { F_FREE, F_CONSOLE /* a tty: the console or a pty's slave */, F_PTMX, F_PROC, F_PROCDIR, F_FILE, F_DIR, F_PIPE_R, F_PIPE_W, F_NULL, F_ZERO, F_RANDOM,
-       F_EVENTFD, F_TIMERFD, F_SIGNALFD, F_EPOLL, F_MEMFD, F_SOCK, F_FB, F_EVDEV };
+       F_EVENTFD, F_TIMERFD, F_SIGNALFD, F_EPOLL, F_MEMFD, F_SOCK, F_FB, F_EVDEV,
+       F_OS2 /* /dev/os2cmd: the OS/2 command interpreter */ };
 
 typedef struct pipe {
     int      used;
@@ -1365,6 +1368,7 @@ static void file_put(file_t *f)
     }
     case F_EPOLL:  f->ep->used = 0; break;
     case F_PROC:   if (f->pbuf) mmu_frames_free(f->pbuf, 1); f->pbuf = 0; break;
+    case F_OS2:    if (f->pbuf) mmu_frames_free(f->pbuf, OS2_FRAMES); f->pbuf = 0; break;
     case F_MEMFD:  mem_put(f->mem); break;
     case F_SOCK:   sock_release(f->sock); break;
     case F_EVDEV:
@@ -3892,6 +3896,51 @@ static s64 proc_open(const char *path, lx_u64 flags)
     return fd_new(f, cl);
 }
 
+/* ── /dev/os2cmd ───────────────────────────────────────────────────────
+ * The kernel's OS/2 command interpreter for Linux programs: each write()
+ * is a command line, run at once by the shell in kernel/src/main.c (same
+ * mounts and current directory as the serial console's); read() returns
+ * what it printed, then the next prompt, then 0 until the next command.
+ * On open there's a banner and the first prompt. */
+
+extern void (*console_capture)(char c);               /* kernel/src/uart.c */
+void os2_shell_banner(void);                           /* kernel/src/main.c */
+void os2_shell_prompt(void);
+void os2_shell_line(const char *line);
+
+static file_t *os2_cap_file;
+static uint32_t os2_cap_limit;
+static int os2_cap_cut;
+
+static void os2_cap(char c)
+{
+    file_t *f = os2_cap_file;
+    if (f->plen < os2_cap_limit) f->pbuf[f->plen++] = c;
+    else os2_cap_cut = 1;
+}
+
+static void os2_out(file_t *f, const char *s)
+{
+    while (*s && f->plen < OS2_BUF) f->pbuf[f->plen++] = *s++;
+}
+
+/* Runs line (NULL: the banner) with its output captured into f. */
+static void os2_run(file_t *f, const char *line)
+{
+    f->plen = 0;
+    f->pos = 0;
+    os2_cap_file = f;
+    os2_cap_limit = OS2_BUF - VFS_PATH_MAX - 64;       /* room for the note and the prompt */
+    os2_cap_cut = 0;
+    console_capture = os2_cap;
+    if (line) os2_shell_line(line);
+    else os2_shell_banner();
+    if (os2_cap_cut) os2_out(f, "\r\n[output cut short]\r\n");
+    os2_cap_limit = OS2_BUF;
+    os2_shell_prompt();
+    console_capture = 0;
+}
+
 /* ── File system calls ────────────────────────────────────────────────── */
 static s64 sys_openat(int dirfd, lx_u64 up, lx_u64 flags)
 {
@@ -3908,6 +3957,7 @@ static s64 sys_openat(int dirfd, lx_u64 up, lx_u64 flags)
         { "/dev/random", F_RANDOM }, { "/dev/tty", F_CONSOLE }, { "/dev/console", F_CONSOLE },
         { "/dev/ptmx", F_PTMX },
         { "/dev/fb0", F_FB }, { "/dev/input/event0", F_EVDEV }, { "/dev/input/event1", F_EVDEV },
+        { "/dev/os2cmd", F_OS2 },
     };
     for (unsigned i = 0; i < sizeof devs / sizeof devs[0]; i++)
         if (streq(path, devs[i].name)) {
@@ -3924,6 +3974,10 @@ static s64 sys_openat(int dirfd, lx_u64 up, lx_u64 flags)
             if (devs[i].kind == F_PTMX) t->masters++;
             if (t && devs[i].kind == F_CONSOLE && t != &console_tty) t->slaves++;
             f->flags = (int)(flags & (L_O_ACCMODE | L_O_NONBLOCK));
+            if (devs[i].kind == F_OS2) {
+                if (!(f->pbuf = mmu_frames_alloc(OS2_FRAMES))) { file_free(f); return -ENOMEM; }
+                os2_run(f, 0);
+            }
             if (devs[i].kind == F_EVDEV) {
                 f->vfd = path[16] - '0';                /* event0 / event1 */
                 evh[f->vfd] = evt[f->vfd];             /* start with nothing old */
@@ -4056,6 +4110,11 @@ static s64 sys_read(lx_u64 fd, lx_u64 buf, lx_u64 n)
         while (k < n && f->pos < f->plen) b[k++] = (uint8_t)f->pbuf[f->pos++];
         return (s64)k;
     }
+    case F_OS2: {
+        lx_u64 k = 0;
+        while (k < n && f->pos < f->plen) b[k++] = (uint8_t)f->pbuf[f->pos++];
+        return (s64)k;
+    }
     case F_PROCDIR: return -EISDIR;
     case F_FB:      return -EINVAL;
     case F_MEMFD:   return mem_rw(f->mem, &f->pos, b, n, 0);
@@ -4131,6 +4190,14 @@ static s64 sys_write(lx_u64 fd, lx_u64 buf, lx_u64 n)
     case F_PIPE_R:  return -EBADF;
     case F_DIR:     return -EISDIR;
     case F_NULL: case F_ZERO: case F_RANDOM: return (s64)n;
+    case F_OS2: {
+        char line[256];
+        lx_u64 k = n < sizeof line - 1 ? n : sizeof line - 1;
+        for (lx_u64 i = 0; i < k; i++) line[i] = (char)b[i];
+        line[k] = '\0';
+        os2_run(f, line);
+        return (s64)n;
+    }
     case F_MEMFD:   return mem_rw(f->mem, &f->pos, (uint8_t *)b, n, 1);
     case F_SOCK:    return n ? sock_send(f, b, n, 0, 0, 0) : 0;
     case F_EVENTFD: {
@@ -4229,6 +4296,7 @@ static s64 sys_fstatat(int dirfd, lx_u64 up, lx_u64 stp, lx_u64 flags, int by_fd
         if (!f) return -EBADF;
         switch (f->kind) {
         case F_CONSOLE: case F_PTMX: case F_NULL: case F_ZERO: case F_RANDOM: case F_FB: case F_EVDEV:
+        case F_OS2:
             kind = ST_CHR; break;
         case F_PIPE_R: case F_PIPE_W: kind = ST_FIFO; break;
         case F_SOCK: kind = ST_SOCK; break;
@@ -4279,7 +4347,8 @@ static s64 sys_fstatat(int dirfd, lx_u64 up, lx_u64 stp, lx_u64 flags, int by_fd
         }
         else if (streq(path, "/dev/null") || streq(path, "/dev/zero") ||
                  streq(path, "/dev/urandom") || streq(path, "/dev/random") ||
-                 streq(path, "/dev/tty") || streq(path, "/dev/console")) kind = ST_CHR;
+                 streq(path, "/dev/tty") || streq(path, "/dev/console") ||
+                 streq(path, "/dev/os2cmd")) kind = ST_CHR;
         else if ((r = vfs_stat(path, &vs)) != VFS_OK) return verr(r);
     }
     fill_stat((uint8_t *)(uintptr_t)stp, &vs, kind, size);

@@ -46,8 +46,11 @@ extern void scheduler_init(void);
 #define UART_FR_TXFF (1u << 5)
 #define UART_FR_RXFE (1u << 4)
 
+extern void (*console_capture)(char c);   /* uart.c */
+
 static void uart_putc(char c)
 {
+    if (console_capture) { console_capture(c); return; }
     while (*UART_FR & UART_FR_TXFF);
     *UART_DR = (ULONG)c;
 }
@@ -611,6 +614,67 @@ static void execute_command(char *cmdline)
         uart_puts(argv[0]);
         uart_puts("\r\nType HELP for list of commands\r\n");
     }
+}
+
+/* ── The shell for Linux programs (/dev/os2cmd) ──────────────────────────
+ * kernel/src/linux/linux.c runs command lines a Linux program writes to
+ * /dev/os2cmd through here, with console output captured for it to read
+ * back: the same interpreter, mounts and current directory as this shell,
+ * in a terminal window on the Wayland desktop (userland/apps/os2cmd.c).
+ * What reads the keyboard itself or takes over the machine can't run
+ * from inside a Linux program; UMOUNT could pull files from under the
+ * running programs (they demand-page their code from the volume). */
+void os2_shell_banner(void)
+{
+    uart_puts("\r\nOS/2 Command Prompt - the kernel's shell\r\n");
+    uart_puts("Type HELP for the commands, EXIT to close the window\r\n\r\n");
+}
+
+void os2_shell_prompt(void)
+{
+    char prompt[VFS_PATH_MAX + 8];
+    dos_prompt(prompt, sizeof prompt);
+    uart_puts(prompt);
+}
+
+void os2_shell_line(const char *line)
+{
+    static const char *const refused[] = {
+        "RUN", "RUNELF", "RUNTEST", "BASIC", "DEBUG", "GUI", "VM", "MORE",
+        "DOSKEY", "UMOUNT", "UNMOUNT", "EXIT",
+    };
+    char buffer[256], word[16];
+    int n = 0;
+    while (line[n] && line[n] != '\n' && line[n] != '\r' && n < (int)sizeof buffer - 1) {
+        buffer[n] = line[n];
+        n++;
+    }
+    buffer[n] = '\0';
+
+    const char *p = buffer;
+    while (*p == ' ' || *p == '\t') p++;
+    int w = 0;
+    while (p[w] && p[w] != ' ' && p[w] != '\t' && w < (int)sizeof word - 1) {
+        word[w] = (p[w] >= 'a' && p[w] <= 'z') ? (char)(p[w] - 32) : p[w];
+        w++;
+    }
+    word[w] = '\0';
+    if (!w) return;
+    for (unsigned i = 0; i < sizeof refused / sizeof refused[0]; i++)
+        if (my_strcmp(word, refused[i]) == 0) {
+            uart_puts("\r\n");
+            uart_puts(word);
+            if (my_strcmp(word, "MORE") == 0)
+                uart_puts(": use TYPE - this window scrolls\r\n");
+            else if (my_strcmp(word, "DOSKEY") == 0)
+                uart_puts(": line editing and history are the terminal's here\r\n");
+            else if (my_strcmp(word, "EXIT") == 0)
+                uart_puts(": close the window (or press Ctrl+D)\r\n");
+            else
+                uart_puts(" can only be used in the kernel's own shell (serial console)\r\n");
+            return;
+        }
+    execute_command(buffer);
 }
 
 /* ── Kernel shell ────────────────────────────────────────────────────────── */

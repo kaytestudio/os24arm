@@ -14,7 +14,8 @@ mkdir -p "$OUT"
 CFLAGS=(--target=aarch64-linux-musl -O2 -Wall -mno-outline-atomics -fno-pie
         -nostdinc -isystem "$SR/include" -isystem "$("$LLVM/clang" -print-resource-dir)/include")
 CC_WRAP="$ROOT/build/userland/toolchain/aarch64-linux-musl-cc"
-for src in "$ROOT"/userland/tests/*.c; do
+# userland/apps: small programs for the desktop, built the same way
+for src in "$ROOT"/userland/tests/*.c "$ROOT"/userland/apps/*.c; do
     name="$(basename "${src%.c}")"
     # " * pkg: a b c" in a test: link against those libraries (userland/build-libs.sh)
     pkgs="$(sed -n 's/^ \* pkg: //p' "$src" | head -1)"
