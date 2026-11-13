@@ -44,6 +44,16 @@ platform-specific are new code.
    - `binutils.spec`: GNU binutils 2.44, static, native aarch64-linux-musl;
      `binutils-2.44-os2warp-ld-base.patch` makes ld link at the kernel's
      user window (0x60000000), so `as x.s -o x.o; ld x.o -o x` runs here.
+   - `make.spec`: GNU make 4.4.1 (no dynamic "load", no Guile); recipes
+     run through UNIXROOT's /bin/sh, a launcher for busybox's sh
+     (userland/apps/applet.c, put there by make-stick.sh).
+   - `musl-devel.spec`: musl 1.2.5 headers, libc.a and crt*.o for /usr.
+   - `tcc.spec`: tcc 0.9.27, a C compiler on the system: rpmbuild builds a
+     cross tcc for the Mac first (it makes libtcc1.a), then the tcc that
+     runs here. `tcc-0.9.27-os2warp.patch`: static programs by default at
+     0x60000000, the AArch64 relocations clang uses in libc.a, the GOT of
+     a static program filled in, libc after libtcc1.a. With musl-devel,
+     `tcc hello.c -o hello` on the system makes a program that runs.
    - On the system, `rpm` (userland/rootfs/rpm, busybox's rpm underneath,
      a database in /var/lib/rpm): `rpm -i binutils` (a file, or a name from
      \OS2\RPMS), `-U`, `-e`, `-q`, `-qa`, `-qi`, `-ql`, `-qp[il]`.

@@ -1,0 +1,144 @@
+tcc 0.9.27 for OS/2 Warp ARM64 (aarch64, musl, static programs):
+- arm64-link.c: programs link at 0x60000000 (the kernel's user window);
+  the relocations clang emits in musl's libc.a (LDST8/16/32/64/128_ABS_LO12_NC,
+  CONDBR19, TSTBR14); in a static program the GOT entries get the final
+  addresses (no dynamic linker fills them).
+- libtcc.c, tccelf.c (CONFIG_TCC_OS2WARP): static by default; libc again
+  after libtcc1.a.
+- tcc.h: building the cross compiler on an Apple (aarch64) Mac: not
+  "native" (no -run, whose backtrace needs Linux's ucontext).
+
+diff -ru -x * pristine/tcc-0.9.27/arm64-link.c tcc-0.9.27/arm64-link.c
+--- pristine/tcc-0.9.27/arm64-link.c	2017-12-17 08:27:05
++++ tcc-0.9.27/arm64-link.c	2026-11-13 16:10:19
+@@ -11,7 +11,7 @@
+ 
+ #define R_NUM      R_AARCH64_NUM
+ 
+-#define ELF_START_ADDR 0x00400000
++#define ELF_START_ADDR 0x60000000
+ #define ELF_PAGE_SIZE 0x1000
+ 
+ #define PCRELATIVE_DLLPLT 1
+@@ -39,11 +39,18 @@
+         case R_AARCH64_LD64_GOT_LO12_NC:
+         case R_AARCH64_GLOB_DAT:
+         case R_AARCH64_COPY:
++        case R_AARCH64_LDST8_ABS_LO12_NC:
++        case R_AARCH64_LDST16_ABS_LO12_NC:
++        case R_AARCH64_LDST32_ABS_LO12_NC:
++        case R_AARCH64_LDST64_ABS_LO12_NC:
++        case R_AARCH64_LDST128_ABS_LO12_NC:
+             return 0;
+ 
+         case R_AARCH64_JUMP26:
+         case R_AARCH64_CALL26:
+         case R_AARCH64_JUMP_SLOT:
++        case R_AARCH64_CONDBR19:
++        case R_AARCH64_TSTBR14:
+             return 1;
+     }
+ 
+@@ -67,6 +74,13 @@
+         case R_AARCH64_GLOB_DAT:
+         case R_AARCH64_JUMP_SLOT:
+         case R_AARCH64_COPY:
++        case R_AARCH64_LDST8_ABS_LO12_NC:
++        case R_AARCH64_LDST16_ABS_LO12_NC:
++        case R_AARCH64_LDST32_ABS_LO12_NC:
++        case R_AARCH64_LDST64_ABS_LO12_NC:
++        case R_AARCH64_LDST128_ABS_LO12_NC:
++        case R_AARCH64_CONDBR19:
++        case R_AARCH64_TSTBR14:
+             return NO_GOTPLT_ENTRY;
+ 
+         case R_AARCH64_ABS32:
+@@ -199,6 +213,35 @@
+             write32le(ptr, ((read32le(ptr) & 0xffc003ff) |
+                             (val & 0xfff) << 10));
+             return;
++        /* loads and stores: the low 12 bits, scaled by the access size
++           (what clang emits for musl's libc.a) */
++        case R_AARCH64_LDST8_ABS_LO12_NC:
++        case R_AARCH64_LDST16_ABS_LO12_NC:
++        case R_AARCH64_LDST32_ABS_LO12_NC:
++        case R_AARCH64_LDST64_ABS_LO12_NC:
++        case R_AARCH64_LDST128_ABS_LO12_NC: {
++            int sh = type == R_AARCH64_LDST8_ABS_LO12_NC ? 0 :
++                     type == R_AARCH64_LDST16_ABS_LO12_NC ? 1 :
++                     type == R_AARCH64_LDST32_ABS_LO12_NC ? 2 :
++                     type == R_AARCH64_LDST64_ABS_LO12_NC ? 3 : 4;
++            write32le(ptr, ((read32le(ptr) & 0xffc003ff) |
++                            ((val & 0xfff) >> sh) << 10));
++            return;
++        }
++        case R_AARCH64_CONDBR19:                  /* b.cond, cbz, cbnz */
++            if (((val - addr) + ((uint64_t)1 << 20)) & ~(uint64_t)0x1ffffc)
++                tcc_error("R_AARCH64_CONDBR19 relocation failed"
++                          " (val=%lx, addr=%lx)", val, addr);
++            write32le(ptr, ((read32le(ptr) & 0xff00001f) |
++                            ((val - addr) >> 2 & 0x7ffff) << 5));
++            return;
++        case R_AARCH64_TSTBR14:                   /* tbz, tbnz */
++            if (((val - addr) + ((uint64_t)1 << 15)) & ~(uint64_t)0xfffc)
++                tcc_error("R_AARCH64_TSTBR14 relocation failed"
++                          " (val=%lx, addr=%lx)", val, addr);
++            write32le(ptr, ((read32le(ptr) & 0xfff8001f) |
++                            ((val - addr) >> 2 & 0x3fff) << 5));
++            return;
+         case R_AARCH64_JUMP26:
+         case R_AARCH64_CALL26:
+ #ifdef DEBUG_RELOC
+@@ -223,6 +266,11 @@
+             return;
+         }
+         case R_AARCH64_LD64_GOT_LO12_NC:
++            /* a static program: no dynamic linker fills the GOT (and
++               fill_got() no longer sees these relocations), so the entry
++               gets the symbol's final address here */
++            if (s1->static_link)
++                write64le(s1->got->data + s1->sym_attrs[sym_index].got_offset, val);
+             write32le(ptr,
+                       ((read32le(ptr) & 0xfff803ff) |
+                        ((s1->got->sh_addr +
+diff -ru -x * pristine/tcc-0.9.27/libtcc.c tcc-0.9.27/libtcc.c
+--- pristine/tcc-0.9.27/libtcc.c	2017-12-17 08:27:05
++++ tcc-0.9.27/libtcc.c	2026-11-13 16:11:45
+@@ -735,6 +735,10 @@
+ 
+     s->alacarte_link = 1;
+     s->nocommon = 1;
++#ifdef CONFIG_TCC_OS2WARP
++    /* OS/2 Warp ARM64 runs static programs only (no dynamic linker) */
++    s->static_link = 1;
++#endif
+     s->warn_implicit_function_declaration = 1;
+     s->ms_extensions = 1;
+ 
+diff -ru -x * pristine/tcc-0.9.27/tcc.h tcc-0.9.27/tcc.h
+--- pristine/tcc-0.9.27/tcc.h	2017-12-17 08:27:05
++++ tcc-0.9.27/tcc.h	2026-11-13 16:05:50
+@@ -157,7 +157,7 @@
+ #  define TCC_IS_NATIVE
+ # elif defined __arm__ && defined TCC_TARGET_ARM
+ #  define TCC_IS_NATIVE
+-# elif defined __aarch64__ && defined TCC_TARGET_ARM64
++# elif defined __aarch64__ && defined TCC_TARGET_ARM64 && !defined __APPLE__
+ #  define TCC_IS_NATIVE
+ # endif
+ #endif
+diff -ru -x * pristine/tcc-0.9.27/tccelf.c tcc-0.9.27/tccelf.c
+--- pristine/tcc-0.9.27/tccelf.c	2017-12-17 08:27:05
++++ tcc-0.9.27/tccelf.c	2026-11-13 16:11:45
+@@ -1201,6 +1201,11 @@
+         }
+ #endif
+         tcc_add_support(s1, TCC_LIBTCC1);
++#ifdef CONFIG_TCC_OS2WARP
++        /* libtcc1.a's helpers use libc (memmove, ...): look again */
++        if (s1->static_link)
++            tcc_add_library_err(s1, "c");
++#endif
+         /* add crt end if not memory output */
+         if (s1->output_type != TCC_OUTPUT_MEMORY)
+             tcc_add_crt(s1, "crtn.o");

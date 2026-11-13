@@ -3,3 +3,6 @@
 #   file  sha256  [url of a detached signature, checked against the GNU keyring]
 binutils-2.44.tar.xz  ce2017e059d63e67ddb9240e9d4ec49c2893605035cd60e92ad53177f4377237  https://ftp.gnu.org/gnu/binutils/binutils-2.44.tar.xz.sig
 make-4.4.1.tar.gz  dd16fb1d67bfab79a72f5e8390735c49e3e8e70b4945a15ab1f81ddb78658fb3  https://ftp.gnu.org/gnu/make/make-4.4.1.tar.gz.sig
+musl-1.2.5.tar.gz  a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4
+# (no signature on Savannah; the SHA-256 is the one Homebrew's tcc formula pins)
+tcc-0.9.27.tar.bz2  de23af78fca90ce32dff2dd45b3432b2334740bb9bb7b05bf60fdbfc396ceb9c
