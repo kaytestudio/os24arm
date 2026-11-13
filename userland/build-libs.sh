@@ -7,7 +7,8 @@
 #   libxkbcommon, libdrm (core library only: wlroots uses its format and
 #   modifier definitions), wayland-protocols, wlroots (pixman renderer;
 #   no DRM/libinput/X11 backends, no session, no XWayland), expat, freetype,
-#   fontconfig, tllist and fcft (font rendering, for the foot terminal)
+#   fontconfig, tllist and fcft (font rendering, for the foot terminal);
+#   and xkeyboard-config's data (keyboard layouts) in build/userland/xkb-data
 #
 # installed into the musl sysroot (build/userland/sysroot: include/, lib/,
 # lib/pkgconfig/), plus a host wayland-scanner (with a host expat) in
@@ -51,6 +52,8 @@ PKGS=(
   "fontconfig   2.16.0  6a33dc555cc9ba8b10caf7695878ef134eeb36d0af366041f639b1da9b6ed220 https://www.freedesktop.org/software/fontconfig/release/fontconfig-2.16.0.tar.xz"
   "tllist       1.1.0   0e7b7094a02550dd80b7243bcffc3671550b0f1d8ba625e4dff52517827d5d23 https://codeberg.org/dnkl/tllist/archive/1.1.0.tar.gz"
   "fcft         3.3.3   b0c0f4a599f43723736c8565b8b84337c4195077f07f1bb8bb3252bb13a2306a https://codeberg.org/dnkl/fcft/archive/3.3.3.tar.gz"
+  "xkeyboard-config 2.46 10c58218fb60d08fb1f7b30304deb3ba47613195aa8a08a81f1972775ccc3640 https://www.x.org/releases/individual/data/xkeyboard-config/xkeyboard-config-2.46.tar.xz"
+  "libX11       1.8.12  fa026f9bb0124f4d6c808f9aef4057aad65e7b35d8ff43951cef0abe06bb9a9a https://www.x.org/releases/individual/lib/libX11-1.8.12.tar.xz"
   "libxkbcommon 1.11.0  78a6b14f16e9a55025978c252e53ce9e16a02bfdb929550b9a0db5af87db7e02 https://github.com/xkbcommon/libxkbcommon/archive/refs/tags/xkbcommon-1.11.0.tar.gz"
 )
 
@@ -306,6 +309,36 @@ if ! done_marker fcft; then
     mark fcft
 fi
 echo "fcft: $(PKG_CONFIG_LIBDIR=$SR/lib/pkgconfig:$SR/share/pkgconfig pkg-config --modversion fcft)"
+
+# ── xkeyboard-config: keyboard layout data (architecture independent),
+#    staged in xkb-data/ for the stick (userland/make-stick.sh) ──────────
+if ! done_marker xkeyboard-config; then
+    fetch xkeyboard-config
+    rm -rf "$WORK/b-xkbconfig" "$WORK/xkb-stage" "$WORK/xkb-data"
+    meson setup "$WORK/b-xkbconfig" "$DIR" --prefix=/usr -Dnls=false \
+        -Dxorg-rules-symlinks=false >/dev/null
+    DESTDIR="$WORK/xkb-stage" ninja -C "$WORK/b-xkbconfig" install >/dev/null
+    cp -R "$WORK/xkb-stage/usr/share/xkeyboard-config-2" "$WORK/xkb-data"
+    rm -rf "$WORK/xkb-stage"
+    mark xkeyboard-config
+fi
+echo "xkeyboard-config: $(ls "$WORK/xkb-data/symbols" | wc -l | tr -d ' ') symbol files"
+
+# ── Compose table (dead keys, Multi_key sequences) from libX11's locale
+#    data: nls/en_US.UTF-8/Compose.pre without its C comments, XCOMM -> #
+#    (what libX11's cpp + sed step does). For XCOMPOSEFILE. ─────────────
+if ! done_marker compose; then
+    fetch libX11
+    python3 - "$DIR/nls/en_US.UTF-8/Compose.pre" "$WORK/Compose" <<'PY'
+import re, sys
+t = open(sys.argv[1], encoding="utf-8").read()
+t = re.sub(r"(?ms)^/\*.*?\*/", "", t)
+t = re.sub(r"(?m)^XCOMM", "#", t)
+open(sys.argv[2], "w", encoding="utf-8").write(t)
+PY
+    mark compose
+fi
+echo "Compose: $(grep -c '^<' "$WORK/Compose") sequences"
 
 echo "libraries installed in $SR/lib:"
 ls "$SR/lib" | grep -E '\.a$' | tr '\n' ' '; echo

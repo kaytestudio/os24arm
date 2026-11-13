@@ -131,14 +131,19 @@ platform-specific are new code.
    `fonts.conf`, `foot.ini`).
 
    Try it: `scripts/run-vm.sh --wayland`, `MOUNT usb0p1 \h`, then
-   `RUNELF \h\busybox sh /h/desktop.sh` - foot in cage on the
-   virtio-gpu display, a busybox shell in it; `exit` ends the session.
+   `RUNELF \h\busybox sh /h/desktop.sh [layout [variant]]` (e.g. `pt`,
+   `de nodeadkeys`; default `us`) - foot in cage on the virtio-gpu
+   display, a busybox shell in it; `exit` ends the session.
+
+   Keyboard layouts: `build-libs.sh` stages xkeyboard-config 2.46's data
+   and libX11's UTF-8 Compose table (dead keys, Multi_key); the stick has
+   them in `/h/xkb` and `/h/Compose` (`XKB_CONFIG_ROOT`,
+   `XKB_DEFAULT_LAYOUT`, `XCOMPOSEFILE` in `desktop.sh`), so xkbcommon
+   works as on Linux - the built-in keymap is only a fallback now.
 
    Notes: foot's `max-shm-pool-size-mb` is 0 (its fast scrolling wants a
-   512 MB sparse memfd, i.e. demand paging); `XKB_CONFIG_ROOT=/tmp`
-   because xkbcommon won't create a context without its data directory
-   (the keymap itself comes from the compositor). Next: xkeyboard-config
-   and cursor themes on the stick, demand paging, more applications. The
+   512 MB sparse memfd, i.e. demand paging). Next: demand paging and a
+   larger user address space, cursor themes, more applications. The
    in-kernel compositor (`kernel/src/gui/wayland.c`, `GUI`) stays as the
    fallback console GUI.
 

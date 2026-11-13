@@ -1,8 +1,9 @@
 #!/bin/bash
 # userland/make-stick.sh - an HPFS "USB stick" image with the userland:
 # build/userland/bin/* (busybox, cage, foot, tinywl, wlclient), the test
-# programs, userland/rootfs/* (desktop.sh, fonts.conf) and a font
-# (DejaVu Sans Mono, in fonts/).
+# programs, userland/rootfs/* (desktop.sh, fonts.conf, foot.ini), a font
+# (DejaVu Sans Mono, in fonts/) and keyboard layouts (xkeyboard-config, in
+# xkb/, from userland/build-libs.sh).
 #   userland/make-stick.sh [image]     (default build/userland/stick.img)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -27,5 +28,7 @@ tar xjf "$DJV_TAR" -C "$STAGE/fonts" --strip-components=2 \
 [ -d "$W/bin" ] && cp "$W"/bin/* "$STAGE"/
 [ -d "$W/tests" ] && find "$W/tests" -maxdepth 1 -type f -perm -u+x -exec cp {} "$STAGE"/ \;
 cp "$ROOT"/userland/rootfs/* "$STAGE"/
+if [ -d "$W/xkb-data" ]; then cp -R "$W/xkb-data" "$STAGE/xkb"; fi   # keyboard layouts
+if [ -f "$W/Compose" ]; then cp "$W/Compose" "$STAGE/Compose"; fi    # dead keys, compose
 python3 "$ROOT/scripts/mkhpfs.py" "$IMG" --size 48M --from "$STAGE" --mbr >/dev/null
 echo "made $IMG ($(ls "$STAGE" | wc -l | tr -d ' ') entries)"
