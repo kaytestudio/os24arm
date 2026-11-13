@@ -61,7 +61,9 @@ SET TEMP=C:\TEMP
 SET TMP=C:\TEMP
 
 REM Unix root path
-SET UNIXROOT=C:
+REM UNIXROOT: the drive the programs see as / (/usr, /etc, /var, ...)
+REM and where RPM installs packages - the USB stick, D:, so they stay.
+SET UNIXROOT=D:
 
 REM ───────────────────────────────────────────────────────────────────
 REM  DEVICE DRIVERS (ARM64)

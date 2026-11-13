@@ -584,6 +584,13 @@ static void cmd_mount(int argc, char **argv)
     kprintf("\n%s is drive %c: (%s%s)\n", dev->name, drv[0],
             hpfs ? (hpfs_is_rw(&user_hpfs[slot]) ? "HPFS" : "HPFS, read-only") : "FAT",
             (!hpfs && (dev->flags & BLKDEV_READONLY)) ? ", read-only" : "");
+    /* UNIXROOT's drive (CONFIG.SYS SET UNIXROOT=D:): its tree, for the
+     * programs (and the package database) */
+    const char *ur = unixroot_drive();
+    if (ur[1] == ':' && (ur[0] | 0x20) == (drv[0] | 0x20) && (drv[0] | 0x20) != 'c') {
+        unixroot_create_tree();
+        kprintf("%c: holds UNIXROOT (the programs' /usr, /etc, ...)\n", drv[0]);
+    }
 }
 
 static void cmd_umount(int argc, char **argv)

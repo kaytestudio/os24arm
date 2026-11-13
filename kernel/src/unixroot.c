@@ -112,29 +112,86 @@ static const char *const k_unixroot_dirs[] = {
     "/usr/share/man",
     "/tmp",
     "/var",
+    "/var/lib",
+    "/var/lib/rpm",                                    /* the package database (rpm) */
 };
 
-static int mkdir_logged(const char *path)
+/* The VFS mount point UNIXROOT's drive is: "/" for C:, the volume's for
+ * D:, E:, ... (os2api's drive letters), NULL while it isn't mounted. */
+extern const char *DosDriveRoot(char letter);
+
+const char *unixroot_root(void)
 {
+    char L = g_drive[0];
+    if (g_drive[1] != ':' || (L | 0x20) == 'c') return "/";
+    return DosDriveRoot(L);
+}
+
+static int unixroot_top(const char *name, uint32_t len)
+{
+    static const char *const top[] = { "bin", "emx", "etc", "home", "lib", "opt", "sbin",
+                                        "usr", "var", 0 };
+    for (int i = 0; top[i]; i++)
+        if (strlen(top[i]) == len && strncmp(top[i], name, len) == 0) return 1;
+    return 0;
+}
+
+int unixroot_map(const char *in, char *out, uint32_t size)
+{
+    const char *root = unixroot_root(), *rest = 0;
+    static const char at[] = "/@unixroot";
+    if (strncmp(in, at, sizeof at - 1) == 0 && (in[sizeof at - 1] == '/' || !in[sizeof at - 1])) {
+        rest = in + sizeof at - 1;                     /* kLIBC's name for it */
+        if (!root) root = "/";
+    } else {
+        if (!root || !root[1] || in[0] != '/') return 0;   /* C: (or not mounted): as it is */
+        const char *e = in + 1;
+        while (*e && *e != '/') e++;
+        if (!unixroot_top(in + 1, (uint32_t)(e - in - 1))) return 0;
+        rest = in;
+    }
+    uint32_t n = 0;
+    if (root[1]) for (const char *c = root; *c && n < size - 1; c++) out[n++] = *c;
+    if (!*rest && n < size - 1) out[n++] = '/';
+    for (const char *c = rest; *c && n < size - 1; c++) out[n++] = *c;
+    if (n == 0) out[n++] = '/';
+    out[n] = '\0';
+    return 1;
+}
+
+static const char *g_root = "/";
+
+static int mkdir_logged(const char *rel)
+{
+    char path[VFS_PATH_MAX];
+    uint32_t n = 0;
+    if (g_root[1]) for (const char *c = g_root; *c && n < sizeof path - 1; c++) path[n++] = *c;
+    for (const char *c = rel; *c && n < sizeof path - 1; c++) path[n++] = *c;
+    path[n] = '\0';
+    vfs_stat_t st;
+    if (vfs_stat(path, &st) == VFS_OK) return 0;      /* there already (the usual case) */
     int r = vfs_mkdir(path);
     if (r == VFS_OK) {
         kprintf("[UNIXROOT] %s\n", path);
         return 0;
     }
-    /* Already existing is the common, harmless case on a second boot -
-     * still worth a quiet log line, but not a failure. */
-    kprintf("[UNIXROOT] %s: %s\n", path,
-            (r == VFS_ERR_ROFS) ? "read-only filesystem" : "skipped/exists");
-    return (r == VFS_ERR_ROFS) ? -1 : 0;
+    kprintf("[UNIXROOT] %s: %s\n", path, (r == VFS_ERR_ROFS) ? "read-only filesystem" : "can't create");
+    return -1;
 }
 
 int unixroot_create_tree(void)
 {
     int failures = 0;
 
-    kprintf("[UNIXROOT] Creating tree on drive %s (VFS root /)\n", g_drive);
+    g_root = unixroot_root();
+    if (!g_root) {
+        kprintf("[UNIXROOT] Drive %s isn't mounted yet: its tree is made when it is\n", g_drive);
+        g_root = "/";
+        return 0;
+    }
 
     for (size_t i = 0; i < sizeof(k_unixroot_dirs) / sizeof(k_unixroot_dirs[0]); i++) {
+        if (g_root[1] && strcmp(k_unixroot_dirs[i], "/tmp") == 0) continue;   /* /tmp: RAM, not D: */
         if (mkdir_logged(k_unixroot_dirs[i]) != 0) failures++;
     }
 
@@ -166,7 +223,7 @@ int unixroot_create_tree(void)
     if (mkdir_logged("/usr/share/man/catn") != 0) failures++;
 
     if (failures == 0) {
-        kprintf("[UNIXROOT] Tree complete.\n");
+        /* (quiet: it's there) */
     } else {
         kprintf("[UNIXROOT] %d director%s could not be created (read-only root?)\n",
                 failures, (failures == 1) ? "y" : "ies");

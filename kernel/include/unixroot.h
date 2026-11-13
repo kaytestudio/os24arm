@@ -36,6 +36,16 @@ const char *unixroot_drive(void);
  * on a read-only-mounted root (e.g. ext4's current mkdir stub). */
 int unixroot_create_tree(void);
 
+/* The VFS mount point of UNIXROOT's drive ("/" for C:), or NULL while
+ * that drive isn't mounted. */
+const char *unixroot_root(void);
+
+/* Linux programs see UNIXROOT as their /: an absolute /usr, /etc, /bin,
+ * /var, /home, /lib, /opt, /sbin or /emx path (and kLIBC's /@unixroot/...)
+ * is moved onto UNIXROOT's drive, into out. Returns 1 if it did, 0 when
+ * the path stays as it is (UNIXROOT is C:, or another path). */
+int unixroot_map(const char *in, char *out, __UINT32_TYPE__ size);
+
 /* CONFIG.SYS "SET key=value": copies value into out; 0, or -1 if absent. */
 int config_sys_value(const char *config_sys_text, const char *key, char *out, __SIZE_TYPE__ out_size);
 

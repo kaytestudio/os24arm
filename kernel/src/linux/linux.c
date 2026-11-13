@@ -77,6 +77,7 @@
  * of /proc, dynamic linking.
  */
 
+#include "unixroot.h"
 #include "linux_abi.h"
 #include "mmu.h"
 #include "vfs.h"
@@ -710,6 +711,10 @@ static int user_path(int dirfd, lx_u64 up, char *out)
     r = norm_path(base, in, out);
     if (!r && streq(out, "/proc/self/exe") && cur->g->exe[0])   /* the program itself */
         kstrncpy(out, cur->g->exe, VFS_PATH_MAX);
+    if (!r) {                                          /* /usr, /etc, ...: UNIXROOT's drive */
+        char mapped[VFS_PATH_MAX];
+        if (unixroot_map(out, mapped, sizeof mapped)) kstrncpy(out, mapped, VFS_PATH_MAX);
+    }
     return r;
 }
 
@@ -2349,6 +2354,80 @@ static int copy_in_argv(lx_u64 uv, uint32_t *used, int *count)
     }
 }
 
+/* "#!interpreter [arg]" scripts: argbuf (argc strings, then envc) becomes
+ * interpreter [arg] script argv[1..]; *path the interpreter. When the
+ * interpreter isn't there (scripts say #!/bin/sh, #!/usr/bin/env ...),
+ * the system's busybox runs the applet of that name. One level only. */
+#define SYSTEM_BUSYBOX "/h/OS2/busybox"
+static int shebang(char *path, uint32_t *used, int *argc, int envc)
+{
+    char head[128];
+    int fd = vfs_open(path, O_RDONLY);
+    if (fd < 0) return 0;
+    int n = vfs_read(fd, head, sizeof head - 1);
+    vfs_close(fd);
+    if (n < 3 || head[0] != '#' || head[1] != '!') return 0;
+    head[n] = 0;
+    char *p = head + 2, *interp, *arg = 0;
+    while (*p == ' ' || *p == '\t') p++;
+    interp = p;
+    while (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r') p++;
+    if (*p == ' ' || *p == '\t') {
+        *p++ = 0;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p && *p != '\n' && *p != '\r') {
+            arg = p;
+            while (*p && *p != '\n' && *p != '\r') p++;
+            while (p > arg && (p[-1] == ' ' || p[-1] == '\t')) p--;
+        }
+    }
+    *p = 0;
+    if (!*interp) return -ENOEXEC;
+
+    char ipath[VFS_PATH_MAX], applet[64];
+    kstrncpy(ipath, interp, sizeof ipath);
+    char mapped[VFS_PATH_MAX];
+    if (unixroot_map(ipath, mapped, sizeof mapped)) kstrncpy(ipath, mapped, sizeof ipath);
+    vfs_stat_t st;
+    applet[0] = 0;
+    if (vfs_stat(ipath, &st) != VFS_OK) {              /* not here: busybox's applet */
+        const char *b = interp;
+        for (const char *c = interp; *c; c++) if (*c == '/') b = c + 1;
+        kstrncpy(applet, b, sizeof applet);
+        kstrncpy(ipath, SYSTEM_BUSYBOX, sizeof ipath);
+        if (vfs_stat(ipath, &st) != VFS_OK) return -ENOENT;
+    }
+
+    /* new argv: [applet|interp] [arg] script argv[1..], then the env */
+    static char nb[ARGBUF];
+    uint32_t k = 0;
+    const char *add[3] = { applet[0] ? applet : interp, arg, path };
+    int nadd = 0;
+    for (int i = 0; i < 3; i++) {
+        if (!add[i]) continue;
+        uint32_t l = (uint32_t)kstrlen(add[i]) + 1;
+        if (k + l > ARGBUF) return -E2BIG;
+        kmemcpy(nb + k, add[i], l);
+        k += l;
+        nadd++;
+    }
+    const char *s = argbuf;
+    for (int i = 0; i < *argc + envc; i++) {
+        uint32_t l = (uint32_t)kstrlen(s) + 1;
+        if (i > 0 || *argc == 0) {                     /* (the old argv[0] goes) */
+            if (k + l > ARGBUF) return -E2BIG;
+            kmemcpy(nb + k, s, l);
+            k += l;
+        }
+        s += l;
+    }
+    kmemcpy(argbuf, nb, k);
+    *used = k;
+    *argc = nadd + (*argc > 0 ? *argc - 1 : 0);
+    kstrncpy(path, ipath, VFS_PATH_MAX);
+    return 1;
+}
+
 static s64 sys_execve(lx_u64 upath, lx_u64 uargv, lx_u64 uenvp)
 {
     char path[VFS_PATH_MAX];
@@ -2358,6 +2437,7 @@ static s64 sys_execve(lx_u64 upath, lx_u64 uargv, lx_u64 uenvp)
     int argc, envc;
     if ((r = copy_in_argv(uargv, &used, &argc)) || (r = copy_in_argv(uenvp, &used, &envc)))
         return r;
+    if ((r = shebang(path, &used, &argc, envc)) < 0) return r;
     mmu_as_t *as, *old = cur->g->as;
     lx_u64 entry, sp, top;
     if ((r = exec_image(path, argbuf, argc, envc, &as, &entry, &sp, &top))) return r;

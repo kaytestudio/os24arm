@@ -195,6 +195,11 @@ static char drive_of(const char *path, int *root_len)
     return best;
 }
 
+const char *DosDriveRoot(char letter)
+{
+    return drive_root(letter);
+}
+
 void DosDisplayPath(const char *vfs_path, char *out, uint32_t out_size)
 {
     int rl = 0;
@@ -472,10 +477,20 @@ static void split_pattern(const char *path, char *dir_out, uint32_t dir_size, ch
  * them down for the programs: /bin, /etc, /tmp, ...) are the system's, not
  * the user's: shown hidden + system, so DIR and TREE list them only with
  * /A, like \OS2 on the stick. */
+const char *unixroot_root(void) __attribute__((weak));   /* kernel/src/unixroot.c */
+
 static int unixroot_folder(const char *vfs_path)
 {
     static const char *const names[] = { "bin", "emx", "etc", "home", "usr", "tmp", "var", 0 };
+    const char *root = unixroot_root ? unixroot_root() : "/";
+    if (!root) root = "/";
     if (vfs_path[0] != '/') return 0;
+    if (root[1]) {                                     /* UNIXROOT on another drive */
+        int k = under(vfs_path, root);
+        if (k <= 0) return 0;
+        vfs_path += k;
+        if (vfs_path[0] != '/') return 0;
+    }
     for (int i = 0; names[i]; i++) {
         const char *a = vfs_path + 1, *b = names[i];
         while (*b && (*a | 0x20) == *b) { a++; b++; }
