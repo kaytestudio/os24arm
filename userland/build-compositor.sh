@@ -155,3 +155,29 @@ PY
     "$ROOT/userland/wlr-os2/os2_backend.c" "$GEN/xdg-shell-protocol.c" \
     $(PKG_CONFIG_LIBDIR="$SR/lib/pkgconfig:$SR/share/pkgconfig" pkg-config --static --cflags --libs $PKGS)
 echo "  cage"
+
+# ── foot (Wayland terminal) ──────────────────────────────────────────────
+FOOT_VER=1.28.0
+FOOT_SHA256=4296be402b5684d049534598e69db92b918f92beac9dab76b585207045f0b037
+FOOT_URL="https://codeberg.org/dnkl/foot/archive/$FOOT_VER.tar.gz"
+FOOT_TGZ="$W/dl/foot-$FOOT_VER.tar.gz"
+FOOT_SRC="$W/src/foot-$FOOT_VER"
+if [ ! -f "$FOOT_TGZ" ]; then
+    echo "Downloading $FOOT_URL"
+    curl -sSfL -o "$FOOT_TGZ.part" "$FOOT_URL" && mv "$FOOT_TGZ.part" "$FOOT_TGZ"
+fi
+echo "$FOOT_SHA256  $FOOT_TGZ" | shasum -a 256 -c - >/dev/null \
+    || { echo "SHA-256 mismatch for $FOOT_TGZ" >&2; rm -f "$FOOT_TGZ"; exit 1; }
+if [ ! -d "$FOOT_SRC" ]; then
+    mkdir -p "$FOOT_SRC.tmp" && tar xzf "$FOOT_TGZ" -C "$FOOT_SRC.tmp" --strip-components=1
+    mv "$FOOT_SRC.tmp" "$FOOT_SRC"
+fi
+rm -rf "$W/b-foot"
+env -u PKG_CONFIG_PATH meson setup "$W/b-foot" "$FOOT_SRC" \
+    --cross-file "$W/toolchain/cross.meson" --prefix="$SR" --libdir=lib --buildtype=release \
+    -Dbuild.pkg_config_path="$W/host/lib/pkgconfig" -Ddocs=disabled -Dthemes=false \
+    -Dgrapheme-clustering=disabled -Dtests=false -Dterminfo=disabled -Dutmp-backend=none \
+    -Dwerror=false >/dev/null
+ninja -C "$W/b-foot" foot >/dev/null
+cp "$W/b-foot/foot" "$OUT/foot"
+echo "  foot"

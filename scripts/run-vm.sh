@@ -15,11 +15,12 @@
 #   --gdb        wait for a debugger on :1234
 #   --usb        add an xHCI controller + USB keyboard (drivers/usb/xhci.c)
 #   --wayland    a display window (virtio-gpu), USB keyboard + tablet, and a
-#                USB stick (HPFS, build/userland/stick.img, (re)made from
-#                build/userland/bin and tests when they change) with the
-#                compositors: at the prompt, MOUNT usb0p1 \h then
-#                RUNELF \h\cage /h/wlclient  (Esc ends wlclient and cage)
-#                or RUNELF \h\tinywl -s /h/wlclient  (Alt+Esc quits it)
+#                USB stick (HPFS, build/userland/stick.img, (re)made by
+#                userland/make-stick.sh when the programs change) with the
+#                Linux userland. At the prompt, MOUNT usb0p1 \h, then
+#                RUNELF \h\busybox sh /h/desktop.sh   (foot terminal in cage)
+#                RUNELF \h\busybox sh                 (a shell on the console)
+#                RUNELF \h\cage /h/wlclient           (Esc ends it)
 #   -h, --help
 #
 # Interactive: type VM TEST at the [C:\]> prompt. Inside the guest,
@@ -45,7 +46,7 @@ while [ $# -gt 0 ]; do
         --gdb)      GDB_OPT=(-s -S) ;;
         --usb)      USB_OPT=(-device qemu-xhci -device usb-kbd) ;;
         --wayland)  WAYLAND=1 ;;
-        -h|--help)  sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)  sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "Unknown option: $1 (see --help)" >&2; exit 1 ;;
     esac
     shift
@@ -83,16 +84,12 @@ fi
 DISPLAY_OPT=(-display none -nographic)
 if [ "$WAYLAND" = 1 ]; then
     STICK="$BUILD/userland/stick.img"
-    if [ ! -f "$STICK" ] || [ -n "$(find "$BUILD/userland/bin" "$BUILD/userland/tests" -maxdepth 1 \
+    if [ ! -f "$STICK" ] || [ -n "$(find "$BUILD/userland/bin" "$BUILD/userland/tests" \
+                                    "$ROOT/userland/rootfs" -maxdepth 1 \
                                     -type f -newer "$STICK" 2>/dev/null | head -1)" ]; then
-        [ -x "$BUILD/userland/bin/tinywl" ] || {
-            echo "build the compositor first: userland/build-libs.sh && userland/build-compositor.sh" >&2; exit 1; }
-        STAGE="$(mktemp -d)"
-        cp "$BUILD"/userland/bin/* "$STAGE"/
-        find "$BUILD/userland/tests" -maxdepth 1 -type f -perm -u+x -exec cp {} "$STAGE"/ \;
-        python3 "$ROOT/scripts/mkhpfs.py" "$STICK" --size 32M --from "$STAGE" --mbr >/dev/null
-        rm -rf "$STAGE"
-        echo "made $STICK"
+        [ -x "$BUILD/userland/bin/cage" ] || {
+            echo "build the userland first: userland/build-libs.sh, build-compositor.sh, build-busybox.sh" >&2; exit 1; }
+        "$ROOT/userland/make-stick.sh" "$STICK"
     fi
     USB_OPT=(-device qemu-xhci -device usb-kbd -device usb-tablet
              -device usb-storage,drive=stick -drive "if=none,id=stick,file=$STICK,format=raw")

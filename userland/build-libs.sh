@@ -6,7 +6,8 @@
 #   uses), libffi, libwayland (server, client, cursor, egl), pixman,
 #   libxkbcommon, libdrm (core library only: wlroots uses its format and
 #   modifier definitions), wayland-protocols, wlroots (pixman renderer;
-#   no DRM/libinput/X11 backends, no session, no XWayland)
+#   no DRM/libinput/X11 backends, no session, no XWayland), expat, freetype,
+#   fontconfig, tllist and fcft (font rendering, for the foot terminal)
 #
 # installed into the musl sysroot (build/userland/sysroot: include/, lib/,
 # lib/pkgconfig/), plus a host wayland-scanner (with a host expat) in
@@ -46,6 +47,10 @@ PKGS=(
   "libdrm       2.4.128 3bb35db8700c2a0b569f2c6729a53f5495786856b310854c8de57782a22bddac https://dri.freedesktop.org/libdrm/libdrm-2.4.128.tar.xz"
   "wayland-protocols 1.45 4d2b2a9e3e099d017dc8107bf1c334d27bb87d9e4aff19a0c8d856d17cd41ef0 https://gitlab.freedesktop.org/wayland/wayland-protocols/-/releases/1.45/downloads/wayland-protocols-1.45.tar.xz"
   "wlroots      0.19.2  09a0a8d60104c8b0772fee4f60ba76a89aed7e59dff7659d00960fba06bdf267 https://gitlab.freedesktop.org/wlroots/wlroots/-/releases/0.19.2/downloads/wlroots-0.19.2.tar.gz"
+  "freetype     2.14.1  32427e8c471ac095853212a37aef816c60b42052d4d9e48230bab3bdf2936ccc https://download.savannah.gnu.org/releases/freetype/freetype-2.14.1.tar.xz"
+  "fontconfig   2.16.0  6a33dc555cc9ba8b10caf7695878ef134eeb36d0af366041f639b1da9b6ed220 https://www.freedesktop.org/software/fontconfig/release/fontconfig-2.16.0.tar.xz"
+  "tllist       1.1.0   0e7b7094a02550dd80b7243bcffc3671550b0f1d8ba625e4dff52517827d5d23 https://codeberg.org/dnkl/tllist/archive/1.1.0.tar.gz"
+  "fcft         3.3.3   b0c0f4a599f43723736c8565b8b84337c4195077f07f1bb8bb3252bb13a2306a https://codeberg.org/dnkl/fcft/archive/3.3.3.tar.gz"
   "libxkbcommon 1.11.0  78a6b14f16e9a55025978c252e53ce9e16a02bfdb929550b9a0db5af87db7e02 https://github.com/xkbcommon/libxkbcommon/archive/refs/tags/xkbcommon-1.11.0.tar.gz"
 )
 
@@ -62,6 +67,7 @@ fetch() {   # name -> sets DIR to the unpacked source directory
         read -r name ver sum url <<<"$line"
         [ "$name" = "$1" ] || continue
         f="$DL/$(basename "$url")"
+        case "$(basename "$url")" in "$name"*|lib*|xkbcommon*) ;; *) f="$DL/$name-$(basename "$url")" ;; esac
         if [ ! -f "$f" ]; then
             echo "Downloading $url"
             curl -sSfL -o "$f.part" "$url"
@@ -115,6 +121,7 @@ pkg_config_libdir = '$SR/lib/pkgconfig:$SR/share/pkgconfig'
 
 [built-in options]
 default_library = 'static'
+prefer_static = true
 c_args = ['-O2', '-fno-stack-protector']
 
 [host_machine]
@@ -145,7 +152,7 @@ if ! done_marker host-scanner; then
 fi
 echo "host wayland-scanner: $("$HOST/bin/wayland-scanner" --version 2>&1)"
 
-export PKG_CONFIG_PATH="$HOST/lib/pkgconfig"            # native (build machine) lookups
+unset PKG_CONFIG_PATH          # build-machine lookups: -Dbuild.pkg_config_path (below)
 CROSS=(--cross-file "$TC/cross.meson" --prefix="$SR" --libdir=lib --buildtype=release
        -Dbuild.pkg_config_path="$HOST/lib/pkgconfig")
 
@@ -243,6 +250,62 @@ if ! done_marker wlroots; then
     mark wlroots
 fi
 echo "wlroots: $(PKG_CONFIG_LIBDIR=$SR/lib/pkgconfig:$SR/share/pkgconfig pkg-config --modversion wlroots-0.19)"
+
+# ── expat (for fontconfig; the host one above is for wayland-scanner) ───
+if ! done_marker expat; then
+    fetch expat
+    rm -rf "$WORK/b-expat"
+    cmake -S "$DIR" -B "$WORK/b-expat" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64 -DCMAKE_C_COMPILER="$CC_WRAP" \
+        -DCMAKE_AR="$LLVM/llvm-ar" -DCMAKE_RANLIB="$LLVM/llvm-ranlib" \
+        -DCMAKE_INSTALL_PREFIX="$SR" -DCMAKE_INSTALL_LIBDIR=lib -DEXPAT_BUILD_TOOLS=OFF \
+        -DEXPAT_BUILD_EXAMPLES=OFF -DEXPAT_BUILD_TESTS=OFF -DEXPAT_BUILD_DOCS=OFF \
+        -DEXPAT_SHARED_LIBS=OFF >/dev/null
+    ninja -C "$WORK/b-expat" install >/dev/null
+    mark expat
+fi
+
+# ── freetype (no zlib/png/brotli/bzip2/harfbuzz) ────────────────────────
+if ! done_marker freetype; then
+    fetch freetype
+    rm -rf "$WORK/b-freetype"
+    meson setup "$WORK/b-freetype" "$DIR" "${CROSS[@]}" -Dbrotli=disabled -Dbzip2=disabled \
+        -Dharfbuzz=disabled -Dpng=disabled -Dzlib=internal -Dtests=disabled >/dev/null
+    ninja -C "$WORK/b-freetype" install >/dev/null
+    mark freetype
+fi
+echo "freetype: $(PKG_CONFIG_LIBDIR=$SR/lib/pkgconfig pkg-config --modversion freetype2)"
+
+# ── fontconfig (library only; its configuration comes at run time from
+#    FONTCONFIG_FILE, e.g. a fonts.conf next to the fonts) ───────────────
+if ! done_marker fontconfig; then
+    fetch fontconfig
+    rm -rf "$WORK/b-fontconfig"
+    meson setup "$WORK/b-fontconfig" "$DIR" "${CROSS[@]}" -Ddoc=disabled -Dnls=disabled \
+        -Dtests=disabled -Dtools=disabled -Dcache-build=disabled -Dxml-backend=expat \
+        -Dcache-dir=/tmp/fontconfig >/dev/null
+    ninja -C "$WORK/b-fontconfig" install >/dev/null
+    mark fontconfig
+fi
+echo "fontconfig: $(PKG_CONFIG_LIBDIR=$SR/lib/pkgconfig pkg-config --modversion fontconfig)"
+
+# ── tllist (header-only) and fcft ──────────────────────────────────────
+if ! done_marker tllist; then
+    fetch tllist
+    rm -rf "$WORK/b-tllist"
+    meson setup "$WORK/b-tllist" "$DIR" "${CROSS[@]}" >/dev/null
+    ninja -C "$WORK/b-tllist" install >/dev/null
+    mark tllist
+fi
+if ! done_marker fcft; then
+    fetch fcft
+    rm -rf "$WORK/b-fcft"
+    meson setup "$WORK/b-fcft" "$DIR" "${CROSS[@]}" -Ddocs=disabled -Dgrapheme-shaping=disabled \
+        -Drun-shaping=disabled -Dtest-text-shaping=false -Dexamples=false >/dev/null
+    ninja -C "$WORK/b-fcft" install >/dev/null
+    mark fcft
+fi
+echo "fcft: $(PKG_CONFIG_LIBDIR=$SR/lib/pkgconfig:$SR/share/pkgconfig pkg-config --modversion fcft)"
 
 echo "libraries installed in $SR/lib:"
 ls "$SR/lib" | grep -E '\.a$' | tr '\n' ' '; echo

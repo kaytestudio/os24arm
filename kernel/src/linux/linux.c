@@ -3786,6 +3786,20 @@ static s64 linux_syscall(linux_tf_t *tf)
         r = vfs_rename(o, n);
         return r == VFS_OK ? 0 : verr(r);
     }
+    case 37: return -EPERM;                             /* linkat: no hard links (callers fall back) */
+    case 43: case 44: {                                 /* statfs, fstatfs */
+        if (tf->x[8] == 44 && !fd_get(a0)) return -EBADF;
+        if (!uok(a1, 120, 1)) return -EFAULT;
+        int64_t *b = (int64_t *)(uintptr_t)a1;
+        kmemset(b, 0, 120);
+        b[0] = 0x858458f6;                              /* f_type: RAMFS_MAGIC (no fs is special here) */
+        b[1] = 4096;                                    /* f_bsize */
+        b[2] = 65536; b[3] = 32768; b[4] = 32768;       /* f_blocks, f_bfree, f_bavail */
+        b[5] = 4096; b[6] = 2048;                       /* f_files, f_ffree */
+        b[8] = 255;                                     /* f_namelen */
+        b[9] = 4096;                                    /* f_frsize */
+        return 0;
+    }
     case 45: {                                          /* truncate */
         char p[VFS_PATH_MAX];
         int r = user_path(AT_FDCWD, a0, p);

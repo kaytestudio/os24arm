@@ -119,19 +119,28 @@ platform-specific are new code.
    isn't installed.
    Tests: `wlrtest` (headless backend, scene graph, xdg-shell client,
    output pixels checked), `evtest` (prints evdev events).
-6. **Compositors** *(tinywl and cage run)*. `userland/build-compositor.sh`
-   builds wlroots' `tinywl` and the `cage` kiosk compositor (0.2.1, pinned
-   download), both patched at build time - os2 backend, the built-in
-   keymap when xkeyboard-config is missing, `tinywl -s` without a shell,
-   cage without VT switching or XWayland - and `wlclient`, a small
-   xdg-shell client. In QEMU both show the client on the virtio-gpu
-   display with a software cursor; keyboard and pointer input reach it;
-   tinywl quits on Alt+Esc, cage when its application exits (and returns
-   its status). Try it: `scripts/run-vm.sh --wayland`, `MOUNT usb0p1 \h`,
-   then `RUNELF \h\cage /h/wlclient` or `RUNELF \h\tinywl -s
-   /h/wlclient`. Next: xkeyboard-config and cursor themes on a volume,
-   real Wayland applications (e.g. foot, which needs fontconfig/freetype). The in-kernel compositor (`kernel/src/gui/wayland.c`, `GUI`)
-   stays as the fallback console GUI.
+6. **Compositors and a terminal** *(tinywl, cage and foot run)*.
+   `userland/build-compositor.sh` builds wlroots' `tinywl`, the `cage`
+   kiosk compositor (0.2.1) and the `foot` terminal (1.28.0), the first
+   two patched at build time - os2 backend, the built-in keymap when
+   xkeyboard-config is missing, `tinywl -s` without a shell, cage without
+   VT switching or XWayland - and `wlclient`, a small xdg-shell client.
+   foot uses fcft, freetype and fontconfig (`build-libs.sh`) with DejaVu
+   Sans Mono, and busybox as its shell. `userland/make-stick.sh` puts it
+   all on an HPFS stick image with `userland/rootfs/` (`desktop.sh`,
+   `fonts.conf`, `foot.ini`).
+
+   Try it: `scripts/run-vm.sh --wayland`, `MOUNT usb0p1 \h`, then
+   `RUNELF \h\busybox sh /h/desktop.sh` - foot in cage on the
+   virtio-gpu display, a busybox shell in it; `exit` ends the session.
+
+   Notes: foot's `max-shm-pool-size-mb` is 0 (its fast scrolling wants a
+   512 MB sparse memfd, i.e. demand paging); `XKB_CONFIG_ROOT=/tmp`
+   because xkbcommon won't create a context without its data directory
+   (the keymap itself comes from the compositor). Next: xkeyboard-config
+   and cursor themes on the stick, demand paging, more applications. The
+   in-kernel compositor (`kernel/src/gui/wayland.c`, `GUI`) stays as the
+   fallback console GUI.
 
 ## Building the toolchain pieces
 
@@ -151,7 +160,7 @@ writes the cross toolchain everything else uses:
   build-machine tools (`wayland-scanner`) are found
 
 Needs Homebrew `llvm`, `lld`, `meson`, `ninja`, `pkg-config`, `cmake`,
-`bison`.
+`bison`, `gperf`, `make` (GNU make, for busybox).
 
 `userland/tests/` holds the test programs, built with
 `userland/build-tests.sh` into `build/userland/tests/`; a test with a
