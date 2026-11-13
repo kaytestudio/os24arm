@@ -5,7 +5,10 @@
 # defconfig, plus: static; no tc (doesn't build against these kernel
 # headers); no x86 SHA acceleration; FEATURE_SH_STANDALONE and
 # PREFER_APPLETS, so ash runs applets without /bin symlinks (it re-runs
-# itself through /proc/self/exe, which the kernel provides).
+# itself through /proc/self/exe, which the kernel provides); and
+# BB_GLOBAL_CONST='' - busybox's "const pointer to globals" trick lets this
+# clang read the pointer before it's set (vi crashed on a NULL), and its
+# documented fix is to turn the trick off.
 #
 # Run it with RUNELF \h\busybox sh (after MOUNT usb0p1 \h).
 set -euo pipefail
@@ -41,6 +44,12 @@ if [ ! -f "$B/.config" ]; then
         -e 's/^# CONFIG_FEATURE_SH_STANDALONE is not set/CONFIG_FEATURE_SH_STANDALONE=y/' \
         -e 's/^# CONFIG_FEATURE_PREFER_APPLETS is not set/CONFIG_FEATURE_PREFER_APPLETS=y/' "$B/.config"
     yes "" | "$MAKE" -C "$SRC" O="$B" HOSTCC=cc oldconfig >/dev/null 2>&1 || true
+fi
+if ! grep -q '^CONFIG_EXTRA_CFLAGS="-DBB_GLOBAL_CONST="$' "$B/.config"; then
+    sed -i.bak 's/^CONFIG_EXTRA_CFLAGS=.*/CONFIG_EXTRA_CFLAGS="-DBB_GLOBAL_CONST="/' "$B/.config"
+    grep -q '^CONFIG_EXTRA_CFLAGS="-DBB_GLOBAL_CONST="$' "$B/.config" \
+        || { echo "busybox .config has no CONFIG_EXTRA_CFLAGS line" >&2; exit 1; }
+    "$MAKE" -C "$SRC" O="$B" clean >/dev/null 2>&1 || true
 fi
 "$MAKE" -C "$SRC" O="$B" HOSTCC=cc CC="$CC" AR="$LLVM/llvm-ar" LD="$(command -v ld.lld)" \
     STRIP="$LLVM/llvm-strip" NM="$LLVM/llvm-nm" OBJCOPY="$LLVM/llvm-objcopy" \

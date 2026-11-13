@@ -93,7 +93,8 @@ platform-specific are new code.
    master: commands, Ctrl-C, resize, exit).
 
    A shell: `userland/build-busybox.sh` builds busybox 1.37 (static, ash
-   with the applets built in). `RUNELF \h\busybox sh` gives an
+   with the applets built in; `BB_GLOBAL_CONST=''`, as busybox advises
+   for compilers that see through its const-globals trick). `RUNELF \h\busybox sh` gives an
    interactive shell on the console - line editing, pipes, redirection,
    job control, Ctrl-C.
 4. **Libraries** *(done)*. `userland/build-libs.sh` cross-builds, as
@@ -132,14 +133,16 @@ platform-specific are new code.
 6. **Compositors and a terminal** *(tinywl, cage, dwl and foot run)*.
    `userland/build-compositor.sh` builds wlroots' `tinywl`, the `cage`
    kiosk compositor (0.2.1), the `dwl` tiling compositor (0.8, without
-   libinput's pointer settings) and the `foot` terminal (1.28.0), the
-   compositors patched at build time - os2 backend, the built-in keymap when
+   libinput's pointer settings), the `foot` terminal (1.28.0) and the
+   `fuzzel` launcher (1.15.0, no icons), the compositors patched at
+   build time - os2 backend, the built-in keymap when
    xkeyboard-config is missing, `tinywl -s` without a shell, cage without
    VT switching or XWayland - and `wlclient`, a small xdg-shell client.
    foot uses fcft, freetype and fontconfig (`build-libs.sh`) with DejaVu
    Sans Mono, and busybox as its shell. `userland/make-stick.sh` puts it
    all on an HPFS stick image with `userland/rootfs/` (`env.sh`,
-   `desktop.sh`, `dwl.sh`, `fonts.conf`, `foot.ini`).
+   `desktop.sh`, `dwl.sh`, `fonts.conf`, `foot.ini`, `fuzzel.ini`, and
+   `applications/*.desktop` - what the launcher offers).
 
    Try it: `scripts/run-vm.sh --wayland --hvf` (`--hvf`: native speed
    with Apple's Hypervisor.framework; without it QEMU emulates (TCG),
@@ -149,7 +152,8 @@ platform-specific are new code.
    `de nodeadkeys`; default `us`) - foot in cage on the virtio-gpu
    display, a busybox shell in it; `exit` ends the session. Or
    `RUNELF \h\busybox sh /h/dwl.sh [layout]` - a tiling desktop:
-   Alt+Shift+Enter opens another terminal, Alt+J/K moves the focus,
+   Alt+P the launcher (terminal, vi, ...), Alt+Shift+Enter another
+   terminal, Alt+J/K moves the focus,
    Alt+Shift+C closes a window, Alt+Shift+Q quits (see `dwl.sh`).
 
    Keyboard layouts: `build-libs.sh` stages xkeyboard-config 2.46's data

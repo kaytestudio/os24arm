@@ -256,6 +256,9 @@ c = c[:a] + c[c.index("\n", b) + 1:]
 t = 'static const char *termcmd[] = { "foot", NULL };'
 assert c.count(t) == 1
 c = c.replace(t, 'static const char *termcmd[] = { "/h/foot", "-c", "/h/foot.ini", NULL };')
+m = 'static const char *menucmd[] = { "wmenu-run", NULL };'
+assert c.count(m) == 1
+c = c.replace(m, 'static const char *menucmd[] = { "/h/fuzzel", "--config", "/h/fuzzel.ini", NULL };')
 open(d + "/config.h", "w").write(c)
 PY
 # shellcheck disable=SC2046,SC2086
@@ -264,3 +267,32 @@ PY
     "$ROOT/userland/wlr-os2/os2_backend.c" \
     $(PKG_CONFIG_LIBDIR="$SR/lib/pkgconfig:$SR/share/pkgconfig" pkg-config --static --cflags --libs $PKGS)
 echo "  dwl"
+
+# ── fuzzel (application launcher; dwl's Alt+P) ───────────────────────────
+FZ_VER=1.15.0
+FZ_SHA256=95b6c022fc1f1c7ab586d47c1594417cc311bf41ea8f5f8b5641478da7b5cf3b
+FZ_URL="https://codeberg.org/dnkl/fuzzel/archive/$FZ_VER.tar.gz"
+FZ_TGZ="$W/dl/fuzzel-$FZ_VER.tar.gz"
+FZ_SRC="$W/src/fuzzel-$FZ_VER"
+if [ ! -f "$FZ_TGZ" ]; then
+    echo "Downloading $FZ_URL"
+    curl -sSfL -o "$FZ_TGZ.part" "$FZ_URL" && mv "$FZ_TGZ.part" "$FZ_TGZ"
+fi
+echo "$FZ_SHA256  $FZ_TGZ" | shasum -a 256 -c - >/dev/null \
+    || { echo "SHA-256 mismatch for $FZ_TGZ" >&2; rm -f "$FZ_TGZ"; exit 1; }
+if [ ! -d "$FZ_SRC" ]; then
+    mkdir -p "$FZ_SRC.tmp" && tar xzf "$FZ_TGZ" -C "$FZ_SRC.tmp" --strip-components=1
+    mv "$FZ_SRC.tmp" "$FZ_SRC"
+fi
+# a copy without the man pages (they need scdoc, and there's no option)
+FZ_B="$GEN/fuzzel-src"
+rm -rf "$FZ_B" "$W/b-fuzzel"; cp -R "$FZ_SRC" "$FZ_B"
+grep -q "^subdir('doc')$" "$FZ_B/meson.build" || { echo "fuzzel meson.build changed upstream" >&2; exit 1; }
+sed -i.bak "s/^subdir('doc')$/# subdir('doc')  # os2: no scdoc/" "$FZ_B/meson.build"
+env -u PKG_CONFIG_PATH meson setup "$W/b-fuzzel" "$FZ_B" \
+    --cross-file "$W/toolchain/cross.meson" --prefix="$SR" --libdir=lib --buildtype=release \
+    -Dbuild.pkg_config_path="$W/host/lib/pkgconfig" -Denable-cairo=disabled \
+    -Dpng-backend=none -Dsvg-backend=none -Dwerror=false >/dev/null
+ninja -C "$W/b-fuzzel" fuzzel >/dev/null
+cp "$W/b-fuzzel/fuzzel" "$OUT/fuzzel"
+echo "  fuzzel"

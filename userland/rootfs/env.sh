@@ -8,5 +8,7 @@ export XKB_DEFAULT_LAYOUT="${1:-us}"
 export XCOMPOSEFILE=/h/Compose          # dead keys and compose sequences
 export LANG=C.UTF-8
 export XDG_RUNTIME_DIR=/tmp HOME=/tmp SHELL=/h/busybox
+export XDG_DATA_DIRS=/h XDG_DATA_HOME=/tmp XDG_CONFIG_HOME=/tmp   # /h/applications
 export PATH=/h
+mkdir -p /tmp/.cache                    # fuzzel remembers what was launched
 cd /tmp

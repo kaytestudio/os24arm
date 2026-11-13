@@ -27,7 +27,7 @@ tar xjf "$DJV_TAR" -C "$STAGE/fonts" --strip-components=2 \
     "dejavu-fonts-ttf-$DJV/ttf/DejaVuSansMono.ttf" "dejavu-fonts-ttf-$DJV/ttf/DejaVuSansMono-Bold.ttf"
 [ -d "$W/bin" ] && cp "$W"/bin/* "$STAGE"/
 [ -d "$W/tests" ] && find "$W/tests" -maxdepth 1 -type f -perm -u+x -exec cp {} "$STAGE"/ \;
-cp "$ROOT"/userland/rootfs/* "$STAGE"/
+cp -R "$ROOT"/userland/rootfs/* "$STAGE"/
 if [ -d "$W/xkb-data" ]; then cp -R "$W/xkb-data" "$STAGE/xkb"; fi   # keyboard layouts
 if [ -f "$W/Compose" ]; then cp "$W/Compose" "$STAGE/Compose"; fi    # dead keys, compose
 python3 "$ROOT/scripts/mkhpfs.py" "$IMG" --size 48M --from "$STAGE" --mbr >/dev/null

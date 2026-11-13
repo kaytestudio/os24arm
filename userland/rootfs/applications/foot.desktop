@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Terminal (foot)
+Comment=A Wayland terminal with a busybox shell
+Exec=/h/foot -c /h/foot.ini
+Terminal=false
+Categories=System;TerminalEmulator;

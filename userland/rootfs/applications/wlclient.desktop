@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Wayland test client
+Comment=userland/wlr-os2/wlclient: a window with a moving bar
+Exec=/h/wlclient
+Terminal=false
+Categories=Development;
