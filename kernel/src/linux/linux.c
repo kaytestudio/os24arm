@@ -4636,7 +4636,28 @@ static s64 linux_syscall(linux_tf_t *tf)
         int r = user_path((int)a0, a1, o);
         if (!r) r = user_path((int)a2, a3, n);
         if (r) return r;
+        vfs_stat_t so, sn;
+        int have_new = vfs_stat(n, &sn) == VFS_OK;
+        if (tf->x[8] == 276 && (a4 & 1) && have_new) return -EEXIST;   /* RENAME_NOREPLACE */
         r = vfs_rename(o, n);
+        /* POSIX: an existing target is replaced (the drivers refuse) - a
+         * file by a file, an empty directory by a directory. Not when the
+         * names differ only in case: on HPFS and FAT that's the same file. */
+        if (r == VFS_ERR_INVAL && have_new && vfs_stat(o, &so) == VFS_OK) {
+            int same = 1;
+            for (int i = 0; same && (o[i] || n[i]); i++) {
+                char x = o[i], y = n[i];
+                if (x >= 'A' && x <= 'Z') x += 32;
+                if (y >= 'A' && y <= 'Z') y += 32;
+                same = x == y;
+            }
+            int odir = (so.attrs & VFS_ATTR_DIR) != 0, ndir = (sn.attrs & VFS_ATTR_DIR) != 0;
+            if (same) return -EINVAL;
+            if (odir != ndir) return odir ? -ENOTDIR : -EISDIR;
+            int u = vfs_unlink(n);                     /* (a directory only if empty) */
+            if (u != VFS_OK) return u == VFS_ERR_BUSY || u == VFS_ERR_ISDIR ? -39 /* ENOTEMPTY */ : verr(u);
+            r = vfs_rename(o, n);
+        }
         return r == VFS_OK ? 0 : verr(r);
     }
     case 37: return -EPERM;                             /* linkat: no hard links (callers fall back) */
@@ -4827,7 +4848,16 @@ static s64 linux_syscall(linux_tf_t *tf)
     }
     case 86: return sys_timerfd_settime(a0, a1, a2, a3);
     case 87: return sys_timerfd_gettime(a0, a1);
-    case 88: return 0;                                  /* utimensat */
+    case 88: {                                          /* utimensat: times aren't settable, */
+        if (!a1) return fd_get(a0) ? 0 : -EBADF;        /* but a missing file is ENOENT (touch */
+        char p[VFS_PATH_MAX];                           /* creates it on that) */
+        int r = user_path((int)a0, a1, p);
+        if (r) return r;
+        if (!kstrncmp(p, "/dev", 4) || !kstrncmp(p, "/proc", 5) || shm_name(p)) return 0;
+        vfs_stat_t vs;
+        r = vfs_stat(p, &vs);
+        return r == VFS_OK ? 0 : verr(r);
+    }
     case 93: do_exit((int)((a0 & 0xFF) << 8)); return 0;          /* exit: this thread */
     case 94: do_exit_group((int)((a0 & 0xFF) << 8)); return 0;    /* exit_group */
     case 96: cur->clear_tid = a0; return cur->pid;      /* set_tid_address -> tid */

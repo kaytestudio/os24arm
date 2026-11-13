@@ -104,6 +104,8 @@ typedef struct {
     uint32_t  bytes_per_cluster;
     uint32_t  total_clusters;
     uint32_t  fat_size_sectors;
+    uint32_t  fsinfo_lba;        /* FAT32: the FSInfo sector (0: none)        */
+    int       fsinfo_stale;      /* its free-cluster count marked unknown     */
     /* scratch buffer (one sector) */
     uint8_t   sector_buf[SECTOR_SIZE];
     uint32_t  sector_buf_lba;    /* which sector is cached   */

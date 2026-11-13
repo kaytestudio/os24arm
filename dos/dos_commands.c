@@ -1706,6 +1706,19 @@ static void copy_or_move(int argc, char **argv, int move)
         return;
     }
     uart_puts("\r\n");
+    if (move && !has_wild(argv[1]) && is_dir(argv[1])) {
+        /* a directory: renamed as a whole, within its volume */
+        char target[VFS_PATH_MAX];
+        int b = base_index(argv[1]);
+        if (x.dest_is_dir) join_path(target, sizeof target, x.dest, (int)strlen(x.dest), argv[1] + b);
+        else join_path(target, sizeof target, "", 0, x.dest);
+        APIRET rc = DosMove(argv[1], target);
+        if (rc == ERROR_INVALID_PARAMETER)
+            kprintf("MOVE: %s can't move there (another volume, into itself, or the name exists)\n", argv[1]);
+        else if (rc != NO_ERROR) print_dos_error(cmd, rc);
+        else kprintf("%s moved\n", argv[1]);
+        return;
+    }
     int n = for_each_file(argv[1], xfer_one, &x);
     if (n < 0) { print_dos_error(cmd, (APIRET)-n); return; }
     kprintf("%9u file(s) %s", x.files, move ? "moved" : "copied");
