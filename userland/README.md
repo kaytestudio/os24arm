@@ -55,6 +55,16 @@ platform-specific are new code.
    (console input, Ctrl-D, Ctrl-C), `preempt` (children spinning without
    system calls don't starve the parent), `threads` (pthreads: mutexes,
    condition variables, TLS, join, exit/execve/signals with threads).
+   Memory: demand paging. Each process has a 64 MB window at 0x60000000
+   (program image, brk heap, a 16 MB stack) and a 4 GB mmap region at
+   0x1_0000_0000; the heap, the stack and every mapping are VM areas
+   whose pages arrive on first touch (EL0 translation faults, and the
+   kernel's own user-memory accesses). `mmap` (anonymous, shared, memfd,
+   file copies, the framebuffer, `MAP_FIXED[_NOREPLACE]`), `munmap`,
+   `mprotect` and `mremap` split and merge areas; PROT_NONE guard pages
+   fault. Shared memory objects are sparse (up to 1 GB), and
+   `fallocate(PUNCH_HOLE)` frees pages and unmaps them everywhere.
+   Test: `vmtest`.
 3. **Event and IPC primitives** *(done)*.
    Signals: `rt_sigaction` handlers run on the user stack with a
    Linux-layout `rt_sigframe` (siginfo, ucontext, FP/SIMD record) and
@@ -141,9 +151,7 @@ platform-specific are new code.
    `XKB_DEFAULT_LAYOUT`, `XCOMPOSEFILE` in `desktop.sh`), so xkbcommon
    works as on Linux - the built-in keymap is only a fallback now.
 
-   Notes: foot's `max-shm-pool-size-mb` is 0 (its fast scrolling wants a
-   512 MB sparse memfd, i.e. demand paging). Next: demand paging and a
-   larger user address space, cursor themes, more applications. The
+   Next: cursor themes, more applications. The
    in-kernel compositor (`kernel/src/gui/wayland.c`, `GUI`) stays as the
    fallback console GUI.
 

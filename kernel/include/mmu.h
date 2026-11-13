@@ -30,6 +30,10 @@ void mmu_init(void);
  * Used by the Linux-ABI user mode (kernel/src/linux). */
 #define MMU_USER_BASE  0x60000000UL
 #define MMU_USER_SIZE  (64UL * 1024 * 1024)
+/* ... and a second, larger user region above RAM, mapped the same way:
+ * the mmap area (demand paged by kernel/src/linux). */
+#define MMU_HI_BASE    0x100000000UL
+#define MMU_HI_SIZE    (4UL << 30)
 #define MMU_POOL_BASE  0x64000000UL
 #define MMU_POOL_END   0x80000000UL
 
@@ -46,8 +50,9 @@ void      mmu_as_activate(mmu_as_t *as);    /* TTBR0; NULL = kernel tables */
 mmu_as_t *mmu_as_current(void);
 
 /* [va, va+len), page-rounded: map (new pages zeroed; existing ones keep
- * their contents and get prot), change permissions, unmap (frees). Writable
- * pages are never executable. 0 on success. */
+ * their contents and get prot), change the permissions of the pages that
+ * are mapped, unmap (frees). Writable pages are never executable. 0 on
+ * success. */
 int  mmu_as_map(mmu_as_t *as, unsigned long va, unsigned long len, int prot);
 int  mmu_as_protect(mmu_as_t *as, unsigned long va, unsigned long len, int prot);
 void mmu_as_unmap(mmu_as_t *as, unsigned long va, unsigned long len);
@@ -57,6 +62,12 @@ void mmu_as_unmap(mmu_as_t *as, unsigned long va, unsigned long len);
  * drops the reference. Used for MAP_SHARED (memfd, shared anonymous). */
 int  mmu_as_map_shared(mmu_as_t *as, unsigned long va, void *const *frames, unsigned long n,
                        int prot);
+
+/* What's at va: -1 if nothing is mapped, else MMU_PROT_* bits. */
+int  mmu_as_query(mmu_as_t *as, unsigned long va);
+
+/* Is [start, end) inside the user regions (the window or the high region)? */
+int  mmu_user_range(unsigned long start, unsigned long end);
 
 /* In the active address space: is every page mapped and allowing prot? */
 int  mmu_user_mapped(unsigned long va, unsigned long len, int prot);

@@ -8,11 +8,19 @@
  * of its own) with its own kernel stack, and use Linux system calls
  * (svc #0, number in x8, arguments x0..x5, result or -errno in x0).
  *
- *   user window layout (per process)
+ *   user address space (per process; mmu.h)
  *     0x60000000  program image (PT_LOAD segments, per-page permissions)
- *       ...       brk heap, growing up              (to 0x62000000)
- *     0x62000000  mmap area, growing up             (to 0x63800000)
- *     0x63800000  stack, 8 MB, growing down         (to 0x64000000)
+ *       ...       brk heap, growing up              (to 0x63000000)
+ *     0x63000000  stack, 16 MB, growing down        (to 0x64000000)
+ *     0x1_0000_0000  mmap area, 4 GB                (mmu.h MMU_HI_BASE)
+ *
+ * Memory is demand paged: the heap, the stack and mmap'ed memory are VM
+ * areas (vma_t: range, protection, anonymous or a shared memory object +
+ * offset), and pages arrive when first touched - by the program (the EL0
+ * fault handler) or by the kernel on its behalf (uok() populates what a
+ * system call is about to access). Shared memory objects (memfd,
+ * /dev/shm, MAP_SHARED|MAP_ANONYMOUS) are sparse too; PUNCH_HOLE frees
+ * pages and takes them out of every address space that maps them.
  *
  * Scheduling: a process runs until it blocks (pipe, socket, poll, wait4,
  * console input, sleep), yields, or its time slice ends - the EL1
@@ -92,10 +100,12 @@ extern int       usbmouse_poll(usbmouse_ev_t *ev) __attribute__((weak));
 
 #define PAGE            4096UL
 #define USER_TOP        (MMU_USER_BASE + MMU_USER_SIZE)
-#define BRK_LIMIT       0x62000000UL
-#define MMAP_BASE       0x62000000UL
-#define MMAP_LIMIT      0x63800000UL
-#define STACK_BOTTOM    0x63800000UL
+#define BRK_LIMIT       0x63000000UL
+#define STACK_BOTTOM    0x63000000UL           /* 16 MB stack, demand paged */
+#define STACK_EAGER     (64UL * 1024)          /* mapped at exec (argv, envp, auxv) */
+#define MMAP_BASE       MMU_HI_BASE
+#define MMAP_LIMIT      (MMU_HI_BASE + MMU_HI_SIZE)
+#define MAX_VMAS        256
 #define MAX_FDS         64
 #define MAX_PHDRS       16
 #define PAGES           (MMU_USER_SIZE / PAGE)
@@ -110,7 +120,7 @@ extern int       usbmouse_poll(usbmouse_ev_t *ev) __attribute__((weak));
 #define MAX_EPOLLS      16
 #define EPOLL_ITEMS     64
 #define MAX_MEMOBJS     64
-#define MEMFD_MAX       (32UL << 20)
+#define MEMFD_MAX       (1UL << 30)            /* sparse: pages exist once touched */
 #define MAX_SOCKS       48
 #define SOCK_BUF_PAGES  16                     /* 64 KB receive buffer */
 #define SOCK_BUF        (SOCK_BUF_PAGES * PAGE)
@@ -237,13 +247,24 @@ typedef struct pipe {
     int      readers, writers;
 } pipe_t;
 
-typedef struct memobj {               /* memfd / shared anonymous memory */
-    int      refs;
+typedef struct memobj {               /* memfd / /dev/shm / shared anonymous memory */
+    int      refs;                    /* files and VM areas using it */
     lx_u64   size;
-    uint32_t npages, cap;             /* pages used, page-pointer slots */
-    void   **pages;                   /* frames (one reference each) */
+    uint32_t npages, cap;             /* pages covering size, page-pointer slots */
+    void   **pages;                   /* frames (one reference each), NULL = a hole (zeros) */
     uint32_t table_frames;
 } memobj_t;
+
+/* A VM area: [start, end) of an address space, its protection, and what
+ * fills its pages on first touch. */
+enum { V_ANON, V_SHARED, V_DEV };     /* zero pages; a memobj's pages; pre-mapped device */
+typedef struct {
+    lx_u64    start, end;
+    int       prot;                   /* MMU_PROT_* (0: no access) */
+    int       kind;
+    memobj_t *m;                      /* V_SHARED: holds a reference */
+    lx_u64    moff;                   /* V_SHARED: offset of start in m */
+} vma_t;
 
 struct file;
 typedef struct {
@@ -337,7 +358,9 @@ typedef struct group {
     int      as_borrowed;      /* vfork child using the parent's */
     file_t  *fd[MAX_FDS];
     __UINT64_TYPE__ cloexec;   /* bit per fd */
-    lx_u64   brk_start, brk_cur, mmap_next;
+    lx_u64   brk_start, brk_cur;
+    vma_t    vma[MAX_VMAS];        /* sorted by start, non-overlapping */
+    int      nvma;
     sigact_t sa[NSIG];
     char     cwd[VFS_PATH_MAX];
     char     exe[VFS_PATH_MAX];    /* /proc/self/exe */
@@ -529,11 +552,8 @@ static int sig_interrupt(void)
     return (cur->sig_pending & ~(cur->sig_blocked & ~UNBLOCKABLE)) != 0;
 }
 
-/* ── User memory access ───────────────────────────────────────────────── */
-static int uok(lx_u64 p, lx_u64 n, int w)
-{
-    return mmu_user_mapped(p, n, w ? MMU_PROT_WRITE : MMU_PROT_READ);
-}
+/* uok(): user memory access checks, with VM areas below */
+static int uok(lx_u64 p, lx_u64 n, int w);
 
 static int copy_in_str(char *dst, lx_u64 src, uint32_t max)
 {
@@ -1022,7 +1042,7 @@ static s64 dos_to_unix(uint16_t d, uint16_t t)
     return days * 86400 + (t >> 11) * 3600 + ((t >> 5) & 63) * 60 + (t & 31) * 2;
 }
 
-/* ── Memory objects (memfd, shared anonymous mappings) ────────────────── */
+/* ── Memory objects (memfd, /dev/shm, shared anonymous mappings) ──────── */
 static memobj_t *mem_new(void)
 {
     for (int i = 0; i < MAX_MEMOBJS; i++)
@@ -1037,19 +1057,31 @@ static memobj_t *mem_new(void)
 static void mem_put(memobj_t *m)
 {
     if (!m || --m->refs > 0) return;
-    for (uint32_t i = 0; i < m->npages; i++) mmu_frame_put(m->pages[i]);
+    for (uint32_t i = 0; i < m->npages; i++) if (m->pages[i]) mmu_frame_put(m->pages[i]);
     if (m->pages) mmu_frames_free(m->pages, m->table_frames);
     m->refs = 0;
 }
 
-/* Set the size: pages are allocated (zeroed) or released as needed. */
+/* Page idx of m: its frame, allocated (zeroed) if create; NULL past the
+ * end, or for a hole when !create. */
+static void *mem_page(memobj_t *m, lx_u64 idx, int create)
+{
+    if (idx >= m->npages) return 0;
+    if (!m->pages[idx] && create) m->pages[idx] = mmu_frames_alloc(1);
+    return m->pages[idx];
+}
+
+static void mem_zap(memobj_t *m, lx_u64 first, lx_u64 last);
+
+/* Set the size. Growing adds holes (no memory until touched); shrinking
+ * frees the pages past the end and takes them out of every mapping. */
 static int mem_resize(memobj_t *m, lx_u64 size)
 {
     if (size > MEMFD_MAX) return -EFBIG;
     uint32_t want = (uint32_t)((size + PAGE - 1) / PAGE);
     if (want > m->cap) {
         uint32_t tf = (uint32_t)((want * sizeof(void *) + PAGE - 1) / PAGE);
-        void **t = mmu_frames_alloc(tf);
+        void **t = mmu_frames_alloc(tf);              /* zeroed: all holes */
         if (!t) return -ENOMEM;
         for (uint32_t i = 0; i < m->npages; i++) t[i] = m->pages[i];
         if (m->pages) mmu_frames_free(m->pages, m->table_frames);
@@ -1057,13 +1089,13 @@ static int mem_resize(memobj_t *m, lx_u64 size)
         m->table_frames = tf;
         m->cap = tf * (uint32_t)(PAGE / sizeof(void *));
     }
-    while (m->npages < want) {
-        void *f = mmu_frames_alloc(1);
-        if (!f) return -ENOMEM;
-        m->pages[m->npages++] = f;
+    if (want < m->npages) {
+        mem_zap(m, want, m->npages);
+        for (uint32_t i = want; i < m->npages; i++)
+            if (m->pages[i]) { mmu_frame_put(m->pages[i]); m->pages[i] = 0; }
     }
-    while (m->npages > want) mmu_frame_put(m->pages[--m->npages]);
-    if (size % PAGE && want)                        /* bytes past the end read as zero */
+    m->npages = want;
+    if (size % PAGE && want && m->pages[want - 1])    /* bytes past the end read as zero */
         kmemset((uint8_t *)m->pages[want - 1] + size % PAGE, 0, PAGE - size % PAGE);
     m->size = size;
     return 0;
@@ -1080,12 +1112,192 @@ static s64 mem_rw(memobj_t *m, lx_u64 *pos, uint8_t *buf, lx_u64 n, int wr)
         lx_u64 off = *pos % PAGE, k = PAGE - off;
         if (k > n - done) k = n - done;
         if (k > m->size - *pos) k = m->size - *pos;
-        uint8_t *pg = (uint8_t *)m->pages[*pos / PAGE] + off;
-        if (wr) kmemcpy(pg, buf + done, k); else kmemcpy(buf + done, pg, k);
+        uint8_t *pg = mem_page(m, *pos / PAGE, wr);
+        if (wr) {
+            if (!pg) return done ? (s64)done : -ENOMEM;
+            kmemcpy(pg + off, buf + done, k);
+        } else if (pg) kmemcpy(buf + done, pg + off, k);
+        else kmemset(buf + done, 0, k);                /* a hole */
         done += k;
         *pos += k;
     }
     return (s64)done;
+}
+
+/* fallocate(PUNCH_HOLE): free whole pages in [off, off+len), zero the
+ * partial ones; the freed pages leave every address space too. */
+static void mem_punch(memobj_t *m, lx_u64 off, lx_u64 len)
+{
+    lx_u64 end = off + len > m->size ? m->size : off + len;
+    while (off < end) {
+        lx_u64 idx = off / PAGE, po = off % PAGE, k = PAGE - po;
+        if (k > end - off) k = end - off;
+        void *pg = mem_page(m, idx, 0);
+        if (pg && k == PAGE) {
+            mem_zap(m, idx, idx + 1);
+            mmu_frame_put(pg);
+            m->pages[idx] = 0;
+        } else if (pg) {
+            kmemset((uint8_t *)pg + po, 0, k);
+        }
+        off += k;
+    }
+}
+
+/* ── VM areas ─────────────────────────────────────────────────────────── */
+static vma_t *vma_find(group_t *g, lx_u64 va)
+{
+    for (int i = 0; i < g->nvma; i++) {
+        if (va < g->vma[i].start) return 0;
+        if (va < g->vma[i].end) return &g->vma[i];
+    }
+    return 0;
+}
+
+/* Can b continue a (a.end == b.start, same kind and protection, the same
+ * object at the following offset)? */
+static int vma_joins(const vma_t *a, const vma_t *b)
+{
+    if (a->end != b->start || a->kind != b->kind || a->prot != b->prot || a->kind == V_DEV) return 0;
+    return a->kind == V_ANON || (a->m == b->m && a->moff + (a->end - a->start) == b->moff);
+}
+
+/* Insert v as it is (splitting). */
+static int vma_insert_raw(group_t *g, const vma_t *v)
+{
+    if (g->nvma >= MAX_VMAS) return -ENOMEM;
+    int i = 0;
+    while (i < g->nvma && g->vma[i].start < v->start) i++;
+    for (int k = g->nvma; k > i; k--) g->vma[k] = g->vma[k - 1];
+    g->vma[i] = *v;
+    g->nvma++;
+    return 0;
+}
+
+/* Insert v, merging it with its neighbours where they line up (as Linux
+ * does: malloc's many small mappings stay a few areas). */
+static int vma_insert(group_t *g, const vma_t *v)
+{
+    int i = 0;
+    while (i < g->nvma && g->vma[i].start < v->start) i++;
+    vma_t *prev = i > 0 ? &g->vma[i - 1] : 0, *next = i < g->nvma ? &g->vma[i] : 0;
+    int jp = prev && vma_joins(prev, v), jn = next && vma_joins(v, next);
+    if (jp && jn) {                                    /* fills the gap: one area */
+        prev->end = next->end;
+        if (v->kind == V_SHARED) { mem_put(v->m); mem_put(next->m); }
+        for (int k = i; k < g->nvma - 1; k++) g->vma[k] = g->vma[k + 1];
+        g->nvma--;
+        return 0;
+    }
+    if (jp) { prev->end = v->end; if (v->kind == V_SHARED) mem_put(v->m); return 0; }
+    if (jn) { next->start = v->start; next->moff = v->moff; if (v->kind == V_SHARED) mem_put(v->m); return 0; }
+    if (g->nvma >= MAX_VMAS) return -ENOMEM;
+    for (int k = g->nvma; k > i; k--) g->vma[k] = g->vma[k - 1];
+    g->vma[i] = *v;
+    g->nvma++;
+    return 0;
+}
+
+/* Split the area containing at into [start, at) and [at, end). */
+static int vma_split(group_t *g, lx_u64 at)
+{
+    vma_t *v = vma_find(g, at);
+    if (!v || v->start == at) return 0;
+    vma_t hi = *v;
+    hi.start = at;
+    if (hi.kind == V_SHARED) { hi.moff += at - v->start; hi.m->refs++; }
+    v->end = at;
+    if (vma_insert_raw(g, &hi)) {                      /* undo */
+        v->end = hi.end;
+        if (hi.kind == V_SHARED) hi.m->refs--;
+        return -ENOMEM;
+    }
+    return 0;
+}
+
+/* Forget [start, end) (the pages must be unmapped by the caller). */
+static int vma_remove(group_t *g, lx_u64 start, lx_u64 end)
+{
+    if (vma_split(g, start) || vma_split(g, end)) return -ENOMEM;
+    for (int i = 0; i < g->nvma; ) {
+        vma_t *v = &g->vma[i];
+        if (v->start >= start && v->end <= end) {
+            if (v->kind == V_SHARED) mem_put(v->m);
+            for (int k = i; k < g->nvma - 1; k++) g->vma[k] = g->vma[k + 1];
+            g->nvma--;
+        } else i++;
+    }
+    return 0;
+}
+
+static void vma_clear(group_t *g)
+{
+    for (int i = 0; i < g->nvma; i++) if (g->vma[i].kind == V_SHARED) mem_put(g->vma[i].m);
+    g->nvma = 0;
+}
+
+/* Lowest free range of size bytes in the mmap area, or 0. */
+static lx_u64 vma_gap(group_t *g, lx_u64 size)
+{
+    lx_u64 at = MMAP_BASE;
+    for (int i = 0; i < g->nvma; i++) {
+        vma_t *v = &g->vma[i];
+        if (v->end <= MMAP_BASE) continue;
+        if (v->start >= at + size) break;
+        if (v->end > at) at = v->end;
+    }
+    return at + size <= MMAP_LIMIT ? at : 0;
+}
+
+/* A memobj's pages [first, last) leave every address space mapping them. */
+static void mem_zap(memobj_t *m, lx_u64 first, lx_u64 last)
+{
+    for (int gi = 0; gi < MAX_GROUPS; gi++) {
+        group_t *g = &groups[gi];
+        if (g->state != G_LIVE || !g->as) continue;
+        for (int i = 0; i < g->nvma; i++) {
+            vma_t *v = &g->vma[i];
+            if (v->kind != V_SHARED || v->m != m) continue;
+            lx_u64 vf = v->moff / PAGE, vl = vf + (v->end - v->start) / PAGE;
+            lx_u64 a = first > vf ? first : vf, b = last < vl ? last : vl;
+            if (a < b) mmu_as_unmap(g->as, v->start + (a - vf) * PAGE, (b - a) * PAGE);
+        }
+    }
+}
+
+/* Bring in the page at va for an access (demand paging). 1 if it's there
+ * now, 0 if the access isn't allowed (no area, or the wrong protection). */
+static int populate(group_t *g, lx_u64 va, int write, int exec)
+{
+    vma_t *v = vma_find(g, va);
+    if (!v || v->kind == V_DEV) return 0;
+    int need = MMU_PROT_READ | (write ? MMU_PROT_WRITE : 0) | (exec ? MMU_PROT_EXEC : 0);
+    if ((v->prot & need) != need) return 0;
+    lx_u64 page = va & ~(PAGE - 1);
+    if (v->kind == V_ANON) {
+        if (mmu_as_map(g->as, page, PAGE, MMU_PROT_READ | MMU_PROT_WRITE)) return 0;
+        if (v->prot != (MMU_PROT_READ | MMU_PROT_WRITE)) mmu_as_protect(g->as, page, PAGE, v->prot);
+        return 1;
+    }
+    void *frame = mem_page(v->m, (v->moff + (page - v->start)) / PAGE, 1);
+    if (!frame) return 0;                              /* past the end of the object */
+    return mmu_as_map_shared(g->as, page, &frame, 1, v->prot) == 0;
+}
+
+/* ── User memory access ───────────────────────────────────────────────── */
+/* Is [p, p+n) accessible (for writing, if w)? Pages that aren't there yet
+ * but belong to an area are brought in: the kernel then accesses them
+ * directly. */
+static int uok(lx_u64 p, lx_u64 n, int w)
+{
+    if (!n) return 1;
+    if (p + n < p || !cur) return 0;
+    for (lx_u64 a = p & ~(PAGE - 1); a < p + n; a += PAGE) {
+        int q = mmu_as_query(cur->g->as, a);
+        if (q < 0) { if (!populate(cur->g, a, w, 0)) return 0; }
+        else if (w && !(q & MMU_PROT_WRITE)) return 0;
+    }
+    return 1;
 }
 
 /* ── Files and descriptors ────────────────────────────────────────────── */
@@ -1467,17 +1679,19 @@ static s64 ev_ioctl(file_t *f, lx_u64 req, lx_u64 arg)
 /* ── Memory ───────────────────────────────────────────────────────────── */
 static lx_u64 page_up(lx_u64 a) { return (a + PAGE - 1) & ~(PAGE - 1); }
 
+/* The heap is one area, [page_up(brk_start), page_up(brk_cur)). */
 static s64 sys_brk(lx_u64 want)
 {
-    if (want < cur->g->brk_start || want > BRK_LIMIT) return (s64)cur->g->brk_cur;
-    lx_u64 old = page_up(cur->g->brk_cur), new = page_up(want);
-    if (new > old) {
-        if (mmu_as_map(cur->g->as, old, new - old, MMU_PROT_READ | MMU_PROT_WRITE))
-            return (s64)cur->g->brk_cur;
-    } else if (new < old) {
-        mmu_as_unmap(cur->g->as, new, old - new);
+    group_t *g = cur->g;
+    if (want < g->brk_start || want > BRK_LIMIT) return (s64)g->brk_cur;
+    lx_u64 base = page_up(g->brk_start), old = page_up(g->brk_cur), new = page_up(want);
+    if (new != old) {
+        if (vma_remove(g, base, old > new ? old : new)) return (s64)g->brk_cur;
+        if (new < old) mmu_as_unmap(g->as, new, old - new);
+        vma_t v = { base, new, MMU_PROT_READ | MMU_PROT_WRITE, V_ANON, 0, 0 };
+        if (new > base && vma_insert(g, &v)) return (s64)g->brk_cur;
     }
-    cur->g->brk_cur = want;
+    g->brk_cur = want;
     return (s64)want;
 }
 
@@ -1487,10 +1701,20 @@ static int prot_bits(lx_u64 p)              /* PROT_READ 1, WRITE 2, EXEC 4 */
                  (p & 4 ? MMU_PROT_EXEC : 0));
 }
 
+static int vma_overlaps(group_t *g, lx_u64 start, lx_u64 end)
+{
+    for (int i = 0; i < g->nvma; i++)
+        if (g->vma[i].start < end && g->vma[i].end > start) return 1;
+    return 0;
+}
+
+/* mmap: an area; pages come on first touch. Private file mappings are
+ * copied in at once; the framebuffer is mapped at once. */
 static s64 sys_mmap(lx_u64 addr, lx_u64 len, lx_u64 prot, lx_u64 flags, s64 fd, lx_u64 off)
 {
-    const lx_u64 MAP_SHARED = 1, MAP_FIXED = 0x10, MAP_ANON = 0x20;
-    if (!len || (off & (PAGE - 1)) || len > MMU_USER_SIZE) return -EINVAL;
+    const lx_u64 MAP_SHARED = 1, MAP_FIXED = 0x10, MAP_ANON = 0x20, MAP_FIXED_NOREPLACE = 0x100000;
+    group_t *g = cur->g;
+    if (!len || (off & (PAGE - 1)) || len > MMU_HI_SIZE) return -EINVAL;
     int p = prot_bits(prot);
     if ((p & MMU_PROT_WRITE) && (p & MMU_PROT_EXEC)) return -EPERM;      /* W^X */
     file_t *f = 0;
@@ -1499,60 +1723,121 @@ static s64 sys_mmap(lx_u64 addr, lx_u64 len, lx_u64 prot, lx_u64 flags, s64 fd, 
         if (!f) return -EBADF;
         if (f->kind != F_FILE && f->kind != F_MEMFD && f->kind != F_FB) return -ENODEV;
         if (f->kind == F_FB && !(flags & MAP_SHARED)) return -EINVAL;
+        if (f->kind == F_FILE && (flags & MAP_SHARED) && (p & MMU_PROT_WRITE)) return -ENOSYS;
     }
     lx_u64 size = page_up(len), at;
-    if (flags & MAP_FIXED) {
-        if ((addr & (PAGE - 1)) || addr < MMU_USER_BASE || addr + size > STACK_BOTTOM) return -EINVAL;
-        mmu_as_unmap(cur->g->as, addr, size);           /* fresh pages */
+    if (flags & (MAP_FIXED | MAP_FIXED_NOREPLACE)) {
+        if ((addr & (PAGE - 1)) || !mmu_user_range(addr, addr + size)) return -EINVAL;
+        if ((flags & MAP_FIXED_NOREPLACE) && vma_overlaps(g, addr, addr + size)) return -EEXIST;
+        if (vma_remove(g, addr, addr + size)) return -ENOMEM;
+        mmu_as_unmap(g->as, addr, size);
         at = addr;
-    } else {
-        if (cur->g->mmap_next + size > MMAP_LIMIT || cur->g->mmap_next + size < cur->g->mmap_next)
-            return -ENOMEM;
-        at = cur->g->mmap_next;
-        cur->g->mmap_next += size;
+    } else if (!(at = vma_gap(g, size))) {
+        return -ENOMEM;
     }
-    /* Shared memory: memfd, or shared anonymous memory (shared with
-     * children across fork). The mapping holds its own frame references. */
-    memobj_t *m = 0;
-    int own = 0;
-    if ((flags & MAP_SHARED) && (flags & MAP_ANON)) {
-        if (!(m = mem_new())) return -ENOMEM;
-        own = 1;
-        if (mem_resize(m, size)) { mem_put(m); return -ENOMEM; }
-        off = 0;
-    } else if ((flags & MAP_SHARED) && f->kind == F_MEMFD) {
-        m = f->mem;
-    } else if (f && f->kind == F_FB) {
+    vma_t v = { at, at + size, p, V_ANON, 0, 0 };
+    if (f && f->kind == F_FB) {                        /* the screen itself */
         s64 r = fb_mmap(at, size, off, p ? p : MMU_PROT_READ);
-        if (r >= 0 && !p) mmu_as_unmap(cur->g->as, at, size);
-        return r;
-    }
-    if (m) {
-        if (off + size > page_up(m->size)) { if (own) mem_put(m); return -EINVAL; }
-        int r = mmu_as_map_shared(cur->g->as, at, m->pages + off / PAGE, size / PAGE,
-                                  p ? p : MMU_PROT_READ);
-        if (own) mem_put(m);
-        if (r) return -ENOMEM;
-        if (!p) mmu_as_unmap(cur->g->as, at, size);
-        return (s64)at;
-    }
-    /* Private: fresh pages, with a copy of the file's contents. (A
-     * read-only MAP_SHARED file mapping is the same thing, as long as
-     * nobody writes the file meanwhile.) */
-    if ((flags & MAP_SHARED) && (p & MMU_PROT_WRITE)) return -ENOSYS;   /* VFS files */
-    if (mmu_as_map(cur->g->as, at, size, MMU_PROT_READ | MMU_PROT_WRITE)) return -ENOMEM;
-    if (f && f->kind == F_MEMFD) {
-        lx_u64 pos = off;
-        mem_rw(f->mem, &pos, (uint8_t *)(uintptr_t)at, len, 0);
+        if (r < 0) return r;
+        v.kind = V_DEV;
+    } else if ((flags & MAP_SHARED) && !f) {            /* shared anonymous: survives fork */
+        if (!(v.m = mem_new())) return -ENOMEM;
+        if (mem_resize(v.m, size)) { mem_put(v.m); return -ENOMEM; }
+        v.kind = V_SHARED;
+    } else if ((flags & MAP_SHARED) && f->kind == F_MEMFD) {
+        v.kind = V_SHARED;
+        v.m = f->mem;
+        v.m->refs++;
+        v.moff = off;
     } else if (f) {
-        if (vfs_seek(f->vfd, (int32_t)off, SEEK_SET) < 0) { mmu_as_unmap(cur->g->as, at, size); return -EINVAL; }
-        int got = vfs_read(f->vfd, (void *)(uintptr_t)at, (uint32_t)len);
-        if (got < 0) { mmu_as_unmap(cur->g->as, at, size); return verr(got); }
+        /* Private (or read-only shared) file mapping: a copy, now. */
+        if (mmu_as_map(g->as, at, size, MMU_PROT_READ | MMU_PROT_WRITE)) {
+            mmu_as_unmap(g->as, at, size);
+            return -ENOMEM;
+        }
+        s64 got;
+        if (f->kind == F_MEMFD) {
+            lx_u64 pos = off;
+            got = mem_rw(f->mem, &pos, (uint8_t *)(uintptr_t)at, len, 0);
+        } else {
+            got = vfs_seek(f->vfd, (int32_t)off, SEEK_SET) < 0 ? -EINVAL
+                  : vfs_read(f->vfd, (void *)(uintptr_t)at, (uint32_t)len);
+            if (got < 0 && got != -EINVAL) got = verr((int)got);
+        }
+        if (got < 0) { mmu_as_unmap(g->as, at, size); return got; }
+        if (p != (MMU_PROT_READ | MMU_PROT_WRITE)) mmu_as_protect(g->as, at, size, p ? p : MMU_PROT_READ);
     }
-    if (p != (MMU_PROT_READ | MMU_PROT_WRITE)) {
-        if (p) mmu_as_protect(cur->g->as, at, size, p);
-        else   mmu_as_unmap(cur->g->as, at, size);       /* PROT_NONE */
+    if (vma_insert(g, &v)) {
+        if (v.kind == V_SHARED) mem_put(v.m);
+        mmu_as_unmap(g->as, at, size);
+        return -ENOMEM;
     }
+    return (s64)at;
+}
+
+static s64 sys_munmap(lx_u64 a, lx_u64 len)
+{
+    if ((a & (PAGE - 1)) || !len || !mmu_user_range(a, a + page_up(len))) return -EINVAL;
+    if (vma_remove(cur->g, a, a + page_up(len))) return -ENOMEM;
+    mmu_as_unmap(cur->g->as, a, page_up(len));
+    return 0;
+}
+
+/* mprotect: the areas in the range get the new protection, and so do the
+ * pages already there. (PROT_NONE on private pages already touched leaves
+ * them readable: an EL0 "no access" page isn't represented yet.) */
+static s64 sys_mprotect(lx_u64 a, lx_u64 len, lx_u64 prot)
+{
+    group_t *g = cur->g;
+    lx_u64 end = a + page_up(len);
+    if ((a & (PAGE - 1)) || !mmu_user_range(a, end)) return -EINVAL;
+    int p = prot_bits(prot);
+    if ((p & MMU_PROT_WRITE) && (p & MMU_PROT_EXEC)) return -EPERM;   /* W^X */
+    if (vma_split(g, a) || vma_split(g, end)) return -ENOMEM;
+    for (int i = 0; i < g->nvma; i++) {
+        vma_t *v = &g->vma[i];
+        if (v->start < a || v->end > end) continue;
+        v->prot = p;
+        if (!p && v->kind == V_SHARED) mmu_as_unmap(g->as, v->start, v->end - v->start);
+    }
+    if (p) mmu_as_protect(g->as, a, end - a, p);
+    return 0;
+}
+
+static s64 sys_mremap(lx_u64 a, lx_u64 oldlen, lx_u64 newlen, lx_u64 flags)
+{
+    group_t *g = cur->g;
+    lx_u64 old = page_up(oldlen), new = page_up(newlen);
+    vma_t *v = vma_find(g, a);
+    if ((a & (PAGE - 1)) || !new || !v || v->end < a + old || v->kind == V_DEV) return -EINVAL;
+    if (new <= old) {                                  /* shrink */
+        if (vma_remove(g, a + new, a + old)) return -ENOMEM;
+        mmu_as_unmap(g->as, a + new, old - new);
+        return (s64)a;
+    }
+    if (v->end == a + old && mmu_user_range(a, a + new) && !vma_overlaps(g, a + old, a + new)) {
+        v->end = a + new;                              /* grow in place */
+        return (s64)a;
+    }
+    if (!(flags & 1)) return -ENOMEM;                  /* MREMAP_MAYMOVE */
+    lx_u64 at = vma_gap(g, new);
+    if (!at) return -ENOMEM;
+    vma_t nv = *v;
+    nv.start = at;
+    nv.end = at + new;
+    if (nv.kind == V_SHARED) { nv.moff += a - v->start; nv.m->refs++; }
+    if (vma_insert(g, &nv)) { if (nv.kind == V_SHARED) mem_put(nv.m); return -ENOMEM; }
+    if (nv.kind == V_ANON)                             /* private pages: copy the ones there */
+        for (lx_u64 k = 0; k < old; k += PAGE)
+            if (mmu_as_query(g->as, a + k) >= 0) {
+                int q = mmu_as_query(g->as, a + k);
+                if (!(q & MMU_PROT_READ) || !populate(g, at + k, 0, 0)) continue;
+                mmu_as_protect(g->as, at + k, PAGE, MMU_PROT_READ | MMU_PROT_WRITE);
+                kmemcpy((void *)(uintptr_t)(at + k), (void *)(uintptr_t)(a + k), PAGE);
+                if (nv.prot != (MMU_PROT_READ | MMU_PROT_WRITE)) mmu_as_protect(g->as, at + k, PAGE, nv.prot);
+            }
+    vma_remove(g, a, a + old);
+    mmu_as_unmap(g->as, a, old);
     return (s64)at;
 }
 
@@ -1661,7 +1946,7 @@ static lx_u64 build_stack(const char *args, int argc, int envc, lx_u64 entry, lx
     const char *s = args;
     for (int i = 0; i < argc + envc; i++) { lx_u64 l = kstrlen(s) + 1; total += l; s += l; }
     lx_u64 el = kstrlen(execfn) + 1;
-    if (total + el + 8192 > USER_TOP - STACK_BOTTOM) return 0;
+    if (total + el + 8192 > STACK_EAGER) return 0;       /* must fit in the pages mapped now */
     sp -= el;
     kmemcpy((void *)(uintptr_t)sp, execfn, el);
     lx_u64 sexec = sp;
@@ -1706,7 +1991,7 @@ static int exec_image(const char *path, const char *args, int argc, int envc,
     lx_u64 phdr = 0;
     uint32_t phnum = 0;
     int r = load_elf(as, path, entry, &phdr, &phnum, top);
-    if (r == 0 && mmu_as_map(as, STACK_BOTTOM, USER_TOP - STACK_BOTTOM,
+    if (r == 0 && mmu_as_map(as, USER_TOP - STACK_EAGER, STACK_EAGER,
                              MMU_PROT_READ | MMU_PROT_WRITE))
         r = -ENOMEM;
     if (r == 0 && !(*sp = build_stack(args, argc, envc, *entry, phdr, phnum, path)))
@@ -1802,6 +2087,7 @@ static void group_finish(group_t *g)
     for (int i = 0; i < MAX_FDS; i++) if (g->fd[i]) fd_close(cur, i);
     for (int i = 0; i < MAX_GROUPS; i++)               /* orphans go to pid 1 */
         if (groups[i].state != G_FREE && groups[i].ppid == g->pid) groups[i].ppid = 1;
+    vma_clear(g);
     mmu_as_activate(0);
     if (!g->as_borrowed) mmu_as_destroy(g->as);
     g->as = 0;
@@ -1880,7 +2166,11 @@ static s64 sys_clone(lx_u64 flags, lx_u64 newsp, lx_u64 ptid, lx_u64 tls, lx_u64
         g->cloexec = cur->g->cloexec;
         g->brk_start = cur->g->brk_start;
         g->brk_cur = cur->g->brk_cur;
-        g->mmap_next = cur->g->mmap_next;
+        for (int i = 0; i < cur->g->nvma; i++) {       /* the areas, sharing memory objects */
+            g->vma[i] = cur->g->vma[i];
+            if (g->vma[i].kind == V_SHARED) g->vma[i].m->refs++;
+        }
+        g->nvma = cur->g->nvma;
         kmemcpy(g->sa, cur->g->sa, sizeof g->sa);
         kstrncpy(g->cwd, cur->g->cwd, sizeof g->cwd);
         kstrncpy(g->exe, cur->g->exe, sizeof g->exe);
@@ -2019,7 +2309,9 @@ static s64 sys_execve(lx_u64 upath, lx_u64 uargv, lx_u64 uenvp)
     cur->g->as = as;
     cur->g->brk_start = cur->g->brk_cur = top;
     kstrncpy(cur->g->exe, path, sizeof cur->g->exe);
-    cur->g->mmap_next = MMAP_BASE;
+    vma_clear(cur->g);                                  /* a fresh layout: the stack area */
+    vma_t sv = { STACK_BOTTOM, USER_TOP, MMU_PROT_READ | MMU_PROT_WRITE, V_ANON, 0, 0 };
+    vma_insert(cur->g, &sv);
     for (int i = 0; i < MAX_FDS; i++)
         if ((cur->g->cloexec >> i) & 1) fd_close(cur, i);
     for (int i = 0; i < NSIG; i++)                      /* handlers don't survive exec */
@@ -3811,13 +4103,14 @@ static s64 linux_syscall(linux_tf_t *tf)
         if (!f) return -EBADF;
         return do_truncate(f, 0, (s64)a1);
     }
-    case 47: {                                          /* fallocate (mode 0): grow only */
+    case 47: {                                          /* fallocate(fd, mode, off, len) */
         file_t *f = fd_get(a0);
         if (!f) return -EBADF;
-        if (a1 || f->kind != F_MEMFD) return f->kind == F_MEMFD ? -EOPNOTSUPP : 0;
         if ((s64)a2 < 0 || (s64)a3 <= 0) return -EINVAL;
-        if (a2 + a3 > f->mem->size) return mem_resize(f->mem, a2 + a3);
-        return 0;
+        if (f->kind != F_MEMFD) return f->kind == F_FILE && !a1 ? 0 : -EOPNOTSUPP;
+        if (a1 == 0) return a2 + a3 > f->mem->size ? mem_resize(f->mem, a2 + a3) : 0;
+        if (a1 == 3) { mem_punch(f->mem, a2, a3); return 0; }   /* PUNCH_HOLE | KEEP_SIZE */
+        return -EOPNOTSUPP;
     }
     case 48: case 439: {                                /* faccessat, faccessat2 */
         char p[VFS_PATH_MAX];
@@ -4069,49 +4362,12 @@ static s64 linux_syscall(linux_tf_t *tf)
     case 211: return sys_sendmsg(a0, a1, a2);
     case 212: return sys_recvmsg(a0, a1, a2);
     case 214: return sys_brk(a0);
-    case 215:                                           /* munmap */
-        if ((a0 & (PAGE - 1)) || a0 < MMU_USER_BASE || a0 + a1 > STACK_BOTTOM) return -EINVAL;
-        mmu_as_unmap(cur->g->as, a0, a1);
-        return 0;
-    case 216: {                                         /* mremap */
-        lx_u64 old = page_up(a1), new = page_up(a2);
-        if ((a0 & (PAGE - 1)) || !new || a0 < MMAP_BASE || a0 + old > MMAP_LIMIT ||
-            !mmu_user_mapped(a0, old, MMU_PROT_READ | MMU_PROT_WRITE))
-            return -EINVAL;
-        if (new <= old) { mmu_as_unmap(cur->g->as, a0 + new, old - new); return (s64)a0; }
-        if (a0 + old == cur->g->mmap_next && a0 + new <= MMAP_LIMIT) {     /* grow in place */
-            if (mmu_as_map(cur->g->as, a0 + old, new - old, MMU_PROT_READ | MMU_PROT_WRITE))
-                return -ENOMEM;
-            cur->g->mmap_next = a0 + new;
-            return (s64)a0;
-        }
-        if (!(a3 & 1)) return -ENOMEM;                  /* MREMAP_MAYMOVE */
-        s64 at = sys_mmap(0, new, 3, 0x22, -1, 0);      /* RW, private anonymous */
-        if (at < 0) return at;
-        kmemcpy((void *)(uintptr_t)at, (void *)(uintptr_t)a0, old);
-        mmu_as_unmap(cur->g->as, a0, old);
-        return at;
-    }
+    case 215: return sys_munmap(a0, a1);
+    case 216: return sys_mremap(a0, a1, a2, a3);
     case 220: return sys_clone(a0, a1, a2, a3, a4);     /* clone(flags, sp, ptid, tls, ctid) */
     case 221: return sys_execve(a0, a1, a2);
     case 222: return sys_mmap(a0, a1, a2, a3, (s64)a4, a5);
-    case 226: {                                         /* mprotect */
-        if ((a0 & (PAGE - 1)) || a0 < MMU_USER_BASE || a0 + a1 > USER_TOP || a0 + a1 < a0)
-            return -EINVAL;
-        int p = prot_bits(a2);
-        if ((p & MMU_PROT_WRITE) && (p & MMU_PROT_EXEC)) return -EPERM;   /* W^X */
-        if (!p) return 0;                                /* PROT_NONE: left as it is */
-        /* PROT_NONE anonymous memory isn't mapped here (mmap leaves it out):
-         * making it accessible brings in zeroed pages - what it held. musl
-         * reserves thread stacks that way, then mprotects them. */
-        for (lx_u64 a = a0; a < a0 + page_up(a1); a += PAGE)
-            if (!mmu_user_mapped(a, 1, MMU_PROT_READ)) {
-                if (a < MMAP_BASE || a >= MMAP_LIMIT) return -ENOMEM;
-                if (mmu_as_map(cur->g->as, a, PAGE, MMU_PROT_READ | MMU_PROT_WRITE)) return -ENOMEM;
-            }
-        mmu_as_protect(cur->g->as, a0, a1, p);
-        return 0;
-    }
+    case 226: return sys_mprotect(a0, a1, a2);
     case 227: case 228: case 229: case 233: return 0;  /* msync, mlock, munlock, madvise */
     case 260: return sys_wait4((s64)a0, a1, a2);
     case 261: {                                         /* prlimit64: report "unlimited" */
@@ -4208,13 +4464,15 @@ void linux_el0_trap(linux_tf_t *tf)
         if (cur->restore_mask) { cur->sig_blocked = cur->saved_mask; cur->restore_mask = 0; }
         return;
     }
+    if ((ec == 0x24 || ec == 0x20) && (esr & 0x3C) == 0x04 &&      /* translation fault: */
+        populate(cur->g, far, ec == 0x24 && ((esr >> 6) & 1), ec == 0x20))   /* demand paging */
+        return;
     const char *what = ec == 0x24 ? "data abort" : ec == 0x20 ? "instruction abort" :
                        ec == 0x22 ? "PC alignment fault" : ec == 0x26 ? "SP alignment fault" :
                        ec == 0x00 ? "undefined instruction" : "exception";
-    kprintf("[LINUX]  pid %d: %s at pc 0x%x, address 0x%x (ESR 0x%x, lr 0x%x, sp 0x%x) - killed (%s)\n",
-            cur->pid, what, (unsigned)(tf->elr & 0xFFFFFFFF), (unsigned)(far & 0xFFFFFFFF),
-            (unsigned)esr, (unsigned)(tf->x[30] & 0xFFFFFFFF), (unsigned)(tf->sp & 0xFFFFFFFF),
-            ec == 0x00 ? "SIGILL" : "SIGSEGV");
+    kprintf("[LINUX]  pid %d: %s at pc %p, address %p (ESR 0x%x, lr %p, sp %p) - killed (%s)\n",
+            cur->pid, what, (void *)(uintptr_t)tf->elr, (void *)(uintptr_t)far, (unsigned)esr,
+            (void *)(uintptr_t)tf->x[30], (void *)(uintptr_t)tf->sp, ec == 0x00 ? "SIGILL" : "SIGSEGV");
     do_exit_group(ec == 0x00 ? SIGILL : SIGSEGV);
 }
 
@@ -4268,7 +4526,8 @@ int linux_run(const char *path, int argc, char **argv)
     init->g->as = as;
     init->g->ppid = 0;
     init->g->brk_start = init->g->brk_cur = top;
-    init->g->mmap_next = MMAP_BASE;
+    vma_t sv = { STACK_BOTTOM, USER_TOP, MMU_PROT_READ | MMU_PROT_WRITE, V_ANON, 0, 0 };
+    vma_insert(init->g, &sv);
     kstrncpy(init->g->cwd, "/", sizeof init->g->cwd);
     kstrncpy(init->g->exe, path, sizeof init->g->exe);
     tty_defaults(&console_tty);
