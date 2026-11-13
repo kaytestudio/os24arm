@@ -168,6 +168,11 @@ platform-specific are new code.
    `kernel/src/main.c` - DIR, COPY, MOUNT, USB, MEM, ... on the same
    mounts and current directory as the serial console's. (RUN, RUNELF,
    DEBUG, BASIC, UMOUNT and the like stay on the serial console.)
+   Names the OS/2 shell doesn't know run as Linux programs there, in its
+   current directory (`ls -l`, `\h\cat x`, `vi`: files, `$PATH`, busybox
+   applets); `START prog` opens one in a new terminal window, `START /PM
+   prog` a graphical one. The other way round, `/h/os2cmd dir \h` in a
+   Linux shell runs one OS/2 command and prints its output.
 
    Keyboard layouts: `build-libs.sh` stages xkeyboard-config 2.46's data
    and libX11's UTF-8 Compose table (dead keys, Multi_key); the stick has

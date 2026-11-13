@@ -627,7 +627,9 @@ static void execute_command(char *cmdline)
 void os2_shell_banner(void)
 {
     uart_puts("\r\nOS/2 Command Prompt - the kernel's shell\r\n");
-    uart_puts("Type HELP for the commands, EXIT to close the window\r\n\r\n");
+    uart_puts("Type HELP for the commands, EXIT to close the window.\r\n");
+    uart_puts("Linux programs run too (busybox ls, \\h\\wlclient, ...);\r\n");
+    uart_puts("START prog opens one in a new window, START /PM a graphical one.\r\n\r\n");
 }
 
 void os2_shell_prompt(void)
