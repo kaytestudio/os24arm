@@ -462,6 +462,60 @@ static int mount_path(const char *in, char *out, int size)
     return n > 1 ? 0 : -1;                            /* not "/" itself */
 }
 
+/* The CHKDSK result, in OS/2's words. */
+static void check_report(const char *dev, const hpfs_check_t *c, int problems)
+{
+    if (problems < 0) { kprintf("CHKDSK: %s couldn't be checked\n", dev); return; }
+    kprintf("%u directories, %u files checked: ", c->dirs, c->files);
+    if (!problems) kprintf("no problems found.\n");
+    else kprintf("%d problem(s) found - nothing was changed.\n", problems);
+    if (c->cleared) kprintf("The volume is marked clean%s.\n", c->now_rw ? " and is writable again" : "");
+    else if (c->was_dirty && problems)
+        kprintf("It stays read-only (marked as not shut down cleanly).\n");
+}
+
+/* AUTOCHECK (CONFIG.SYS IFS=...HPFS.IFS /AUTOCHECK:*): an HPFS volume left
+ * dirty by an unclean shutdown is checked as it's mounted; when it's
+ * sound it's marked clean and mounted read-write. */
+static void autocheck(hpfs_mount_t *m)
+{
+    if (hpfs_is_rw(m) || !hpfs_is_dirty(m) || (m->dev->flags & BLKDEV_READONLY)) return;
+    kprintf("\n%s was not shut down cleanly - checking it...\n", m->dev->name);
+    hpfs_check_t c;
+    int p = hpfs_check(m, 1, &c);
+    check_report(m->dev->name, &c, p);
+}
+
+/* CHKDSK [path] [/F] on an HPFS volume mounted with MOUNT: the structure
+ * check after DIR-style space figures (dos_chkdsk). /F: a dirty volume
+ * that checks out is marked clean (and becomes writable). */
+static void cmd_chkdsk_hpfs(int argc, char **argv)
+{
+    const char *arg = ".";
+    int fix = 0;
+    for (int i = 1; i < argc; i++) {
+        if (argv[i][0] == '/' && (argv[i][1] | 0x20) == 'f') fix = 1;
+        else arg = argv[i];
+    }
+    char resolved[VFS_PATH_MAX];
+    extern void DosResolvePath(const char *in, char *out, uint32_t out_size);
+    DosResolvePath(arg, resolved, sizeof resolved);
+    for (int i = 0; i < USER_MOUNTS; i++) {
+        const char *mp = user_mnt_path[i];
+        if (!mp[0] || user_hpfs[i].dev != user_mnt_dev[i]) continue;
+        int k = 0;
+        while (mp[k] && resolved[k] && ((mp[k] | 0x20) == (resolved[k] | 0x20))) k++;
+        if (mp[k] || (resolved[k] && resolved[k] != '/')) continue;
+        kprintf("\nChecking %s (%s)...\n", user_mnt_dev[i]->name, mp);
+        hpfs_check_t c;
+        int p = hpfs_check(&user_hpfs[i], fix, &c);
+        check_report(user_mnt_dev[i]->name, &c, p);
+        if (!fix && c.was_dirty && p == 0)
+            kprintf("CHKDSK /F marks it clean and writable.\n");
+        return;
+    }
+}
+
 static void cmd_mount(int argc, char **argv)
 {
     if (argc == 1) {
@@ -504,6 +558,7 @@ static void cmd_mount(int argc, char **argv)
         kmemset(&user_hpfs[slot], 0, sizeof(user_hpfs[slot]));
         user_hpfs[slot].dev = dev;
         r = vfs_mount(path, &vfs_hpfs_fs, &user_hpfs[slot]);
+        if (r == VFS_OK) autocheck(&user_hpfs[slot]);
     } else {
         kmemset(&user_mnt[slot], 0, sizeof(user_mnt[slot]));
         user_mnt[slot].dev = dev;
@@ -629,6 +684,10 @@ static void execute_command(char *cmdline)
     }
     else if (my_strcmp(argv[0], "HELP") == 0 || my_strcmp(argv[0], "?") == 0) {
         cmd_help();
+    }
+    else if (my_strcmp(argv[0], "CHKDSK") == 0) {
+        dos_shell_dispatch(argc, argv);                /* size and free space */
+        cmd_chkdsk_hpfs(argc, argv);                   /* HPFS: the structures */
     }
     else if (dos_shell_dispatch(argc, argv)) {
         /* handled by dos/ command dispatcher (DIR, ECHO, CLS, EXIT, TYPE,

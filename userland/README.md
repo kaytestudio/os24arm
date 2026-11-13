@@ -167,7 +167,11 @@ platform-specific are new code.
    Alt+Shift+C closes a window, Alt+Shift+Q goes back to the console.
    Shut Down (Alt+P) or SHUTDOWN in a prompt ends the programs, unmounts
    every drive cleanly (HPFS marked clean) and powers off - closing QEMU's
-   window instead leaves the stick dirty, so it mounts read-only next time.
+   window instead leaves the stick marked dirty; the next MOUNT checks it
+   (AUTOCHECK, fs/hpfs hpfs_check: every fnode, dnode, anode and extent,
+   against the bitmaps) and, when it's sound, marks it clean and mounts it
+   read-write - otherwise it stays read-only and CHKDSK \h lists what's
+   wrong. Nothing is ever freed or moved.
    (`RUNELF \h\busybox sh /h/desktop.sh` instead: one prompt in cage.)
 
    `userland/apps/os2cmd.c` relays a terminal to `/dev/os2cmd`, which runs

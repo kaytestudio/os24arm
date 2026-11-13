@@ -1950,7 +1950,9 @@ void dos_attrib(int argc, char **argv)
  * pass - the drivers check their structures as they mount. */
 void dos_chkdsk(int argc, char **argv)
 {
-    const char *path = (argc > 1) ? argv[1] : ".";
+    const char *path = ".";
+    for (int i = 1; i < argc; i++)
+        if (argv[i][0] != '/') path = argv[i];          /* (/F: the shell's HPFS check) */
     FSINFOPATH fi;
     APIRET rc = DosQueryFSInfoPath(path, &fi);
     if (rc != NO_ERROR) { print_dos_error("CHKDSK", rc); return; }

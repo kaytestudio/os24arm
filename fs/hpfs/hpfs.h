@@ -46,6 +46,21 @@ static inline int hpfs_is_rw(const hpfs_mount_t *m) { return m->rw; }
 /* 1 if dev holds an HPFS volume (superblock signature at LSN 16). */
 int hpfs_probe(blkdev_t *dev);
 
+/* CHKDSK: walks every directory and file, checking the fnodes, dnodes and
+ * anodes (signatures, their own sector numbers, parent links), that the
+ * extents lie inside the volume, and that every sector in use is marked
+ * used in the bitmaps. Nothing is ever freed or moved. With fix, a
+ * volume left dirty that checks out is marked clean, and a read-only
+ * mount (read-only only because it was dirty) becomes read-write.
+ * Returns the number of problems found, -1 if it couldn't check. */
+typedef struct {
+    unsigned dirs, files, problems;
+    unsigned long long bytes;
+    int was_dirty, cleared, now_rw;
+} hpfs_check_t;
+int hpfs_check(hpfs_mount_t *m, int fix, hpfs_check_t *r);
+int hpfs_is_dirty(hpfs_mount_t *m);     /* the spareblock's dirty bit */
+
 /* IFS init (IFS=HPFS.IFS): mount every HPFS volume found on the block
  * devices at /HPFS, /HPFS2, ... Not fatal if there is none. */
 int hpfs_init(const char *params);

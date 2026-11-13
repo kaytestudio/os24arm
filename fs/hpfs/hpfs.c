@@ -1335,6 +1335,118 @@ static int write_setup(hpfs_mount_t *m, const uint8_t *sb)
     return 0;
 }
 
+/* ── CHKDSK ───────────────────────────────────────────────────────────── */
+int hpfs_is_dirty(hpfs_mount_t *m)
+{
+    uint8_t b[512];
+    if (blk_read(m->dev, 17, 1, b) != 0 || le32(b) != SP_MAGIC0) return 0;
+    return b[8] & 1;
+}
+
+/* Is [s, s+n) marked in use? A dnode in the directory band by its own
+ * bitmap (bit set = free), anything else by the band bitmaps. */
+static int chk_used(hpfs_mount_t *m, uint32_t s, uint32_t n, int dnode)
+{
+    if (s >= m->n_sectors || n > m->n_sectors - s) return 0;
+    if (dnode && m->dband_n && s >= m->dband_start && s + 3 <= m->dband_end) {
+        uint32_t i = (s - m->dband_start) / 4;
+        return !(m->dband_bm[i / 8] & (1u << (i % 8)));
+    }
+    for (uint32_t k = 0; k < n; k++)
+        if (sector_free(m, s + k)) return 0;
+    return 1;
+}
+
+#define CHK_MAX_DIRS 4096
+
+int hpfs_check(hpfs_mount_t *m, int fix, hpfs_check_t *r)
+{
+    static uint32_t queue[CHK_MAX_DIRS], dn[RB_DNODES], anodes[64];
+    static extent_t ext[MAX_EXTENTS];
+    static uint8_t sb[512], fn[512], d[HPFS_DNODE_SIZE];
+    char name[VFS_NAME_MAX + 1];
+    kmemset(r, 0, sizeof *r);
+    r->was_dirty = hpfs_is_dirty(m);
+    if (rd(m, SB_LSN, 1, sb) != 0 || le32(sb) != SB_MAGIC0) return -1;
+    if (write_setup(m, sb) != 0) {                    /* (only reads) */
+        kprintf("[CHKDSK] %s: the free-space bitmaps can't be read\n", m->dev->name);
+        return -1;
+    }
+#define PROBLEM(...) do { if (r->problems++ < 12) kprintf("[CHKDSK] " __VA_ARGS__); } while (0)
+
+    uint32_t head = 0, tail = 0;
+    queue[tail++] = m->root_fnode;
+    if (read_fnode(m, m->root_fnode, fn) != VFS_OK) PROBLEM("the root directory's fnode is damaged\n");
+    else if (!chk_used(m, m->root_fnode, 1, 0)) PROBLEM("the root fnode is marked free\n");
+
+    while (head < tail) {
+        uint32_t dir = queue[head++];
+        r->dirs++;
+        uint32_t root = dir_root_dnode(m, dir), n = 0;
+        if (!root) { PROBLEM("directory fnode %u has no directory tree\n", dir); continue; }
+        if (rb_collect(m, root, dn, &n) != 0) {
+            PROBLEM("the directory tree under fnode %u is damaged\n", dir);
+            continue;
+        }
+        for (uint32_t i = 0; i < n; i++) {
+            if (rd(m, dn[i], 4, d) != 0 || le32(d + 16) != dn[i])
+                PROBLEM("dnode %u: wrong sector number in it\n", dn[i]);
+            else if (!chk_used(m, dn[i], 4, 1))
+                PROBLEM("dnode %u is in use but marked free\n", dn[i]);
+        }
+        dwalk_t w;
+        walk_start(&w, root);
+        const uint8_t *p;
+        while ((p = walk_next(m, &w)) != 0) {
+            uint32_t f = le32(p + 4), size = le32(p + 12);
+            uint32_t nl = p[30] > VFS_NAME_MAX ? VFS_NAME_MAX : p[30];
+            for (uint32_t i = 0; i < nl; i++) name[i] = (char)p[31 + i];
+            name[nl] = 0;
+            if (read_fnode(m, f, fn) != VFS_OK) { PROBLEM("%s: its fnode %u is damaged\n", name, f); continue; }
+            if (!chk_used(m, f, 1, 0)) PROBLEM("%s: its fnode %u is marked free\n", name, f);
+            if (le32(fn + 28) != dir) PROBLEM("%s: its fnode points at the wrong directory\n", name);
+            if (fn[55] & 1) {                         /* a directory */
+                if (tail < CHK_MAX_DIRS) queue[tail++] = f;
+                else PROBLEM("too many directories to check\n");
+                continue;
+            }
+            r->files++;
+            r->bytes += size;
+            uint32_t next, na;
+            if (collect_extents(m, fn, ext, &next, anodes, &na) != 0) {
+                PROBLEM("%s: its allocation tree is damaged\n", name);
+                continue;
+            }
+            for (uint32_t i = 0; i < na; i++)
+                if (!chk_used(m, anodes[i], 1, 0)) PROBLEM("%s: anode %u is marked free\n", name, anodes[i]);
+            unsigned long long have = 0;
+            for (uint32_t i = 0; i < next; i++) {
+                if (!chk_used(m, ext[i].disk, ext[i].len, 0))
+                    PROBLEM("%s: sectors %u+%u are in use but marked free\n", name, ext[i].disk, ext[i].len);
+                have += ext[i].len;
+            }
+            if (have * 512 < size) PROBLEM("%s: shorter on disk than its size\n", name);
+        }
+        if (w.warned) PROBLEM("a directory (fnode %u) has damaged entries\n", dir);
+    }
+#undef PROBLEM
+
+    if (fix && !r->problems && r->was_dirty && !(m->dev->flags & BLKDEV_READONLY)) {
+        uint8_t b[512];
+        if (blk_read(m->dev, 17, 1, b) == 0 && le32(b) == SP_MAGIC0) {
+            b[8] &= (uint8_t)~1u;
+            if (blk_write(m->dev, 17, 1, b) == 0) r->cleared = 1;
+        }
+        /* read-only only because it was dirty: writable now */
+        if (r->cleared && !m->rw && sb[8] == 2 && m->codepage && !m->inconsistent) {
+            m->marked_dirty = 0;
+            m->rw = 1;
+            r->now_rw = 1;
+        }
+    }
+    return (int)r->problems;
+}
+
 /* ── VFS operations ───────────────────────────────────────────────────── */
 static int hpfs_mount_op(vfs_mount_t *mnt)
 {
@@ -1396,7 +1508,7 @@ static int hpfs_mount_op(vfs_mount_t *mnt)
     if (m->n_hotfix)
         kprintf("[HPFS]   %s: %u bad sector(s) hotfixed to spares\n", m->dev->name, m->n_hotfix);
     if (dirty == 1)
-        kprintf("[HPFS]   %s: volume was not shut down cleanly - run CHKDSK on OS/2\n",
+        kprintf("[HPFS]   %s: volume was not shut down cleanly (CHKDSK /F checks it)\n",
                 m->dev->name);
     return VFS_OK;
 }
