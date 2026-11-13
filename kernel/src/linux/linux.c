@@ -1480,6 +1480,24 @@ static int fb_geom(int *w, int *h, lx_u64 *size)
     return 0;
 }
 
+/* SHUTDOWN from an OS/2 Command Prompt window: every program is ended,
+ * so linux_run() returns and the shell can unmount and power off. */
+static int shutdown_pending;
+
+void linux_shutdown_request(void)
+{
+    shutdown_pending = 1;
+    for (int i = 0; i < MAX_GROUPS; i++)
+        if (groups[i].state == G_LIVE) send_sig_group(&groups[i], SIGKILL, 0);
+}
+
+int linux_shutdown_pending(void)
+{
+    int p = shutdown_pending;
+    shutdown_pending = 0;
+    return p;
+}
+
 int linux_display_ok(void)
 {
     int w, h;

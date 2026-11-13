@@ -32,6 +32,7 @@
 #define HYP_CALL_PROBE     0   /* -> x0 = HYP_MAGIC */
 #define HYP_CALL_INIT_MMU  1   /* x1 = TTBR0_EL2, x2 = TCR_EL2, x3 = MAIR_EL2 */
 #define HYP_CALL_RUN_VCPU  2   /* x1 = struct hyp_vcpu * -> x0 = HYP_EXIT_* */
+#define HYP_CALL_SYSTEM_OFF 3  /* PSCI SYSTEM_OFF, by smc from EL2 (no return) */
 #define HYP_MAGIC          0x48595021  /* "HYP!" */
 
 /* ── Why the guest stopped running (which EL2 vector it came in on) ──── */
@@ -177,6 +178,10 @@ extern unsigned long hyp_boot_el;
  * the hypervisor is usable, <0 if not (entered at EL1, or EL2 broken). */
 int  hyp_init(void);
 int  hyp_available(void);
+/* Power the machine off (PSCI SYSTEM_OFF): over hvc when QEMU owns EL2
+ * (HVF), through this kernel's EL2 by smc when it does. Returns only if
+ * neither worked. */
+void hyp_system_off(void);
 
 /* One VM, one vCPU, guest RAM as a single stage-2 mapping. */
 int  vm_create(struct vm *vm, uint64_t ram_ipa, uint64_t ram_size);

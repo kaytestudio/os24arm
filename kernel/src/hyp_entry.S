@@ -207,7 +207,16 @@ hyp_host_trap:
     b.eq    hyp_init_mmu
     cmp     x0, #HYP_CALL_PROBE
     b.eq    hyp_probe
+    cmp     x0, #HYP_CALL_SYSTEM_OFF
+    b.eq    hyp_system_off_el2
     mov     x0, #-1
+    eret
+
+/* PSCI SYSTEM_OFF: with EL2 present and no EL3, QEMU's PSCI is the smc
+ * conduit, from here. If it returns, so does the host's hvc. */
+hyp_system_off_el2:
+    ldr     x0, =0x84000008
+    smc     #0
     eret
 
 hyp_probe:

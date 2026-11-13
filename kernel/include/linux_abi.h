@@ -26,6 +26,10 @@ typedef struct {
 int linux_run(const char *path, int argc, char **argv);
 /* Is there a display for /dev/fb0 (a virtio-gpu)? Sets it up if needed. */
 int linux_display_ok(void);
+/* End every program (SHUTDOWN from a desktop window); linux_shutdown_pending()
+ * then says so once, after linux_run() has returned. */
+void linux_shutdown_request(void);
+int  linux_shutdown_pending(void);
 
 /* Called from el0_sync_entry / el0_irq_entry. */
 void linux_el0_trap(linux_tf_t *tf);

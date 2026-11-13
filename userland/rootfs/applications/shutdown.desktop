@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Shut Down
+Comment=Close everything, unmount the drives safely and power off
+Exec=/h/OS2/os2cmd SHUTDOWN
+Terminal=false
+Categories=System;

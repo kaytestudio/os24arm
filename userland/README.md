@@ -165,6 +165,9 @@ platform-specific are new code.
    Editor, and the compositor's and terminals' own output goes to
    `/tmp/desktop.log` rather than the console. Alt+J/K moves the focus,
    Alt+Shift+C closes a window, Alt+Shift+Q goes back to the console.
+   Shut Down (Alt+P) or SHUTDOWN in a prompt ends the programs, unmounts
+   every drive cleanly (HPFS marked clean) and powers off - closing QEMU's
+   window instead leaves the stick dirty, so it mounts read-only next time.
    (`RUNELF \h\busybox sh /h/desktop.sh` instead: one prompt in cage.)
 
    `userland/apps/os2cmd.c` relays a terminal to `/dev/os2cmd`, which runs

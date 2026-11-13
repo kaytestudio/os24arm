@@ -477,6 +477,14 @@ int hyp_init(void)
     return 0;
 }
 
+void hyp_system_off(void)
+{
+    if (hyp_call(HYP_CALL_PROBE, 0, 0, 0) == HYP_MAGIC)  /* this kernel's EL2 */
+        hyp_call(HYP_CALL_SYSTEM_OFF, 0, 0, 0);
+    else
+        hyp_call(0x84000008UL, 0, 0, 0);               /* QEMU's PSCI, over hvc */
+}
+
 int hyp_available(void)
 {
     return hyp_ready;

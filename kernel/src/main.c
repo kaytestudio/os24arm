@@ -305,6 +305,7 @@ static void cmd_help(void)
     uart_puts("  USB       - List USB devices (USBD)\r\n");
     uart_puts("  MOUNT     - MOUNT dev \\DIR: mount an HPFS/FAT volume (e.g. usb0p1)\r\n");
     uart_puts("  DESKTOP   - The graphical desktop [keyboard layout [variant]]\r\n");
+    uart_puts("  SHUTDOWN  - Close everything, unmount the drives, power off\r\n");
     uart_puts("  UMOUNT    - UMOUNT \\DIR: unmount it\r\n");
     uart_puts("  IFS       - List loaded filesystem drivers\r\n");
     uart_puts("  RUN       - Load and run an OS/2 LX .EXE (e.g. RUN CMD.EXE)\r\n");
@@ -540,6 +541,25 @@ static void cmd_umount(int argc, char **argv)
     kprintf("\n%s unmounted\n", path);
 }
 
+/* SHUTDOWN: every volume unmounted cleanly (HPFS marked clean, FAT32's
+ * free count written), then the machine powered off (PSCI SYSTEM_OFF).
+ * From a desktop window the programs are ended first (os2_shell_line ->
+ * linux_shutdown_request; cmd_desktop() comes here when they're gone). */
+static void system_shutdown(void)
+{
+    kprintf("\nShutting down...\n");
+    for (int i = 0; i < USER_MOUNTS; i++) {
+        if (!user_mnt_path[i][0]) continue;
+        char path[34];
+        kstrncpy(path, user_mnt_path[i], sizeof path);
+        char *uv[2] = { "UMOUNT", path };
+        cmd_umount(2, uv);
+    }
+    kprintf("\nShutdown has completed. It is now safe to turn off your computer.\n");
+    hyp_system_off();
+    for (;;) __asm__ volatile("wfi");                 /* no PSCI: stay halted */
+}
+
 /* DESKTOP [layout [variant]]: the Wayland desktop (dwl, userland/rootfs/
  * dwl.sh) from the USB stick - mounted at \h first if it isn't: the first
  * USB volume with dwl.sh on it. Back here when dwl quits (Alt+Shift+Q). */
@@ -587,6 +607,7 @@ static void cmd_desktop(int argc, char **argv)
     kprintf("\nStarting the desktop - Alt+Shift+Enter or Alt+O: OS/2 Command Prompt,\n"
             "Alt+P: programs, Alt+Shift+Q: back to this console\n");
     int status = linux_run("/h/OS2/busybox", ac, av);
+    if (linux_shutdown_pending()) system_shutdown();
     if (status != 0) kprintf("\nThe desktop ended unexpectedly (status %d)\n", status);
 }
 
@@ -635,6 +656,9 @@ static void execute_command(char *cmdline)
     }
     else if (my_strcmp(argv[0], "DESKTOP") == 0) {
         cmd_desktop(argc, argv);
+    }
+    else if (my_strcmp(argv[0], "SHUTDOWN") == 0) {
+        system_shutdown();
     }
     else if (my_strcmp(argv[0], "UMOUNT") == 0 || my_strcmp(argv[0], "UNMOUNT") == 0) {
         cmd_umount(argc, argv);
@@ -744,6 +768,11 @@ void os2_shell_line(const char *line)
     }
     word[w] = '\0';
     if (!w) return;
+    if (my_strcmp(word, "SHUTDOWN") == 0) {          /* the programs first */
+        uart_puts("\r\nShutting down...\r\n");
+        linux_shutdown_request();
+        return;
+    }
     for (unsigned i = 0; i < sizeof refused / sizeof refused[0]; i++)
         if (my_strcmp(word, refused[i]) == 0) {
             uart_puts("\r\n");
