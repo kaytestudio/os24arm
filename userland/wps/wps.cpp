@@ -333,7 +333,8 @@ struct Window;
 struct Tag { enum K { DESK, BAR, WIN, MENU } k; Window *w; };
 
 struct Window {
-    enum Kind { XDG, FOLDER, WINLIST, INFO } kind;
+    enum Kind { XDG, FOLDER, WINLIST, INFO, NOTEBOOK } kind;
+    int tab = 0;                                  /* NOTEBOOK: the page shown */
     Tag tag{ Tag::WIN, this };
     wlr_scene_tree *tree = nullptr;
     Picture frame;
@@ -404,6 +405,9 @@ struct Server {
     std::vector<Object> shadows;                 /* ... and the shadows put on it */
     std::vector<Object> startup;                 /* the Startup folder's shadows */
     bool restoring = false;                      /* (no saving while restoring) */
+    uint32_t desk_color = C_DESK;                /* the Settings notebook's: the background, */
+    bool pattern = true;                         /* ... with the pattern, */
+    int scheme = 0;                              /* ... and the title bars' colours */
     int desk_sel = -1;
 
     std::vector<Window *> windows;               /* back to front */
@@ -466,6 +470,7 @@ static void close_menu();
 static std::vector<Object> program_objects();
 static void run_app(const Object &o);
 static void save_state();
+static void open_desktop_settings();
 static void rebuild_desktop();
 static void remove_shadow(const std::string &where, const std::string &path);
 static bool classify(const std::string &p, const std::string &label, Object *o);
@@ -583,7 +588,7 @@ std::string Window::titleText() const
 {
     if (kind == FOLDER) return name + (view == TREE ? " - Tree View" : view == DETAILS ? " - Details View" : " - Icon View");
     if (kind == WINLIST) return "Window List";
-    if (kind == INFO) return info_title;
+    if (kind == INFO || kind == NOTEBOOK) return info_title;
     if (top && top->title && *top->title) return top->title;
     if (top && top->app_id && *top->app_id) return top->app_id;
     return "(untitled)";
@@ -601,16 +606,34 @@ static void draw_label(pixman_image_t *im, int cx, int y, const std::string &s, 
     text_draw(im, TEXT_SMALL, x, y + text_ascent(TEXT_SMALL), s.c_str(), c, x + 86);
 }
 
+/* ── the desktop's Settings notebook: Background, Window ──────────────── */
+static const uint32_t palette[] = {
+    0xFF2C4DA3, 0xFF000080, 0xFF6E9ED6, 0xFF006A6A, 0xFF2E6B3A, 0xFF45556B,
+    0xFF4B2E83, 0xFF6E1E1E, 0xFF6B5432, 0xFF808080, 0xFF000000, 0xFFD8D8D8,
+};
+static const int NPAL = sizeof palette / sizeof palette[0];
+struct Scheme { const char *name; uint32_t t1, t2; };
+static const Scheme schemes[] = {
+    { "Warp 4", 0xFF1C3C9C, 0xFF5878C8 }, { "Warp 3", 0xFF000080, 0xFF000080 },
+    { "Teal", 0xFF005A5A, 0xFF3A9A9A }, { "Graphite", 0xFF303030, 0xFF8A8A8A },
+    { "Plum", 0xFF4A1E5E, 0xFF9A6AB0 },
+};
+static const int NSCHEMES = sizeof schemes / sizeof schemes[0];
+static const char *nb_tabs[] = { "Background", "Window" };
+static const int NB_TABS = 2, NB_TAB_W = 96, NB_TAB_H = 26;
+
 /* a desktop object's name in WPS.INI: a shadow's is its original's path */
 static std::string desk_key(const Object &o) { return o.shadow ? "@" + o.path : o.label; }
 
+static uint32_t darker(uint32_t c, int pct);
 static void draw_desktop()
 {
     PixBuf *pb = pixbuf_new(S.W, S.H);
     pixman_image_t *im = pb->img;
-    fill(im, 0, 0, S.W, S.H, C_DESK);
+    fill(im, 0, 0, S.W, S.H, S.desk_color);
+    uint32_t c2 = darker(S.desk_color, 8);
     for (int y = 0; y < S.H; y += 2)                      /* a quiet texture */
-        for (int x = (y / 2) % 4; x < S.W; x += 4) pb->px[y * S.W + x] = C_DESK2;
+        for (int x = (y / 2) % 4; S.pattern && x < S.W; x += 4) pb->px[y * S.W + x] = c2;
     S.desk_pos.clear();
     for (size_t i = 0; i < S.desk_objs.size(); i++) {
         int x, y;
@@ -680,6 +703,7 @@ static int window_icon(const Window *w)
                                           w->path == "::startup" ? I_FOLDER :
                                           w->path.rfind("::", 0) == 0 ? I_SYSTEM : (w->path == "/" || w->path == "/h") ? I_DRIVE : I_FOLDER;
     if (w->kind == Window::WINLIST) return I_WINLIST;
+    if (w->kind == Window::NOTEBOOK) return I_SYSTEM;
     std::string t = w->titleText();
     return t.find("Command Prompt") != std::string::npos ? I_PROMPT : I_PROGRAM;
 }
@@ -708,6 +732,7 @@ static void draw_button(pixman_image_t *im, int x, int y, int kind)
 static void draw_folder_content(Window *w, pixman_image_t *im, int ox, int oy);
 static void draw_winlist_content(Window *w, pixman_image_t *im, int ox, int oy);
 static void draw_info_content(Window *w, pixman_image_t *im, int ox, int oy);
+static void draw_notebook_content(Window *w, pixman_image_t *im, int ox, int oy);
 
 static void draw_window(Window *w)
 {
@@ -719,7 +744,7 @@ static void draw_window(Window *w)
     fill(im, 0, 0, W, H, C_FACE);
     bevel(im, 0, 0, W, H, true, 2);
     bevel(im, B - 1, B + T - 1, w->cw + 2, w->ch + 2, false, 1);
-    if (on) gradient_h(im, B, B, W - 2 * B, T - 1, C_TITLE, C_TITLE2);
+    if (on) gradient_h(im, B, B, W - 2 * B, T - 1, schemes[S.scheme].t1, schemes[S.scheme].t2);
     else fill(im, B, B, W - 2 * B, T - 1, C_TITLE_OFF);
     draw_icon(im, window_icon(w), B + 2, B + 1, 16);
     int text_right = btn_x(w, 2) - 6;
@@ -734,6 +759,7 @@ static void draw_window(Window *w)
     if (w->kind == Window::FOLDER) draw_folder_content(w, im, B, B + T);
     else if (w->kind == Window::WINLIST) draw_winlist_content(w, im, B, B + T);
     else if (w->kind == Window::INFO) draw_info_content(w, im, B, B + T);
+    else if (w->kind == Window::NOTEBOOK) draw_notebook_content(w, im, B, B + T);
     else fill(im, B, B + T, w->cw, w->ch, C_WHITE);       /* under the client */
     w->frame.show(w->tree, pb, &w->tag);
     wlr_scene_node_lower_to_bottom(&w->frame.node->node);
@@ -1211,6 +1237,113 @@ static std::string dos_path(const std::string &p)
 }
 
 /* Properties, About: a window of lines */
+static uint32_t darker(uint32_t c, int pct)
+{
+    auto ch = [&](int sh) { return (uint32_t)(((c >> sh) & 0xFF) * (100 - pct) / 100) << sh; };
+    return 0xFF000000u | ch(16) | ch(8) | ch(0);
+}
+
+/* geometry, in content coordinates */
+static int nb_page_w(const Window *w) { return w->cw - NB_TAB_W - 18; }
+static void nb_swatch(int i, int *x, int *y) { *x = 24 + (i % 6) * 46; *y = 46 + (i / 6) * 36; }
+static const int NB_SW = 40, NB_SH = 28, NB_CHECK_Y = 128, NB_SCHEME_Y = 46, NB_SCHEME_ROW = 30;
+
+static void nb_check(pixman_image_t *im, int x, int y, bool on)
+{
+    fill(im, x, y, 13, 13, C_WHITE);
+    bevel(im, x, y, 13, 13, false, 1);
+    if (on) for (int k = 0; k < 7; k++) fill(im, x + 3 + k, y + 6 + (k < 3 ? k - 1 : 4 - k), 1, 2, C_DARK);
+}
+
+static void draw_notebook_content(Window *w, pixman_image_t *im, int ox, int oy)
+{
+    fill(im, ox, oy, w->cw, w->ch, C_FACE);
+    int pw = nb_page_w(w);
+    /* the tabs, on the right as in Warp 4 */
+    for (int i = 0; i < NB_TABS; i++) {
+        int tx = ox + pw + 12, ty = oy + 12 + i * (NB_TAB_H + 2);
+        bool on = i == w->tab;
+        fill(im, tx, ty, NB_TAB_W, NB_TAB_H, on ? C_FACE : 0xFFB0B0B0);
+        bevel(im, tx, ty, NB_TAB_W, NB_TAB_H, true, 1);
+        if (on) fill(im, tx - 2, ty + 1, 3, NB_TAB_H - 2, C_FACE);    /* joined to the page */
+        text_draw(im, on ? TEXT_BOLD : TEXT_UI, tx + 10, ty + NB_TAB_H / 2 + text_ascent(TEXT_UI) / 2 - 1,
+                  nb_tabs[i], C_TEXT, 0);
+    }
+    fill(im, ox + 8, oy + 8, pw + 4, w->ch - 16, C_FACE);
+    bevel(im, ox + 8, oy + 8, pw + 4, w->ch - 16, true, 1);
+    int base = text_ascent(TEXT_BOLD);
+    if (w->tab == 0) {
+        text_draw(im, TEXT_BOLD, ox + 24, oy + 26 + base / 2, "Color", C_TEXT, 0);
+        for (int i = 0; i < NPAL; i++) {
+            int x, y;
+            nb_swatch(i, &x, &y);
+            bool sel = palette[i] == S.desk_color;
+            fill(im, ox + x - 3, oy + y - 3, NB_SW + 6, NB_SH + 6, sel ? C_DARK : C_FACE);
+            if (sel) fill(im, ox + x - 1, oy + y - 1, NB_SW + 2, NB_SH + 2, C_WHITE);
+            fill(im, ox + x, oy + y, NB_SW, NB_SH, palette[i]);
+            bevel(im, ox + x, oy + y, NB_SW, NB_SH, false, 1);
+        }
+        nb_check(im, ox + 24, oy + NB_CHECK_Y, S.pattern);
+        text_draw(im, TEXT_UI, ox + 44, oy + NB_CHECK_Y + 11, "Pattern", C_TEXT, 0);
+        /* what it looks like */
+        int px = ox + 24, py = oy + NB_CHECK_Y + 28, pwid = std::min(240, pw - 40), ph = w->ch - (NB_CHECK_Y + 28) - 22;
+        fill(im, px, py, pwid, ph, S.desk_color);
+        if (S.pattern)
+            for (int y = 0; y < ph; y += 2)
+                for (int x = (y / 2) % 4; x < pwid; x += 4) fill(im, px + x, py + y, 1, 1, darker(S.desk_color, 8));
+        bevel(im, px - 1, py - 1, pwid + 2, ph + 2, false, 1);
+    } else {
+        text_draw(im, TEXT_BOLD, ox + 24, oy + 26 + base / 2, "Title bars", C_TEXT, 0);
+        for (int i = 0; i < NSCHEMES; i++) {
+            int y = oy + NB_SCHEME_Y + i * NB_SCHEME_ROW;
+            disc(im, ox + 30, y + 8, 6, C_SHADOW);
+            disc(im, ox + 30, y + 8, 5, C_WHITE);
+            if (i == S.scheme) disc(im, ox + 30, y + 8, 2, C_DARK);
+            text_draw(im, TEXT_UI, ox + 44, y + 12, schemes[i].name, C_TEXT, 0);
+            gradient_h(im, ox + 120, y, std::min(160, pw - 120), 17, schemes[i].t1, schemes[i].t2);
+            text_draw(im, TEXT_BOLD, ox + 128, y + 13, "Title", C_WHITE, 0);
+        }
+    }
+}
+
+static void apply_settings()
+{
+    draw_desktop();
+    for (Window *w : S.windows) draw_window(w);
+    save_state();
+}
+
+static void notebook_click(Window *w, int cx, int cy)
+{
+    int pw = nb_page_w(w);
+    for (int i = 0; i < NB_TABS; i++) {
+        int tx = pw + 12, ty = 12 + i * (NB_TAB_H + 2);
+        if (cx >= tx && cx < tx + NB_TAB_W && cy >= ty && cy < ty + NB_TAB_H) { w->tab = i; draw_window(w); return; }
+    }
+    if (w->tab == 0) {
+        for (int i = 0; i < NPAL; i++) {
+            int x, y;
+            nb_swatch(i, &x, &y);
+            if (cx >= x && cx < x + NB_SW && cy >= y && cy < y + NB_SH) { S.desk_color = palette[i]; apply_settings(); return; }
+        }
+        if (cx >= 20 && cx < 100 && cy >= NB_CHECK_Y - 2 && cy < NB_CHECK_Y + 16) { S.pattern = !S.pattern; apply_settings(); }
+    } else {
+        for (int i = 0; i < NSCHEMES; i++) {
+            int y = NB_SCHEME_Y + i * NB_SCHEME_ROW;
+            if (cy >= y - 4 && cy < y + 22 && cx >= 20 && cx < pw) { S.scheme = i; apply_settings(); return; }
+        }
+    }
+}
+
+static void open_desktop_settings()
+{
+    for (Window *w : S.windows) if (w->kind == Window::NOTEBOOK) { focus(w); return; }
+    Window *w = new_internal(Window::NOTEBOOK, 440, 300, nullptr, [](Window *x) { x->info_title = "Desktop - Properties"; });
+    w->x = (S.W - w->fw()) / 2;
+    w->y = (S.H - w->fh()) / 3;
+    wlr_scene_node_set_position(&w->tree->node, w->x, w->y);
+}
+
 /* ── dialogs: lines of text, maybe an entry field, buttons ───────────── */
 static const int DLG_BTN_H = 24, DLG_EDIT_H = 22;
 
@@ -1777,6 +1910,8 @@ static void system_menu(int x, int y)
         { "Drives", [] { open_folder("::drives", "Drives"); } },
         { "OS/2 System", [] { open_folder("::system", "OS/2 System"); } },
         { "Window List", [] { toggle_winlist(); } },
+        { "", nullptr },
+        { "Properties", [] { open_desktop_settings(); } },
         { "Shut Down...", [] { spawn({ sys("os2cmd"), "SHUTDOWN" }); } },
     });
 }
@@ -1940,6 +2075,7 @@ static void save_state()
     if (!f) return;
     fprintf(f, "# Workplace Shell: the desktop as it was left (written by wps)\n");
     for (auto &p : S.desk_place) fprintf(f, "icon %d %d %s\n", p.second.first, p.second.second, p.first.c_str());
+    fprintf(f, "background %06X %d\nscheme %d\n", (unsigned)(S.desk_color & 0xFFFFFF), S.pattern ? 1 : 0, S.scheme);
     for (const Object &o : S.shadows) fprintf(f, "shadow %s|%s\n", o.path.c_str(), o.label.c_str());
     for (const Object &o : S.startup) fprintf(f, "startup %s|%s\n", o.path.c_str(), o.label.c_str());
     for (Window *w : S.windows)
@@ -1960,7 +2096,10 @@ static void load_state()
     while (fgets(line, sizeof line, f)) {
         line[strcspn(line, "\n")] = 0;
         int a, b, c, d, e, n = 0;
+        unsigned rgb;
         if (sscanf(line, "icon %d %d %n", &a, &b, &n) == 2 && n) S.desk_place[line + n] = { a, b };
+        else if (sscanf(line, "background %x %d", &rgb, &a) == 2) { S.desk_color = 0xFF000000u | rgb; S.pattern = a != 0; }
+        else if (sscanf(line, "scheme %d", &a) == 1 && a >= 0 && a < NSCHEMES) S.scheme = a;
         else if (!strncmp(line, "shadow ", 7) || !strncmp(line, "startup ", 8)) {
             bool st = line[1] == 't';
             std::string rest = line + (st ? 8 : 7);
@@ -2309,7 +2448,9 @@ static void folder_click(Window *w, int cx, int cy, uint32_t time, bool right)
 
 static void content_click(Window *w, int cx, int cy, uint32_t time, bool right)
 {
-    if (w->kind == Window::INFO) {
+    if (w->kind == Window::NOTEBOOK) {
+        if (!right) notebook_click(w, cx, cy);
+    } else if (w->kind == Window::INFO) {
         int b = dialog_button_at(w, cx, cy);
         if (b >= 0 && !right) dialog_press(w, b);
     } else if (w->kind == Window::FOLDER) {
@@ -2540,6 +2681,11 @@ static bool internal_key(Window *w, xkb_keysym_t sym, const char *utf8)
         }
         draw_window(w);
         return true;
+    }
+    if (w->kind == Window::NOTEBOOK) {
+        if (sym == XKB_KEY_Escape) { close_window(w); return true; }
+        if (sym == XKB_KEY_Next || sym == XKB_KEY_Prior) { w->tab = (w->tab + 1) % NB_TABS; draw_window(w); return true; }
+        return false;
     }
     if (w->kind == Window::WINLIST) {
         auto list = listed_windows();

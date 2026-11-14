@@ -252,6 +252,11 @@ platform-specific are new code.
    "Open folder of original", and the Shredder deletes only the shadow.
    OS/2 System has a Startup folder: shadows dropped into it are started
    whenever the desktop starts. Shadows are kept in WPS.INI too.
+   The desktop's Settings notebook (right-click the desktop, Properties;
+   tabs on the right, as in Warp 4): Background - the colour (twelve)
+   and the pattern on it - and Window - the title bars' colours (Warp 4,
+   Warp 3, Teal, Graphite, Plum). Changes show at once and are kept in
+   WPS.INI.
    Ctrl+Esc is the Window List (hidden windows too), Alt+Tab the next
    window, Alt+F4 closes. The pictures are drawn by the compositor
    (pixman; the icons are its own), the text by fcft with DejaVu Sans.
