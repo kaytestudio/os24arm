@@ -213,7 +213,7 @@ static void gradient_h(pixman_image_t *im, int x, int y, int w, int h, uint32_t 
 
 /* ── icons: drawn here, OS/2 Warp in spirit ─────────────────────────── */
 enum Icon { I_FOLDER, I_FILE, I_TEXT, I_PROGRAM, I_PROMPT, I_DRIVE, I_SYSTEM, I_PROGRAMS,
-            I_WINLIST, I_SHUTDOWN, I_DRIVES, I_SHREDDER, I_COUNT };
+            I_WINLIST, I_SHUTDOWN, I_DRIVES, I_SHREDDER, I_HELP, I_COUNT };
 
 static void disc(pixman_image_t *im, int cx, int cy, int r, uint32_t c)
 {
@@ -288,6 +288,17 @@ static void draw_icon(pixman_image_t *im, int i, int x, int y, int s)
         fill(im, x + S(5), y + S(4), S(22), S(4), C_TITLE);
         for (int l = 0; l < 5; l++) fill(im, x + S(8), y + S(11 + 3 * l), S(16), S(2), C_SHADOW);
         break;
+    case I_HELP: {                                                          /* a book, a question mark */
+        boxed(im, x + S(5), y + S(3), S(22), S(26), 0xFF2050B0);
+        fill(im, x + S(5) + 1, y + S(3) + 1, std::max(1, S(3)), S(26) - 2, 0xFF102C70);   /* the spine */
+        int q = std::max(1, S(3)), cx = x + S(17), cy = y + S(8);
+        fill(im, cx - S(4), cy, S(8), q, C_WHITE);                          /* the "?" */
+        fill(im, cx + S(4) - q, cy, q, S(6), C_WHITE);
+        fill(im, cx - 1, cy + S(6) - q, S(4) + 1, q, C_WHITE);
+        fill(im, cx - 1, cy + S(6) - q, q, S(4), C_WHITE);
+        fill(im, cx - 1, cy + S(12), q, q, C_WHITE);
+        break;
+    }
     case I_SHREDDER:
         boxed(im, x + S(4), y + S(14), S(24), S(16), C_FACE);                 /* the bin */
         fill(im, x + S(4) + 1, y + S(14) + 1, S(24) - 2, 1, C_LIGHT);
@@ -307,7 +318,7 @@ static void draw_icon(pixman_image_t *im, int i, int x, int y, int s)
 }
 
 /* ── objects: what an icon stands for ───────────────────────────────── */
-enum Action { A_NONE, A_APP, A_FOLDER, A_RUN, A_OS2RUN, A_EDIT, A_SHREDDER, A_SCRIPT, A_PROMPT, A_PROGRAMS, A_WINLIST,
+enum Action { A_NONE, A_HELP, A_APP, A_FOLDER, A_RUN, A_OS2RUN, A_EDIT, A_SHREDDER, A_SCRIPT, A_PROMPT, A_PROGRAMS, A_WINLIST,
               A_SHUTDOWN };
 struct Object {
     std::string label;
@@ -333,7 +344,8 @@ struct Window;
 struct Tag { enum K { DESK, BAR, WIN, MENU } k; Window *w; };
 
 struct Window {
-    enum Kind { XDG, FOLDER, WINLIST, INFO, NOTEBOOK } kind;
+    enum Kind { XDG, FOLDER, WINLIST, INFO, NOTEBOOK, HELP } kind;
+    std::vector<std::pair<std::string, std::string>> topics;   /* HELP: title, file */
     int tab = 0;                                  /* NOTEBOOK: the page shown */
     Tag tag{ Tag::WIN, this };
     wlr_scene_tree *tree = nullptr;
@@ -470,6 +482,7 @@ static void close_menu();
 static std::vector<Object> program_objects();
 static void run_app(const Object &o);
 static void save_state();
+static void open_help(int topic);
 static void open_desktop_settings();
 static void rebuild_desktop();
 static void remove_shadow(const std::string &where, const std::string &path);
@@ -488,6 +501,7 @@ static void run_object(const Object &o)
     case A_PROMPT:   spawn(terminal()); break;
     case A_PROGRAMS: spawn({ sys("fuzzel"), "--config", sys("fuzzel.ini") }); break;
     case A_APP:      run_app(o); break;
+    case A_HELP:     open_help(0); break;
     case A_WINLIST:  toggle_winlist(); break;
     case A_SHUTDOWN: spawn({ sys("os2cmd"), "SHUTDOWN" }); break;
     case A_RUN:    { auto v = terminal(true); v.push_back(o.path); spawn(v); break; }
@@ -552,6 +566,7 @@ static std::vector<Object> folder_objects(const std::string &path)
         v.push_back({ "Programs", I_PROGRAMS, A_FOLDER, "::programs" });
         v.push_back({ "Window List", I_WINLIST, A_WINLIST, "" });
         v.push_back({ "Startup", I_FOLDER, A_FOLDER, "::startup" });
+        v.push_back({ "Assistance Center", I_HELP, A_HELP, "" });
         v.push_back({ "Shut Down", I_SHUTDOWN, A_SHUTDOWN, "" });
         return v;
     }
@@ -588,7 +603,7 @@ std::string Window::titleText() const
 {
     if (kind == FOLDER) return name + (view == TREE ? " - Tree View" : view == DETAILS ? " - Details View" : " - Icon View");
     if (kind == WINLIST) return "Window List";
-    if (kind == INFO || kind == NOTEBOOK) return info_title;
+    if (kind == INFO || kind == NOTEBOOK || kind == HELP) return info_title;
     if (top && top->title && *top->title) return top->title;
     if (top && top->app_id && *top->app_id) return top->app_id;
     return "(untitled)";
@@ -631,7 +646,7 @@ static void draw_desktop()
     PixBuf *pb = pixbuf_new(S.W, S.H);
     pixman_image_t *im = pb->img;
     fill(im, 0, 0, S.W, S.H, S.desk_color);
-    uint32_t c2 = darker(S.desk_color, 8);
+    uint32_t c2 = darker(S.desk_color, 14);
     for (int y = 0; y < S.H; y += 2)                      /* a quiet texture */
         for (int x = (y / 2) % 4; S.pattern && x < S.W; x += 4) pb->px[y * S.W + x] = c2;
     S.desk_pos.clear();
@@ -704,6 +719,7 @@ static int window_icon(const Window *w)
                                           w->path.rfind("::", 0) == 0 ? I_SYSTEM : (w->path == "/" || w->path == "/h") ? I_DRIVE : I_FOLDER;
     if (w->kind == Window::WINLIST) return I_WINLIST;
     if (w->kind == Window::NOTEBOOK) return I_SYSTEM;
+    if (w->kind == Window::HELP) return I_HELP;
     std::string t = w->titleText();
     return t.find("Command Prompt") != std::string::npos ? I_PROMPT : I_PROGRAM;
 }
@@ -733,6 +749,7 @@ static void draw_folder_content(Window *w, pixman_image_t *im, int ox, int oy);
 static void draw_winlist_content(Window *w, pixman_image_t *im, int ox, int oy);
 static void draw_info_content(Window *w, pixman_image_t *im, int ox, int oy);
 static void draw_notebook_content(Window *w, pixman_image_t *im, int ox, int oy);
+static void draw_help_content(Window *w, pixman_image_t *im, int ox, int oy);
 
 static void draw_window(Window *w)
 {
@@ -760,6 +777,7 @@ static void draw_window(Window *w)
     else if (w->kind == Window::WINLIST) draw_winlist_content(w, im, B, B + T);
     else if (w->kind == Window::INFO) draw_info_content(w, im, B, B + T);
     else if (w->kind == Window::NOTEBOOK) draw_notebook_content(w, im, B, B + T);
+    else if (w->kind == Window::HELP) draw_help_content(w, im, B, B + T);
     else fill(im, B, B + T, w->cw, w->ch, C_WHITE);       /* under the client */
     w->frame.show(w->tree, pb, &w->tag);
     wlr_scene_node_lower_to_bottom(&w->frame.node->node);
@@ -1290,7 +1308,7 @@ static void draw_notebook_content(Window *w, pixman_image_t *im, int ox, int oy)
         fill(im, px, py, pwid, ph, S.desk_color);
         if (S.pattern)
             for (int y = 0; y < ph; y += 2)
-                for (int x = (y / 2) % 4; x < pwid; x += 4) fill(im, px + x, py + y, 1, 1, darker(S.desk_color, 8));
+                for (int x = (y / 2) % 4; x < pwid; x += 4) fill(im, px + x, py + y, 1, 1, darker(S.desk_color, 14));
         bevel(im, px - 1, py - 1, pwid + 2, ph + 2, false, 1);
     } else {
         text_draw(im, TEXT_BOLD, ox + 24, oy + 26 + base / 2, "Title bars", C_TEXT, 0);
@@ -1342,6 +1360,156 @@ static void open_desktop_settings()
     w->x = (S.W - w->fw()) / 2;
     w->y = (S.H - w->fh()) / 3;
     wlr_scene_node_set_position(&w->tree->node, w->x, w->y);
+}
+
+/* ── the Assistance Center: help topics from \OS2\HELP\*.txt ─────────────
+ * Each file's first line is its title; then paragraphs, separated by
+ * blank lines, wrapped to the window; lines starting with two spaces are
+ * shown as they are (examples, tables of keys). */
+static const int HELP_LIST_W = 170;
+
+static void help_load_topics(Window *w)
+{
+    w->topics.clear();
+    std::string dir = sys("help");
+    DIR *d = opendir(dir.c_str());
+    if (d) {
+        while (dirent *e = readdir(d)) {
+            std::string n = e->d_name;
+            if (n.size() < 5 || strcasecmp(n.c_str() + n.size() - 4, ".txt")) continue;
+            FILE *f = fopen((dir + "/" + n).c_str(), "r");
+            if (!f) continue;
+            char line[256] = "";
+            if (fgets(line, sizeof line, f)) line[strcspn(line, "\r\n")] = 0;
+            fclose(f);
+            w->topics.push_back({ line[0] ? line : n, dir + "/" + n });
+        }
+        closedir(d);
+    }
+    std::sort(w->topics.begin(), w->topics.end(), [](const std::pair<std::string, std::string> &a,
+                                                     const std::pair<std::string, std::string> &b) {
+        return a.second < b.second; });
+}
+
+/* the topic's text, wrapped to the window's width */
+static void help_wrap(Window *w)
+{
+    w->lines.clear();
+    if (w->sel < 0 || w->sel >= (int)w->topics.size()) return;
+    FILE *f = fopen(w->topics[w->sel].second.c_str(), "r");
+    if (!f) { w->lines.push_back("(this topic can't be read)"); return; }
+    int width = w->cw - HELP_LIST_W - 40 - SB;
+    char buf[2048];
+    bool first = true;
+    while (fgets(buf, sizeof buf, f)) {
+        std::string l = buf;
+        while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+        if (first) { first = false; continue; }                       /* (the title) */
+        if (l.empty() || l.rfind("  ", 0) == 0) { w->lines.push_back(l); continue; }
+        std::string cur;
+        size_t i = 0;
+        while (i < l.size()) {
+            size_t j = l.find(' ', i);
+            std::string word = l.substr(i, j == std::string::npos ? std::string::npos : j - i);
+            std::string next = cur.empty() ? word : cur + " " + word;
+            if (!cur.empty() && text_width(TEXT_UI, next.c_str()) > width) { w->lines.push_back(cur); cur = word; }
+            else cur = next;
+            if (j == std::string::npos) break;
+            i = j + 1;
+        }
+        w->lines.push_back(cur);
+    }
+    fclose(f);
+}
+
+static int help_rows(const Window *w) { return std::max(1, (w->ch - 44) / ROW); }
+static int help_scroll_max(const Window *w) { return std::max(0, (int)w->lines.size() - help_rows(w)); }
+
+static void draw_help_content(Window *w, pixman_image_t *im, int ox, int oy)
+{
+    fill(im, ox, oy, w->cw, w->ch, C_FACE);
+    /* the topics */
+    int lx = ox + 6, ly = oy + 6, lh = w->ch - 12;
+    fill(im, lx, ly, HELP_LIST_W - 8, lh, C_WHITE);
+    bevel(im, lx, ly, HELP_LIST_W - 8, lh, false, 2);
+    for (int i = 0; i < (int)w->topics.size(); i++) {
+        int y = ly + 4 + i * (ROW + 2);
+        bool sel = i == w->sel;
+        if (sel) fill(im, lx + 3, y, HELP_LIST_W - 14, ROW + 1, C_SEL);
+        draw_icon(im, I_HELP, lx + 6, y + 1, 16);
+        text_draw(im, TEXT_UI, lx + 26, y + ROW / 2 + text_ascent(TEXT_UI) / 2, w->topics[i].first.c_str(),
+                  sel ? C_WHITE : C_TEXT, lx + HELP_LIST_W - 12);
+    }
+    /* the text */
+    int tx = ox + HELP_LIST_W, ty = oy + 6, tw = w->cw - HELP_LIST_W - 6, th = w->ch - 12;
+    fill(im, tx, ty, tw, th, C_WHITE);
+    bevel(im, tx, ty, tw, th, false, 2);
+    if (w->sel >= 0 && w->sel < (int)w->topics.size())
+        text_draw(im, TEXT_BOLD, tx + 12, ty + 12 + text_ascent(TEXT_BOLD), w->topics[w->sel].first.c_str(),
+                  0xFF1C3C9C, tx + tw - SB - 6);
+    w->scroll = std::clamp(w->scroll, 0, help_scroll_max(w));
+    int y = ty + 34;
+    for (int i = w->scroll; i < (int)w->lines.size() && y + ROW <= ty + th; i++, y += ROW)
+        text_draw(im, TEXT_UI, tx + 12, y + text_ascent(TEXT_UI), w->lines[i].c_str(), C_TEXT, tx + tw - SB - 6);
+    /* where in it */
+    int sx = tx + tw - SB - 2, sy = ty + 2, sh = th - 4;
+    fill(im, sx, sy, SB, sh, 0xFFE4E4E4);
+    int tot = (int)w->lines.size(), vis = help_rows(w);
+    if (tot > vis) {
+        int mh = std::max(14, sh * vis / tot), my = sy + (sh - mh) * w->scroll / std::max(1, tot - vis);
+        fill(im, sx, my, SB, mh, C_FACE);
+        bevel(im, sx, my, SB, mh, true, 1);
+    }
+}
+
+static void help_select(Window *w, int topic)
+{
+    if (topic < 0 || topic >= (int)w->topics.size()) return;
+    w->sel = topic;
+    w->scroll = 0;
+    help_wrap(w);
+    draw_window(w);
+}
+
+static void open_help(int topic)
+{
+    for (Window *w : S.windows)
+        if (w->kind == Window::HELP) { focus(w); help_select(w, topic); return; }
+    Window *w = new_internal(Window::HELP, 640, 400, nullptr, [topic](Window *x) {
+        x->info_title = "Assistance Center";
+        help_load_topics(x);
+        x->sel = x->topics.empty() ? -1 : std::clamp(topic, 0, (int)x->topics.size() - 1);
+    });
+    help_wrap(w);                                     /* (now that it has its size) */
+    draw_window(w);
+}
+
+static void help_click(Window *w, int cx, int cy)
+{
+    if (cx >= 6 && cx < HELP_LIST_W - 2) {
+        int i = (cy - 10) / (ROW + 2);
+        if (cy >= 10 && i < (int)w->topics.size()) help_select(w, i);
+    }
+}
+
+static bool help_key(Window *w, xkb_keysym_t sym)
+{
+    int page = help_rows(w) - 1;
+    switch (sym) {
+    case XKB_KEY_Escape: close_window(w); return true;
+    case XKB_KEY_Up: w->scroll--; break;
+    case XKB_KEY_Down: w->scroll++; break;
+    case XKB_KEY_Prior: w->scroll -= page; break;
+    case XKB_KEY_Next: case XKB_KEY_space: w->scroll += page; break;
+    case XKB_KEY_Home: w->scroll = 0; break;
+    case XKB_KEY_End: w->scroll = help_scroll_max(w); break;
+    case XKB_KEY_Tab: help_select(w, (w->sel + 1) % std::max(1, (int)w->topics.size())); return true;
+    case XKB_KEY_ISO_Left_Tab:
+        help_select(w, (w->sel + (int)w->topics.size() - 1) % std::max(1, (int)w->topics.size())); return true;
+    default: return false;
+    }
+    draw_window(w);
+    return true;
 }
 
 /* ── dialogs: lines of text, maybe an entry field, buttons ───────────── */
@@ -1966,7 +2134,9 @@ static std::vector<Menu::Item> folder_menu(Window *w, int which)
         { "", nullptr },
         { "Properties", [w] { properties(w); }, any } };
     default: return {
-        { "Keys and mouse", [] { about(); } },
+        { "Help index", [] { open_help(0); } },
+        { "Using folders", [] { open_help(3); } },
+        { "Keys", [] { open_help(2); } },
         { "", nullptr },
         { "Product information", [] { about(); } } };
     }
@@ -2448,7 +2618,9 @@ static void folder_click(Window *w, int cx, int cy, uint32_t time, bool right)
 
 static void content_click(Window *w, int cx, int cy, uint32_t time, bool right)
 {
-    if (w->kind == Window::NOTEBOOK) {
+    if (w->kind == Window::HELP) {
+        if (!right) help_click(w, cx, cy);
+    } else if (w->kind == Window::NOTEBOOK) {
         if (!right) notebook_click(w, cx, cy);
     } else if (w->kind == Window::INFO) {
         int b = dialog_button_at(w, cx, cy);
@@ -2645,6 +2817,12 @@ static void pointer_axis(wlr_pointer_axis_event *e)
                                      e->delta_discrete, e->source, e->relative_direction);
         return;
     }
+    if (h.tag && h.tag->k == Tag::WIN && h.tag->w->kind == Window::HELP) {
+        Window *w = h.tag->w;
+        w->scroll += e->delta > 0 ? 3 : e->delta < 0 ? -3 : 0;
+        draw_window(w);
+        return;
+    }
     if (h.tag && h.tag->k == Tag::WIN && h.tag->w->kind == Window::FOLDER) {
         Window *w = h.tag->w;
         w->scroll += e->delta > 0 ? 1 : e->delta < 0 ? -1 : 0;
@@ -2682,6 +2860,7 @@ static bool internal_key(Window *w, xkb_keysym_t sym, const char *utf8)
         draw_window(w);
         return true;
     }
+    if (w->kind == Window::HELP) return help_key(w, sym);
     if (w->kind == Window::NOTEBOOK) {
         if (sym == XKB_KEY_Escape) { close_window(w); return true; }
         if (sym == XKB_KEY_Next || sym == XKB_KEY_Prior) { w->tab = (w->tab + 1) % NB_TABS; draw_window(w); return true; }
@@ -2751,6 +2930,10 @@ static bool binding(uint32_t mods, xkb_keysym_t sym)
 {
     bool alt = mods & WLR_MODIFIER_ALT, ctrl = mods & WLR_MODIFIER_CTRL, shift = mods & WLR_MODIFIER_SHIFT;
     if (ctrl && sym == XKB_KEY_Escape) { toggle_winlist(); return true; }
+    if (sym == XKB_KEY_F1 && !alt && !ctrl) {                 /* help: about what's in front */
+        open_help(S.active && S.active->kind == Window::FOLDER ? 3 : 0);
+        return true;
+    }
     if (!alt) return false;
     switch (sym) {
     case XKB_KEY_Tab: case XKB_KEY_ISO_Left_Tab: {
@@ -2900,6 +3083,7 @@ int main(int argc, char **argv)
 
     S.desk_builtin = {
         { "OS/2 System", I_SYSTEM, A_FOLDER, "::system" },
+        { "Assistance Center", I_HELP, A_HELP, "" },
         { "Drives", I_DRIVES, A_FOLDER, "::drives" },
         { "Command Prompt", I_PROMPT, A_PROMPT, "" },
         { "Drive D", I_DRIVE, A_FOLDER, "/h" },

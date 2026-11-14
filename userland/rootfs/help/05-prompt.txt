@@ -1,0 +1,12 @@
+The Command Prompt
+An OS/2 Command Prompt is a window with the OS/2 command line: DIR, CD, COPY, DEL, MD, RD, TYPE, VER, DATE, TIME, MOUNT, SHUTDOWN and the rest - HELP lists them.
+
+Drives are letters: C: is the system's drive, D: the USB stick. Change to one by typing its letter and a colon (D:).
+
+Programs: type a program's name to run it in the window. OS/2 programs run as programs of their own - CMD (CMD.EXE, the OS/2 command processor), KAYTEVM, or RUN C:\HELLO.EXE. A name finds NAME.EXE, in upper or lower case.
+
+START program opens it in a window of its own (START /PM for a graphical program).
+
+The UNIXROOT tools are here too: the packages installed on drive D (rpm -qa lists them) - the C compilers, make, the binutils. See "Programs and packages".
+
+EXIT closes the window.

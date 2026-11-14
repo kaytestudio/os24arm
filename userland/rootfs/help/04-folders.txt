@@ -1,0 +1,14 @@
+Folders
+A folder window shows what's in a folder. Its menu bar: Folder (Open parent, Create new folder, Refresh now, Close), Edit (Select all, Deselect all), View, Selected and Help.
+
+Views: Icon view (the objects as icons), Tree view (the folders inside, as a tree: click + to open a branch, - to close it) and Details view (name, size and when it was last written).
+
+Double-click a folder to open it, a program to run it, a file to edit it. Selected > Properties tells you about an object.
+
+Moving and copying: drag an object onto a folder, a folder window or a drive. On the same drive it's moved; onto another drive it's copied - as in OS/2. Hold Shift while you drop to move instead, Ctrl to copy. Press Esc while dragging to cancel.
+
+Renaming: Selected > Rename, or F2. Deleting: Selected > Delete, the Del key, or drop the object on the Shredder - you're asked first.
+
+Keys in a folder: the arrows, Home and End, Page Up and Page Down; Enter opens, Backspace opens the parent folder, F5 refreshes, F10 goes to the menu bar.
+
+Drive C is the system's own drive; drive D is the USB stick. The system's folders on them are hidden.

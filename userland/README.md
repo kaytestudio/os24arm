@@ -196,7 +196,7 @@ platform-specific are new code.
    foot uses fcft, freetype and fontconfig (`build-libs.sh`) with DejaVu
    Sans Mono, and busybox as its shell (the Workplace Shell uses DejaVu Sans). `userland/make-stick.sh` puts it
    all on an HPFS stick image with `userland/rootfs/` (`env.sh`,
-   `desktop.sh`, `dwl.sh`, `wps.sh`, `fonts.conf`, `foot.ini`, `fuzzel.ini`, and
+   `desktop.sh`, `dwl.sh`, `wps.sh`, `help/`, `fonts.conf`, `foot.ini`, `fuzzel.ini`, and
    `applications/*.desktop` - what the launcher offers).
 
    Try it: `scripts/run-vm.sh --wayland --hvf` (`--hvf`: native speed
@@ -257,6 +257,11 @@ platform-specific are new code.
    and the pattern on it - and Window - the title bars' colours (Warp 4,
    Warp 3, Teal, Graphite, Plum). Changes show at once and are kept in
    WPS.INI.
+   The Assistance Center (on the desktop, F1, a folder's Help menu) is
+   the help: the topics on the left, the text on the right - plain text
+   files in `userland/rootfs/help` (`\OS2\HELP`: a title line, then
+   paragraphs, wrapped to the window; lines starting with two spaces
+   kept as they are).
    Ctrl+Esc is the Window List (hidden windows too), Alt+Tab the next
    window, Alt+F4 closes. The pictures are drawn by the compositor
    (pixman; the icons are its own), the text by fcft with DejaVu Sans.

@@ -1,0 +1,10 @@
+The desktop
+Move an object: drag it with the left mouse button and drop it where you want it. The desktop remembers where its objects are.
+
+Shadows: drop a file, a folder or a program from a folder window onto an empty part of the desktop, and a shadow of it is made there - a link to the original, its title in a lighter blue. Opening a shadow opens the original; right-click it for "Open folder of original". Dropping a shadow on the Shredder deletes only the shadow.
+
+The Startup folder (in OS/2 System): the shadows you drop into it are started every time the desktop starts.
+
+The Settings notebook: right-click an empty part of the desktop and choose Properties. The Background page sets the desktop's colour and pattern, the Window page the title bars' colours. Changes show at once.
+
+The desktop is kept as you leave it - where its objects are, its shadows, the folder windows that are open and where they are, and your settings - in \OS2\WPS.INI on drive D.

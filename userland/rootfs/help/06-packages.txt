@@ -1,0 +1,19 @@
+Programs and packages
+Drive D holds UNIXROOT: the place where the system's ported programs live, as on OS/2 with its \usr, \etc and \bin folders (hidden in folder windows). Programs there are installed as packages with rpm, from \OS2\RPMS:
+
+  rpm -qa                 the packages installed
+  rpm -i llvm             install one (by its name)
+  rpm -U package          upgrade it
+  rpm -e package          remove it
+  rpm -qi package         about it;  rpm -ql package   its files
+
+Packages on the stick: binutils, make, musl-devel (the C library's headers), tcc, llvm (clang and lld) and libcxx-devel (C++).
+
+Writing a program: install musl-devel and llvm, then
+
+  clang hello.c -o hello
+  hello
+
+and for C++, install libcxx-devel too and use clang++.
+
+The Programs folder holds the programs on the desktop's menus; the WarpCenter's Programs button lists them too.

@@ -1,0 +1,15 @@
+Windows
+Every window has an OS/2 frame. Drag the title bar to move the window; drag its border to change its size. The active window's title bar is coloured, the others grey.
+
+In the title bar, on the left, is the system menu icon: click it for the window's menu (Maximize, Hide, Window List, Close), double-click it to close the window. On the right are three buttons: hide, maximize (or restore) and close. Double-clicking the title bar maximizes the window too.
+
+Hidden windows are still there: the Window List (Ctrl+Esc, or the WarpCenter's second button) shows every window, hidden ones too; double-click one to bring it back.
+
+Keys:
+  Ctrl+Esc          the Window List
+  Alt+Tab           the next window
+  Alt+F4            close the window
+  Alt+O             an OS/2 Command Prompt (also Alt+Shift+Enter)
+  Alt+P             Programs
+  F1                this help
+  Alt+Shift+Q       leave the desktop for the system console
