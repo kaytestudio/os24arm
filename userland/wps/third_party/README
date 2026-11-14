@@ -1,0 +1,5 @@
+stb_image.h - v2.32, from https://github.com/nothings/stb, commit
+9600522de53973336fa033a289858a4354cbb04c (SHA-256 of the file
+deb4f18c9ca21b751a1323019031c94c0bf5ca1d2929ef5913cc56f00aab6e91),
+unchanged. Public domain or MIT (its last lines). WebExplorer's pictures
+(PNG, JPEG, GIF, BMP) - see ../image.c.

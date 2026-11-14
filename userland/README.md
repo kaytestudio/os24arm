@@ -281,8 +281,12 @@ platform-specific are new code.
    TLS - certificates not checked), a parser here takes the HTML apart
    (headings, paragraphs, lists, pre, links, anchors, entities, forms -
    text fields, submit buttons, hidden fields, a select's choice, sent by
-   GET or POST; scripts and styles left out, pictures as their names) and lays the text
-   out to the window. Back, Forward, Reload, Home, an address bar
+   GET or POST; scripts and styles left out) and lays the text
+   out to the window, with its pictures (PNG, JPEG, GIF, BMP: fetched
+   four at a time after the page, decoded by stb_image - userland/wps/
+   third_party - scaled to fit; SVG and WebP as their names). file:
+   addresses show local files; picture files in folders open there.
+   Back, Forward, Reload, Home, an address bar
    (Ctrl+L), the link under the pointer in the status line.
    The Assistance Center (on the desktop, F1, a folder's Help menu) is
    the help: the topics on the left, the text on the right - plain text

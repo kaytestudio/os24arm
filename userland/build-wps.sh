@@ -57,13 +57,15 @@ O="$GEN/obj"; mkdir -p "$O"
 # shellcheck disable=SC2086
 "$CLANG" "${BASE[@]}" "${CINC[@]}" $PC_CFLAGS -c "$ROOT/userland/wlr-os2/os2_backend.c" -o "$O/os2_backend.o"
 # shellcheck disable=SC2086
+"$CLANG" "${BASE[@]}" "${CINC[@]}" -std=c11 -w -c "$ROOT/userland/wps/image.c" -o "$O/image.o"   # (stb_image, as it comes)
+# shellcheck disable=SC2086
 "$CLANG" -x c++ "${BASE[@]}" "${CXXINC[@]}" -std=c++17 -fno-exceptions -fno-rtti \
     -Wno-c99-designator -Wno-missing-field-initializers -Wno-keyword-macro $PC_CFLAGS \
     -c "$ROOT/userland/wps/wps.cpp" -o "$O/wps.o"
 # shellcheck disable=SC2086
 "$CLANG" --target=aarch64-linux-musl --sysroot="$SR" -fuse-ld=lld -static -nostdlib \
     -Wl,--image-base=0x60000000 -L"$SR/lib" -o "$OUT/wps" \
-    "$SR/lib/crt1.o" "$SR/lib/crti.o" "$O/wps.o" "$O/text.o" "$O/os2_backend.o" \
+    "$SR/lib/crt1.o" "$SR/lib/crti.o" "$O/wps.o" "$O/text.o" "$O/image.o" "$O/os2_backend.o" \
     $PC_LIBS \
     "$CXXR/usr/lib/libc++.a" "$CXXR/usr/lib/libc++abi.a" "$CXXR/usr/lib/libunwind.a" \
     -Wl,--start-group -lc "$SR/lib/libclang_rt.builtins-aarch64.a" -Wl,--end-group \

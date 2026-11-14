@@ -80,6 +80,7 @@ extern "C" {
 #include "os2_backend.h"
 }
 #include "text.h"
+#include "image.h"
 
 extern char **environ;
 
@@ -216,7 +217,7 @@ static void gradient_h(pixman_image_t *im, int x, int y, int w, int h, uint32_t 
 
 /* ── icons: drawn here, OS/2 Warp in spirit ─────────────────────────── */
 enum Icon { I_FOLDER, I_FILE, I_TEXT, I_PROGRAM, I_PROMPT, I_DRIVE, I_SYSTEM, I_PROGRAMS,
-            I_WINLIST, I_SHUTDOWN, I_DRIVES, I_SHREDDER, I_HELP, I_NETWORK, I_WEB, I_COUNT };
+            I_WINLIST, I_SHUTDOWN, I_DRIVES, I_SHREDDER, I_HELP, I_NETWORK, I_WEB, I_PICTURE, I_COUNT };
 
 static void disc(pixman_image_t *im, int cx, int cy, int r, uint32_t c)
 {
@@ -291,6 +292,12 @@ static void draw_icon(pixman_image_t *im, int i, int x, int y, int s)
         fill(im, x + S(5), y + S(4), S(22), S(4), C_TITLE);
         for (int l = 0; l < 5; l++) fill(im, x + S(8), y + S(11 + 3 * l), S(16), S(2), C_SHADOW);
         break;
+    case I_PICTURE:                                                         /* a framed landscape */
+        boxed(im, x + S(3), y + S(6), S(26), S(20), 0xFF9CC8F0);
+        disc(im, x + S(22), y + S(11), S(3), 0xFFF0D040);                    /* the sun */
+        for (int k = 0; k < S(10); k++) fill(im, x + S(5) + k, y + S(24) - k, S(14) - 2 * k > 0 ? S(14) - 2 * k : 1, 1, 0xFF3A8040);
+        fill(im, x + S(3) + 1, y + S(22), S(26) - 2, S(3), 0xFF3A8040);
+        break;
     case I_WEB: {                                                           /* a globe */
         disc(im, x + S(16), y + S(16), S(13), 0xFF103070);
         disc(im, x + S(16), y + S(16), S(12), 0xFF2E78D0);
@@ -345,7 +352,7 @@ static void draw_icon(pixman_image_t *im, int i, int x, int y, int s)
 }
 
 /* ── objects: what an icon stands for ───────────────────────────────── */
-enum Action { A_NONE, A_HELP, A_EDITOR, A_WEB, A_NETSTATUS, A_PING, A_TELNET, A_APP, A_FOLDER, A_RUN, A_OS2RUN, A_EDIT, A_SHREDDER, A_SCRIPT, A_PROMPT, A_PROGRAMS, A_WINLIST,
+enum Action { A_NONE, A_HELP, A_EDITOR, A_WEB, A_VIEW, A_NETSTATUS, A_PING, A_TELNET, A_APP, A_FOLDER, A_RUN, A_OS2RUN, A_EDIT, A_SHREDDER, A_SCRIPT, A_PROMPT, A_PROGRAMS, A_WINLIST,
               A_SHUTDOWN };
 struct Object {
     std::string label;
@@ -548,6 +555,7 @@ static void run_object(const Object &o)
     case A_HELP:     open_help(0); break;
     case A_NETSTATUS: tcpip_status(); break;
     case A_WEB:      open_web(""); break;
+    case A_VIEW:     open_web("file://" + o.path); break;      /* a picture: WebExplorer shows it */
     case A_PING:     ask_host("Ping", "Ping which host (a name or an address)?",
                               [](const std::string &h) { return std::vector<std::string>{ sys("os2cmd"), "PING", h, "4" }; });
                      break;
@@ -600,6 +608,8 @@ static bool classify(const std::string &p, const std::string &label, Object *o)
     else if (!memcmp(head, "MZ", 2) || !memcmp(head, "LX", 2))
         *o = { label, I_PROGRAM, A_OS2RUN, p };                    /* an OS/2 program: a process */
     else if ((head[0] == '#' && head[1] == '!') || ends(".sh")) *o = { label, I_PROGRAM, A_SCRIPT, p };
+    else if (ends(".png") || ends(".jpg") || ends(".jpeg") || ends(".gif") || ends(".bmp")) *o = { label, I_PICTURE, A_VIEW, p };
+    else if (ends(".html") || ends(".htm")) *o = { label, I_WEB, A_VIEW, p };
     else if (ends(".txt") || ends(".c") || ends(".h") || ends(".cpp") || ends(".s") || ends(".md") ||
              ends(".ini") || ends(".sys") || ends("makefile"))
         *o = { label, I_TEXT, A_EDIT, p };
@@ -2955,7 +2965,7 @@ static int capture_read(int fd, uint32_t mask, void *data)
     char buf[4096];
     for (;;) {
         ssize_t n = read(fd, buf, sizeof buf);
-        if (n > 0) { c->out.append(buf, (size_t)n); if (c->out.size() > (1u << 20)) break; continue; }
+        if (n > 0) { c->out.append(buf, (size_t)n); if (c->out.size() > (8u << 20)) break; continue; }
         if (n < 0 && errno == EAGAIN && !(mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR))) return 0;
         break;
     }
@@ -3035,7 +3045,9 @@ static void ask_host(const std::string &title, const std::string &what,
  * window's width. Pictures show as their names; scripts and styles not at
  * all. */
 struct WebItem {                       /* what the parser makes: text, or a break */
-    enum Kind { TEXT, PARA, LINE, RULE, ANCHOR, FIELD, BUTTON } kind;   /* (ANCHOR: text is an id) */
+    enum Kind { TEXT, PARA, LINE, RULE, ANCHOR, FIELD, BUTTON, IMAGE } kind;   /* (ANCHOR: text is an id) */
+    std::string src;                          /* IMAGE: where it is (text: its alt) */
+    int iw = 0, ih = 0;                       /* IMAGE: its width and height, if the page says */
     int form = -1, field = -1, size = 20;     /* FIELD, BUTTON: which (BUTTON: text its label) */
     std::string text;
     int font = TEXT_BODY, link = -1, indent = 0;
@@ -3044,6 +3056,7 @@ struct WebItem {                       /* what the parser makes: text, or a brea
 struct WebSeg { int x, y, w, h, base, font, link; uint32_t color; std::string text; int box = 0, form = -1, field = -1; };
 struct WebField { std::string name, value, type; };       /* type: text, password, hidden, submit */
 struct WebForm { std::string action, method; std::vector<WebField> fields; };
+struct WebImg { enum State { QUEUED, LOADING, OK, FAILED } state = QUEUED; int w = 0, h = 0; std::vector<uint32_t> px; };
 struct Web {
     std::string url, title, status;
     std::vector<WebItem> items;
@@ -3058,6 +3071,8 @@ struct Web {
     std::vector<WebForm> forms;
     int fform = -1, ffield = -1;              /* the field being typed in */
     std::string post;                         /* the page's own POST data (Reload sends it again) */
+    std::map<std::string, WebImg> imgs;       /* the pictures, by address */
+    int fetching = 0;                         /* ... being fetched now */
 };
 
 static const char *WEB_HOME = "about:home";
@@ -3315,7 +3330,19 @@ static void html_parse(Web *wb, const std::string &html, bool plain)
         if (skip) continue;
         if (name == "br") { brk(WebItem::LINE); continue; }
         if (name == "hr") { brk(WebItem::RULE); continue; }
-        if (name == "img") { std::string alt = attr_of(tag, "alt"); if (!alt.empty()) text("[" + alt + "]"); continue; }
+        if (name == "img") {
+            std::string src = attr_of(tag, "src");
+            WebItem it;
+            it.kind = WebItem::IMAGE;
+            it.text = attr_of(tag, "alt");
+            it.src = src.empty() || src.rfind("data:", 0) == 0 ? "" : url_resolve(wb->url, src);
+            it.iw = atoi(attr_of(tag, "width").c_str());
+            it.ih = atoi(attr_of(tag, "height").c_str());
+            it.link = link;
+            it.indent = indent;
+            wb->items.push_back(it);
+            continue;
+        }
         if (name == "a") {
             if (close) link = -1;
             else {
@@ -3378,10 +3405,15 @@ static void web_layout(Web *wb, int width)
         if (line.empty()) return;
         int asc = 0, hh = 0;
         for (auto &s : line) {
-            int a = text_ascent(s.font) + (s.box ? 4 : 0), hgt = text_height(s.font) + (s.box ? 8 : 0);
+            int a = s.box == 3 ? s.h : text_ascent(s.font) + (s.box ? 4 : 0);     /* (a picture sits on the line) */
+            int hgt = s.box == 3 ? s.h + 4 : text_height(s.font) + (s.box ? 8 : 0);
             asc = std::max(asc, a); hh = std::max(hh, hgt);
         }
-        for (auto &s : line) { s.y = y; s.base = y + asc; s.h = hh + 3; wb->segs.push_back(s); }
+        for (auto &s : line) {
+            if (s.box == 3) { s.y = y + asc - s.h; s.base = y + asc; }      /* (its own height) */
+            else { s.y = y; s.base = y + asc; s.h = hh + 3; }
+            wb->segs.push_back(s);
+        }
         y += hh + 3;
         line.clear();
         x = left(cur_indent);
@@ -3390,6 +3422,35 @@ static void web_layout(Web *wb, int width)
     x = left(0);
     for (const WebItem &it : wb->items) {
         if (it.kind == WebItem::ANCHOR) { wb->anchors[it.text] = std::max(0, y - 4); continue; }
+        if (it.kind == WebItem::IMAGE) {                   /* a picture: as big as it is (to the width) */
+            auto f = wb->imgs.find(it.src);
+            bool ok = f != wb->imgs.end() && f->second.state == WebImg::OK;
+            bool waiting = f != wb->imgs.end() && (f->second.state == WebImg::QUEUED || f->second.state == WebImg::LOADING);
+            int iw = ok ? f->second.w : it.iw, ih = ok ? f->second.h : it.ih;
+            if (ok && it.iw > 0 && it.iw < iw) { ih = (int)((long)ih * it.iw / iw); iw = it.iw; }   /* (the page's size) */
+            if (!ok && !(waiting && iw > 0 && ih > 0)) {   /* not here (yet): its name */
+                if (!it.text.empty()) {
+                    WebItem t; t.kind = WebItem::TEXT; t.text = "[" + it.text + "]"; t.link = it.link; t.indent = it.indent;
+                    std::string word = t.text;
+                    if (line.empty()) { cur_indent = it.indent; x = left(cur_indent); }
+                    int ww = text_width(TEXT_BODY, word.c_str());
+                    if (!line.empty() && x + ww > right) flush();
+                    line.push_back({ x, 0, ww, 0, 0, TEXT_BODY, it.link, it.link >= 0 ? 0xFF1A3FB8 : C_SHADOW, word });
+                    x += ww + text_width(TEXT_BODY, " ");
+                }
+                continue;
+            }
+            if (line.empty()) { cur_indent = it.indent; x = left(cur_indent); }
+            int room = right - left(cur_indent);
+            if (iw > room) { ih = (int)((long)ih * room / iw); iw = room; }
+            if (iw < 1 || ih < 1) continue;
+            if (!line.empty() && x + iw > right) flush();
+            WebSeg sg{ x, 0, iw, ih, 0, TEXT_BODY, it.link, C_SHADOW, it.src };
+            sg.box = 3;
+            line.push_back(sg);
+            x += iw + 4;
+            continue;
+        }
         if (it.kind == WebItem::FIELD || it.kind == WebItem::BUTTON) {      /* a box in the line */
             if (line.empty()) { cur_indent = it.indent; x = left(cur_indent); }
             int bw = it.kind == WebItem::FIELD ? std::clamp(it.size * 8, 80, right - left(cur_indent))
@@ -3476,7 +3537,7 @@ static std::string url_resolve(const std::string &base, std::string ref)
     if (colon != std::string::npos && colon < ref.find('/')) {
         std::string sch = ref.substr(0, colon);
         for (char &c : sch) c = (char)tolower((unsigned char)c);
-        return sch == "http" || sch == "https" || sch == "about" ? ref : "";   /* (mailto:, javascript: - no) */
+        return sch == "http" || sch == "https" || sch == "about" || sch == "file" ? ref : "";   /* (mailto:, javascript: - no) */
     }
     size_t se = base.find("://");
     if (se == std::string::npos) return "";
@@ -3515,13 +3576,95 @@ static Window *web_window(Web *wb)
     return nullptr;
 }
 
+/* ── pictures: fetched after the page, a few at a time, then laid out ── */
+static void web_images_pump(std::shared_ptr<Web> keep);
+static std::string slurp(const std::string &path);
+
+static bool is_picture_name(const std::string &p)
+{
+    static const char *ext[] = { ".png", ".jpg", ".jpeg", ".gif", ".bmp", nullptr };
+    for (int i = 0; ext[i]; i++) {
+        size_t l = strlen(ext[i]);
+        if (p.size() > l && !strcasecmp(p.c_str() + p.size() - l, ext[i])) return true;
+    }
+    return false;
+}
+
+static void web_image_done(std::shared_ptr<Web> keep, const std::string &url, const std::string &data)
+{
+    WebImg &im = keep->imgs[url];
+    int w = 0, h = 0;
+    uint32_t *px = data.empty() ? nullptr
+                 : image_decode((const unsigned char *)data.data(), (int)data.size(), 1200, 2400, &w, &h);
+    if (px) {
+        im.px.assign(px, px + (size_t)w * h);
+        free(px);
+        im.w = w; im.h = h;
+        im.state = WebImg::OK;
+    } else {
+        im.state = WebImg::FAILED;
+    }
+    keep->fetching--;
+    if (Window *win = web_window(keep.get())) { keep->laid_w = -1; draw_window(win); }
+    web_images_pump(keep);
+}
+
+/* starts fetching what's waiting, four at a time */
+static void web_images_pump(std::shared_ptr<Web> keep)
+{
+    if (!web_window(keep.get())) return;
+    for (auto &it : keep->imgs) {
+        if (keep->fetching >= 4) break;
+        if (it.second.state != WebImg::QUEUED) continue;
+        it.second.state = WebImg::LOADING;
+        keep->fetching++;
+        std::string url = it.first;
+        int seq = keep->seq;
+        if (url.rfind("file://", 0) == 0) {                 /* a file here: read it */
+            std::string d = slurp(url.substr(7));
+            web_image_done(keep, url, d);
+            return;                                         /* (that pumped already) */
+        }
+        std::string q;
+        for (char c : url) { if (c == '\'') q += "%27"; else if ((unsigned char)c >= 0x20) q += c; }
+        run_capture({ sys("busybox"), "sh", "-c", "exec " + sys("busybox") + " wget -q -T 30 -U '" + WEB_UA + "' -O - '" + q + "' 2>/dev/null" },
+                    [keep, url, seq](const std::string &data) {
+                        if (keep->seq != seq) { keep->fetching--; return; }   /* (another page by now) */
+                        web_image_done(keep, url, data);
+                    });
+    }
+}
+
+static void web_images_start(Window *w)
+{
+    Web *wb = w->web.get();
+    int n = 0;
+    for (const WebItem &it : wb->items)
+        if (it.kind == WebItem::IMAGE && !it.src.empty() && !wb->imgs.count(it.src) && n++ < 48) {
+            WebImg im;
+            im.state = WebImg::QUEUED;
+            wb->imgs[it.src] = im;
+        }
+    web_images_pump(w->web);
+}
+
 static void web_show(Window *w, const std::string &url, const std::string &body, const std::string &type)
 {
     Web *wb = w->web.get();
     wb->url = url;
     bool html = type.find("html") != std::string::npos || type.empty();
     bool text = type.find("text/plain") != std::string::npos;
-    if (!html && !text) {
+    bool picture = type.rfind("image/", 0) == 0 && (type.find("png") != std::string::npos || type.find("jpeg") != std::string::npos ||
+                                                   type.find("gif") != std::string::npos || type.find("bmp") != std::string::npos);
+    wb->imgs.clear();
+    wb->fetching = 0;
+    if (picture) {                                      /* a picture alone: a page with just it */
+        html_parse(wb, "<title>" + url.substr(url.rfind('/') + 1) + "</title><img src=\"" + url + "\">", false);
+        if (!body.empty()) {                            /* (it's here already) */
+            WebImg im; im.state = WebImg::LOADING; wb->imgs[url] = im; wb->fetching++;
+            web_image_done(w->web, url, body);
+        }
+    } else if (!html && !text) {
         std::string msg = "<title>" + url + "</title><h2>This isn't a page</h2><p>" + url + " is <b>" + type +
                           "</b>, which WebExplorer doesn't show. wget can fetch it in a Command Prompt.</p>";
         html_parse(wb, msg, false);
@@ -3534,6 +3677,7 @@ static void web_show(Window *w, const std::string &url, const std::string &body,
     wb->hover = -1;
     wb->status = "Done";
     wb->loading = false;
+    web_images_start(w);
     draw_window(w);
     draw_bar();
     redraw_winlist();
@@ -3562,7 +3706,8 @@ static std::string slurp(const std::string &path)
 static void web_go(Window *w, std::string url, bool push = true, const std::string &post = "")
 {
     Web *wb = w->web.get();
-    if (url.find("://") == std::string::npos && url.rfind("about:", 0) != 0) url = "http://" + url;
+    if (url.find("://") == std::string::npos && url.rfind("about:", 0) != 0)
+        url = url[0] == '/' ? "file://" + url : "http://" + url;   /* (a path: a file here) */
     std::string frag;
     size_t hash = url.find('#');
     if (hash != std::string::npos) { frag = url.substr(hash + 1); url = url.substr(0, hash); }
@@ -3581,6 +3726,19 @@ static void web_go(Window *w, std::string url, bool push = true, const std::stri
     }
     wb->editing = false;
     if (url == WEB_HOME) { web_show(w, url, web_home_html, "text/html"); return; }
+    if (url.rfind("file://", 0) == 0) {                     /* a file here */
+        std::string path = url.substr(7);
+        struct stat st;
+        if (stat(path.c_str(), &st) != 0) { web_error(w, url, std::string("No such file: ") + path); return; }
+        if (st.st_size > (8 << 20)) { web_error(w, url, "The file is too big to show."); return; }
+        std::string body = slurp(path);
+        std::string type = is_picture_name(path) ? "image/" + path.substr(path.rfind('.') + 1)
+                         : (path.size() > 5 && (!strcasecmp(path.c_str() + path.size() - 5, ".html") ||
+                                                !strcasecmp(path.c_str() + path.size() - 4, ".htm"))) ? "text/html" : "text/plain";
+        if (type == "image/jpg") type = "image/jpeg";
+        web_show(w, url, body, type);
+        return;
+    }
     wb->url = url;
     wb->loading = true;
     wb->status = "Loading " + url + " ...";
@@ -3672,6 +3830,26 @@ static void draw_web_content(Window *w, pixman_image_t *im, int ox, int oy)
         int y = py + s.y - w->scroll;
         if (y + s.h < py) continue;
         if (y > py + ph) break;
+        if (s.box == 3) {                                   /* a picture: scaled to its box */
+            auto f = wb->imgs.find(s.text);
+            if (f == wb->imgs.end() || f->second.state != WebImg::OK) {
+                fill(im, px + s.x, y, s.w, s.h, 0xFFE8E8E8);
+                bevel(im, px + s.x, y, s.w, s.h, false, 1);
+                continue;
+            }
+            WebImg &g = f->second;
+            pixman_image_t *src = pixman_image_create_bits(PIXMAN_a8r8g8b8, g.w, g.h, g.px.data(), g.w * 4);
+            if (g.w != s.w || g.h != s.h) {
+                pixman_transform_t t;
+                pixman_transform_init_scale(&t, pixman_double_to_fixed((double)g.w / s.w), pixman_double_to_fixed((double)g.h / s.h));
+                pixman_image_set_transform(src, &t);
+                pixman_image_set_filter(src, PIXMAN_FILTER_BILINEAR, nullptr, 0);
+            }
+            pixman_image_composite32(PIXMAN_OP_OVER, src, nullptr, im, 0, 0, 0, 0, px + s.x, y, s.w, s.h);
+            pixman_image_unref(src);
+            if (s.link >= 0 && s.link == wb->hover) bevel(im, px + s.x, y, s.w, s.h, false, 1);
+            continue;
+        }
         if (s.box) {                                        /* a form's field or button */
             int bx = px + s.x, by = y + 1, bh = s.h - 4;
             if (s.box == 2) {
@@ -3750,7 +3928,7 @@ static const WebSeg *web_box_at(Window *w, int cx, int cy)
     int y = cy - WEB_TOOL + w->scroll;
     if (cy < WEB_TOOL || cy >= w->ch - WEB_STATUS) return nullptr;
     for (const WebSeg &s : wb->segs)
-        if (s.box && cx >= s.x && cx < s.x + s.w && y >= s.y && y < s.y + s.h) return &s;
+        if (s.box && s.box != 3 && cx >= s.x && cx < s.x + s.w && y >= s.y && y < s.y + s.h) return &s;
     return nullptr;
 }
 
