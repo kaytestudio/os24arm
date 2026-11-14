@@ -1526,13 +1526,38 @@ static int hpfs_unmount_op(vfs_mount_t *mnt)
     return VFS_OK;
 }
 
-/* Another handle on the same fnode? (a writer excludes everyone else) */
+/* Another handle on the same fnode? writer: any handle at all (to delete
+ * it); else only a writer. */
 static int fnode_busy(hpfs_mount_t *m, uint32_t fnode, int writer)
 {
     for (int i = 0; i < MAX_FILES; i++)
         if (files[i].m == m && files[i].fnode_lsn == fnode && (writer || files[i].writable))
             return 1;
     return 0;
+}
+
+/* The handle writing this fnode (but not f), if any. Readers may be open
+ * beside it, as on Unix - one writer at a time, though: each handle keeps
+ * its own copy of the fnode (the allocation), and two would grow the file
+ * apart. */
+static hpfs_file_t *fnode_writer(hpfs_mount_t *m, uint32_t fnode, const hpfs_file_t *f)
+{
+    for (int i = 0; i < MAX_FILES; i++)
+        if (&files[i] != f && files[i].m == m && files[i].fnode_lsn == fnode && files[i].writable)
+            return &files[i];
+    return 0;
+}
+
+/* A reader beside a writer sees the file as it is now: the writer's fnode
+ * (where the data is, after it grew or was cut) and size. */
+static void reader_refresh(hpfs_file_t *f)
+{
+    if (f->writable) return;
+    hpfs_file_t *w = fnode_writer(f->m, f->fnode_lsn, f);
+    if (!w) return;
+    kmemcpy(f->fnode, w->fnode, sizeof f->fnode);
+    f->size = w->size;
+    if (f->pos > f->size) f->pos = f->size;
 }
 
 static int hpfs_open_do(vfs_mount_t *mnt, const char *path, int flags, void **fpriv)
@@ -1574,7 +1599,7 @@ static int hpfs_open_do(vfs_mount_t *mnt, const char *path, int flags, void **fp
         if (writer && (info.attr & VFS_ATTR_RDONLY)) return VFS_ERR_ISDIR; /* access denied */
         if (read_fnode(m, info.fnode, f->fnode) != VFS_OK) return VFS_EIO;
     }
-    if (fnode_busy(m, info.fnode, writer)) return VFS_ERR_BUSY;
+    if (writer && fnode_writer(m, info.fnode, 0)) return VFS_ERR_BUSY;   /* (one writer; readers: any) */
 
     f->fnode_lsn = info.fnode;
     f->size      = le32(f->fnode + 160);
@@ -1616,6 +1641,7 @@ static int hpfs_read(vfs_mount_t *mnt, void *fpriv, void *buf, uint32_t len,
     hpfs_file_t *f = fpriv;
     uint8_t *out = buf, sec[512];
     uint32_t done = 0;
+    reader_refresh(f);
     if (f->pos >= f->size) len = 0;
     else if (len > f->size - f->pos) len = f->size - f->pos;
 
@@ -1724,6 +1750,7 @@ static int hpfs_seek(vfs_mount_t *mnt, void *fpriv, int32_t offset, int whence,
 {
     (void)mnt;
     hpfs_file_t *f = fpriv;
+    reader_refresh(f);
     int64_t base = whence == SEEK_CUR ? f->pos : whence == SEEK_END ? f->size : 0;
     int64_t p = base + offset;
     if (p < 0 || p > 0xFFFFFFFFLL) return VFS_EINVAL;
@@ -1741,6 +1768,8 @@ static int hpfs_stat(vfs_mount_t *mnt, const char *path, vfs_stat_t *st)
     if (r != VFS_OK) return r;
     kstrncpy(st->name, info.name, sizeof st->name);
     st->size  = (info.attr & VFS_ATTR_DIR) ? 0 : info.size;
+    hpfs_file_t *w = (info.attr & VFS_ATTR_DIR) ? 0 : fnode_writer(mnt->priv, info.fnode, 0);
+    if (w) st->size = w->size;                  /* being written: its size now, not the entry's */
     st->attrs = info.attr & 0x37;               /* drop not-8.3 etc. */
     dos_datetime(info.mtime, &st->mdate, &st->mtime);
     return VFS_OK;
