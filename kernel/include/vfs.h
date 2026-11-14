@@ -100,6 +100,9 @@ struct vfs_fs {
 
     /* Optional: size and free space (df) */
     int (*statfs)  (vfs_mount_t *mnt, vfs_statfs_t *st);
+
+    /* Optional: an open file cut to size bytes (smaller than it is) */
+    int (*ftruncate)(vfs_mount_t *mnt, void *fpriv, uint32_t size);
 };
 
 /* ── Mount point ─────────────────────────────────────────────────────────── */
@@ -176,6 +179,7 @@ int vfs_close(int fd);
 int vfs_read(int fd, void *buf, uint32_t len);
 int vfs_write(int fd, const void *buf, uint32_t len);
 int vfs_seek(int fd, int32_t offset, int whence);
+int vfs_ftruncate(int fd, uint32_t size);   /* cut an open file shorter (VFS_ERR_INVAL: the fs can't) */
 
 /* Metadata operations */
 int vfs_stat(const char *path, vfs_stat_t *st);

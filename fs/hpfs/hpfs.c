@@ -1745,6 +1745,39 @@ static int hpfs_write_do(vfs_mount_t *mnt, void *fpriv, const void *buf, uint32_
     return VFS_OK;
 }
 
+/* An open file cut to size (smaller): the extents past it go - the one
+ * across it is shortened - and their sectors are freed once the shorter
+ * list is on disk. Bytes past the new end in its last sector stay as they
+ * are: reads stop at the size, and growing again zeroes them (write). */
+static int hpfs_ftruncate_do(vfs_mount_t *mnt, void *fpriv, uint32_t size)
+{
+    hpfs_mount_t *m = mnt->priv;
+    hpfs_file_t *f = fpriv;
+    if (!f->writable || !m->rw) return VFS_EROFS;
+    if (size > f->size) return VFS_EINVAL;                  /* (growing: the caller writes zeros) */
+    if (size == f->size) return VFS_OK;
+    static extent_t ext[MAX_EXTENTS], gone[MAX_EXTENTS];
+    uint32_t n, an[64], nan, kn = 0, gn = 0, keep = (size + 511) / 512;
+    if (collect_extents(m, f->fnode, ext, &n, an, &nan) != 0) return VFS_EIO;
+    for (uint32_t i = 0; i < n; i++) {
+        extent_t e = ext[i];
+        if (e.fsec >= keep) { gone[gn++] = e; continue; }
+        if (e.fsec + e.len > keep) {                        /* across the new end */
+            uint32_t cut = keep - e.fsec;
+            gone[gn].fsec = keep; gone[gn].disk = e.disk + cut; gone[gn].len = e.len - cut; gn++;
+            e.len = cut;
+        }
+        ext[kn++] = e;
+    }
+    put32(f->fnode + 160, size);
+    int r = write_extents(m, f->fnode_lsn, f->fnode, ext, kn, an, nan);
+    if (r != VFS_OK) return r;
+    for (uint32_t i = 0; i < gn; i++) mark(m, gone[i].disk, gone[i].len, 0);
+    f->size = size;
+    f->changed = 1;
+    return VFS_OK;
+}
+
 static int hpfs_seek(vfs_mount_t *mnt, void *fpriv, int32_t offset, int whence,
                      uint32_t *newpos)
 {
@@ -2019,6 +2052,13 @@ static int hpfs_write(vfs_mount_t *mnt, void *f, const void *b, uint32_t n, uint
     return tracked(m, w0, hpfs_write_do(mnt, f, b, n, a));
 }
 
+static int hpfs_ftruncate(vfs_mount_t *mnt, void *f, uint32_t size)
+{
+    hpfs_mount_t *m = mnt->priv;
+    uint32_t w0 = m->wcount;
+    return tracked(m, w0, hpfs_ftruncate_do(mnt, f, size));
+}
+
 static int hpfs_unlink(vfs_mount_t *mnt, const char *path)
 {
     hpfs_mount_t *m = mnt->priv;
@@ -2101,6 +2141,7 @@ vfs_fs_t vfs_hpfs_fs = {
     .readdir  = hpfs_readdir,
     .closedir = hpfs_closedir,
     .statfs   = hpfs_statfs,
+    .ftruncate = hpfs_ftruncate,
 };
 
 /* ── Probe / IFS init ─────────────────────────────────────────────────── */

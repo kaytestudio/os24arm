@@ -4783,9 +4783,9 @@ static s64 do_truncate(file_t *f, const char *path, s64 len)
         int r = ramfs_truncate(rel, (uint32_t)len);
         return r == VFS_OK ? 0 : verr(r);
     }
-    /* Other file systems (no truncate operation): growing appends zeros
-     * (LLVM sizes its output files so), to 0 is a reopen with O_TRUNC;
-     * shrinking to another size isn't possible. */
+    /* Other file systems: growing appends zeros (LLVM sizes its output
+     * files so), to 0 is a reopen with O_TRUNC, shrinking to another size
+     * is the file system's ftruncate (HPFS; FAT: not possible). */
     const char *p = f ? f->path : path;
     vfs_stat_t vs;
     int r = vfs_stat(p, &vs);
@@ -4794,14 +4794,20 @@ static s64 do_truncate(file_t *f, const char *path, s64 len)
                                          * unclosed writes: busybox wget truncates at its end) */
     if ((lx_u64)len == vs.size) return 0;
     if (len > 0x7FFFFFFF) return -EFBIG;
-    if (len == 0) {
+    if ((lx_u64)len < vs.size) {                        /* shorter: the file system cuts it (HPFS) */
+        int vf = f ? f->vfd : vfs_open(p, O_WRONLY);
+        int c = vf < 0 ? vf : vfs_ftruncate(vf, (uint32_t)len);
+        if (!f && vf >= 0) vfs_close(vf);
+        if (c != VFS_ERR_INVAL || len) return c == VFS_OK ? 0 : verr(c);
+    }
+    if (len == 0) {                                     /* (no ftruncate there: a reopen empties it) */
         int vf = vfs_open(p, O_WRONLY | O_TRUNC);
         if (vf < 0) return verr(vf);
         vfs_close(vf);
         if (f) vfs_seek(f->vfd, 0, SEEK_SET);           /* (its old position is past the end) */
         return 0;
     }
-    if ((lx_u64)len < vs.size) return -EINVAL;
+    if ((lx_u64)len < vs.size) return -EINVAL;          /* (FAT: can't be cut) */
     static const uint8_t zeros[4096];
     int vf = f ? f->vfd : vfs_open(p, O_WRONLY);
     if (vf < 0) return verr(vf);

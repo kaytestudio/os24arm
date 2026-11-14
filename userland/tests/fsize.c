@@ -4,7 +4,8 @@
  * size changes nothing (busybox wget does it at the end of every download:
  * on HPFS it used to write zeros over the file), and that the data reads
  * back as written. Meanwhile, as on Unix: stat by name sees the size too,
- * and a reader opened beside the writer sees what's written after it. */
+ * and a reader opened beside the writer sees what's written after it.
+ * Then cut shorter, grown again (zeros, not the old bytes), and emptied. */
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -65,6 +66,29 @@ int main(int argc, char **argv)
         printf("FAIL read back: %zd bytes, differs at %u\n", r, at);
         fails++;
     }
+    /* shorter: cut to an odd size, then grown again - the old bytes past
+     * the cut must not come back */
+    fd = open(f, O_WRONLY);
+    const unsigned cut = 30001;
+    if (fd < 0 || ftruncate(fd, cut)) { printf("FAIL ftruncate shorter: %d\n", errno); fails++; }
+    else {
+        if (fstat(fd, &st) || st.st_size != (off_t)cut) { printf("FAIL size after the cut: %lld\n", (long long)st.st_size); fails++; }
+        if (lseek(fd, 0, SEEK_END) != (off_t)cut || write(fd, "0123456789", 10) != 10) { printf("FAIL write after the cut\n"); fails++; }
+        if (ftruncate(fd, cut + 10 + 600)) { printf("FAIL ftruncate longer: %d\n", errno); fails++; }
+    }
+    if (fd >= 0) close(fd);
+    fd = open(f, O_RDONLY);
+    r = fd < 0 ? -1 : read(fd, back, sizeof back);
+    if (fd >= 0) close(fd);
+    int zeros = 1;
+    for (unsigned i = cut + 10; r > 0 && i < (unsigned)r; i++) if (back[i]) zeros = 0;
+    if (r != (ssize_t)(cut + 10 + 600) || memcmp(buf, back, cut) || memcmp(back + cut, "0123456789", 10) || !zeros) {
+        printf("FAIL after cutting and growing: %zd bytes%s\n", r, zeros ? "" : ", old bytes came back");
+        fails++;
+    }
+    fd = open(f, O_RDWR);                                  /* and to nothing, while open */
+    if (fd < 0 || ftruncate(fd, 0) || fstat(fd, &st) || st.st_size != 0) { printf("FAIL ftruncate to 0 while open: %d\n", errno); fails++; }
+    if (fd >= 0) close(fd);
     unlink(f);
     printf("%s\n", fails ? "fsize: FAILED" : "fsize: PASS");
     return fails != 0;

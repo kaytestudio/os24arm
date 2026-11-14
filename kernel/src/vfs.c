@@ -235,6 +235,13 @@ int vfs_write(int fd, const void *buf, uint32_t len)
     return (int)actual;
 }
 
+int vfs_ftruncate(int fd, uint32_t size)
+{
+    if (fd < 0 || fd >= VFS_MAX_FILES || !files[fd].used) return VFS_ERR_BADFD;
+    if (!files[fd].mnt->fs->ftruncate) return VFS_ERR_INVAL;
+    return files[fd].mnt->fs->ftruncate(files[fd].mnt, files[fd].fpriv, size);
+}
+
 int vfs_seek(int fd, int32_t offset, int whence)
 {
     if (fd < 0 || fd >= VFS_MAX_FILES || !files[fd].used) return VFS_ERR_BADFD;
