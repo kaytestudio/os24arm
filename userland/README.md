@@ -329,6 +329,35 @@ platform-specific are new code.
    themselves). `RUN` at the system console starts them the same way,
    in the shell's directory, the console raw while they run.
 
+   32-bit x86 OS/2 programs (real OS/2 2.x-4.x console .EXEs: LX, usually
+   after a DOS "MZ" stub, CPU type 386-586) run through an emulator,
+   `userland/os2x86` (`\OS2\os2x86` on the stick): the kernel's execve
+   treats one like a `#!/h/OS2/os2x86` script. `cpu.c` is an i386 in
+   software (the 386/486 integer instructions, CMOV, BSWAP, CPUID, the
+   x87 with doubles inside) with a flat 4 GB address space of its own (512
+   MB of it backed, `OS2X86_MEM=MB` for more); `os2x86.c` places the LX
+   objects where they're linked (or elsewhere, if they have fixups),
+   unpacks EXEPACK pages, applies the fixups, and turns the imports from
+   DOSCALLS, NLS and MSG into addresses at the top, where the interpreter
+   stops and the call is done with this system's own calls: about 100 of
+   them - files (DosOpen ... DosFindFirst, any case on any file system),
+   directories and drives (C: is /, D: the stick at /h, or
+   `OS2X86_DRIVES="C=/;D=/h;E=/mnt"`), memory (DosAllocMem, in 64 KB),
+   the environment and command line (DosGetInfoBlocks, the TIB at FS),
+   DosExecPgm/DosWaitChild (fork and exec: x86 programs run through
+   os2x86 again), exception handlers (DosSetExceptionHandler: an access
+   violation, a division by zero, an illegal instruction go to the
+   program's handlers, as on OS/2; unhandled, a SYS3175 report with the
+   registers), semaphores, exit lists, x86 DLLs it brings along (the
+   program's directory, the current one, LIBPATH; their initialisation
+   runs). Not there yet: a second thread (DosCreateThread fails), the
+   16-bit KBD/VIO/MOU calls, Presentation Manager (PMWIN & co.: such a
+   program stops at once, saying so). Calls it doesn't have yet print
+   one line on stderr and return error 1; `OS2X86_TRACE=1` lists every
+   call. `userland/os2x86/test/run-tests.sh` runs its test program
+   (freestanding C, `os2test.c`, made an LX .EXE by `elf2lx.py`) on the
+   build machine; the same .EXE passes on the system.
+
    `userland/apps/os2cmd.c` relays a terminal to `/dev/os2cmd`, which runs
    each line in the shell of `kernel/src/main.c` - DIR, COPY, MOUNT, USB,
    MEM, ... on the same mounts as the serial console's; each window starts

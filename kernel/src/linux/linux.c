@@ -2703,14 +2703,27 @@ static int copy_in_argv(lx_u64 uv, uint32_t *used, int *count)
 /* "#!interpreter [arg]" scripts: argbuf (argc strings, then envc) becomes
  * interpreter [arg] script argv[1..]; *path the interpreter. When the
  * interpreter isn't there (scripts say #!/bin/sh, #!/usr/bin/env ...),
- * the system's busybox runs the applet of that name. One level only. */
+ * the system's busybox runs the applet of that name. One level only.
+ * x86 OS/2 programs go the same way, to the emulator. */
 #define SYSTEM_BUSYBOX "/h/OS2/busybox"
+#define OS2X86_EMULATOR "/h/OS2/os2x86"             /* userland/os2x86 */
 static int shebang(char *path, uint32_t *used, int *argc, int envc)
 {
     char head[128];
     int fd = vfs_open(path, O_RDONLY);
     if (fd < 0) return 0;
     int n = vfs_read(fd, head, sizeof head - 1);
+    /* a 32-bit x86 OS/2 program (LX, usually after a DOS "MZ" stub):
+     * the emulator runs it, as if it said #!/h/OS2/os2x86 */
+    if (n >= 2 && ((head[0] == 'M' && head[1] == 'Z' && n >= 0x40) || (head[0] == 'L' && head[1] == 'X'))) {
+        uint32_t lxo = 0;
+        uint8_t lx[10];
+        if (head[0] == 'M') kmemcpy(&lxo, head + 0x3C, 4);
+        if (read_at(fd, lxo, lx, sizeof lx) == 0 && lx[0] == 'L' && lx[1] == 'X' && lx[8] >= 1 && lx[8] <= 4 && !lx[9]) {
+            kstrncpy(head, "#!" OS2X86_EMULATOR "\n", sizeof head);
+            n = (int)kstrlen(head);
+        }
+    }
     vfs_close(fd);
     if (n < 3 || head[0] != '#' || head[1] != '!') return 0;
     head[n] = 0;

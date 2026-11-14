@@ -49,3 +49,16 @@ for src in "$ROOT"/userland/tests/*.c "$ROOT"/userland/apps/*.c; do
     rm -f "$OUT/$name.o"
     echo "  $name"
 done
+# userland/os2x86: the x86 OS/2 emulator (several files; the kernel runs
+# x86 LX programs through it as \OS2\os2x86)
+objs=()
+for src in "$ROOT"/userland/os2x86/*.c; do
+    o="$OUT/os2x86-$(basename "${src%.c}").o"
+    "$LLVM/clang" "${CFLAGS[@]}" -c "$src" -o "$o"
+    objs+=("$o")
+done
+ld.lld -static --image-base=0x60000000 -o "$OUT/os2x86" \
+    "$SR/lib/crt1.o" "$SR/lib/crti.o" "${objs[@]}" \
+    "$SR/lib/libc.a" "$SR/lib/libclang_rt.builtins-aarch64.a" "$SR/lib/crtn.o"
+rm -f "${objs[@]}"
+echo "  os2x86"
