@@ -30,6 +30,7 @@
 #include <cstring>
 #include <ctime>
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -306,7 +307,7 @@ static void draw_icon(pixman_image_t *im, int i, int x, int y, int s)
 }
 
 /* ── objects: what an icon stands for ───────────────────────────────── */
-enum Action { A_NONE, A_FOLDER, A_RUN, A_OS2RUN, A_EDIT, A_SHREDDER, A_SCRIPT, A_PROMPT, A_PROGRAMS, A_WINLIST,
+enum Action { A_NONE, A_APP, A_FOLDER, A_RUN, A_OS2RUN, A_EDIT, A_SHREDDER, A_SCRIPT, A_PROMPT, A_PROGRAMS, A_WINLIST,
               A_SHUTDOWN };
 struct Object {
     std::string label;
@@ -314,6 +315,8 @@ struct Object {
     Action action;
     std::string path;                /* A_FOLDER: a directory or "::system"/"::drives" */
     long long size = -1;             /* files: for the Details view */
+    std::string exec;                /* A_APP: its command line (a .desktop entry's Exec) */
+    bool term = false;               /* ... in a terminal */
     time_t mtime = 0;
 };
 
@@ -395,6 +398,8 @@ struct Server {
     Tag desk_tag{ Tag::DESK, nullptr }, bar_tag{ Tag::BAR, nullptr };
     std::vector<Object> desk_objs;
     std::vector<std::pair<int, int>> desk_pos;   /* where each desktop object is */
+    std::map<std::string, std::pair<int, int>> desk_place;   /* ... moved there by hand */
+    bool restoring = false;                      /* (no saving while restoring) */
     int desk_sel = -1;
 
     std::vector<Window *> windows;               /* back to front */
@@ -416,6 +421,8 @@ struct Server {
     struct Drag {
         bool armed = false, active = false;
         Window *src = nullptr;
+        int desk = -1;                           /* a desktop object being moved, or -1 */
+        double dx = 0, dy = 0;                   /* (where it was taken, in it) */
         Object obj;
         double x0 = 0, y0 = 0;
         Picture pic;
@@ -452,6 +459,9 @@ static std::vector<std::string> terminal(bool hold = false)
 
 static void open_folder(const std::string &path, const std::string &name, int view = 0);
 static void close_menu();
+static std::vector<Object> program_objects();
+static void run_app(const Object &o);
+static void save_state();
 static void toggle_winlist();
 static void focus(Window *w);
 
@@ -463,6 +473,7 @@ static void run_object(const Object &o)
     case A_FOLDER:   open_folder(o.path, o.label); break;
     case A_PROMPT:   spawn(terminal()); break;
     case A_PROGRAMS: spawn({ sys("fuzzel"), "--config", sys("fuzzel.ini") }); break;
+    case A_APP:      run_app(o); break;
     case A_WINLIST:  toggle_winlist(); break;
     case A_SHUTDOWN: spawn({ sys("os2cmd"), "SHUTDOWN" }); break;
     case A_RUN:    { auto v = terminal(true); v.push_back(o.path); spawn(v); break; }
@@ -492,11 +503,12 @@ static std::vector<Object> folder_objects(const std::string &path)
     if (path == "::system") {
         v.push_back({ "Drives", I_DRIVES, A_FOLDER, "::drives" });
         v.push_back({ "Command Prompt", I_PROMPT, A_PROMPT, "" });
-        v.push_back({ "Programs", I_PROGRAMS, A_PROGRAMS, "" });
+        v.push_back({ "Programs", I_PROGRAMS, A_FOLDER, "::programs" });
         v.push_back({ "Window List", I_WINLIST, A_WINLIST, "" });
         v.push_back({ "Shut Down", I_SHUTDOWN, A_SHUTDOWN, "" });
         return v;
     }
+    if (path == "::programs") return program_objects();
     if (path == "::drives") {
         v.push_back({ "Drive C", I_DRIVE, A_FOLDER, "/" });
         v.push_back({ "Drive D", I_DRIVE, A_FOLDER, "/h" });
@@ -576,7 +588,12 @@ static void draw_desktop()
     S.desk_pos.clear();
     for (size_t i = 0; i < S.desk_objs.size(); i++) {
         int x, y;
-        if (S.desk_objs[i].action == A_SHREDDER) { x = S.W - 70; y = S.H - 80; }
+        auto pl = S.desk_place.find(S.desk_objs[i].label);
+        if (pl != S.desk_place.end()) {
+            x = std::clamp(pl->second.first, 0, S.W - 56);
+            y = std::clamp(pl->second.second, BAR, S.H - 54);
+        }
+        else if (S.desk_objs[i].action == A_SHREDDER) { x = S.W - 70; y = S.H - 80; }
         else if (S.desk_objs[i].action == A_SHUTDOWN) { x = S.W - 140; y = S.H - 80; }
         else { x = 18; y = BAR + 16 + (int)i * 72; }
         S.desk_pos.push_back({ x, y });
@@ -629,7 +646,8 @@ static void draw_bar()
 /* ── drawing windows ────────────────────────────────────────────────── */
 static int window_icon(const Window *w)
 {
-    if (w->kind == Window::FOLDER) return w->path.rfind("::", 0) == 0 ? I_SYSTEM : (w->path == "/" || w->path == "/h") ? I_DRIVE : I_FOLDER;
+    if (w->kind == Window::FOLDER) return w->path == "::programs" ? I_PROGRAMS : w->path == "::drives" ? I_DRIVES :
+                                          w->path.rfind("::", 0) == 0 ? I_SYSTEM : (w->path == "/" || w->path == "/h") ? I_DRIVE : I_FOLDER;
     if (w->kind == Window::WINLIST) return I_WINLIST;
     std::string t = w->titleText();
     return t.find("Command Prompt") != std::string::npos ? I_PROMPT : I_PROGRAM;
@@ -864,7 +882,7 @@ static void draw_tree_view(Window *w, pixman_image_t *im, int ox, int oy)
             fill(im, bx + 2, mid, 5, 1, C_DARK);
             if (!n.open) fill(im, bx + 4, mid - 2, 1, 5, C_DARK);
         }
-        int icon = n.path.rfind("::", 0) == 0 ? (n.path == "::drives" ? I_DRIVES : I_SYSTEM)
+        int icon = n.path.rfind("::", 0) == 0 ? (n.path == "::drives" ? I_DRIVES : n.path == "::programs" ? I_PROGRAMS : I_SYSTEM)
                  : (n.path == "/" || n.path == "/h") ? I_DRIVE : I_FOLDER;
         draw_icon(im, icon, bx + 14, mid - 8, 16);
         int tx = bx + 34, tw = text_width(TEXT_UI, n.name.c_str());
@@ -1027,6 +1045,7 @@ static void toggle_maximize(Window *w)
     }
     wlr_scene_node_set_position(&w->tree->node, w->x, w->y);
     draw_window(w);
+    if (w->kind == Window::FOLDER) save_state();
 }
 
 /* internal windows: folders and the Window List */
@@ -1050,7 +1069,10 @@ static Window *new_internal(Window::Kind k, int cw, int ch, Window **slot = null
 /* the Tree view: the folder, and the folders in it as they're opened */
 static bool has_subfolders(const std::string &path)
 {
-    if (path.rfind("::", 0) == 0) return true;
+    if (path.rfind("::", 0) == 0) {
+        for (const Object &o : folder_objects(path)) if (o.action == A_FOLDER) return true;
+        return false;
+    }
     DIR *d = opendir(path.c_str());
     if (!d) return false;
     bool root = path == "/" || path == "/h", found = false;
@@ -1109,6 +1131,7 @@ static void set_view(Window *w, Window::View v)
     w->view = v;
     load_folder(w);
     draw_window(w);
+    save_state();
     draw_bar();
     redraw_winlist();
 }
@@ -1132,6 +1155,7 @@ static void open_folder(const std::string &path, const std::string &name, int vi
     S.windows.push_back(w);
     place(w);
     focus(w);
+    save_state();
 }
 
 /* a folder's parent: the drive's parent is Drives */
@@ -1517,10 +1541,12 @@ static void forget(Window *w)
 static void close_window(Window *w)
 {
     if (w->top) { wlr_xdg_toplevel_send_close(w->top); return; }
+    bool folder = w->kind == Window::FOLDER;
     forget(w);
     w->frame.destroy();
     wlr_scene_node_destroy(&w->tree->node);
     delete w;
+    if (folder) save_state();
 }
 
 /* ── xdg-shell windows ─────────────────────────────────────────────── */
@@ -1866,6 +1892,121 @@ static bool double_click(uint32_t time, const void *target, int index)
     return dbl;
 }
 
+/* ── the desktop as it was left: \OS2\WPS.INI on the stick ───────────── *
+ *   icon X Y Label                       a desktop object moved by hand
+ *   folder VIEW X Y W H Path|Name        an open folder window, back to front */
+static std::string state_file() { return sys("wps.ini"); }
+
+static void save_state()
+{
+    if (S.restoring) return;
+    std::string tmp = state_file() + ".new";
+    FILE *f = fopen(tmp.c_str(), "w");
+    if (!f) return;
+    fprintf(f, "# Workplace Shell: the desktop as it was left (written by wps)\n");
+    for (auto &p : S.desk_place) fprintf(f, "icon %d %d %s\n", p.second.first, p.second.second, p.first.c_str());
+    for (Window *w : S.windows)
+        if (w->kind == Window::FOLDER && w->mapped)
+            fprintf(f, "folder %d %d %d %d %d %s|%s\n", (int)w->view, w->x, w->y, w->cw, w->ch,
+                    w->path.c_str(), w->name.c_str());
+    if (fclose(f) == 0) rename(tmp.c_str(), state_file().c_str());
+}
+
+struct Saved { int view, x, y, w, h; std::string path, name; };
+static std::vector<Saved> saved_folders;
+
+static void load_state()
+{
+    FILE *f = fopen(state_file().c_str(), "r");
+    if (!f) return;
+    char line[1200];
+    while (fgets(line, sizeof line, f)) {
+        line[strcspn(line, "\n")] = 0;
+        int a, b, c, d, e, n = 0;
+        if (sscanf(line, "icon %d %d %n", &a, &b, &n) == 2 && n) S.desk_place[line + n] = { a, b };
+        else if (sscanf(line, "folder %d %d %d %d %d %n", &a, &b, &c, &d, &e, &n) == 5 && n) {
+            std::string rest = line + n;
+            size_t bar = rest.find('|');
+            if (bar == std::string::npos || a < 0 || a > 2) continue;
+            saved_folders.push_back({ a, b, c, d, e, rest.substr(0, bar), rest.substr(bar + 1) });
+        }
+    }
+    fclose(f);
+}
+
+/* the folders that were open: where they were (if they're still there) */
+static void restore_folders()
+{
+    S.restoring = true;
+    for (const Saved &s : saved_folders) {
+        struct stat st;
+        if (real_dir(s.path) && (stat(s.path.c_str(), &st) != 0 || !S_ISDIR(st.st_mode))) continue;
+        open_folder(s.path, s.name, s.view);
+        Window *w = S.active;
+        if (!w || w->kind != Window::FOLDER || w->path != s.path) continue;
+        w->cw = std::clamp(s.w, 160, S.W);
+        w->ch = std::clamp(s.h, 80, S.H);
+        w->x = std::clamp(s.x, -w->fw() + 40, S.W - 40);
+        w->y = std::clamp(s.y, BAR - T, S.H - 40);
+        wlr_scene_node_set_position(&w->tree->node, w->x, w->y);
+        draw_window(w);
+    }
+    S.restoring = false;
+}
+
+/* ── Programs: the launcher's entries (\OS2\applications\*.desktop) ──── */
+static std::vector<Object> program_objects()
+{
+    std::vector<Object> v;
+    std::string dir = sys("applications");
+    DIR *d = opendir(dir.c_str());
+    if (!d) return v;
+    while (dirent *e = readdir(d)) {
+        std::string n = e->d_name;
+        if (n.size() < 9 || n.compare(n.size() - 8, 8, ".desktop")) continue;
+        FILE *f = fopen((dir + "/" + n).c_str(), "r");
+        if (!f) continue;
+        std::string name, exec, cats;
+        bool term = false, hidden = false;
+        char line[512];
+        while (fgets(line, sizeof line, f)) {
+            line[strcspn(line, "\r\n")] = 0;
+            if (!strncmp(line, "Name=", 5)) name = line + 5;
+            else if (!strncmp(line, "Exec=", 5)) exec = line + 5;
+            else if (!strncmp(line, "Categories=", 11)) cats = line + 11;
+            else if (!strncmp(line, "Terminal=", 9)) term = !strcmp(line + 9, "true");
+            else if (!strncmp(line, "NoDisplay=", 10)) hidden = !strcmp(line + 10, "true");
+        }
+        fclose(f);
+        if (name.empty() || exec.empty() || hidden) continue;
+        int icon = cats.find("TerminalEmulator") != std::string::npos ? I_PROMPT
+                 : cats.find("TextEditor") != std::string::npos ? I_TEXT
+                 : exec.find("SHUTDOWN") != std::string::npos ? I_SHUTDOWN
+                 : cats.find("Monitor") != std::string::npos ? I_WINLIST : I_PROGRAM;
+        Object o{ name, icon, A_APP, dir + "/" + n };
+        o.exec = exec;
+        o.term = term;
+        v.push_back(o);
+    }
+    closedir(d);
+    std::sort(v.begin(), v.end(), [](const Object &a, const Object &b) {
+        return strcasecmp(a.label.c_str(), b.label.c_str()) < 0; });
+    return v;
+}
+
+static void run_app(const Object &o)
+{
+    std::vector<std::string> args = o.term ? terminal() : std::vector<std::string>();
+    std::string w;
+    for (size_t i = 0; i <= o.exec.size(); i++) {
+        char c = i < o.exec.size() ? o.exec[i] : ' ';
+        if (c != ' ') { w += c; continue; }
+        if (!w.empty() && w[0] != '%') args.push_back(w);      /* (not %f, %U, ...) */
+        w.clear();
+    }
+    if (!args.empty()) spawn(args);
+}
+
 /* ── drag and drop: an object onto a folder, a drive or the Shredder ── */
 static void drag_arm(Window *src, const Object &o)
 {
@@ -1934,6 +2075,17 @@ static std::string drop_target(double lx, double ly)
 static void drag_drop()
 {
     Server::Drag d = S.drag;
+    if (d.desk >= 0) {                                   /* a desktop object: put where it's dropped */
+        drag_cancel();
+        if (!d.active) return;
+        int x = (int)(S.cursor->x - d.dx), y = (int)(S.cursor->y - d.dy);
+        x = std::clamp((x + 4) / 8 * 8, 0, S.W - 56);
+        y = std::clamp((y + 4) / 8 * 8, BAR, S.H - 54);
+        S.desk_place[d.obj.label] = { x, y };
+        draw_desktop();
+        save_state();
+        return;
+    }
     std::string target = d.active ? drop_target(S.cursor->x, S.cursor->y) : "";
     bool was_active = d.active;
     drag_cancel();
@@ -2097,6 +2249,7 @@ static void pointer_button(wlr_pointer_button_event *e)
             Window *w = S.grab;
             S.mode = Server::NONE; S.grab = nullptr;
             if (w && !w->top) draw_window(w);
+            if (w && w->kind == Window::FOLDER) save_state();     /* (moved, resized) */
             return;
         }
         wlr_seat_pointer_notify_button(S.seat, e->time_msec, e->button, e->state);
@@ -2123,6 +2276,13 @@ static void pointer_button(wlr_pointer_button_event *e)
             const BarButton &b = bar_buttons[i];
             if (b.icon == I_SYSTEM) system_menu(4 + i * BAR_BTN, BAR);
             else if (b.action == A_FOLDER) open_folder("::drives", "Drives");
+            else if (b.action == A_PROGRAMS) {
+                std::vector<Menu::Item> items;
+                for (const Object &o : program_objects()) items.push_back({ o.label, [o] { run_app(o); } });
+                items.push_back({ "", nullptr });
+                items.push_back({ "Programs folder", [] { open_folder("::programs", "Programs"); } });
+                open_menu(4 + i * BAR_BTN, BAR, items);
+            }
             else run_object({ b.label, b.icon, b.action, "" });
         }
         return;
@@ -2175,6 +2335,14 @@ static void pointer_button(wlr_pointer_button_event *e)
         bool dbl = double_click(e->time_msec, &S.desk_tag, i);
         if (i != S.desk_sel) { S.desk_sel = i; draw_desktop(); }
         if (dbl && i >= 0) run_object(S.desk_objs[i]);
+        else if (i >= 0 && !right) {                     /* maybe moved somewhere else */
+            S.drag = Server::Drag();
+            S.drag.armed = true;
+            S.drag.desk = i;
+            S.drag.obj = S.desk_objs[i];
+            S.drag.x0 = lx; S.drag.y0 = ly;
+            S.drag.dx = lx - S.desk_pos[i].first; S.drag.dy = ly - S.desk_pos[i].second;
+        }
         return;
     }
     if (h.surface) {                                     /* a layer surface (fuzzel) */
@@ -2379,6 +2547,7 @@ static void new_output(wlr_output *o)
         S.W = o->width; S.H = o->height;
         draw_desktop();
         draw_bar();
+        restore_folders();
     }
 }
 
@@ -2436,12 +2605,13 @@ int main(int argc, char **argv)
     S.t_layers = wlr_scene_tree_create(&S.scene->tree);
     S.t_menu = wlr_scene_tree_create(&S.scene->tree);
 
+    load_state();
     S.desk_objs = {
         { "OS/2 System", I_SYSTEM, A_FOLDER, "::system" },
         { "Drives", I_DRIVES, A_FOLDER, "::drives" },
         { "Command Prompt", I_PROMPT, A_PROMPT, "" },
         { "Drive D", I_DRIVE, A_FOLDER, "/h" },
-        { "Programs", I_PROGRAMS, A_PROGRAMS, "" },
+        { "Programs", I_PROGRAMS, A_FOLDER, "::programs" },
         { "Window List", I_WINLIST, A_WINLIST, "" },
         { "Shut Down", I_SHUTDOWN, A_SHUTDOWN, "" },
         { "Shredder", I_SHREDDER, A_SHREDDER, "" },

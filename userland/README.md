@@ -240,6 +240,12 @@ platform-specific are new code.
    folder: arrows, Home/End, Page Up/Down, Enter opens, Backspace the
    parent, F5 refreshes, F10 the menu bar (arrows, Enter, Esc); in a
    Tree view Right/+ expands and Left/- collapses.
+   Programs is a folder of program objects - the launcher's entries
+   (`\OS2\applications\*.desktop`) - and the WarpCenter's Programs button
+   a menu of them. Desktop objects can be dragged where you want them,
+   and the desktop is kept as it was left: the objects' places and the
+   open folder windows (view, place, size, order) are in `\OS2\WPS.INI`
+   on the stick, written as they change, and come back at the next boot.
    Ctrl+Esc is the Window List (hidden windows too), Alt+Tab the next
    window, Alt+F4 closes. The pictures are drawn by the compositor
    (pixman; the icons are its own), the text by fcft with DejaVu Sans.
