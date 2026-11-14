@@ -317,6 +317,7 @@ struct Object {
     long long size = -1;             /* files: for the Details view */
     std::string exec;                /* A_APP: its command line (a .desktop entry's Exec) */
     bool term = false;               /* ... in a terminal */
+    bool shadow = false;             /* a shadow: a link to the object at path */
     time_t mtime = 0;
 };
 
@@ -399,6 +400,9 @@ struct Server {
     std::vector<Object> desk_objs;
     std::vector<std::pair<int, int>> desk_pos;   /* where each desktop object is */
     std::map<std::string, std::pair<int, int>> desk_place;   /* ... moved there by hand */
+    std::vector<Object> desk_builtin;            /* the desktop's own objects */
+    std::vector<Object> shadows;                 /* ... and the shadows put on it */
+    std::vector<Object> startup;                 /* the Startup folder's shadows */
     bool restoring = false;                      /* (no saving while restoring) */
     int desk_sel = -1;
 
@@ -462,6 +466,11 @@ static void close_menu();
 static std::vector<Object> program_objects();
 static void run_app(const Object &o);
 static void save_state();
+static void rebuild_desktop();
+static void remove_shadow(const std::string &where, const std::string &path);
+static bool classify(const std::string &p, const std::string &label, Object *o);
+static std::string desk_key(const Object &o);
+static bool resolve_shadow(const std::string &path, const std::string &label, Object *sh);
 static void toggle_winlist();
 static void focus(Window *w);
 
@@ -497,6 +506,38 @@ static bool hidden_at_root(const std::string &n)
     return false;
 }
 
+/* what the object at path p is (named label): its icon, what opening it does */
+static bool classify(const std::string &p, const std::string &label, Object *o)
+{
+    struct stat st;
+    if (stat(p.c_str(), &st) != 0) return false;
+    if (S_ISDIR(st.st_mode)) {
+        int icon = p == "/" || p == "/h" ? I_DRIVE : I_FOLDER;
+        *o = { label, icon, A_FOLDER, p };
+        o->mtime = st.st_mtime;
+        return true;
+    }
+    char head[4] = { 0 };
+    int fd = open(p.c_str(), O_RDONLY);
+    if (fd >= 0) { if (read(fd, head, 4) < 0) head[0] = 0; close(fd); }
+    std::string n = p.substr(p.rfind('/') + 1);
+    auto ends = [&](const char *x) {
+        size_t l = strlen(x);
+        return n.size() > l && strcasecmp(n.c_str() + n.size() - l, x) == 0;
+    };
+    if (!memcmp(head, "\x7f" "ELF", 4)) *o = { label, I_PROGRAM, A_RUN, p };
+    else if (!memcmp(head, "MZ", 2) || !memcmp(head, "LX", 2))
+        *o = { label, I_PROGRAM, A_OS2RUN, p };                    /* an OS/2 program: a process */
+    else if ((head[0] == '#' && head[1] == '!') || ends(".sh")) *o = { label, I_PROGRAM, A_SCRIPT, p };
+    else if (ends(".txt") || ends(".c") || ends(".h") || ends(".cpp") || ends(".s") || ends(".md") ||
+             ends(".ini") || ends(".sys") || ends("makefile"))
+        *o = { label, I_TEXT, A_EDIT, p };
+    else *o = { label, I_FILE, A_EDIT, p };
+    o->size = st.st_size;
+    o->mtime = st.st_mtime;
+    return true;
+}
+
 static std::vector<Object> folder_objects(const std::string &path)
 {
     std::vector<Object> v;
@@ -505,10 +546,12 @@ static std::vector<Object> folder_objects(const std::string &path)
         v.push_back({ "Command Prompt", I_PROMPT, A_PROMPT, "" });
         v.push_back({ "Programs", I_PROGRAMS, A_FOLDER, "::programs" });
         v.push_back({ "Window List", I_WINLIST, A_WINLIST, "" });
+        v.push_back({ "Startup", I_FOLDER, A_FOLDER, "::startup" });
         v.push_back({ "Shut Down", I_SHUTDOWN, A_SHUTDOWN, "" });
         return v;
     }
     if (path == "::programs") return program_objects();
+    if (path == "::startup") return S.startup;
     if (path == "::drives") {
         v.push_back({ "Drive C", I_DRIVE, A_FOLDER, "/" });
         v.push_back({ "Drive D", I_DRIVE, A_FOLDER, "/h" });
@@ -523,30 +566,9 @@ static std::vector<Object> folder_objects(const std::string &path)
         if (n.empty() || n[0] == '.') continue;
         if (root && hidden_at_root(n)) continue;
         std::string p = (path == "/" ? "" : path) + "/" + n;
-        struct stat st;
-        if (stat(p.c_str(), &st) != 0) continue;
-        if (S_ISDIR(st.st_mode)) {
-            dirs.push_back({ n, I_FOLDER, A_FOLDER, p });
-            dirs.back().mtime = st.st_mtime;
-            continue;
-        }
-        char head[4] = { 0 };
-        int fd = open(p.c_str(), O_RDONLY);
-        if (fd >= 0) { if (read(fd, head, 4) < 0) head[0] = 0; close(fd); }
-        auto ends = [&](const char *x) {
-            size_t l = strlen(x);
-            return n.size() > l && strcasecmp(n.c_str() + n.size() - l, x) == 0;
-        };
-        if (!memcmp(head, "\x7f" "ELF", 4)) files.push_back({ n, I_PROGRAM, A_RUN, p });
-        else if (!memcmp(head, "MZ", 2) || !memcmp(head, "LX", 2))
-            files.push_back({ n, I_PROGRAM, A_OS2RUN, p });         /* an OS/2 program: the kernel's RUN */
-        else if ((head[0] == '#' && head[1] == '!') || ends(".sh")) files.push_back({ n, I_PROGRAM, A_SCRIPT, p });
-        else if (ends(".txt") || ends(".c") || ends(".h") || ends(".cpp") || ends(".s") || ends(".md") ||
-                 ends(".ini") || ends(".sys") || ends("makefile"))
-            files.push_back({ n, I_TEXT, A_EDIT, p });
-        else files.push_back({ n, I_FILE, A_EDIT, p });
-        files.back().size = st.st_size;
-        files.back().mtime = st.st_mtime;
+        Object o;
+        if (!classify(p, n, &o)) continue;
+        (o.action == A_FOLDER ? dirs : files).push_back(o);
     }
     closedir(d);
     auto by = [](const Object &a, const Object &b) { return strcasecmp(a.label.c_str(), b.label.c_str()) < 0; };
@@ -568,15 +590,19 @@ std::string Window::titleText() const
 }
 
 /* ── drawing the desktop and the WarpCenter ─────────────────────────── */
-static void draw_label(pixman_image_t *im, int cx, int y, const std::string &s, bool sel, bool on_desk)
+static void draw_label(pixman_image_t *im, int cx, int y, const std::string &s, bool sel, bool on_desk,
+                       bool shadow = false)
 {
     int w = std::min(text_width(TEXT_SMALL, s.c_str()), 86), h = text_height(TEXT_SMALL);
     int x = cx - w / 2;
     if (sel) fill(im, x - 2, y, w + 4, h + 2, C_SEL);
     if (on_desk && !sel) text_draw(im, TEXT_SMALL, x + 1, y + 1 + text_ascent(TEXT_SMALL), s.c_str(), C_DARK, x + 87);
-    text_draw(im, TEXT_SMALL, x, y + text_ascent(TEXT_SMALL), s.c_str(),
-              (sel || on_desk) ? C_WHITE : C_TEXT, x + 86);
+    uint32_t c = sel ? C_WHITE : on_desk ? (shadow ? 0xFFB8E0FF : C_WHITE) : (shadow ? 0xFF1C3CB4 : C_TEXT);
+    text_draw(im, TEXT_SMALL, x, y + text_ascent(TEXT_SMALL), s.c_str(), c, x + 86);
 }
+
+/* a desktop object's name in WPS.INI: a shadow's is its original's path */
+static std::string desk_key(const Object &o) { return o.shadow ? "@" + o.path : o.label; }
 
 static void draw_desktop()
 {
@@ -588,17 +614,21 @@ static void draw_desktop()
     S.desk_pos.clear();
     for (size_t i = 0; i < S.desk_objs.size(); i++) {
         int x, y;
-        auto pl = S.desk_place.find(S.desk_objs[i].label);
+        auto pl = S.desk_place.find(desk_key(S.desk_objs[i]));
         if (pl != S.desk_place.end()) {
             x = std::clamp(pl->second.first, 0, S.W - 56);
             y = std::clamp(pl->second.second, BAR, S.H - 54);
         }
         else if (S.desk_objs[i].action == A_SHREDDER) { x = S.W - 70; y = S.H - 80; }
         else if (S.desk_objs[i].action == A_SHUTDOWN) { x = S.W - 140; y = S.H - 80; }
+        else if (S.desk_objs[i].shadow) {
+            int k = (int)(i - S.desk_builtin.size());
+            x = 90 + 72 * (k / 8); y = BAR + 16 + (k % 8) * 72;
+        }
         else { x = 18; y = BAR + 16 + (int)i * 72; }
         S.desk_pos.push_back({ x, y });
         draw_icon(im, S.desk_objs[i].icon, x + 11, y, 32);
-        draw_label(im, x + 27, y + 36, S.desk_objs[i].label, (int)i == S.desk_sel, true);
+        draw_label(im, x + 27, y + 36, S.desk_objs[i].label, (int)i == S.desk_sel, true, S.desk_objs[i].shadow);
     }
     S.desk.show(S.t_desk, pb, &S.desk_tag);
 }
@@ -647,6 +677,7 @@ static void draw_bar()
 static int window_icon(const Window *w)
 {
     if (w->kind == Window::FOLDER) return w->path == "::programs" ? I_PROGRAMS : w->path == "::drives" ? I_DRIVES :
+                                          w->path == "::startup" ? I_FOLDER :
                                           w->path.rfind("::", 0) == 0 ? I_SYSTEM : (w->path == "/" || w->path == "/h") ? I_DRIVE : I_FOLDER;
     if (w->kind == Window::WINLIST) return I_WINLIST;
     std::string t = w->titleText();
@@ -842,7 +873,7 @@ static void draw_icon_view(Window *w, pixman_image_t *im, int ox, int oy)
         int x = ox + 4 + c * CELL_W, y = oy + 6 + r * CELL_H;
         if (y > oy + view_h(w)) break;
         draw_icon(im, w->objects[i].icon, x + (CELL_W - 32) / 2, y, 32);
-        draw_label(im, x + CELL_W / 2, y + 36, w->objects[i].label, selected(w, i), false);
+        draw_label(im, x + CELL_W / 2, y + 36, w->objects[i].label, selected(w, i), false, w->objects[i].shadow);
     }
 }
 
@@ -1290,7 +1321,7 @@ static bool real_dir(const std::string &p) { return !p.empty() && p.rfind("::", 
 /* the drive a path is on: D: (the stick, /h) or C: */
 static char drive_of(const std::string &p) { return p == "/h" || p.rfind("/h/", 0) == 0 ? 'D' : 'C'; }
 /* can it be moved, copied, renamed, deleted? (not the drives, nor the desktop's own objects) */
-static bool movable(const Object &o) { return real_dir(o.path) && o.path != "/" && o.path != "/h"; }
+static bool movable(const Object &o) { return !o.shadow && real_dir(o.path) && o.path != "/" && o.path != "/h"; }
 
 static bool copy_tree(const std::string &from, const std::string &to)
 {
@@ -1792,7 +1823,11 @@ static std::vector<Menu::Item> folder_menu(Window *w, int which)
           }, folder },
         { "", nullptr },
         { "Rename...", [w] { Object o; if (selected_object(w, &o)) rename_dialog(o.path); }, can_change },
-        { "Delete...", [w] { Object o; if (selected_object(w, &o)) confirm_delete(o.path); }, can_change },
+        { so.shadow ? "Delete shadow" : "Delete...", [w] {
+              Object o;
+              if (!selected_object(w, &o)) return;
+              if (o.shadow) remove_shadow(w->path, o.path); else confirm_delete(o.path);
+          }, can_change || (any && so.shadow) },
         { "", nullptr },
         { "Properties", [w] { properties(w); }, any } };
     default: return {
@@ -1905,6 +1940,8 @@ static void save_state()
     if (!f) return;
     fprintf(f, "# Workplace Shell: the desktop as it was left (written by wps)\n");
     for (auto &p : S.desk_place) fprintf(f, "icon %d %d %s\n", p.second.first, p.second.second, p.first.c_str());
+    for (const Object &o : S.shadows) fprintf(f, "shadow %s|%s\n", o.path.c_str(), o.label.c_str());
+    for (const Object &o : S.startup) fprintf(f, "startup %s|%s\n", o.path.c_str(), o.label.c_str());
     for (Window *w : S.windows)
         if (w->kind == Window::FOLDER && w->mapped)
             fprintf(f, "folder %d %d %d %d %d %s|%s\n", (int)w->view, w->x, w->y, w->cw, w->ch,
@@ -1924,6 +1961,14 @@ static void load_state()
         line[strcspn(line, "\n")] = 0;
         int a, b, c, d, e, n = 0;
         if (sscanf(line, "icon %d %d %n", &a, &b, &n) == 2 && n) S.desk_place[line + n] = { a, b };
+        else if (!strncmp(line, "shadow ", 7) || !strncmp(line, "startup ", 8)) {
+            bool st = line[1] == 't';
+            std::string rest = line + (st ? 8 : 7);
+            size_t bar = rest.find('|');
+            Object sh;
+            if (bar != std::string::npos && resolve_shadow(rest.substr(0, bar), rest.substr(bar + 1), &sh))
+                (st ? S.startup : S.shadows).push_back(sh);
+        }
         else if (sscanf(line, "folder %d %d %d %d %d %n", &a, &b, &c, &d, &e, &n) == 5 && n) {
             std::string rest = line + n;
             size_t bar = rest.find('|');
@@ -2007,10 +2052,97 @@ static void run_app(const Object &o)
     if (!args.empty()) spawn(args);
 }
 
+/* ── shadows: links to objects, on the desktop and in Startup ─────────── */
+static void rebuild_desktop()
+{
+    S.desk_objs = S.desk_builtin;
+    S.desk_objs.insert(S.desk_objs.end(), S.shadows.begin(), S.shadows.end());
+    if (S.desk_sel >= (int)S.desk_objs.size()) S.desk_sel = -1;
+    if (S.output) draw_desktop();
+}
+
+/* a shadow of orig (an object of a folder, or a program) */
+static bool make_shadow(const Object &orig, Object *sh)
+{
+    if (orig.action == A_APP) *sh = orig;
+    else if (!real_dir(orig.path) || !classify(orig.path, orig.label, sh)) return false;
+    sh->shadow = true;
+    return true;
+}
+
+/* the object a shadow saved as path|label stands for, if it's still there */
+static bool resolve_shadow(const std::string &path, const std::string &label, Object *sh)
+{
+    if (path.rfind(sys("applications") + "/", 0) == 0) {
+        for (const Object &o : program_objects())
+            if (o.path == path) { *sh = o; sh->label = label; sh->shadow = true; return true; }
+        return false;
+    }
+    if (!classify(path, label, sh)) return false;
+    sh->shadow = true;
+    return true;
+}
+
+static std::vector<Object> &shadow_list(const std::string &where) { return where == "::startup" ? S.startup : S.shadows; }
+
+static void add_shadow(const std::string &where, const Object &orig, int x = -1, int y = -1)
+{
+    Object sh;
+    if (!make_shadow(orig, &sh)) return;
+    auto &v = shadow_list(where);
+    for (const Object &o : v) if (o.path == sh.path) return;              /* one is enough */
+    v.push_back(sh);
+    if (where == "::desktop") {
+        if (x >= 0) S.desk_place[desk_key(sh)] = { std::clamp(x / 8 * 8, 0, S.W - 56), std::clamp(y / 8 * 8, BAR, S.H - 54) };
+        rebuild_desktop();
+    } else {
+        refresh_dir(where);
+    }
+    save_state();
+}
+
+static void remove_shadow(const std::string &where, const std::string &path)
+{
+    auto &v = shadow_list(where);
+    for (size_t i = 0; i < v.size(); i++)
+        if (v[i].path == path) {
+            if (where == "::desktop") S.desk_place.erase(desk_key(v[i]));
+            v.erase(v.begin() + i);
+            break;
+        }
+    if (where == "::desktop") rebuild_desktop(); else refresh_dir(where);
+    save_state();
+}
+
+/* the folder holding a shadow's original, with it selected */
+static void open_original_folder(const Object &sh)
+{
+    if (sh.action == A_APP) { open_folder("::programs", "Programs"); return; }
+    std::string dir = parent_of(sh.path);
+    std::string nm = dir == "/" ? "Drive C" : dir == "/h" ? "Drive D" : leaf_of(dir);
+    open_folder(dir, nm);
+    Window *w = S.active;
+    if (!w || w->kind != Window::FOLDER || w->view == Window::TREE) return;
+    for (int i = 0; i < (int)w->objects.size(); i++)
+        if (w->objects[i].path == sh.path) { w->sel = i; ensure_visible(w, i); draw_window(w); }
+}
+
+static void desktop_object_menu(int i, int x, int y)
+{
+    Object o = S.desk_objs[i];
+    std::vector<Menu::Item> items = { { "Open", [o] { run_object(o); } } };
+    if (o.shadow) {
+        items.push_back({ "Open folder of original", [o] { open_original_folder(o); } });
+        items.push_back({ "", nullptr });
+        items.push_back({ "Delete shadow", [o] { remove_shadow("::desktop", o.path); } });
+    }
+    open_menu(x, y, items);
+}
+
 /* ── drag and drop: an object onto a folder, a drive or the Shredder ── */
 static void drag_arm(Window *src, const Object &o)
 {
-    if (!movable(o)) return;
+    if (!movable(o) && o.action != A_APP && !o.shadow) return;   /* (those: shadows made, or removed) */
     S.drag = Server::Drag();
     S.drag.armed = true;
     S.drag.src = src;
@@ -2055,9 +2187,10 @@ static std::string drop_target(double lx, double ly)
                 const Object &o = S.desk_objs[k];
                 if (o.action == A_SHREDDER) return "::shredder";
                 if (o.action == A_FOLDER && real_dir(o.path)) return o.path;
+                return "";
             }
         }
-        return "";
+        return "::desktop";                               /* the desktop itself: a shadow there */
     }
     if (h.tag->k != Tag::WIN || h.tag->w->kind != Window::FOLDER) return "";
     Window *w = h.tag->w;
@@ -2067,21 +2200,25 @@ static std::string drop_target(double lx, double ly)
     if (i >= 0) {
         std::string p = w->view == Window::TREE ? w->nodes[i].path
                       : w->objects[i].action == A_FOLDER ? w->objects[i].path : "";
-        if (real_dir(p)) return p;
+        if (real_dir(p) || p == "::startup") return p;
     }
-    return real_dir(w->path) ? w->path : "";
+    return real_dir(w->path) || w->path == "::startup" ? w->path : "";
 }
 
 static void drag_drop()
 {
     Server::Drag d = S.drag;
     if (d.desk >= 0) {                                   /* a desktop object: put where it's dropped */
+        std::string target = d.active ? drop_target(S.cursor->x, S.cursor->y) : "";
         drag_cancel();
         if (!d.active) return;
+        if (target == "::shredder") { if (d.obj.shadow) remove_shadow("::desktop", d.obj.path); return; }
+        if (target == "::startup") { add_shadow("::startup", d.obj); return; }
+        if (target != "::desktop") return;
         int x = (int)(S.cursor->x - d.dx), y = (int)(S.cursor->y - d.dy);
         x = std::clamp((x + 4) / 8 * 8, 0, S.W - 56);
         y = std::clamp((y + 4) / 8 * 8, BAR, S.H - 54);
-        S.desk_place[d.obj.label] = { x, y };
+        S.desk_place[desk_key(d.obj)] = { x, y };
         draw_desktop();
         save_state();
         return;
@@ -2090,7 +2227,14 @@ static void drag_drop()
     bool was_active = d.active;
     drag_cancel();
     if (!was_active || target.empty()) return;
-    if (target == "::shredder") { confirm_delete(d.obj.path); return; }
+    if (target == "::shredder") {
+        if (d.obj.shadow) remove_shadow("::startup", d.obj.path);       /* (the shadow, not its original) */
+        else if (movable(d.obj)) confirm_delete(d.obj.path);
+        return;
+    }
+    if (target == "::desktop") { add_shadow("::desktop", d.obj, (int)S.cursor->x - 28, (int)S.cursor->y - 16); return; }
+    if (target == "::startup") { add_shadow("::startup", d.obj); return; }
+    if (!movable(d.obj)) return;
     wlr_keyboard *kb = wlr_seat_get_keyboard(S.seat);
     uint32_t mods = kb ? wlr_keyboard_get_modifiers(kb) : 0;
     bool copy = drive_of(d.obj.path) != drive_of(target);
@@ -2332,6 +2476,7 @@ static void pointer_button(wlr_pointer_button_event *e)
             if (lx >= x && lx < x + 56 && ly >= y && ly < y + 54) i = (int)k;
         }
         if (right && i < 0) { system_menu((int)lx, (int)ly); return; }
+        if (right) { desktop_object_menu(i, (int)lx, (int)ly); return; }
         bool dbl = double_click(e->time_msec, &S.desk_tag, i);
         if (i != S.desk_sel) { S.desk_sel = i; draw_desktop(); }
         if (dbl && i >= 0) run_object(S.desk_objs[i]);
@@ -2421,7 +2566,8 @@ static bool internal_key(Window *w, xkb_keysym_t sym, const char *utf8)
     case XKB_KEY_BackSpace: open_parent(w); return true;
     case XKB_KEY_Delete: case XKB_KEY_F2: {
         Object o;
-        if (selected_object(w, &o) && movable(o)) {
+        if (selected_object(w, &o) && o.shadow && sym == XKB_KEY_Delete) remove_shadow(w->path, o.path);
+        else if (selected_object(w, &o) && movable(o)) {
             if (sym == XKB_KEY_Delete) confirm_delete(o.path);
             else rename_dialog(o.path);
         }
@@ -2548,6 +2694,7 @@ static void new_output(wlr_output *o)
         draw_desktop();
         draw_bar();
         restore_folders();
+        for (const Object &o : S.startup) run_object(o);     /* the Startup folder */
     }
 }
 
@@ -2605,8 +2752,7 @@ int main(int argc, char **argv)
     S.t_layers = wlr_scene_tree_create(&S.scene->tree);
     S.t_menu = wlr_scene_tree_create(&S.scene->tree);
 
-    load_state();
-    S.desk_objs = {
+    S.desk_builtin = {
         { "OS/2 System", I_SYSTEM, A_FOLDER, "::system" },
         { "Drives", I_DRIVES, A_FOLDER, "::drives" },
         { "Command Prompt", I_PROMPT, A_PROMPT, "" },
@@ -2616,6 +2762,8 @@ int main(int argc, char **argv)
         { "Shut Down", I_SHUTDOWN, A_SHUTDOWN, "" },
         { "Shredder", I_SHREDDER, A_SHREDDER, "" },
     };
+    load_state();
+    rebuild_desktop();
 
     S.new_output.connect(&S.backend->events.new_output, [](void *d) { new_output(static_cast<wlr_output *>(d)); });
 

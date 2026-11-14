@@ -246,6 +246,12 @@ platform-specific are new code.
    and the desktop is kept as it was left: the objects' places and the
    open folder windows (view, place, size, order) are in `\OS2\WPS.INI`
    on the stick, written as they change, and come back at the next boot.
+   Shadows, as in OS/2: drop an object (a file, a folder, a program)
+   on the desktop and a shadow of it is made there - a link, its title
+   in a lighter blue; opening it opens the original, right-click has
+   "Open folder of original", and the Shredder deletes only the shadow.
+   OS/2 System has a Startup folder: shadows dropped into it are started
+   whenever the desktop starts. Shadows are kept in WPS.INI too.
    Ctrl+Esc is the Window List (hidden windows too), Alt+Tab the next
    window, Alt+F4 closes. The pictures are drawn by the compositor
    (pixman; the icons are its own), the text by fcft with DejaVu Sans.
