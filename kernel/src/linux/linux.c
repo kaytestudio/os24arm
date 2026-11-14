@@ -350,6 +350,7 @@ typedef struct file {
     memobj_t *mem;
     sock_t  *sock;
     nsock_t *ns;                      /* F_INET: a TCP or UDP socket (kernel/src/net/sock.c) */
+    int hopcm;                        /* F_INET: the hop limit asked for with each packet (its cmsg type) */
     struct tty *tty;                  /* F_CONSOLE, F_PTMX */
     char    *pbuf;                    /* F_PROC: the generated contents (one frame) */
     uint32_t plen;
@@ -3269,36 +3270,52 @@ static file_t *sock_file(sock_t *s, lx_u64 flags)
     return f;
 }
 
-/* ── AF_INET sockets: TCP and UDP over lwIP (kernel/src/net/sock.c) ────
- * An F_INET file holds an nsock; blocking calls sleep on it, and lwIP's
- * callbacks (from net_poll: the idle loop, the scheduler tick) wake them.
- * struct sockaddr_in: family 2 (16 bits), port and address big-endian. */
-static int sin_get(lx_u64 uaddr, lx_u64 len, uint32_t *ip, uint16_t *port)
+/* ── AF_INET and AF_INET6 sockets: TCP, UDP, ICMP over lwIP
+ * (kernel/src/net/sock.c). An F_INET file holds an nsock; blocking calls
+ * sleep on it, and lwIP's callbacks (from net_poll: the idle loop, the
+ * scheduler tick) wake them. struct sockaddr_in: family 2 (16 bits),
+ * port and address big-endian (16 bytes); sockaddr_in6: family 10, port,
+ * flowinfo, the 16 byte address, scope id (28 bytes). An IPv6 socket
+ * takes either, as Linux's (IPv4 as ::ffff:a.b.c.d). */
+static int sin_get(lx_u64 uaddr, lx_u64 len, int v6, nsaddr_t *na, uint16_t *port)
 {
     if (len < 8) return -EINVAL;
-    if (!uok(uaddr, 8, 0)) return -EFAULT;
+    if (!uok(uaddr, len < 24 ? len : 24, 0)) return -EFAULT;
     const uint8_t *a = (const uint8_t *)(uintptr_t)uaddr;
-    if (*(const uint16_t *)a != 2) return -EAFNOSUPPORT;
+    uint16_t fam = *(const uint16_t *)a;
+    kmemset(na, 0, sizeof *na);
     *port = (uint16_t)(a[2] << 8 | a[3]);
-    kmemcpy(ip, a + 4, 4);
+    if (fam == 2) {
+        if (v6) {                                       /* (as ::ffff:a.b.c.d) */
+            na->v6 = 1;
+            na->a[10] = na->a[11] = 0xFF;
+            kmemcpy(na->a + 12, a + 4, 4);
+        } else kmemcpy(na->a, a + 4, 4);
+        return 0;
+    }
+    if (fam != 10 || !v6) return -EAFNOSUPPORT;
+    if (len < 24) return -EINVAL;
+    na->v6 = 1;
+    kmemcpy(na->a, a + 8, 16);
     return 0;
 }
 
-/* writes a sockaddr_in to (uaddr, *ulen) - neither may be there */
-static int sin_put(lx_u64 uaddr, lx_u64 ulen, uint32_t ip, uint16_t port)
+/* writes a sockaddr_in or sockaddr_in6 to (uaddr, *ulen) - neither may be there */
+static int sin_put(lx_u64 uaddr, lx_u64 ulen, const nsaddr_t *na, uint16_t port)
 {
     if (!uaddr || !ulen) return 0;
     if (!uok(ulen, 4, 1)) return -EFAULT;
-    uint32_t room = *(uint32_t *)(uintptr_t)ulen;
-    uint8_t a[16];
+    uint32_t room = *(uint32_t *)(uintptr_t)ulen, size = na->v6 ? 28 : 16;
+    uint8_t a[28];
     kmemset(a, 0, sizeof a);
-    *(uint16_t *)a = 2;
+    *(uint16_t *)a = na->v6 ? 10 : 2;
     a[2] = (uint8_t)(port >> 8); a[3] = (uint8_t)port;
-    kmemcpy(a + 4, &ip, 4);
-    if (room > 16) room = 16;
+    if (na->v6) kmemcpy(a + 8, na->a, 16);
+    else kmemcpy(a + 4, na->a, 4);
+    if (room > size) room = size;
     if (room && !uok(uaddr, room, 1)) return -EFAULT;
     kmemcpy((void *)(uintptr_t)uaddr, a, room);
-    *(uint32_t *)(uintptr_t)ulen = 16;
+    *(uint32_t *)(uintptr_t)ulen = size;
     return 0;
 }
 
@@ -3311,13 +3328,13 @@ static file_t *inet_file(nsock_t *ns, lx_u64 flags)
     return f;
 }
 
-static s64 inet_socket(lx_u64 type, lx_u64 proto)
+static s64 inet_socket(int v6, lx_u64 type, lx_u64 proto)
 {
     int t = (int)(type & 0xF);
     if (t != 1 && t != 2 && t != 3) return -EPROTOTYPE;  /* SOCK_STREAM, SOCK_DGRAM, SOCK_RAW */
-    if (t == 3 && proto != 1) return -EPROTONOSUPPORT;    /* raw: ICMP only (ping) */
+    if (t == 3 && proto != (v6 ? 58u : 1u)) return -EPROTONOSUPPORT;   /* raw: ICMP, ICMPv6 only (ping) */
     if (t != 3 && proto && proto != (t == 1 ? 6u : 17u)) return -EPROTONOSUPPORT;
-    nsock_t *ns = nsock_new(t == 1 ? NS_STREAM : t == 2 ? NS_DGRAM : NS_RAW);
+    nsock_t *ns = nsock_new(t == 1 ? NS_STREAM : t == 2 ? NS_DGRAM : NS_RAW, v6);
     if (!ns) return -ENFILE;
     file_t *f = inet_file(ns, type);
     if (!f) { nsock_close(ns); return -ENFILE; }
@@ -3326,10 +3343,10 @@ static s64 inet_socket(lx_u64 type, lx_u64 proto)
 
 static s64 inet_connect(file_t *f, lx_u64 uaddr, lx_u64 len)
 {
-    uint32_t ip; uint16_t port;
-    int r = sin_get(uaddr, len, &ip, &port);
+    nsaddr_t na; uint16_t port;
+    int r = sin_get(uaddr, len, nsock_v6(f->ns), &na, &port);
     if (r) return r;
-    r = nsock_connect(f->ns, ip, port);
+    r = nsock_connect(f->ns, &na, port);
     if (r != -EINPROGRESS) return r;
     if (f->flags & L_O_NONBLOCK) return -EINPROGRESS;
     while (nsock_connecting(f->ns)) {
@@ -3352,18 +3369,18 @@ static s64 inet_accept(file_t *f, lx_u64 uaddr, lx_u64 ulen, lx_u64 flags)
     if (!nf) { nsock_close(c); return -ENFILE; }
     s64 fd = fd_new(nf, (flags & L_O_CLOEXEC) != 0);
     if (fd < 0) return fd;
-    uint32_t ip; uint16_t port;
-    nsock_addr(c, 1, &ip, &port);
-    sin_put(uaddr, ulen, ip, port);
+    nsaddr_t na; uint16_t port;
+    nsock_addr(c, 1, &na, &port);
+    sin_put(uaddr, ulen, &na, port);
     return fd;
 }
 
-static s64 inet_send(file_t *f, const uint8_t *b, lx_u64 n, lx_u64 flags, const uint32_t *ip, uint16_t port)
+static s64 inet_send(file_t *f, const uint8_t *b, lx_u64 n, lx_u64 flags, const nsaddr_t *to, uint16_t port)
 {
     int nonblock = (f->flags & L_O_NONBLOCK) || (flags & MSG_DONTWAIT);
     lx_u64 k = 0;
     for (;;) {
-        long r = nsock_send(f->ns, b + k, n - k, ip, port);
+        long r = nsock_send(f->ns, b + k, n - k, to, port);
         if (r > 0 || (r == 0 && n == 0)) {
             k += (lx_u64)r;
             if (k >= n || nsock_type(f->ns) != NS_STREAM) return (s64)k;
@@ -3381,11 +3398,11 @@ static s64 inet_send(file_t *f, const uint8_t *b, lx_u64 n, lx_u64 flags, const 
     }
 }
 
-static s64 inet_recv(file_t *f, uint8_t *b, lx_u64 n, lx_u64 flags, uint32_t *ip, uint16_t *port)
+static s64 inet_recv(file_t *f, uint8_t *b, lx_u64 n, lx_u64 flags, nsaddr_t *from, uint16_t *port)
 {
     int nonblock = (f->flags & L_O_NONBLOCK) || (flags & MSG_DONTWAIT);
     for (;;) {
-        long r = nsock_recv(f->ns, b, n, ip, port, (flags & MSG_PEEK) != 0);
+        long r = nsock_recv(f->ns, b, n, from, port, (flags & MSG_PEEK) != 0);
         if (r != -EAGAIN) return r;
         if (nonblock) return -EAGAIN;
         if (sig_interrupt()) return -EINTR;
@@ -3395,11 +3412,11 @@ static s64 inet_recv(file_t *f, uint8_t *b, lx_u64 n, lx_u64 flags, uint32_t *ip
 
 static s64 inet_sockname(file_t *f, lx_u64 uaddr, lx_u64 ulen, int peer)
 {
-    uint32_t ip; uint16_t port;
-    int r = nsock_addr(f->ns, peer, &ip, &port);
+    nsaddr_t na; uint16_t port;
+    int r = nsock_addr(f->ns, peer, &na, &port);
     if (r) return r;
     if (!ulen) return -EFAULT;
-    return sin_put(uaddr, ulen, ip, port);
+    return sin_put(uaddr, ulen, &na, port);
 }
 
 static s64 inet_getsockopt(file_t *f, lx_u64 level, lx_u64 opt, lx_u64 uval, lx_u64 ulen)
@@ -3412,12 +3429,14 @@ static s64 inet_getsockopt(file_t *f, lx_u64 level, lx_u64 opt, lx_u64 uval, lx_
         case 3: v = nsock_type(f->ns) == NS_STREAM ? 1 : nsock_type(f->ns) == NS_RAW ? 3 : 2; break;   /* SO_TYPE */
         case 4: v = nsock_error(f->ns, 1); break;                    /* SO_ERROR */
         case 7: case 8: v = 64 * 1024; break;                         /* SO_SNDBUF, SO_RCVBUF */
-        case 39: v = 2; break;                                       /* SO_DOMAIN: AF_INET */
+        case 39: v = nsock_v6(f->ns) ? 10 : 2; break;                /* SO_DOMAIN: AF_INET(6) */
         case 2: case 9: v = 0; break;                                /* SO_REUSEADDR, SO_KEEPALIVE */
         default: return -ENOPROTOOPT;
         }
     } else if (level == 6 && (opt == 1 || opt == 2)) {  /* TCP_NODELAY, TCP_MAXSEG */
         v = opt == 2 ? 1460 : 0;
+    } else if (level == 41 && nsock_v6(f->ns) && opt == 26) {   /* IPV6_V6ONLY: no, dual stack */
+        v = 0;
     } else {
         return -ENOPROTOOPT;
     }
@@ -3430,8 +3449,9 @@ static s64 inet_getsockopt(file_t *f, lx_u64 level, lx_u64 opt, lx_u64 uval, lx_
 
 static s64 sys_socket(lx_u64 domain, lx_u64 type, lx_u64 proto)
 {
-    if (domain == 2) return inet_socket(type, proto);   /* AF_INET: TCP, UDP */
-    if (domain != 1) return -EAFNOSUPPORT;              /* AF_UNIX, AF_INET */
+    if (domain == 2 || domain == 10)                    /* AF_INET, AF_INET6: TCP, UDP, ICMP */
+        return inet_socket(domain == 10, type, proto);
+    if (domain != 1) return -EAFNOSUPPORT;              /* AF_UNIX, AF_INET(6) */
     if ((type & 0xF) != 1) return -EPROTOTYPE;          /* SOCK_STREAM only (for now) */
     if (proto) return -EPROTONOSUPPORT;
     sock_t *s = sock_new();
@@ -3518,7 +3538,7 @@ static sock_t *sock_by_name(const char *name, uint32_t nlen)
 
 static s64 sys_bind(lx_u64 fd, lx_u64 uaddr, lx_u64 len)
 {
-    { file_t *inf = fd_get(fd); if (inf && inf->kind == F_INET) return ({ uint32_t ip; uint16_t port; int r = sin_get(uaddr, len, &ip, &port); r ? r : nsock_bind(inf->ns, ip, port); }); }
+    { file_t *inf = fd_get(fd); if (inf && inf->kind == F_INET) return ({ nsaddr_t na; uint16_t port; int r = sin_get(uaddr, len, nsock_v6(inf->ns), &na, &port); r ? r : nsock_bind(inf->ns, &na, port); }); }
     s64 err;
     sock_t *s = fd_sock(fd, &err);
     if (!s) return err;
@@ -3768,9 +3788,9 @@ static s64 sys_sendmsg(lx_u64 fd, lx_u64 umsg, lx_u64 flags)
     if (f->kind == F_INET) {                             /* (an address in msg_name: UDP's sendto) */
         if (!uok(umsg, 56, 0)) return -EFAULT;
         const lx_u64 *m = (const lx_u64 *)(uintptr_t)umsg;
-        uint32_t ip = 0; uint16_t port = 0;
+        nsaddr_t na; uint16_t port = 0;
         int to = m[0] && m[1];
-        if (to) { int r = sin_get(m[0], m[1], &ip, &port); if (r) return r; }
+        if (to) { int r = sin_get(m[0], m[1], nsock_v6(f->ns), &na, &port); if (r) return r; }
         lx_u64 iov = m[2], iovlen = m[3];
         if (iovlen > 1024 || !uok(iov, iovlen * 16, 0)) return -EFAULT;
         static uint8_t kb[65536];
@@ -3782,7 +3802,7 @@ static s64 sys_sendmsg(lx_u64 fd, lx_u64 umsg, lx_u64 flags)
             kmemcpy(kb + n, (const void *)(uintptr_t)base, len);
             n += len;
         }
-        return inet_send(f, kb, n, flags, to ? &ip : 0, port);
+        return inet_send(f, kb, n, flags, to ? &na : 0, port);
     }
     if (f->kind != F_SOCK) return -ENOTSOCK;
     if (!uok(umsg, 56, 0)) return -EFAULT;
@@ -3846,8 +3866,8 @@ static s64 sys_recvmsg(lx_u64 fd, lx_u64 umsg, lx_u64 flags)
         lx_u64 want = 0;
         for (lx_u64 i = 0; i < iovlen; i++) want += ((lx_u64 *)(uintptr_t)iov)[2 * i + 1];
         if (want > sizeof kb) want = sizeof kb;
-        uint32_t ip = 0; uint16_t port = 0;
-        s64 r = inet_recv(f, kb, want, flags, &ip, &port);
+        nsaddr_t na; uint16_t port = 0;
+        s64 r = inet_recv(f, kb, want, flags, &na, &port);
         if (r < 0) return r;
         lx_u64 done = 0;
         for (lx_u64 i = 0; i < iovlen && done < (lx_u64)r; i++) {
@@ -3858,19 +3878,20 @@ static s64 sys_recvmsg(lx_u64 fd, lx_u64 umsg, lx_u64 flags)
             done += c;
         }
         if (m[0] && m[1]) {                               /* msg_name: who sent it */
-            lx_u64 nl = m[1];
-            uint32_t room = (uint32_t)nl;
-            uint8_t a[16];
-            kmemset(a, 0, 16);
-            *(uint16_t *)a = 2; a[2] = (uint8_t)(port >> 8); a[3] = (uint8_t)port;
-            kmemcpy(a + 4, &ip, 4);
-            if (room > 16) room = 16;
-            if (uok(m[0], room, 1)) kmemcpy((void *)(uintptr_t)m[0], a, room);
-            m[1] = 16;
+            uint32_t room = (uint32_t)m[1];
+            m[1] = room;                                  /* (msg_namelen: 32 bits, then padding) */
+            sin_put(m[0], umsg + 8, &na, port);
         } else {
             m[1] = 0;
         }
-        m[5] = 0;                                         /* no control data */
+        int hop = f->hopcm && nsock_type(f->ns) == NS_RAW && nsock_v6(f->ns) ? nsock_hoplimit(f->ns) : -1;
+        if (hop >= 0 && m[4] && m[5] >= 24 && uok(m[4], 24, 1)) {
+            lx_u64 *c = (lx_u64 *)(uintptr_t)m[4];         /* cmsghdr { 20, IPPROTO_IPV6, IPV6_HOPLIMIT }, the int */
+            c[0] = 20; ((int32_t *)c)[2] = 41; ((int32_t *)c)[3] = f->hopcm; ((int32_t *)c)[4] = hop; ((int32_t *)c)[5] = 0;
+            m[5] = 24;
+        } else {
+            m[5] = 0;                                     /* no control data */
+        }
         ((int32_t *)(uintptr_t)umsg)[12] = 0;
         return r;
     }
@@ -5731,9 +5752,9 @@ static s64 linux_syscall(linux_tf_t *tf)
         if (!f) return -EBADF;
         if (f->kind == F_INET) {
             if (!uok(a1, a2, 0)) return -EFAULT;
-            uint32_t ip = 0; uint16_t port = 0;
-            if (a4 && a5) { int r = sin_get(a4, a5, &ip, &port); if (r) return r; }
-            return inet_send(f, (const uint8_t *)(uintptr_t)a1, a2, a3, a4 && a5 ? &ip : 0, port);
+            nsaddr_t na; uint16_t port = 0;
+            if (a4 && a5) { int r = sin_get(a4, a5, nsock_v6(f->ns), &na, &port); if (r) return r; }
+            return inet_send(f, (const uint8_t *)(uintptr_t)a1, a2, a3, a4 && a5 ? &na : 0, port);
         }
         if (f->kind != F_SOCK) return -ENOTSOCK;
         if (!uok(a1, a2, 0)) return -EFAULT;
@@ -5744,9 +5765,9 @@ static s64 linux_syscall(linux_tf_t *tf)
         if (!f) return -EBADF;
         if (f->kind == F_INET) {
             if (!uok(a1, a2, 1)) return -EFAULT;
-            uint32_t ip = 0; uint16_t port = 0;
-            s64 r = inet_recv(f, (uint8_t *)(uintptr_t)a1, a2, a3, &ip, &port);
-            if (r >= 0 && a4) sin_put(a4, a5, ip, port);
+            nsaddr_t na; uint16_t port = 0;
+            s64 r = inet_recv(f, (uint8_t *)(uintptr_t)a1, a2, a3, &na, &port);
+            if (r >= 0 && a4) sin_put(a4, a5, &na, port);
             return r;
         }
         if (f->kind != F_SOCK) return -ENOTSOCK;
@@ -5759,6 +5780,8 @@ static s64 linux_syscall(linux_tf_t *tf)
         file_t *f = fd_get(a0);
         if (f && f->kind == F_INET) {
             if (a1 == 6 && a2 == 1 && a4 >= 4 && uok(a3, 4, 0)) nsock_nodelay(f->ns, *(int32_t *)(uintptr_t)a3 != 0);
+            if (a1 == 41 && (a2 == 51 || a2 == 8) && a4 >= 4 && uok(a3, 4, 0))   /* IPV6_RECVHOPLIMIT, IPV6_2292HOPLIMIT */
+                f->hopcm = *(int32_t *)(uintptr_t)a3 ? (a2 == 51 ? 52 : 8) : 0;
             return 0;
         }
         s64 err;

@@ -587,22 +587,27 @@ actually succeeds depends on which filesystem ended up mounted at `/`
 
 A virtio-net card (`kernel/src/net/virtio_net.c`, polled, on virtio-mmio)
 and lwIP 2.2.0 (`external/lwip`, configured by `kernel/src/net/lwipopts.h`)
-give the kernel IPv4: Ethernet and ARP, DHCP, DNS, ICMP, UDP and TCP. The
-interface is `lan0`; it asks DHCP for an address at boot. `scripts/run-vm.sh`
-always adds the card with QEMU's user networking (the guest is 10.0.2.15,
-the host 10.0.2.2, DNS 10.0.2.3; `NET_FWD=",hostfwd=tcp::8080-:80"` forwards
-a host port in). The shell's commands, also in the desktop's Command Prompts:
+give the kernel IPv4 and IPv6: Ethernet and ARP, DHCP, DNS, ICMP, UDP and
+TCP; for IPv6 a link-local address and SLAAC addresses from router
+advertisements (neighbour discovery, MLD, ICMPv6). The interface is `lan0`;
+it asks DHCP for an address at boot. `scripts/run-vm.sh` always adds the
+card with QEMU's user networking (the guest is 10.0.2.15 and an address in
+fec0::/64, the host 10.0.2.2 and fec0::2, DNS 10.0.2.3;
+`NET_FWD=",hostfwd=tcp::8080-:80"` forwards a host port in). The shell's commands, also in the desktop's Command Prompts:
 
 | Command | |
 |---|---|
-| `IFCONFIG` | the interface: MAC, address, netmask, gateway, name servers |
-| `PING host [count]` | ICMP echo, by address or name (also `-c N`, `-n N`) |
+| `IFCONFIG` | the interface: MAC, addresses (IPv4, IPv6), netmask, gateway, name servers |
+| `PING host [count]` | ICMP echo, by address (IPv4 or IPv6) or name (also `-c N`, `-n N`) |
 | `HOST name` | a DNS lookup |
 
-Programs have it too: AF_INET sockets (`kernel/src/net/sock.c`, TCP and
-UDP over lwIP's callback API, and raw ICMP sockets - busybox's `ping`; the `F_INET` files of `kernel/src/linux`) -
+Programs have it too: AF_INET and AF_INET6 sockets (`kernel/src/net/sock.c`,
+TCP and UDP over lwIP's callback API, and raw ICMP and ICMPv6 sockets -
+busybox's `ping` and `ping6`; the `F_INET` files of `kernel/src/linux`) -
 connect, listen and accept, send and receive (to/from, msg), blocking or
-not, poll/epoll, `SO_ERROR`, `TCP_NODELAY`, loopback (127.0.0.1). When
+not, poll/epoll, `SO_ERROR`, `TCP_NODELAY`, loopback (127.0.0.1). IPv6
+sockets are dual stack, as Linux's: they reach IPv4 too, its addresses as
+`::ffff:a.b.c.d` (`IPV6_V6ONLY` is off). When
 there's no `/etc/resolv.conf`, a program reading it gets the name servers
 DHCP gave (musl's resolver works unchanged). So busybox's `wget`, `nc`,
 `nslookup` work from a Command Prompt (wget does HTTPS too, with busybox's
@@ -610,6 +615,8 @@ own TLS, which doesn't check certificates):
 
     sh -c "wget -qO- http://example.com/ | head"
     nslookup example.com
+    ping6 -c 2 fec0::2
+    wget -O- http://[fec0::2]:8000/      (a server on the host's ::1)
 
 lwIP runs in the kernel, polled from the shell's idle loop and the
 scheduler (the kernel isn't preempted, so it has one caller at a time).

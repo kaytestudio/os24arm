@@ -3,7 +3,9 @@
  * connection's received data waits here in pbufs until it's read (the
  * window opens as it is); sending copies into lwIP as far as its send
  * buffer goes. UDP: datagrams queue with their sender. lwIP calls back
- * from net_poll(); every change wakes whoever sleeps on the socket. */
+ * from net_poll(); every change wakes whoever sleeps on the socket.
+ * IPv6 sockets use lwIP's dual stack pcbs (IPADDR_TYPE_ANY): IPv4 peers
+ * as ::ffff:a.b.c.d, as Linux does. */
 #include "net/sock.h"
 #include "net/net.h"
 #include "string.h"
@@ -14,6 +16,8 @@
 #include "lwip/raw.h"
 #include "lwip/pbuf.h"
 #include "lwip/ip_addr.h"
+#include "lwip/netif.h"
+#include "lwip/prot/ip6.h"
 
 #define E_AGAIN 11
 #define E_NOMEM 12
@@ -35,10 +39,10 @@
 #define BACKLOG    16
 #define DGRAMS     64
 
-typedef struct { struct pbuf *p; uint32_t ip; uint16_t port; } dgram_t;
+typedef struct { struct pbuf *p; ip_addr_t from; uint16_t port; int16_t hop; } dgram_t;
 
 struct nsock {
-    int used, type;
+    int used, type, v6, hop;
     struct tcp_pcb *tcp;
     struct udp_pcb *udp;
     struct raw_pcb *raw;                   /* NS_RAW: ICMP */
@@ -54,6 +58,38 @@ static nsock_t socks[MAX_NSOCKS];
 void (*nsock_wakeup)(void *chan);
 
 static void wake(nsock_t *s) { if (nsock_wakeup) nsock_wakeup(s); }
+
+static const uint8_t v4mapped[12] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF };
+
+/* ours -> lwIP's: ::ffff:a.b.c.d and :: to what lwIP knows them as */
+static void to_lwip(const nsock_t *s, const nsaddr_t *a, ip_addr_t *o)
+{
+    static const uint8_t zero[16];
+    uint32_t v;
+    if (!a->v6) { memcpy(&v, a->a, 4); ip_addr_set_ip4_u32(o, v); return; }
+    if (!memcmp(a->a, v4mapped, 12)) { memcpy(&v, a->a + 12, 4); ip_addr_set_ip4_u32(o, v); return; }
+    if (!memcmp(a->a, zero, 16)) { *o = s->v6 ? *IP_ANY_TYPE : *IP4_ADDR_ANY; return; }
+    IP_SET_TYPE(o, IPADDR_TYPE_V6);
+    memcpy(ip_2_ip6(o)->addr, a->a, 16);
+    ip6_addr_clear_zone(ip_2_ip6(o));
+    if (ip6_addr_islinklocal(ip_2_ip6(o))) ip6_addr_assign_zone(ip_2_ip6(o), IP6_UNICAST, netif_default);
+}
+
+/* lwIP's -> ours: for an IPv6 socket, IPv4 as ::ffff:a.b.c.d */
+static void from_lwip(const nsock_t *s, const ip_addr_t *i, nsaddr_t *o)
+{
+    memset(o, 0, sizeof *o);
+    o->v6 = (uint8_t)s->v6;
+    if (!i || IP_IS_ANY_TYPE_VAL(*i)) return;
+    if (IP_IS_V4(i)) {
+        uint32_t v = ip4_addr_get_u32(ip_2_ip4(i));
+        if (s->v6) { memcpy(o->a, v4mapped, 12); memcpy(o->a + 12, &v, 4); }
+        else memcpy(o->a, &v, 4);
+        return;
+    }
+    o->v6 = 1;
+    memcpy(o->a, ip_2_ip6(i)->addr, 16);
+}
 
 static int lwip_errno(err_t e)
 {
@@ -74,13 +110,14 @@ static int lwip_errno(err_t e)
     }
 }
 
-static nsock_t *alloc(int type)
+static nsock_t *alloc(int type, int v6)
 {
     for (int i = 0; i < MAX_NSOCKS; i++)
         if (!socks[i].used) {
             memset(&socks[i], 0, sizeof socks[i]);
             socks[i].used = 1;
             socks[i].type = type;
+            socks[i].v6 = v6;
             return &socks[i];
         }
     return 0;
@@ -143,7 +180,7 @@ static err_t tcp_accept_cb(void *arg, struct tcp_pcb *newpcb, err_t err)
 {
     nsock_t *l = arg;
     if (err != ERR_OK || !newpcb || !l) return ERR_VAL;
-    nsock_t *c = l->nbacklog < BACKLOG ? alloc(NS_STREAM) : 0;
+    nsock_t *c = l->nbacklog < BACKLOG ? alloc(NS_STREAM, l->v6) : 0;
     if (!c) { tcp_abort(newpcb); return ERR_ABRT; }
     tcp_hook(c, newpcb);
     c->connected = c->was_connected = 1;
@@ -160,44 +197,51 @@ static void udp_recv_cb(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip
     if (!s || s->dcount >= DGRAMS) { pbuf_free(p); return; }
     dgram_t *d = &s->dq[(s->dhead + s->dcount++) % DGRAMS];
     d->p = p;
-    d->ip = ip4_addr_get_u32(ip_2_ip4(addr));
+    ip_addr_copy(d->from, *addr);
     d->port = port;
+    d->hop = -1;
     wake(s);
 }
 
-/* ── raw (ICMP): a copy of every packet, its IP header in front; lwIP
- *    goes on with them (its own echo replies, the shell's PING) ────── */
+/* ── raw (ICMP): a copy of every packet - ICMP: its IP header in front;
+ *    ICMPv6: without it, as Linux - and lwIP goes on with them (its own
+ *    echo replies, the shell's PING) ───────────────────────────────── */
 static u8_t raw_recv_cb(void *arg, struct raw_pcb *pcb, struct pbuf *p, const ip_addr_t *addr)
 {
     (void)pcb;
     nsock_t *s = arg;
     if (!s || s->dcount >= DGRAMS) return 0;
-    struct pbuf *c = pbuf_alloc(PBUF_RAW, p->tot_len, PBUF_RAM);
+    u16_t skip = IP_IS_V6(addr) ? IP6_HLEN : 0;
+    if (p->tot_len <= skip) return 0;
+    struct pbuf *c = pbuf_alloc(PBUF_RAW, (u16_t)(p->tot_len - skip), PBUF_RAM);
     if (!c) return 0;
-    pbuf_copy(c, p);
+    pbuf_copy_partial(p, c->payload, c->len, skip);
     dgram_t *d = &s->dq[(s->dhead + s->dcount++) % DGRAMS];
     d->p = c;
-    d->ip = ip4_addr_get_u32(ip_2_ip4(addr));
+    ip_addr_copy(d->from, *addr);
     d->port = 0;
+    d->hop = skip ? ((const uint8_t *)p->payload)[7] : -1;      /* (IPv6 header: hop limit) */
     wake(s);
     return 0;                                         /* (not eaten) */
 }
 
 /* ── the calls ─────────────────────────────────────────────────────── */
-nsock_t *nsock_new(int type)
+nsock_t *nsock_new(int type, int v6)
 {
-    nsock_t *s = alloc(type);
+    nsock_t *s = alloc(type, v6);
     if (!s) return 0;
+    u8_t t = v6 ? IPADDR_TYPE_ANY : IPADDR_TYPE_V4;      /* (IPv6: both, as Linux) */
     if (type == NS_STREAM) {
-        struct tcp_pcb *pcb = tcp_new_ip_type(IPADDR_TYPE_V4);
+        struct tcp_pcb *pcb = tcp_new_ip_type(t);
         if (!pcb) { s->used = 0; return 0; }
         tcp_hook(s, pcb);
     } else if (type == NS_RAW) {
-        s->raw = raw_new(IP_PROTO_ICMP);
+        s->raw = v6 ? raw_new_ip_type(IPADDR_TYPE_V6, IP6_NEXTH_ICMP6) : raw_new_ip_type(IPADDR_TYPE_V4, IP_PROTO_ICMP);
         if (!s->raw) { s->used = 0; return 0; }
+        if (v6) { s->raw->chksum_reqd = 1; s->raw->chksum_offset = 2; }   /* (ICMPv6: lwIP sums it) */
         raw_recv(s->raw, raw_recv_cb, s);
     } else {
-        s->udp = udp_new_ip_type(IPADDR_TYPE_V4);
+        s->udp = udp_new_ip_type(t);
         if (!s->udp) { s->used = 0; return 0; }
         udp_recv(s->udp, udp_recv_cb, s);
     }
@@ -226,11 +270,13 @@ void nsock_close(nsock_t *s)
 }
 
 int nsock_type(nsock_t *s) { return s->type; }
+int nsock_v6(nsock_t *s) { return s->v6; }
+int nsock_hoplimit(nsock_t *s) { return s->hop; }
 
-int nsock_bind(nsock_t *s, uint32_t ip, uint16_t port)
+int nsock_bind(nsock_t *s, const nsaddr_t *na, uint16_t port)
 {
     ip_addr_t a;
-    ip_addr_set_ip4_u32(&a, ip);
+    to_lwip(s, na, &a);
     err_t e = s->tcp ? tcp_bind(s->tcp, &a, port) : s->udp ? udp_bind(s->udp, &a, port) :
               s->raw ? raw_bind(s->raw, &a) : ERR_CLSD;
     return e == ERR_OK ? 0 : e == ERR_USE ? -E_ADDRINUSE : -lwip_errno(e);
@@ -241,7 +287,7 @@ int nsock_listen(nsock_t *s, int backlog)
     if (s->type != NS_STREAM) return -E_OPNOTSUPP;
     if (s->listening) return 0;
     if (!s->tcp) return -E_INVAL;
-    if (s->tcp->local_port == 0) tcp_bind(s->tcp, IP4_ADDR_ANY, 0);
+    if (s->tcp->local_port == 0) tcp_bind(s->tcp, s->v6 ? IP_ANY_TYPE : IP4_ADDR_ANY, 0);
     err_t e;
     struct tcp_pcb *l = tcp_listen_with_backlog_and_err(s->tcp, (u8_t)(backlog > 0 && backlog < 255 ? backlog : BACKLOG), &e);
     if (!l) return -lwip_errno(e);
@@ -252,10 +298,10 @@ int nsock_listen(nsock_t *s, int backlog)
     return 0;
 }
 
-int nsock_connect(nsock_t *s, uint32_t ip, uint16_t port)
+int nsock_connect(nsock_t *s, const nsaddr_t *na, uint16_t port)
 {
     ip_addr_t a;
-    ip_addr_set_ip4_u32(&a, ip);
+    to_lwip(s, na, &a);
     if (s->type == NS_RAW) return raw_connect(s->raw, &a) == ERR_OK ? 0 : -E_INVAL;
     if (s->type == NS_DGRAM) {
         if (!s->udp) return -E_INVAL;
@@ -284,7 +330,7 @@ nsock_t *nsock_accept(nsock_t *s)
     return c;
 }
 
-long nsock_send(nsock_t *s, const void *buf, unsigned long n, const uint32_t *ip, uint16_t port)
+long nsock_send(nsock_t *s, const void *buf, unsigned long n, const nsaddr_t *to, uint16_t port)
 {
     if (s->type == NS_RAW) {                          /* the ICMP message: lwIP puts the IP header on */
         if (!s->raw) return -E_INVAL;
@@ -293,7 +339,7 @@ long nsock_send(nsock_t *s, const void *buf, unsigned long n, const uint32_t *ip
         if (!p) return -E_NOMEM;
         if (n) pbuf_take(p, buf, (u16_t)n);
         err_t e;
-        if (ip) { ip_addr_t a; ip_addr_set_ip4_u32(&a, *ip); e = raw_sendto(s->raw, p, &a); }
+        if (to) { ip_addr_t a; to_lwip(s, to, &a); e = raw_sendto(s->raw, p, &a); }
         else e = raw_send(s->raw, p);
         pbuf_free(p);
         return e == ERR_OK ? (long)n : -lwip_errno(e);
@@ -305,9 +351,9 @@ long nsock_send(nsock_t *s, const void *buf, unsigned long n, const uint32_t *ip
         if (!p) return -E_NOMEM;
         if (n) pbuf_take(p, buf, (u16_t)n);
         err_t e;
-        if (ip) {
+        if (to) {
             ip_addr_t a;
-            ip_addr_set_ip4_u32(&a, *ip);
+            to_lwip(s, to, &a);
             e = udp_sendto(s->udp, p, &a, port);
         } else {
             if (ip_addr_isany(&s->udp->remote_ip) && !s->udp->remote_port) { pbuf_free(p); return -E_DESTADDRREQ; }
@@ -331,14 +377,15 @@ long nsock_send(nsock_t *s, const void *buf, unsigned long n, const uint32_t *ip
     return (long)n;
 }
 
-long nsock_recv(nsock_t *s, void *buf, unsigned long n, uint32_t *ip, uint16_t *port, int peek)
+long nsock_recv(nsock_t *s, void *buf, unsigned long n, nsaddr_t *from, uint16_t *port, int peek)
 {
     if (s->type == NS_DGRAM || s->type == NS_RAW) {
         if (!s->dcount) return -E_AGAIN;
         dgram_t *d = &s->dq[s->dhead];
         unsigned long c = n < d->p->tot_len ? n : d->p->tot_len;
         pbuf_copy_partial(d->p, buf, (u16_t)c, 0);
-        if (ip) *ip = d->ip;
+        if (from) from_lwip(s, &d->from, from);
+        s->hop = d->hop;
         if (port) *port = d->port;
         if (!peek) {
             pbuf_free(d->p);
@@ -356,7 +403,7 @@ long nsock_recv(nsock_t *s, void *buf, unsigned long n, uint32_t *ip, uint16_t *
     unsigned long done = n < s->rx->tot_len ? n : s->rx->tot_len;
     if (done > 0xFFFF) done = 0xFFFF;
     pbuf_copy_partial(s->rx, buf, (u16_t)done, 0);
-    if (ip || port) nsock_addr(s, 1, ip, port);
+    if (from || port) nsock_addr(s, 1, from, port);
     if (peek) return (long)done;
     s->rx = pbuf_free_header(s->rx, (u16_t)done);        /* what was read: gone */
     if (s->tcp) tcp_recved(s->tcp, (u16_t)(done > 0xFFFF ? 0xFFFF : done));
@@ -395,14 +442,14 @@ int nsock_error(nsock_t *s, int clear)
     return e;
 }
 
-int nsock_addr(nsock_t *s, int peer, uint32_t *ip, uint16_t *port)
+int nsock_addr(nsock_t *s, int peer, nsaddr_t *na, uint16_t *port)
 {
     const ip_addr_t *a = 0;
     uint16_t p = 0;
     if (s->tcp) { a = peer ? &s->tcp->remote_ip : &s->tcp->local_ip; p = peer ? s->tcp->remote_port : s->tcp->local_port; }
     else if (s->udp) { a = peer ? &s->udp->remote_ip : &s->udp->local_ip; p = peer ? s->udp->remote_port : s->udp->local_port; }
     if (peer && (!s->connected && !(s->udp && p))) return -E_NOTCONN;
-    if (ip) *ip = a ? ip4_addr_get_u32(ip_2_ip4(a)) : 0;
+    if (na) from_lwip(s, a, na);
     if (port) *port = p;
     return 0;
 }
