@@ -236,7 +236,11 @@ platform-specific are new code.
    same drive it moves, to another drive it's copied (OS/2's rule - Shift
    forces a move, Ctrl a copy; Esc cancels the drag); onto the Shredder
    (bottom right) it's deleted, after a confirmation. Folder > Create new
-   folder; Selected > Rename... (F2) and Delete... (Del). Keys in a
+   folder; Selected > Rename... (F2) and Delete... (Del). Several
+   objects at once: Ctrl+click, Shift+click (a range), a rubber band
+   from the folder's background, Ctrl+A; dragging one of them takes them
+   all (to a folder, the desktop - shadows - or the Shredder: one
+   question for all). Keys in a
    folder: arrows, Home/End, Page Up/Down, Enter opens, Backspace the
    parent, F5 refreshes, F10 the menu bar (arrows, Enter, Esc); in a
    Tree view Right/+ expands and Left/- collapses.

@@ -5,6 +5,8 @@ Views: Icon view (the objects as icons), Tree view (the folders inside, as a tre
 
 Double-click a folder to open it, a program to run it, a file to edit it. Selected > Properties tells you about an object.
 
+Selecting several objects: hold Ctrl and click to add one (or take it away again), hold Shift and click to select everything from the last one to this one, or drag a rubber band around them from an empty part of the folder. Ctrl+A selects everything. Dragging any of the selected objects takes them all; Del or the Shredder deletes them all, after one question.
+
 Moving and copying: drag an object onto a folder, a folder window or a drive. On the same drive it's moved; onto another drive it's copied - as in OS/2. Hold Shift while you drop to move instead, Ctrl to copy. Press Esc while dragging to cancel.
 
 Renaming: Selected > Rename, or F2. Deleting: Selected > Delete, the Del key, or drop the object on the Shredder - you're asked first.
