@@ -28,6 +28,11 @@
 #                kernel's own hypervisor (VM TEST; not with --test)
 #   -h, --help
 #
+# Every run has a network card (virtio-net, QEMU's user networking: the
+# guest is 10.0.2.15 by DHCP, the host 10.0.2.2, DNS 10.0.2.3): PING,
+# IFCONFIG, HOST at the prompt. NET_FWD=",hostfwd=tcp::8080-:80" in the
+# environment forwards host ports to the guest.
+#
 # Interactive: type VM TEST at the [C:\]> prompt. Inside the guest,
 # Ctrl-D powers it off and Ctrl-] stops it from the host side. Ctrl-A X
 # quits QEMU.
@@ -117,6 +122,8 @@ QEMU=(qemu-system-aarch64
       -kernel "$KERNEL"
       "${DISK_OPT[@]}"
       -serial mon:stdio
+      -global virtio-mmio.force-legacy=false
+      -device virtio-net-device,netdev=lan0 -netdev "user,id=lan0${NET_FWD:-}"
       "${DISPLAY_OPT[@]}"
       "${USB_OPT[@]}"
       "${GDB_OPT[@]}")

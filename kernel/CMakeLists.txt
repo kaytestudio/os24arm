@@ -62,6 +62,8 @@ else()
             src/vm_pl011.c      # ← emulated PL011 device model
             src/vm_cmd.c        # ← VM shell command / VM run loop
             src/vm_guest_hello.S  # ← built-in test guest for VM TEST
+            src/net/virtio_net.c  # ← network card: virtio-net (virtio-mmio)
+            src/net/net.c         # ← lwIP glue: lan0, DHCP, polling, PING/IFCONFIG/HOST
     )
     set(LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/linker.ld)
 endif()
@@ -116,6 +118,20 @@ target_include_directories(os2warp_kernel PRIVATE
         ${CMAKE_SOURCE_DIR}/fs/btrfs
         ${CMAKE_SOURCE_DIR}/fs/hpfs
 )
+
+# ── lwIP: the TCP/IP stack (external/lwip, configured by src/net/lwipopts.h) ─
+if(TARGET_ARCH STREQUAL "aarch64" AND NOT TARGET_PLATFORM STREQUAL "RPI3")
+    set(LWIP_DIR ${CMAKE_SOURCE_DIR}/external/lwip/src)
+    file(GLOB LWIP_SOURCES ${LWIP_DIR}/core/*.c ${LWIP_DIR}/core/ipv4/*.c)
+    list(APPEND LWIP_SOURCES ${LWIP_DIR}/netif/ethernet.c)
+    add_library(lwip STATIC ${LWIP_SOURCES})
+    target_include_directories(lwip PUBLIC
+            ${LWIP_DIR}/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/net      # lwipopts.h, arch/cc.h
+            ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_compile_options(lwip PRIVATE -w)          # (its code, as it comes)
+    target_link_libraries(os2warp_kernel lwip)
+endif()
 
 # ── Link libraries ────────────────────────────────────────────────────────────
 if(TARGET_ARCH STREQUAL "aarch64")

@@ -95,6 +95,7 @@ extern void cpu_switch(lx_u64 *save, const lx_u64 *load);
 extern void el0_start(void);
 extern uint32_t kernel_time_seconds(void) __attribute__((weak));
 extern void usbd_daemon(void) __attribute__((weak));
+extern void net_poll(void) __attribute__((weak));      /* the network (kernel/src/net) */
 /* Display (drivers/video/virtiofb.c) and input (drivers/usb) for /dev/fb0
  * and /dev/input/event*; weak, so boards without them still link. */
 extern int       fb_init_driver(void) __attribute__((weak));
@@ -498,7 +499,15 @@ static void schedule(void)
 static void yield(void)
 {
     if (usbd_daemon) usbd_daemon();         /* keep USB (keyboard, disks) alive */
+    if (net_poll) net_poll();
     schedule();
+}
+
+/* For kernel code that waits a while inside a system call (the shell's
+ * PING, run for a desktop's prompt): the other processes run meanwhile. */
+void linux_kernel_yield(void)
+{
+    if (cur) yield();
 }
 
 /* Sleep until woken on ch, or until deadline (ticks; 0 = none). */
@@ -5565,6 +5574,7 @@ void linux_el0_irq(linux_tf_t *tf)
     if (console_tty.used) con_pump(&console_tty);                  /* typed keys, Ctrl-C */
     __asm__ volatile("msr S3_0_C12_C12_1, %0\n\tisb" :: "r"(intid)); /* ICC_EOIR1_EL1 */
     if (usbd_daemon) usbd_daemon();
+    if (net_poll) net_poll();
     schedule();                                                    /* time's up: next one */
     deliver_signal(cur->tf);
 }
@@ -5714,6 +5724,7 @@ int linux_run(const char *path, int argc, char **argv)
          * even though it's masked here). */
         if (console_tty.used) con_pump(&console_tty);
         if (usbd_daemon) usbd_daemon();
+        if (net_poll) net_poll();
         if (pick_runnable(0)) continue;
         lx_u64 ctl;
         __asm__ volatile("mrs %0, cntp_ctl_el0" : "=r"(ctl));

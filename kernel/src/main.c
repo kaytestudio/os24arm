@@ -8,6 +8,7 @@
 #include "fat32.h"
 #include "hpfs.h"
 #include "linux_abi.h"
+#include "net/net.h"
 #include "kio.h"
 #include "basic.h"
 #include "gui/framebuffer.h"
@@ -310,6 +311,9 @@ static void cmd_help(void)
     uart_puts("  UMOUNT    - UMOUNT \\DIR: unmount it\r\n");
     uart_puts("  IFS       - List loaded filesystem drivers\r\n");
     uart_puts("  RUN       - Load and run an OS/2 LX .EXE (e.g. RUN CMD.EXE)\r\n");
+    uart_puts("  PING      - Send echo requests to a host (PING 10.0.2.2, PING example.com)\r\n");
+    uart_puts("  IFCONFIG  - The network interface: address, gateway, name servers\r\n");
+    uart_puts("  HOST      - Look up a host name (DNS)\r\n");
 #ifdef LX_HAS_TEST_PAYLOAD
     uart_puts("  RUNTEST   - Run the embedded HELLO.EXE loader self-test\r\n");
 #endif
@@ -727,6 +731,15 @@ static void execute_command(char *cmdline)
          * COPY, DEL/ERASE, REN/RENAME, MD/MKDIR, RD/RMDIR, CD/CHDIR, VOL,
          * ATTRIB, CHKDSK, FORMAT) */
     }
+    else if (my_strcmp(argv[0], "PING") == 0) {
+        net_cmd_ping(argc, argv);
+    }
+    else if (my_strcmp(argv[0], "IFCONFIG") == 0 || my_strcmp(argv[0], "IPCONFIG") == 0) {
+        net_cmd_ifconfig(argc, argv);
+    }
+    else if (my_strcmp(argv[0], "HOST") == 0 || my_strcmp(argv[0], "NSLOOKUP") == 0) {
+        net_cmd_host(argc, argv);
+    }
     else if (my_strcmp(argv[0], "USB") == 0) {
         usbd_list();
     }
@@ -945,6 +958,7 @@ void uart_idle_wait(void);
 static void kernel_shell_idle(void)
 {
     usbd_daemon();          /* USB: completions, hot-plug */
+    net_poll();             /* the network: frames, timers */
     if (usb_pointer_poll()) {
         wl_compositor_flush();
     }
@@ -1155,6 +1169,9 @@ void kernel_main(void)
 
         if (cfg_text) mem_free(cfg_text);
     }
+
+    /* The network: a virtio-net card, lwIP, an address from DHCP */
+    net_init();
 
     uart_puts("\r\n[KERNEL] Boot complete.\r\n");
     uart_puts("[VFS]    Filesystem ready for mounting\r\n");

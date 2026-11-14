@@ -583,6 +583,27 @@ actually succeeds depends on which filesystem ended up mounted at `/`
 
 ---
 
+## 7b. Networking
+
+A virtio-net card (`kernel/src/net/virtio_net.c`, polled, on virtio-mmio)
+and lwIP 2.2.0 (`external/lwip`, configured by `kernel/src/net/lwipopts.h`)
+give the kernel IPv4: Ethernet and ARP, DHCP, DNS, ICMP, UDP and TCP. The
+interface is `lan0`; it asks DHCP for an address at boot. `scripts/run-vm.sh`
+always adds the card with QEMU's user networking (the guest is 10.0.2.15,
+the host 10.0.2.2, DNS 10.0.2.3; `NET_FWD=",hostfwd=tcp::8080-:80"` forwards
+a host port in). The shell's commands, also in the desktop's Command Prompts:
+
+| Command | |
+|---|---|
+| `IFCONFIG` | the interface: MAC, address, netmask, gateway, name servers |
+| `PING host [count]` | ICMP echo, by address or name |
+| `HOST name` | a DNS lookup |
+
+lwIP runs in the kernel, polled from the shell's idle loop and the
+scheduler (the kernel isn't preempted, so it has one caller at a time).
+
+---
+
 ## 8. CMD.EXE and the LX loader
 
 `RUN <file.EXE>` (`kernel/src/lx_loader.c`) loads and executes a real OS/2 LX
