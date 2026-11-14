@@ -10,6 +10,8 @@ Type to write; the arrows, Home and End, Page Up and Page Down move around (Ctrl
   Ctrl+A        select everything
   F10           the menu bar
 
+The clipboard is the desktop's: text copied here pastes into a Command Prompt (Ctrl+Shift+V there), and text copied there (select it, Ctrl+Shift+C) pastes here.
+
 File > Save as saves under another name: type the whole name, with its drive and folders (D:\NOTES\TODO.TXT).
 
 The title bar shows a * while there are changes that aren't saved; closing the window then asks whether to save them.

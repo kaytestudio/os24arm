@@ -2304,7 +2304,121 @@ static bool double_click(uint32_t time, const void *target, int index)
  * Lines of bytes (UTF-8); the cursor and the selection's other end are
  * (row, byte) positions; tabs show as spaces to the next multiple of 8. */
 static const int ED_STATUS = 18;
-static std::string clipboard;                       /* Cut, Copy, Paste */
+static std::string clipboard;                       /* Cut, Copy, Paste (our own copy of it) */
+/* ── the clipboard, shared with every program: the seat's selection ──────
+ * Copy/Cut in the System Editor offers the text to the other programs (a
+ * data source of ours); Paste takes the selection, whoever offered it -
+ * read from a pipe as it comes, the compositor never waiting on it. */
+struct ClipSource { wlr_data_source base; std::string text; };   /* (base first) */
+struct ClipWriter { std::string data; size_t off = 0; int fd; wl_event_source *src = nullptr; };
+struct ClipReader { std::string data; int fd; wl_event_source *src = nullptr; Window *w; };
+
+static const char *const text_mimes[] = { "text/plain;charset=utf-8", "text/plain", "UTF8_STRING", "TEXT", "STRING" };
+
+static int clip_write(int fd, uint32_t mask, void *data)
+{
+    ClipWriter *cw = static_cast<ClipWriter *>(data);
+    while (!(mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR)) && cw->off < cw->data.size()) {
+        ssize_t n = write(fd, cw->data.data() + cw->off, cw->data.size() - cw->off);
+        if (n < 0 && errno == EAGAIN) return 0;                  /* (later: the pipe is full) */
+        if (n <= 0) break;
+        cw->off += (size_t)n;
+    }
+    wl_event_source_remove(cw->src);
+    close(fd);
+    delete cw;
+    return 0;
+}
+
+static const wlr_data_source_impl *clip_impl()
+{
+    static wlr_data_source_impl impl;
+    static bool ready;
+    if (!ready) {
+        impl.send = [](wlr_data_source *s, const char *, int32_t fd) {
+            ClipWriter *cw = new ClipWriter();
+            cw->data = reinterpret_cast<ClipSource *>(s)->text;
+            cw->fd = fd;
+            fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+            cw->src = wl_event_loop_add_fd(wl_display_get_event_loop(S.display), fd, WL_EVENT_WRITABLE, clip_write, cw);
+        };
+        impl.destroy = [](wlr_data_source *s) {                    /* (wlroots frees the mime types) */
+            delete reinterpret_cast<ClipSource *>(s);
+        };
+        ready = true;
+    }
+    return &impl;
+}
+
+/* text copied in the shell: everyone can paste it */
+static void clipboard_offer(const std::string &text)
+{
+    clipboard = text;
+    ClipSource *cs = new ClipSource();
+    wlr_data_source_init(&cs->base, clip_impl());
+    cs->text = text;
+    for (const char *m : text_mimes) {
+        char **slot = static_cast<char **>(wl_array_add(&cs->base.mime_types, sizeof(char *)));
+        if (slot) *slot = strdup(m);
+    }
+    wlr_seat_set_selection(S.seat, &cs->base, wl_display_next_serial(S.display));
+}
+
+static bool clipboard_ours() { return S.seat->selection_source && S.seat->selection_source->impl == clip_impl(); }
+static bool clipboard_has_text() { return S.seat->selection_source != nullptr || !clipboard.empty(); }
+
+static void ed_insert(Window *w, const std::string &s);
+static void ed_follow(Window *w);
+
+static int clip_read(int fd, uint32_t mask, void *data)
+{
+    ClipReader *cr = static_cast<ClipReader *>(data);
+    char buf[4096];
+    for (;;) {
+        ssize_t n = read(fd, buf, sizeof buf);
+        if (n > 0) { cr->data.append(buf, (size_t)n); if (cr->data.size() > 4u << 20) break; continue; }
+        if (n < 0 && errno == EAGAIN && !(mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR))) return 0;
+        break;                                                     /* the end of it */
+    }
+    wl_event_source_remove(cr->src);
+    close(fd);
+    Window *w = cr->w;
+    if (std::find(S.windows.begin(), S.windows.end(), w) != S.windows.end() && !cr->data.empty()) {
+        std::string t;
+        for (char c : cr->data) if (c != '\r') t += c;           /* (CR LF from elsewhere: LF) */
+        ed_insert(w, t);
+        ed_follow(w);
+        draw_window(w);
+        draw_bar();
+    }
+    delete cr;
+    return 0;
+}
+
+/* Paste into an editor window: the selection, as text */
+static void clipboard_paste(Window *w, std::function<void(const std::string &)> local)
+{
+    wlr_data_source *src = S.seat->selection_source;
+    if (!src || clipboard_ours()) { if (!clipboard.empty()) local(clipboard); return; }
+    const char *mime = nullptr;
+    for (const char *want : text_mimes) {
+        for (char **m = (char **)src->mime_types.data;
+             !mime && (char *)m < (char *)src->mime_types.data + src->mime_types.size; m++)
+            if (!strcmp(*m, want)) mime = want;
+        if (mime) break;
+    }
+    if (!mime) return;                                              /* (not text) */
+    int p[2];
+    if (pipe(p) != 0) return;
+    fcntl(p[0], F_SETFL, fcntl(p[0], F_GETFL) | O_NONBLOCK);
+    fcntl(p[0], F_SETFD, FD_CLOEXEC);
+    wlr_data_source_send(src, mime, p[1]);                        /* (it closes p[1]) */
+    ClipReader *cr = new ClipReader();
+    cr->fd = p[0];
+    cr->w = w;
+    cr->src = wl_event_loop_add_fd(wl_display_get_event_loop(S.display), p[0], WL_EVENT_READABLE, clip_read, cr);
+}
+
 
 static int ed_cw() { return std::max(1, text_width(TEXT_MONO, "M")); }
 static int ed_lh() { return text_height(TEXT_MONO) + 1; }
@@ -2606,9 +2720,12 @@ static void ed_select_all(Window *w)
     draw_window(w);
 }
 
-static void ed_copy(Window *w) { if (ed_has_sel(w)) clipboard = ed_sel_text(w); }
-static void ed_cut(Window *w) { if (ed_has_sel(w)) { clipboard = ed_sel_text(w); ed_delete_sel(w); ed_follow(w); draw_window(w); draw_bar(); } }
-static void ed_paste(Window *w) { if (!clipboard.empty()) { ed_insert(w, clipboard); ed_follow(w); draw_window(w); draw_bar(); } }
+static void ed_copy(Window *w) { if (ed_has_sel(w)) clipboard_offer(ed_sel_text(w)); }
+static void ed_cut(Window *w) { if (ed_has_sel(w)) { clipboard_offer(ed_sel_text(w)); ed_delete_sel(w); ed_follow(w); draw_window(w); draw_bar(); } }
+static void ed_paste(Window *w)
+{
+    clipboard_paste(w, [w](const std::string &t) { ed_insert(w, t); ed_follow(w); draw_window(w); draw_bar(); });
+}
 
 static std::vector<Menu::Item> editor_menu(Window *w, int which)
 {
@@ -2623,7 +2740,7 @@ static std::vector<Menu::Item> editor_menu(Window *w, int which)
     case 1: return {
         { "Cut           Ctrl+X", [w] { ed_cut(w); }, sel },
         { "Copy          Ctrl+C", [w] { ed_copy(w); }, sel },
-        { "Paste         Ctrl+V", [w] { ed_paste(w); }, !clipboard.empty() },
+        { "Paste         Ctrl+V", [w] { ed_paste(w); }, clipboard_has_text() },
         { "", nullptr },
         { "Select all    Ctrl+A", [w] { ed_select_all(w); } } };
     default: return {

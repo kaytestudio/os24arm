@@ -267,7 +267,10 @@ platform-specific are new code.
    select, Ctrl+X/C/V/A/S, Enter keeping the indentation, the line and
    column below; File > Save as takes a DOS path (D:\NOTES\TODO.TXT);
    closing it with unsaved changes asks Save, Discard or Cancel. Binary
-   files (a NUL in them) and files over 4 MB aren't opened.
+   files (a NUL in them) and files over 4 MB aren't opened. Its
+   clipboard is the seat's selection (a wlr_data_source of the shell's,
+   written to the reader through the event loop; another program's read
+   the same way), so text goes both ways between it and foot.
    The Assistance Center (on the desktop, F1, a folder's Help menu) is
    the help: the topics on the left, the text on the right - plain text
    files in `userland/rootfs/help` (`\OS2\HELP`: a title line, then
