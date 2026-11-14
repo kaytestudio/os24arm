@@ -456,7 +456,6 @@ static void toggle_winlist();
 static void focus(Window *w);
 
 static std::string dos_path(const std::string &p);
-static void os2_program(const Object &o);
 static void open_info(const std::string &title, std::vector<std::string> lines);
 static void run_object(const Object &o)
 {
@@ -467,7 +466,8 @@ static void run_object(const Object &o)
     case A_WINLIST:  toggle_winlist(); break;
     case A_SHUTDOWN: spawn({ sys("os2cmd"), "SHUTDOWN" }); break;
     case A_RUN:    { auto v = terminal(true); v.push_back(o.path); spawn(v); break; }
-    case A_OS2RUN:   os2_program(o); break;
+    case A_OS2RUN: { auto v = terminal(true); v.push_back(sys("os2cmd")); v.push_back("RUN");
+                     v.push_back(dos_path(o.path)); spawn(v); break; }   /* an OS/2 program: a process */
     case A_SHREDDER: open_info("Shredder", { "Shredder", "Drag an object here to delete it." }); break;     /* (the LX loader: the console's) */
     case A_SCRIPT: { auto v = terminal(true); v.push_back(sys("busybox")); v.push_back("sh");
                      v.push_back(o.path); spawn(v); break; }
@@ -1439,17 +1439,6 @@ static bool selected_object(Window *w, Object *o)
         *o = w->objects[w->sel];
     }
     return true;
-}
-
-/* OS/2 (LX) programs are run by the kernel's loader, at the system console
- * only, so far: says so */
-static void os2_program(const Object &o)
-{
-    open_info(o.label, {
-        o.label, "This is an OS/2 program (LX format).",
-        "OS/2 programs run at the system console for now:",
-        "    RUN " + dos_path(o.path),
-        "(Alt+Shift+Q goes back to the console.)" });
 }
 
 static void properties(Window *w)

@@ -12,6 +12,7 @@
  */
 
 #include "lx_dll_loader.h"
+#include "lx_services.h"
 #include "uart.h"
 #include "kprintf.h"
 #include "string.h"
@@ -255,6 +256,12 @@ int lx_dll_load_image(const void *image, uint32_t image_size, lx_dll_t *out)
                             (uint8_t *)LX_DLL_DATA_LOAD_BASE, LX_DLL_DATA_REGION_SIZE);
     if (rc != 0) return rc;
 
+    /* In a process (kernel/src/linux) the code was copied into writable
+     * pages: the kernel makes them executable (and syncs the caches) */
+    const struct lx_services *us = uart_user_services();
+    if (us && us->make_exec) {
+        if (us->make_exec((void *)LX_DLL_LOAD_BASE, code_obj->virtual_size) != 0) return LX_DLL_ERR_BADMAGIC;
+    } else
     lx_dll_flush_icache((void *)LX_DLL_LOAD_BASE, code_obj->virtual_size);
 
     out->code_base = (void *)LX_DLL_LOAD_BASE;
@@ -266,7 +273,7 @@ int lx_dll_load_image(const void *image, uint32_t image_size, lx_dll_t *out)
     out->resident_names_offset = hdr->resident_names_offset;
     out->entry_table_offset = hdr->entry_table_offset;
 
-    kprintf("[LX-DLL] Loaded code at %p (%u bytes), data at %p (%u bytes)\r\n",
+    if (!us) kprintf("[LX-DLL] Loaded code at %p (%u bytes), data at %p (%u bytes)\r\n",
             out->code_base, out->code_size, out->data_base, out->data_size);
     return 0;
 }

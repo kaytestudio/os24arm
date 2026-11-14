@@ -135,7 +135,10 @@ static uint64_t mmu_l2_ram[MMU_L2_ENTRIES];
 #define MMU_HI_L3S        (MMU_HI_SIZE / MMU_BLOCK_2MB)        /* 2048 */
 #define MMU_HI_L1S        (MMU_HI_SIZE / MMU_BLOCK_1GB)        /* 4 */
 #define MMU_HI_L1_FIRST   (MMU_HI_BASE / MMU_BLOCK_1GB)        /* L1[4..7] */
-#define MMU_USER_L3S      (MMU_WIN_L3S + MMU_HI_L3S)
+#define MMU_LX_L3S        (MMU_LX_SIZE / MMU_BLOCK_2MB)        /* 32 */
+#define MMU_LX_FIRST      (MMU_WIN_L3S + MMU_HI_L3S)           /* its slots, after the others */
+#define MMU_USER_L3S      (MMU_WIN_L3S + MMU_HI_L3S + MMU_LX_L3S)
+#define MMU_LX_L2_FIRST   ((MMU_LX_BASE - MMU_L2_BASE) / MMU_BLOCK_2MB)
 #define MMU_USER_L2_FIRST ((MMU_USER_BASE - MMU_L2_BASE) / MMU_BLOCK_2MB)
 #define POOL_PAGES        ((MMU_POOL_END - MMU_POOL_BASE) / MMU_PAGE)
 #define MAX_AS            32
@@ -238,7 +241,8 @@ int mmu_user_range(unsigned long start, unsigned long end)
 {
     if (end < start) return 0;
     return (start >= MMU_USER_BASE && end <= MMU_USER_BASE + MMU_USER_SIZE) ||
-           (start >= MMU_HI_BASE && end <= MMU_HI_BASE + MMU_HI_SIZE);
+           (start >= MMU_HI_BASE && end <= MMU_HI_BASE + MMU_HI_SIZE) ||
+           (start >= MMU_LX_BASE && end <= MMU_LX_BASE + MMU_LX_SIZE);
 }
 
 /* 2 MB slot of a user address, or -1 */
@@ -248,11 +252,14 @@ static long slot_of(unsigned long va)
         return (long)((va - MMU_USER_BASE) / MMU_BLOCK_2MB);
     if (va >= MMU_HI_BASE && va < MMU_HI_BASE + MMU_HI_SIZE)
         return (long)(MMU_WIN_L3S + (va - MMU_HI_BASE) / MMU_BLOCK_2MB);
+    if (va >= MMU_LX_BASE && va < MMU_LX_BASE + MMU_LX_SIZE)
+        return (long)(MMU_LX_FIRST + (va - MMU_LX_BASE) / MMU_BLOCK_2MB);
     return -1;
 }
 
 static unsigned long slot_va(unsigned long t)
 {
+    if (t >= MMU_LX_FIRST) return MMU_LX_BASE + (t - MMU_LX_FIRST) * MMU_BLOCK_2MB;
     return t < MMU_WIN_L3S ? MMU_USER_BASE + t * MMU_BLOCK_2MB
                            : MMU_HI_BASE + (t - MMU_WIN_L3S) * MMU_BLOCK_2MB;
 }
@@ -268,6 +275,9 @@ static uint64_t *pte(mmu_as_t *as, unsigned long va, int create)
         if (t < (long)MMU_WIN_L3S) {
             l2 = as->l2;
             idx = MMU_USER_L2_FIRST + (unsigned long)t;
+        } else if (t >= (long)MMU_LX_FIRST) {          /* (replaces the kernel's own 2 MB block) */
+            l2 = as->l2;
+            idx = MMU_LX_L2_FIRST + (unsigned long)(t - MMU_LX_FIRST);
         } else {
             unsigned long h = (unsigned long)(t - MMU_WIN_L3S);
             unsigned long g = h / 512;                 /* which GB */
@@ -301,6 +311,7 @@ mmu_as_t *mmu_as_create(void)
     for (int i = 0; i < MMU_L1_ENTRIES; i++) as->l1[i] = mmu_l1_table[i];
     for (int i = 0; i < MMU_L2_ENTRIES; i++) as->l2[i] = mmu_l2_ram[i];
     as->l1[1] = (uint64_t)(uintptr_t)as->l2 | MMU_DESC_TABLE;
+    for (unsigned i = 0; i < MMU_LX_L3S; i++) as->l2[MMU_LX_L2_FIRST + i] = 0;   /* the LX window: empty */
     as->used = 1;
     return as;
 }

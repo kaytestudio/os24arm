@@ -106,7 +106,9 @@ int main(const struct lx_services *svc)
     own_disks = DosSetKernelServices(svc) != NO_ERROR;
 
     uart_puts("\r\nOS/2 Warp ARM64 - CMD.EXE\r\n");
-    uart_puts("Type HELP for the list of commands, EXIT to return to the kernel shell\r\n");
+    uart_puts(uart_user_services()
+        ? "Type HELP for the list of commands, EXIT to end CMD.EXE\r\n"           /* (a process) */
+        : "Type HELP for the list of commands, EXIT to return to the kernel shell\r\n");
     uart_puts("Type DOSKEY to enable command history/macros\r\n\r\n");
 
     for (;;) {

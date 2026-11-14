@@ -1,11 +1,13 @@
 #include "uart.h"
+#include "lx_services.h"
 /* In the kernel the USB keyboard (drivers/usb/usbkbd.c) feeds the same
  * console input. LX apps/DLLs compile this file too, without USB. */
 #ifdef HAVE_USB
 #include "usbkbd.h"
+#define user_svc() ((const struct lx_services *)0)
+const struct lx_services *uart_user_services(void) { return 0; }
 #else
 /* LX programs: the kernel passes its keyboard in an lx_services table. */
-#include "lx_services.h"
 static const struct lx_services *input_svc;
 void uart_set_input_services(const struct lx_services *svc)
 {
@@ -19,6 +21,13 @@ static inline int usbkbd_getc(void)
 {
     return (input_svc && input_svc->kbd_getc) ? input_svc->kbd_getc() : -1;
 }
+/* Started as a process (kernel/src/linux: version 3): no UART, no timers
+ * here - the console is stdin and stdout, through the services. */
+static inline const struct lx_services *user_svc(void)
+{
+    return input_svc && input_svc->version >= LX_SERVICES_USER ? input_svc : 0;
+}
+const struct lx_services *uart_user_services(void) { return user_svc(); }
 #endif
 
 #define UART_BASE   0x09000000UL
@@ -34,6 +43,7 @@ void (*console_capture)(char c);
 void uart_putc(char c)
 {
     if (console_capture) { console_capture(c); return; }
+    if (user_svc()) { user_svc()->putc(c); return; }
     while (UART_FR & UART_FR_TXFF)
         ;
     UART_DR = (uint32_t)(unsigned char)c;
@@ -73,6 +83,7 @@ extern void gicv3_ppi_setup(unsigned int intid, int enable) __attribute__((weak)
 
 void uart_idle_wait(void)
 {
+    if (user_svc()) { user_svc()->idle(); return; }
     if (!gicv3_ppi_setup) {
         event_stream_on();
         __asm__ volatile("wfe");
@@ -89,6 +100,11 @@ void uart_idle_wait(void)
 
 char uart_getc(void)
 {
+    if (user_svc()) {
+        int c = user_svc()->kbd_getc();
+        if (c < 0) user_svc()->exit(0);                /* stdin is gone: so is the program */
+        return (char)c;
+    }
     event_stream_on();
     for (;;) {
         if (!(UART_FR & UART_FR_RXFE))
@@ -102,6 +118,7 @@ char uart_getc(void)
 
 int uart_ready(void)
 {
+    if (user_svc()) return user_svc()->kbd_ready();
     return !(UART_FR & UART_FR_RXFE) || usbkbd_ready();
 }
 

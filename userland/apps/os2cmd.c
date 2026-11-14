@@ -30,6 +30,7 @@
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <termios.h>
 #include <unistd.h>
 
 extern char **environ;
@@ -126,6 +127,22 @@ static int find_program(const char *name, char *path, size_t size)
     char p[512];
     int has_dir = strchr(name, '\\') || strchr(name, '/') || (name[0] && name[1] == ':');
     if (os2_resolve(name, p, sizeof p) == 0 && is_file(p)) { snprintf(path, size, "%s", p); return 1; }
+    /* an OS/2 program by its name alone: HELLO is HELLO.EXE */
+    const char *leaf = strrchr(name, '\\') ? strrchr(name, '\\') + 1 : name;
+    if (strlen(name) < 250) {
+        /* ... in any case (the disks keep OS/2's upper-case names): HELLO,
+         * hello, hello.exe all find HELLO.EXE */
+        char up[256], exe[256];
+        snprintf(up, sizeof up, "%s", name);
+        char *l = up + (leaf - name);
+        for (char *c = l; *c; c++) if (*c >= 'a' && *c <= 'z') *c -= 32;
+        const char *tries[3] = { 0, 0, 0 };
+        int nt = 0;
+        if (!strchr(leaf, '.')) { snprintf(exe, sizeof exe, "%s.EXE", up); tries[nt++] = exe; }
+        tries[nt++] = up;
+        for (int i = 0; i < nt; i++)
+            if (os2_resolve(tries[i], p, sizeof p) == 0 && is_file(p)) { snprintf(path, size, "%s", p); return 1; }
+    }
     if (has_dir) return 0;
 
     /* $PATH, then the directory os2cmd itself is in (on the stick: /h) */
@@ -218,16 +235,40 @@ static int resolve(char **argv, int argc, char *path, size_t size, char **run, i
     return 1;
 }
 
-/* Runs a Linux program in this window, in the OS/2 directory, and waits. */
-static void run_here(char **argv, int argc)
+/* an OS/2 program (LX), not a Linux one? */
+static int is_os2_program(const char *path)
+{
+    char m[2] = { 0 };
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return 0;
+    int r = read(fd, m, 2) == 2 && m[0] == 'L' && m[1] == 'X';
+    close(fd);
+    return r;
+}
+
+/* Runs a program in this window, in the OS/2 directory, and waits. OS/2
+ * programs (CMD.EXE, ...) read keys one at a time and echo them
+ * themselves: the terminal is raw for them, as the console is. */
+static void run_here(char **argv, int argc, int prompt)
 {
     char path[512];
     char *run[64];
     if (!resolve(argv, argc, path, sizeof path, run, 64)) {
-        put(out, out_len);                            /* the shell's own message */
+        if (prompt) put(out, out_len);                /* the shell's own message */
+        else fprintf(stderr, "%s: no such program\n", argv[0]);
         return;
     }
-    put("\r\n", 2);
+    if (prompt) put("\r\n", 2);
+    struct termios saved, raw;
+    int os2 = is_os2_program(path) && tcgetattr(0, &saved) == 0;
+    if (os2) {
+        raw = saved;
+        raw.c_lflag &= ~(ICANON | ECHO);
+        raw.c_iflag &= ~ICRNL;                        /* Enter is CR, as on the console */
+        raw.c_cc[VMIN] = 1;
+        raw.c_cc[VTIME] = 0;
+        tcsetattr(0, TCSANOW, &raw);
+    }
     pid_t pid = fork();
     if (pid == 0) {
         signal(SIGINT, SIG_DFL);
@@ -240,8 +281,10 @@ static void run_here(char **argv, int argc)
     if (pid < 0) { perror("fork"); return; }
     int status;
     while (waitpid(pid, &status, 0) < 0 && errno == EINTR) { }
+    if (os2) tcsetattr(0, TCSANOW, &saved);
     if (WIFSIGNALED(status) && WTERMSIG(status) != SIGINT)
         fprintf(stderr, "\n[%s: killed by signal %d]\n", argv[0], WTERMSIG(status));
+    if (!prompt) return;
     size_t p = prompt_at();
     put(out + p, out_len - p);                        /* just the prompt again */
 }
@@ -310,6 +353,14 @@ static int is_word(const char *s, const char *w)
  * Linux program. interactive: show the prompt that follows. */
 static void line_cmd(int fd, char *line, int interactive)
 {
+    if (is_word(line, "RUN")) {                       /* RUN X.EXE: an OS/2 program, here */
+        char copy[256], *argv[64];
+        snprintf(copy, sizeof copy, "%s", line);
+        int argc = split(copy, argv, 64);
+        if (argc < 2) { fputs("\nUsage: RUN program.EXE [arguments]\n", stdout); fflush(stdout); }
+        else run_here(argv + 1, argc - 1, interactive);
+        return;
+    }
     if (is_word(line, "START")) {
         char *argv[64];
         int argc = split(line, argv, 64);
@@ -340,7 +391,7 @@ static void line_cmd(int fd, char *line, int interactive)
                 perror(argv[0]);
                 exit(127);
             }
-            run_here(argv, argc);
+            run_here(argv, argc, 1);
             return;
         }
     }

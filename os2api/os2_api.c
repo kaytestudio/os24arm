@@ -318,9 +318,10 @@ APIRET DosSetKernelServices(const struct lx_services *svc)
 #ifndef OS2_API_SKIP_LAZY_INIT
     if (!svc || svc->version < 2 || !svc->vfs) return ERROR_NOT_SUPPORTED;
     kvfs = svc->vfs;
+    uart_set_input_services(svc);       /* this DLL's console too (a process: stdin/stdout) */
     if (svc->cwd && svc->cwd[0] == '/') {
         vfs_stat_t st;
-        if (vfs_stat(svc->cwd, &st) == VFS_OK && (st.attrs & VFS_ATTR_DIR)) {
+        if (os2_vfs_stat(svc->cwd, &st) == VFS_OK && (st.attrs & VFS_ATTR_DIR)) {
             strncpy(current_dir, svc->cwd, sizeof(current_dir) - 1);
             current_dir[sizeof(current_dir) - 1] = '\0';
         }

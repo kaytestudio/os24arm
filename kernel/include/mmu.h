@@ -34,6 +34,13 @@ void mmu_init(void);
  * the mmap area (demand paged by kernel/src/linux). */
 #define MMU_HI_BASE    0x100000000UL
 #define MMU_HI_SIZE    (4UL << 30)
+/* ... and the LX window: where OS/2 programs (CMD.EXE, ...) are linked
+ * (lx/lx_app.ld, lx/lx_dll.ld: 0x48000000 the program, 0x4A000000 its
+ * DLL), mapped the same way when one runs as a process
+ * (kernel/src/linux/lx_user.c). The kernel's own tables keep this range
+ * for RUN at the console, which runs them in the kernel. */
+#define MMU_LX_BASE    0x48000000UL
+#define MMU_LX_SIZE    (64UL * 1024 * 1024)
 #define MMU_POOL_BASE  0x64000000UL
 #define MMU_POOL_END   0x80000000UL
 

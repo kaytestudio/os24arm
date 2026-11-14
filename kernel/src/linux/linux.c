@@ -86,6 +86,10 @@
 #include "uart.h"
 #include "kprintf.h"
 #include "gicv3.h"
+#include "lx_loader.h"
+#include "lx_dll_loader.h"
+#include "lx_services.h"
+#include "lx_vfs.h"
 
 extern void cpu_switch(lx_u64 *save, const lx_u64 *load);
 extern void el0_start(void);
@@ -386,6 +390,9 @@ typedef struct group {
     char     cmdline[256];         /* argv, NUL-separated (/proc/PID/cmdline) */
     uint32_t cmdlen;
     struct tty *ctty;              /* controlling terminal */
+#define LX_MAX_VFDS 16
+    int      lx_vfd[LX_MAX_VFDS];  /* an OS/2 program's VFS handles (+1; 0 = free) */
+    uint8_t  lx_dir[LX_MAX_VFDS];  /* ... and which are directories */
 } group_t;
 
 typedef struct proc {
@@ -2119,15 +2126,256 @@ static lx_u64 build_stack(const char *args, int argc, int envc, lx_u64 entry, lx
 
 /* A fresh address space with path loaded and its stack built, left
  * active. On failure the previous address space is active again. */
+/* ── OS/2 programs as processes ─────────────────────────────────────────
+ * An LX .EXE (CMD.EXE, KAYTEVM.EXE, ...) runs here like any program: in an
+ * address space of its own, at EL0, with its objects at the addresses it's
+ * linked for - the LX window (mmu.h MMU_LX_BASE): the program at
+ * LX_LOAD_BASE, its private heap at 0x49000000, the DLL it loads itself
+ * (DOSCALLS.DLL, lx_dll_loader.c) at LX_DLL_LOAD_BASE with that DLL's heap
+ * after it. main() gets an lx_services table (version 3) in x0: console
+ * I/O through its stdin and stdout, the kernel's file systems through
+ * LX_SYS (sys_lx below) - see lx_stubs.S - and returns to an exit_group. */
+#define LX_SYS          0x4F32
+#define LX_EXE_HEAP     0x49000000UL               /* CMD.EXE, KAYTEVM.EXE (cmd_main.c, ...) */
+#define LX_DLL_HEAP     0x4A400000UL               /* DOSCALLS.DLL's (os2api/os2_api.c) */
+#define LX_HEAP_SIZE    (4UL << 20)
+#define LX_STUBS_VA     (MMU_LX_BASE + MMU_LX_SIZE - 2 * PAGE)
+#define LX_TABLE_VA     (MMU_LX_BASE + MMU_LX_SIZE - PAGE)
+#define LX_STAGE_VA     MMU_USER_BASE              /* the file, while it's placed */
+
+extern char lx_stubs_start[], lx_stubs_end[], lxs_exit[], lxs_putc[], lxs_getc[], lxs_ready[],
+            lxs_idle[], lxs_time[], lxs_vfs[];
+
+/* the page at LX_TABLE_VA */
+struct lx_page {
+    struct lx_services svc;
+    struct lx_vfs_ops vfs;
+    char cwd[VFS_PATH_MAX];
+    char name1[64], name2[64];                    /* statfs's and mount_info's strings */
+};
+
+static lx_u64 lx_stub(const char *sym) { return LX_STUBS_VA + (lx_u64)(sym - lx_stubs_start); }
+
+/* code the process copied in: what the CPU fetches must see it */
+static void lx_sync_code(lx_u64 va, lx_u64 len)
+{
+    for (lx_u64 a = va & ~63UL; a < va + len; a += 64) __asm__ volatile("dc cvau, %0" :: "r"(a) : "memory");
+    __asm__ volatile("dsb ish" ::: "memory");
+    for (lx_u64 a = va & ~63UL; a < va + len; a += 64) __asm__ volatile("ic ivau, %0" :: "r"(a) : "memory");
+    __asm__ volatile("dsb ish\n\tisb" ::: "memory");
+}
+
+static int is_lx(const char *path)
+{
+    int vfd = vfs_open(path, O_RDONLY);
+    if (vfd < 0) return 0;
+    uint8_t m[2];
+    int r = read_at(vfd, 0, m, 2) == 0 && m[0] == 'L' && m[1] == 'X';
+    vfs_close(vfd);
+    return r;
+}
+
+/* Loads an LX program into the active address space as. 0 or -errno. */
+static int load_lx(mmu_as_t *as, const char *path, lx_u64 *entry, lx_u64 *x0, lx_u64 *lr)
+{
+    vfs_stat_t st;
+    if (vfs_stat(path, &st) != VFS_OK) return -ENOENT;
+    if (st.size < 64 || st.size > LX_LOAD_MAX_SIZE) return -ENOEXEC;
+    const int RW = MMU_PROT_READ | MMU_PROT_WRITE, RX = MMU_PROT_READ | MMU_PROT_EXEC;
+    /* the file, staged in the user window (gone again before it runs) */
+    if (mmu_as_map(as, LX_STAGE_VA, st.size, RW)) return -ENOMEM;
+    int vfd = vfs_open(path, O_RDONLY), r = -ENOEXEC;
+    if (vfd < 0) { mmu_as_unmap(as, LX_STAGE_VA, st.size); return verr(vfd); }
+    const void *img = (const void *)(uintptr_t)LX_STAGE_VA;
+    lx_image_info_t in;
+    if (read_at(vfd, 0, (void *)(uintptr_t)LX_STAGE_VA, st.size) != 0) { r = -EIO; goto out; }
+    if (lx_check_image(img, st.size, &in) != 0) {
+        kprintf("[PROG]   %s: not an OS/2 program this loader can run\n", path);
+        goto out;
+    }
+    /* the code and the data object now; the rest - .bss past the data
+     * object, the heaps, the DLL - as it's touched (lx_vmas) */
+    r = -ENOMEM;
+    if (mmu_as_map(as, LX_LOAD_BASE, in.code_size, RW) ||
+        (in.data_size && mmu_as_map(as, LX_DATA_LOAD_BASE, in.data_size, RW)) ||
+        mmu_as_map(as, LX_STUBS_VA, 2 * PAGE, RW))
+        goto out;
+    if (lx_place_image(img, st.size) != 0) { r = -ENOEXEC; goto out; }
+    /* the services: the stubs, and the table pointing at them */
+    lx_u64 n = (lx_u64)(lx_stubs_end - lx_stubs_start);
+    kmemcpy((void *)(uintptr_t)LX_STUBS_VA, lx_stubs_start, (uint32_t)n);
+    struct lx_page *pg = (struct lx_page *)(uintptr_t)LX_TABLE_VA;
+    pg->svc.version = LX_SERVICES_USER;
+    pg->svc.kbd_ready = (int (*)(void))lx_stub(lxs_ready);
+    pg->svc.kbd_getc = (int (*)(void))lx_stub(lxs_getc);
+    pg->svc.vfs = (const struct lx_vfs_ops *)(uintptr_t)(LX_TABLE_VA + __builtin_offsetof(struct lx_page, vfs));
+    pg->svc.cwd = (const char *)(uintptr_t)(LX_TABLE_VA + __builtin_offsetof(struct lx_page, cwd));
+    pg->svc.putc = (void (*)(char))lx_stub(lxs_putc);
+    pg->svc.idle = (void (*)(void))lx_stub(lxs_idle);
+    pg->svc.time = (unsigned long (*)(void))lx_stub(lxs_time);
+    pg->svc.make_exec = (int (*)(void *, unsigned long))(lx_stub(lxs_vfs) + 8 * 15);
+    pg->svc.exit = (void (*)(int))lx_stub(lxs_exit);
+    void **ops = (void **)&pg->vfs;                       /* (the struct's 15 calls, in order) */
+    for (int i = 0; i < 15; i++) ops[i] = (void *)(uintptr_t)(lx_stub(lxs_vfs) + 8 * (lx_u64)i);
+    kstrncpy(pg->cwd, cur && cur->g ? cur->g->cwd : "/", sizeof pg->cwd);
+    if (mmu_as_protect(as, LX_LOAD_BASE, in.code_size, RX) || mmu_as_protect(as, LX_STUBS_VA, PAGE, RX))
+        goto out;
+    lx_sync_code(LX_LOAD_BASE, in.code_size);
+    lx_sync_code(LX_STUBS_VA, PAGE);
+    *entry = LX_LOAD_BASE + in.entry;
+    *x0 = LX_TABLE_VA;
+    *lr = lx_stub(lxs_exit);
+    r = 0;
+out:
+    vfs_close(vfd);
+    mmu_as_unmap(as, LX_STAGE_VA, st.size);
+    return r;
+}
+
+/* An LX process's memory besides its code: zero pages on demand. */
+static void lx_vmas(group_t *g)
+{
+    const int RW = MMU_PROT_READ | MMU_PROT_WRITE;
+    vma_t data = { LX_DATA_LOAD_BASE, LX_LOAD_BASE + LX_LOAD_MAX_SIZE, RW, V_ANON, 0, 0 };
+    vma_t heap = { LX_EXE_HEAP, LX_EXE_HEAP + LX_HEAP_SIZE, RW, V_ANON, 0, 0 };
+    vma_t dll = { LX_DLL_LOAD_BASE, LX_DLL_HEAP + LX_HEAP_SIZE, RW, V_ANON, 0, 0 };  /* DLL, its heap */
+    vma_insert(g, &data);
+    vma_insert(g, &heap);
+    vma_insert(g, &dll);
+}
+
+/* the VFS handles an LX process has open: its own, closed when it ends */
+static int lx_track(group_t *g, int vfd, int dir)
+{
+    for (int i = 0; i < LX_MAX_VFDS; i++)
+        if (!g->lx_vfd[i]) { g->lx_vfd[i] = vfd + 1; g->lx_dir[i] = (uint8_t)dir; return 1; }
+    return 0;
+}
+static int lx_owned(group_t *g, int vfd, int dir, int drop)
+{
+    for (int i = 0; i < LX_MAX_VFDS; i++)
+        if (g->lx_vfd[i] == vfd + 1 && g->lx_dir[i] == dir) { if (drop) g->lx_vfd[i] = 0; return 1; }
+    return 0;
+}
+static void lx_close_all(group_t *g)
+{
+    for (int i = 0; i < LX_MAX_VFDS; i++)
+        if (g->lx_vfd[i]) {
+            if (g->lx_dir[i]) vfs_closedir(g->lx_vfd[i] - 1); else vfs_close(g->lx_vfd[i] - 1);
+            g->lx_vfd[i] = 0;
+        }
+}
+
+/* LX_SYS: struct lx_vfs_ops, op x7 (in its order), arguments x0..x3; the
+ * results are the VFS's own (VFS_OK, VFS_ERR_*). 15: make_exec. */
+static s64 sys_lx(linux_tf_t *tf)
+{
+    group_t *g = cur->g;
+    lx_u64 a0 = tf->x[0], a1 = tf->x[1], a2 = tf->x[2];
+    char p1[VFS_PATH_MAX], p2[VFS_PATH_MAX];
+    struct lx_page *pg = (struct lx_page *)(uintptr_t)LX_TABLE_VA;
+    int r;
+    switch (tf->x[7]) {
+    case 0:                                             /* open(path, flags) */
+        if (copy_in_str(p1, a0, sizeof p1)) return VFS_ERR_INVAL;
+        if ((r = vfs_open(p1, (int)a1)) >= 0 && !lx_track(g, r, 0)) { vfs_close(r); return VFS_ERR_NOSPACE; }
+        return r;
+    case 1:                                             /* close(fd) */
+        return lx_owned(g, (int)a0, 0, 1) ? vfs_close((int)a0) : VFS_ERR_BADFD;
+    case 2:                                             /* read(fd, buf, len) */
+        if (!lx_owned(g, (int)a0, 0, 0)) return VFS_ERR_BADFD;
+        if (!uok(a1, (uint32_t)a2, 1)) return VFS_ERR_INVAL;
+        return vfs_read((int)a0, (void *)(uintptr_t)a1, (uint32_t)a2);
+    case 3:                                             /* write(fd, buf, len) */
+        if (!lx_owned(g, (int)a0, 0, 0)) return VFS_ERR_BADFD;
+        if (!uok(a1, (uint32_t)a2, 0)) return VFS_ERR_INVAL;
+        return vfs_write((int)a0, (const void *)(uintptr_t)a1, (uint32_t)a2);
+    case 4:                                             /* seek(fd, offset, whence) */
+        if (!lx_owned(g, (int)a0, 0, 0)) return VFS_ERR_BADFD;
+        return vfs_seek((int)a0, (int32_t)a1, (int)a2);
+    case 5: {                                           /* stat(path, st) */
+        vfs_stat_t st;
+        if (copy_in_str(p1, a0, sizeof p1) || !uok(a1, sizeof st, 1)) return VFS_ERR_INVAL;
+        if ((r = vfs_stat(p1, &st)) == VFS_OK) kmemcpy((void *)(uintptr_t)a1, &st, sizeof st);
+        return r;
+    }
+    case 6: {                                           /* statfs(path, st, &fsname) */
+        vfs_statfs_t st;
+        const char *fs = 0;
+        if (copy_in_str(p1, a0, sizeof p1) || !uok(a1, sizeof st, 1) || (a2 && !uok(a2, 8, 1)) ||
+            !uok(LX_TABLE_VA, PAGE, 1))
+            return VFS_ERR_INVAL;
+        if ((r = vfs_statfs(p1, &st, &fs)) == VFS_OK) {
+            kmemcpy((void *)(uintptr_t)a1, &st, sizeof st);
+            kstrncpy(pg->name1, fs ? fs : "", sizeof pg->name1);
+            if (a2) *(lx_u64 *)(uintptr_t)a2 = LX_TABLE_VA + __builtin_offsetof(struct lx_page, name1);
+        }
+        return r;
+    }
+    case 7:                                             /* unlink(path) */
+        if (copy_in_str(p1, a0, sizeof p1)) return VFS_ERR_INVAL;
+        return vfs_unlink(p1);
+    case 8:                                             /* rename(old, new) */
+        if (copy_in_str(p1, a0, sizeof p1) || copy_in_str(p2, a1, sizeof p2)) return VFS_ERR_INVAL;
+        return vfs_rename(p1, p2);
+    case 9:                                             /* mkdir(path) */
+        if (copy_in_str(p1, a0, sizeof p1)) return VFS_ERR_INVAL;
+        return vfs_mkdir(p1);
+    case 10:                                            /* opendir(path) */
+        if (copy_in_str(p1, a0, sizeof p1)) return VFS_ERR_INVAL;
+        if ((r = vfs_opendir(p1)) >= 0 && !lx_track(g, r, 1)) { vfs_closedir(r); return VFS_ERR_NOSPACE; }
+        return r;
+    case 11: {                                          /* readdir(dfd, ent) */
+        vfs_dirent_t e;
+        if (!lx_owned(g, (int)a0, 1, 0)) return VFS_ERR_BADFD;
+        if (!uok(a1, sizeof e, 1)) return VFS_ERR_INVAL;
+        if ((r = vfs_readdir((int)a0, &e)) == VFS_OK) kmemcpy((void *)(uintptr_t)a1, &e, sizeof e);
+        return r;
+    }
+    case 12:                                            /* closedir(dfd) */
+        return lx_owned(g, (int)a0, 1, 1) ? vfs_closedir((int)a0) : VFS_ERR_BADFD;
+    case 13: {                                          /* mount_info(i, &mountpoint, &fsname) */
+        const char *mp = 0, *fs = 0;
+        if ((a1 && !uok(a1, 8, 1)) || (a2 && !uok(a2, 8, 1)) || !uok(LX_TABLE_VA, PAGE, 1)) return VFS_ERR_INVAL;
+        if ((r = vfs_mount_info((int)a0, &mp, &fs)) == VFS_OK) {
+            kstrncpy(pg->name1, mp ? mp : "", sizeof pg->name1);
+            kstrncpy(pg->name2, fs ? fs : "", sizeof pg->name2);
+            if (a1) *(lx_u64 *)(uintptr_t)a1 = LX_TABLE_VA + __builtin_offsetof(struct lx_page, name1);
+            if (a2) *(lx_u64 *)(uintptr_t)a2 = LX_TABLE_VA + __builtin_offsetof(struct lx_page, name2);
+        }
+        return r;
+    }
+    case 14:                                            /* mount_quiet(i) */
+        return vfs_mount_quiet((int)a0);
+    case 15: {                                          /* make_exec(addr, len): code it loaded */
+        lx_u64 s = a0 & ~(PAGE - 1), e = (a0 + a1 + PAGE - 1) & ~(PAGE - 1);
+        if (s < MMU_LX_BASE || e > MMU_LX_BASE + MMU_LX_SIZE || e <= s || !uok(s, e - s, 0)) return -EINVAL;
+        if (mmu_as_protect(g->as, s, e - s, MMU_PROT_READ | MMU_PROT_EXEC)) return -ENOMEM;
+        lx_sync_code(s, e - s);
+        return 0;
+    }
+    }
+    return -ENOSYS;
+}
+
+/* ELF or LX: *x0 and *lr are what an LX program starts with (else 0) */
 static int exec_image(const char *path, const char *args, int argc, int envc,
-                      mmu_as_t **as_out, lx_u64 *entry, lx_u64 *sp, lx_u64 *top)
+                      mmu_as_t **as_out, lx_u64 *entry, lx_u64 *sp, lx_u64 *top,
+                      lx_u64 *x0, lx_u64 *lr)
 {
     mmu_as_t *old = mmu_as_current(), *as = mmu_as_create();
     if (!as) return -ENOMEM;
     mmu_as_activate(as);
     lx_u64 phdr = 0;
     uint32_t phnum = 0;
-    int r = load_elf(as, path, entry, &phdr, &phnum, top);
+    *x0 = *lr = 0;
+    int r;
+    if (is_lx(path)) {
+        r = load_lx(as, path, entry, x0, lr);
+        *top = USER_TOP - 16 * 1024 * 1024;            /* (brk: none of its business) */
+    } else {
+        r = load_elf(as, path, entry, &phdr, &phnum, top);
+    }
     if (r == 0 && mmu_as_map(as, USER_TOP - STACK_EAGER, STACK_EAGER,
                              MMU_PROT_READ | MMU_PROT_WRITE))
         r = -ENOMEM;
@@ -2223,6 +2471,7 @@ static void group_finish(group_t *g)
 {
     fwb_flush(g, 0, ~0ULL, 1);                         /* shared file mappings: to their files */
     for (int i = 0; i < MAX_FDS; i++) if (g->fd[i]) fd_close(cur, i);
+    lx_close_all(g);
     for (int i = 0; i < MAX_GROUPS; i++)               /* orphans go to pid 1 */
         if (groups[i].state != G_FREE && groups[i].ppid == g->pid) groups[i].ppid = 1;
     vma_clear(g);
@@ -2524,8 +2773,8 @@ static s64 sys_execve(lx_u64 upath, lx_u64 uargv, lx_u64 uenvp)
     if ((r = shebang(path, &used, &argc, envc)) < 0) return r;
     fwb_flush(cur->g, 0, ~0ULL, 1);                   /* shared file mappings go with the image */
     mmu_as_t *as, *old = cur->g->as;
-    lx_u64 entry, sp, top;
-    if ((r = exec_image(path, argbuf, argc, envc, &as, &entry, &sp, &top))) return r;
+    lx_u64 entry, sp, top, lx_x0, lx_lr;
+    if ((r = exec_image(path, argbuf, argc, envc, &as, &entry, &sp, &top, &lx_x0, &lx_lr))) return r;
     /* Point of no return: the new image replaces the old one, and this
      * thread is the process's only one. */
     group_t *g = cur->g;
@@ -2553,6 +2802,7 @@ static s64 sys_execve(lx_u64 upath, lx_u64 uargv, lx_u64 uenvp)
     vma_clear(cur->g);                                  /* a fresh layout: the stack area */
     vma_t sv = { STACK_BOTTOM, USER_TOP, MMU_PROT_READ | MMU_PROT_WRITE, V_ANON, 0, 0 };
     vma_insert(cur->g, &sv);
+    if (lx_lr) lx_vmas(cur->g);
     for (int i = 0; i < MAX_FDS; i++)
         if ((cur->g->cloexec >> i) & 1) fd_close(cur, i);
     for (int i = 0; i < NSIG; i++)                      /* handlers don't survive exec */
@@ -2564,6 +2814,8 @@ static s64 sys_execve(lx_u64 upath, lx_u64 uargv, lx_u64 uenvp)
     tf->spsr = 0;                                       /* EL0t, interrupts on */
     cur->tpidr = 0;
     __asm__ volatile("msr tpidr_el0, xzr");
+    lx_close_all(cur->g);
+    if (lx_lr) { tf->x[30] = lx_lr; return (s64)lx_x0; }  /* an OS/2 program: main(services) */
     return 0;                                           /* -> x0 of the new program */
 }
 
@@ -5221,6 +5473,7 @@ static s64 linux_syscall(linux_tf_t *tf)
     case 216: return sys_mremap(a0, a1, a2, a3);
     case 220: return sys_clone(a0, a1, a2, a3, a4);     /* clone(flags, sp, ptid, tls, ctid) */
     case 221: return sys_execve(a0, a1, a2);
+    case LX_SYS: return sys_lx(tf);
     case 222: return sys_mmap(a0, a1, a2, a3, (s64)a4, a5);
     case 226: return sys_mprotect(a0, a1, a2);
     case 227: fwb_flush(cur->g, a0, a0 + page_up(a1), 0); return 0;   /* msync */
@@ -5399,8 +5652,8 @@ int linux_run(const char *path, int argc, char **argv)
     ig->pid = init->pid;
     ig->nthreads = 1;
     mmu_as_t *as;
-    lx_u64 entry, sp, top;
-    int r = exec_image(path, argbuf, argc, envc, &as, &entry, &sp, &top);
+    lx_u64 entry, sp, top, lx_x0, lx_lr;
+    int r = exec_image(path, argbuf, argc, envc, &as, &entry, &sp, &top, &lx_x0, &lx_lr);
     mmu_as_activate(0);
     if (r) {
         kprintf("[PROG]   %s: can't run (errno %d)\n", path, -r);
@@ -5414,6 +5667,7 @@ int linux_run(const char *path, int argc, char **argv)
     init->g->brk_start = init->g->brk_cur = top;
     vma_t sv = { STACK_BOTTOM, USER_TOP, MMU_PROT_READ | MMU_PROT_WRITE, V_ANON, 0, 0 };
     vma_insert(init->g, &sv);
+    if (lx_lr) lx_vmas(init->g);
     kstrncpy(init->g->cwd, "/", sizeof init->g->cwd);
     kstrncpy(init->g->exe, path, sizeof init->g->exe);
     set_cmdline(init->g, argbuf, argc);
@@ -5437,6 +5691,8 @@ int linux_run(const char *path, int argc, char **argv)
     tf->elr = entry;
     tf->sp = sp;
     tf->spsr = 0;                                       /* EL0t, interrupts on */
+    tf->x[0] = lx_x0;                                   /* (an OS/2 program: main(services)) */
+    tf->x[30] = lx_lr;
     init->state = P_RUN;
     tick_start();
 

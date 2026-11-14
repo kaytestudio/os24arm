@@ -230,9 +230,8 @@ platform-specific are new code.
    Folder (Open parent, Refresh now, Close), Edit (Select all), View
    (Icon, Tree and Details views), Selected (Open, Open as Tree view,
    Properties), Help - and a scroll bar. Double-click a folder to open
-   it, a program to run it in a prompt, a file to edit it; an OS/2 (LX)
-   program says to RUN it at the system console (the LX loader runs
-   there only, so far). Right-click an object for its menu. Drag an
+   it, a program (Linux or OS/2) to run it in a prompt, a file to edit
+   it. Right-click an object for its menu. Drag an
    object (left button) onto a folder, a folder window or a drive: on the
    same drive it moves, to another drive it's copied (OS/2's rule - Shift
    forces a move, Ctrl a copy; Esc cancels the drag); onto the Shredder
@@ -253,6 +252,24 @@ platform-specific are new code.
    read-write - otherwise it stays read-only and CHKDSK \h lists what's
    wrong. Nothing is ever freed or moved.
    (`RUNELF \h\busybox sh /h/desktop.sh` instead: one prompt in cage.)
+
+   OS/2 programs (LX: CMD.EXE, KAYTEVM.EXE, ...) run as processes too:
+   type `CMD`, `kaytevm` or `RUN C:\HELLO.EXE` in a prompt (a name finds
+   NAME.EXE, in any case). The kernel's execve recognises an LX image
+   (`kernel/src/linux/linux.c`, "OS/2 programs as processes") and maps
+   it, at EL0, where it's linked: the LX window, 0x48000000 (`mmu.h`
+   MMU_LX_BASE; every address space has its own) - code read-only and
+   executable, its data, and on demand its .bss, its heap, and the DLL
+   it loads itself (DOSCALLS.DLL at 0x4A000000, made executable through
+   the kernel). `main()` gets an `lx_services` table, version 3
+   (`lx_services.h`): console output and input are its stdout and stdin
+   (`kernel/src/linux/lx_stubs.S`, EL0 code in a page of its own), the
+   kernel's file systems one system call (`LX_SYS`, the `lx_vfs_ops`),
+   the clock `clock_gettime`; the handles it opens are closed when it
+   ends. The programs' `uart.c` uses those instead of the UART when
+   they're there; the terminal is raw while one runs (they echo
+   themselves). At the system console `RUN` still runs them inside the
+   kernel.
 
    `userland/apps/os2cmd.c` relays a terminal to `/dev/os2cmd`, which runs
    each line in the shell of `kernel/src/main.c` - DIR, COPY, MOUNT, USB,

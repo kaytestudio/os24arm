@@ -57,6 +57,18 @@
  * value, or a negative LX_ERR_* on load failure. */
 int lx_exec_file(const char *path);
 
+/* For running an LX program as a process (kernel/src/linux/lx_user.c):
+ * check an image (its entry offset in the code object, the objects'
+ * sizes), then copy its objects to LX_LOAD_BASE / LX_DATA_LOAD_BASE in
+ * the address space that's active. 0 or a negative LX_ERR_*. */
+typedef struct {
+    uint32_t entry;          /* offset into the code object */
+    uint32_t code_size;
+    uint32_t data_size;
+} lx_image_info_t;
+int lx_check_image(const void *image, uint32_t image_size, lx_image_info_t *info);
+int lx_place_image(const void *image, uint32_t image_size);
+
 /* Load and run an LX image already sitting in memory (e.g. embedded in
  * the kernel image via .incbin). Same semantics as lx_exec_file(). */
 int lx_exec_image(const void *image, uint32_t image_size);

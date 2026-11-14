@@ -593,10 +593,11 @@ actual command-interpreter logic, not a demo.
 `dos/cmd_main.c` builds a standalone `CMD.EXE` from the exact same
 `dos_commands.c`/`dos_shell_dispatch()` command set the in-kernel shell uses,
 wrapped as a genuine LX executable by the host-side tools in `lx/`
-(`lxbuild`, `makeexe`). `RUN CMD.EXE` loads and jumps into it directly. Since
-there's no process boundary to return across, `CMD.EXE` is treated like the
-in-kernel shell: `EXIT` halts the CPU rather than returning control to
-whatever called `RUN`.
+(`lxbuild`, `makeexe`). At the system console `RUN CMD.EXE` loads and jumps
+into it directly, inside the kernel; `EXIT` returns to the kernel shell. On
+the desktop, OS/2 programs run as processes of their own instead (EL0, own
+address space - see `userland/README.md`, stage 6): type `CMD` in an OS/2
+Command Prompt, or double-click the program in a folder.
 
 ---
 

@@ -205,7 +205,10 @@ static int lx_copy_object(const uint8_t *base, uint32_t image_size,
     return 0;
 }
 
-int lx_exec_image(const void *image, uint32_t image_size)
+/* Checks an LX image and, if place, copies its objects to LX_LOAD_BASE /
+ * LX_DATA_LOAD_BASE - wherever those addresses are mapped right now: the
+ * kernel's own memory (RUN), or a process's pages (lx_user.c). */
+static int lx_image(const void *image, uint32_t image_size, lx_image_info_t *info, int place)
 {
     if (!image || image_size < sizeof(lx_header_t)) {
         uart_puts("[LX] Image too small\r\n");
@@ -279,13 +282,42 @@ int lx_exec_image(const void *image, uint32_t image_size)
      * lx/lxbuilder.c). Kept in two separate fixed regions (rather than
      * one flat RWX blob) so kernel/src/mmu.c can give them real, different
      * W^X permissions. */
+    if (info) {
+        info->entry = hdr->eip;
+        info->code_size = code_obj->virtual_size;
+        info->data_size = data_obj->virtual_size;
+    }
+    if (code_obj->virtual_size > LX_CODE_REGION_SIZE || data_obj->virtual_size > LX_DATA_REGION_SIZE) {
+        uart_puts("[LX] Object too large for its region\r\n");
+        return LX_ERR_TOOBIG;
+    }
+    if (!place) return 0;
     int rc;
     rc = lx_copy_object(base, image_size, hdr, code_obj,
                         (uint8_t *)LX_LOAD_BASE, LX_CODE_REGION_SIZE);
     if (rc != 0) return rc;
     rc = lx_copy_object(base, image_size, hdr, data_obj,
                         (uint8_t *)LX_DATA_LOAD_BASE, LX_DATA_REGION_SIZE);
+    return rc;
+}
+
+int lx_check_image(const void *image, uint32_t image_size, lx_image_info_t *info)
+{
+    return lx_image(image, image_size, info, 0);
+}
+
+int lx_place_image(const void *image, uint32_t image_size)
+{
+    return lx_image(image, image_size, 0, 1);
+}
+
+int lx_exec_image(const void *image, uint32_t image_size)
+{
+    lx_image_info_t info;
+    int rc = lx_image(image, image_size, &info, 1);
     if (rc != 0) return rc;
+    const lx_header_t *hdr = (const lx_header_t *)image;
+    const lx_object_t *code_obj = (const lx_object_t *)((const uint8_t *)image + hdr->object_table_offset);
 
     lx_flush_icache((void *)LX_LOAD_BASE, code_obj->virtual_size);
 

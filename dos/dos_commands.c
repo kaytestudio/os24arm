@@ -24,6 +24,7 @@
 #include "os2_api.h"
 #endif
 #include "uart.h"
+#include "lx_services.h"
 #include "kprintf.h"
 #include "string.h"
 
@@ -2209,6 +2210,8 @@ void dos_more(int argc, char **argv)
 /* QEMU virt's PL031 real-time clock: seconds since 1970 (UTC). */
 static unsigned long rtc_seconds(void)
 {
+    const struct lx_services *us = uart_user_services();   /* a process: no device access */
+    if (us && us->time) return us->time();
     return *(volatile uint32_t *)0x09010000UL;
 }
 
