@@ -3314,9 +3314,10 @@ static file_t *inet_file(nsock_t *ns, lx_u64 flags)
 static s64 inet_socket(lx_u64 type, lx_u64 proto)
 {
     int t = (int)(type & 0xF);
-    if (t != 1 && t != 2) return -EPROTOTYPE;            /* SOCK_STREAM, SOCK_DGRAM */
-    if (proto && proto != (t == 1 ? 6u : 17u)) return -EPROTONOSUPPORT;
-    nsock_t *ns = nsock_new(t == 1 ? NS_STREAM : NS_DGRAM);
+    if (t != 1 && t != 2 && t != 3) return -EPROTOTYPE;  /* SOCK_STREAM, SOCK_DGRAM, SOCK_RAW */
+    if (t == 3 && proto != 1) return -EPROTONOSUPPORT;    /* raw: ICMP only (ping) */
+    if (t != 3 && proto && proto != (t == 1 ? 6u : 17u)) return -EPROTONOSUPPORT;
+    nsock_t *ns = nsock_new(t == 1 ? NS_STREAM : t == 2 ? NS_DGRAM : NS_RAW);
     if (!ns) return -ENFILE;
     file_t *f = inet_file(ns, type);
     if (!f) { nsock_close(ns); return -ENFILE; }
@@ -3365,7 +3366,7 @@ static s64 inet_send(file_t *f, const uint8_t *b, lx_u64 n, lx_u64 flags, const 
         long r = nsock_send(f->ns, b + k, n - k, ip, port);
         if (r > 0 || (r == 0 && n == 0)) {
             k += (lx_u64)r;
-            if (k >= n || nsock_type(f->ns) == NS_DGRAM) return (s64)k;
+            if (k >= n || nsock_type(f->ns) != NS_STREAM) return (s64)k;
             continue;
         }
         if (r != -EAGAIN) {
@@ -3408,7 +3409,7 @@ static s64 inet_getsockopt(file_t *f, lx_u64 level, lx_u64 opt, lx_u64 uval, lx_
     int32_t v = 0;
     if (level == 1) {                                   /* SOL_SOCKET */
         switch (opt) {
-        case 3: v = nsock_type(f->ns) == NS_STREAM ? 1 : 2; break;   /* SO_TYPE */
+        case 3: v = nsock_type(f->ns) == NS_STREAM ? 1 : nsock_type(f->ns) == NS_RAW ? 3 : 2; break;   /* SO_TYPE */
         case 4: v = nsock_error(f->ns, 1); break;                    /* SO_ERROR */
         case 7: case 8: v = 64 * 1024; break;                         /* SO_SNDBUF, SO_RCVBUF */
         case 39: v = 2; break;                                       /* SO_DOMAIN: AF_INET */

@@ -596,11 +596,11 @@ a host port in). The shell's commands, also in the desktop's Command Prompts:
 | Command | |
 |---|---|
 | `IFCONFIG` | the interface: MAC, address, netmask, gateway, name servers |
-| `PING host [count]` | ICMP echo, by address or name |
+| `PING host [count]` | ICMP echo, by address or name (also `-c N`, `-n N`) |
 | `HOST name` | a DNS lookup |
 
 Programs have it too: AF_INET sockets (`kernel/src/net/sock.c`, TCP and
-UDP over lwIP's callback API; the `F_INET` files of `kernel/src/linux`) -
+UDP over lwIP's callback API, and raw ICMP sockets - busybox's `ping`; the `F_INET` files of `kernel/src/linux`) -
 connect, listen and accept, send and receive (to/from, msg), blocking or
 not, poll/epoll, `SO_ERROR`, `TCP_NODELAY`, loopback (127.0.0.1). When
 there's no `/etc/resolv.conf`, a program reading it gets the name servers

@@ -11,6 +11,7 @@
 
 #include "lwip/tcp.h"
 #include "lwip/udp.h"
+#include "lwip/raw.h"
 #include "lwip/pbuf.h"
 #include "lwip/ip_addr.h"
 
@@ -40,6 +41,7 @@ struct nsock {
     int used, type;
     struct tcp_pcb *tcp;
     struct udp_pcb *udp;
+    struct raw_pcb *raw;                   /* NS_RAW: ICMP */
     int listening, connecting, connected, eof, err, shut_wr, was_connected;
     struct pbuf *rx;                       /* TCP: received, unread */
     nsock_t *backlog[BACKLOG];             /* listening: accepted by lwIP, not yet by the program */
@@ -163,6 +165,24 @@ static void udp_recv_cb(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip
     wake(s);
 }
 
+/* ── raw (ICMP): a copy of every packet, its IP header in front; lwIP
+ *    goes on with them (its own echo replies, the shell's PING) ────── */
+static u8_t raw_recv_cb(void *arg, struct raw_pcb *pcb, struct pbuf *p, const ip_addr_t *addr)
+{
+    (void)pcb;
+    nsock_t *s = arg;
+    if (!s || s->dcount >= DGRAMS) return 0;
+    struct pbuf *c = pbuf_alloc(PBUF_RAW, p->tot_len, PBUF_RAM);
+    if (!c) return 0;
+    pbuf_copy(c, p);
+    dgram_t *d = &s->dq[(s->dhead + s->dcount++) % DGRAMS];
+    d->p = c;
+    d->ip = ip4_addr_get_u32(ip_2_ip4(addr));
+    d->port = 0;
+    wake(s);
+    return 0;                                         /* (not eaten) */
+}
+
 /* ── the calls ─────────────────────────────────────────────────────── */
 nsock_t *nsock_new(int type)
 {
@@ -172,6 +192,10 @@ nsock_t *nsock_new(int type)
         struct tcp_pcb *pcb = tcp_new_ip_type(IPADDR_TYPE_V4);
         if (!pcb) { s->used = 0; return 0; }
         tcp_hook(s, pcb);
+    } else if (type == NS_RAW) {
+        s->raw = raw_new(IP_PROTO_ICMP);
+        if (!s->raw) { s->used = 0; return 0; }
+        raw_recv(s->raw, raw_recv_cb, s);
     } else {
         s->udp = udp_new_ip_type(IPADDR_TYPE_V4);
         if (!s->udp) { s->used = 0; return 0; }
@@ -194,6 +218,7 @@ void nsock_close(nsock_t *s)
     }
     for (int i = 0; i < s->nbacklog; i++) nsock_close(s->backlog[i]);   /* never accepted */
     if (s->udp) { udp_remove(s->udp); s->udp = 0; }
+    if (s->raw) { raw_remove(s->raw); s->raw = 0; }
     if (s->rx) pbuf_free(s->rx);
     while (s->dcount) { pbuf_free(s->dq[s->dhead].p); s->dhead = (s->dhead + 1) % DGRAMS; s->dcount--; }
     s->used = 0;
@@ -206,7 +231,8 @@ int nsock_bind(nsock_t *s, uint32_t ip, uint16_t port)
 {
     ip_addr_t a;
     ip_addr_set_ip4_u32(&a, ip);
-    err_t e = s->tcp ? tcp_bind(s->tcp, &a, port) : s->udp ? udp_bind(s->udp, &a, port) : ERR_CLSD;
+    err_t e = s->tcp ? tcp_bind(s->tcp, &a, port) : s->udp ? udp_bind(s->udp, &a, port) :
+              s->raw ? raw_bind(s->raw, &a) : ERR_CLSD;
     return e == ERR_OK ? 0 : e == ERR_USE ? -E_ADDRINUSE : -lwip_errno(e);
 }
 
@@ -230,6 +256,7 @@ int nsock_connect(nsock_t *s, uint32_t ip, uint16_t port)
 {
     ip_addr_t a;
     ip_addr_set_ip4_u32(&a, ip);
+    if (s->type == NS_RAW) return raw_connect(s->raw, &a) == ERR_OK ? 0 : -E_INVAL;
     if (s->type == NS_DGRAM) {
         if (!s->udp) return -E_INVAL;
         err_t e = udp_connect(s->udp, &a, port);
@@ -259,6 +286,18 @@ nsock_t *nsock_accept(nsock_t *s)
 
 long nsock_send(nsock_t *s, const void *buf, unsigned long n, const uint32_t *ip, uint16_t port)
 {
+    if (s->type == NS_RAW) {                          /* the ICMP message: lwIP puts the IP header on */
+        if (!s->raw) return -E_INVAL;
+        if (n > 65507) return -90;
+        struct pbuf *p = pbuf_alloc(PBUF_IP, (u16_t)n, PBUF_RAM);
+        if (!p) return -E_NOMEM;
+        if (n) pbuf_take(p, buf, (u16_t)n);
+        err_t e;
+        if (ip) { ip_addr_t a; ip_addr_set_ip4_u32(&a, *ip); e = raw_sendto(s->raw, p, &a); }
+        else e = raw_send(s->raw, p);
+        pbuf_free(p);
+        return e == ERR_OK ? (long)n : -lwip_errno(e);
+    }
     if (s->type == NS_DGRAM) {
         if (!s->udp) return -E_INVAL;
         if (n > 65507) return -90;                            /* EMSGSIZE */
@@ -294,7 +333,7 @@ long nsock_send(nsock_t *s, const void *buf, unsigned long n, const uint32_t *ip
 
 long nsock_recv(nsock_t *s, void *buf, unsigned long n, uint32_t *ip, uint16_t *port, int peek)
 {
-    if (s->type == NS_DGRAM) {
+    if (s->type == NS_DGRAM || s->type == NS_RAW) {
         if (!s->dcount) return -E_AGAIN;
         dgram_t *d = &s->dq[s->dhead];
         unsigned long c = n < d->p->tot_len ? n : d->p->tot_len;
@@ -327,7 +366,7 @@ long nsock_recv(nsock_t *s, void *buf, unsigned long n, uint32_t *ip, uint16_t *
 unsigned nsock_poll(nsock_t *s)
 {
     unsigned m = 0;
-    if (s->type == NS_DGRAM) return (s->dcount ? NS_IN : 0) | NS_OUT;
+    if (s->type == NS_DGRAM || s->type == NS_RAW) return (s->dcount ? NS_IN : 0) | NS_OUT;
     if (s->listening) return s->nbacklog ? NS_IN : 0;
     if (s->rx || s->eof) m |= NS_IN;
     if (s->eof) m |= NS_RDHUP;
@@ -370,7 +409,7 @@ int nsock_addr(nsock_t *s, int peer, uint32_t *ip, uint16_t *port)
 
 long nsock_unread(nsock_t *s)
 {
-    if (s->type == NS_DGRAM) return s->dcount ? s->dq[s->dhead].p->tot_len : 0;
+    if (s->type == NS_DGRAM || s->type == NS_RAW) return s->dcount ? s->dq[s->dhead].p->tot_len : 0;
     return s->rx ? (long)s->rx->tot_len : 0;
 }
 

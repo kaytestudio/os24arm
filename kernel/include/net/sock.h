@@ -8,12 +8,12 @@
 #include "types.h"
 
 typedef struct nsock nsock_t;
-enum { NS_STREAM = 1, NS_DGRAM = 2 };
+enum { NS_STREAM = 1, NS_DGRAM = 2, NS_RAW = 3 };   /* (RAW: ICMP - ping) */
 enum { NS_IN = 1, NS_OUT = 4, NS_ERR = 8, NS_HUP = 16, NS_RDHUP = 0x2000 };   /* poll's bits */
 
 extern void (*nsock_wakeup)(void *chan);         /* set by the Linux layer */
 
-nsock_t *nsock_new(int type);
+nsock_t *nsock_new(int type);                    /* NS_RAW: ICMP, its packets with their IP header */
 void     nsock_close(nsock_t *s);
 int      nsock_bind(nsock_t *s, uint32_t ip, uint16_t port);
 int      nsock_listen(nsock_t *s, int backlog);

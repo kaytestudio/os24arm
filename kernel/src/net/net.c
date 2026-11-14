@@ -232,18 +232,31 @@ static u8_t ping_recv(void *arg, struct raw_pcb *pcb, struct pbuf *p, const ip_a
 
 void net_cmd_ping(int argc, char **argv)
 {
-    if (argc < 2) { kprintf("\nUsage: PING host [count]\n"); return; }
+    /* PING host [count], or with -c N / -n N (Unix, OS/2 and Windows), in any order */
+    const char *host = 0;
+    int count = 4;
+    for (int i = 1; i < argc; i++) {
+        const char *a = argv[i];
+        if ((a[0] == '-' || a[0] == '/') && (a[1] == 'c' || a[1] == 'C' || a[1] == 'n' || a[1] == 'N') && !a[2] && i + 1 < argc) {
+            count = 0;
+            for (const char *c = argv[++i]; *c >= '0' && *c <= '9'; c++) count = count * 10 + (*c - '0');
+        } else if (a[0] >= '0' && a[0] <= '9' && host) {
+            count = 0;
+            for (const char *c = a; *c >= '0' && *c <= '9'; c++) count = count * 10 + (*c - '0');
+        } else if (!host) {
+            host = a;
+        }
+    }
+    if (!host) { kprintf("\nUsage: PING host [count]    (or PING -n count host)\n"); return; }
     if (!need_net()) return;
     ip_addr_t to;
-    if (resolve(argv[1], &to) != 0) return;
-    int count = 4;
-    if (argc > 2) { count = 0; for (const char *c = argv[2]; *c >= '0' && *c <= '9'; c++) count = count * 10 + (*c - '0'); }
+    if (resolve(host, &to) != 0) return;
     if (count < 1) count = 1;
     struct raw_pcb *pcb = raw_new(IP_PROTO_ICMP);
     if (!pcb) { kprintf("\nPING: out of memory\n"); return; }
     raw_recv(pcb, ping_recv, 0);
     raw_bind(pcb, IP_ADDR_ANY);
-    kprintf("\nPING %s (%s): 56 data bytes\n", argv[1], ipaddr_ntoa(&to));
+    kprintf("\nPING %s (%s): 56 data bytes\n", host, ipaddr_ntoa(&to));
     int sent = 0, got = 0;
     unsigned long total = 0;
     for (int i = 0; i < count; i++) {
@@ -276,7 +289,7 @@ void net_cmd_ping(int argc, char **argv)
     }
     raw_remove(pcb);
     kprintf("--- %s ping statistics ---\n%d packets transmitted, %d received, %d%% packet loss",
-            argv[1], sent, got, sent ? (sent - got) * 100 / sent : 0);
+            host, sent, got, sent ? (sent - got) * 100 / sent : 0);
     if (got) kprintf(", average %u ms", (unsigned)(total / (unsigned long)got));
     kprintf("\n");
 }
