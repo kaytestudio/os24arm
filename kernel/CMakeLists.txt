@@ -64,6 +64,7 @@ else()
             src/vm_guest_hello.S  # ← built-in test guest for VM TEST
             src/net/virtio_net.c  # ← network card: virtio-net (virtio-mmio)
             src/net/net.c         # ← lwIP glue: lan0, DHCP, polling, PING/IFCONFIG/HOST
+            src/net/sock.c        # ← Internet sockets (TCP, UDP) for the Linux-ABI programs
     )
     set(LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/linker.ld)
 endif()

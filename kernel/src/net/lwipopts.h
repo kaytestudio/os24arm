@@ -39,6 +39,8 @@
 #define LWIP_DNS                    1
 #define DNS_MAX_SERVERS             2
 #define LWIP_NETIF_STATUS_CALLBACK  1
+#define LWIP_NETIF_LOOPBACK         1      /* to its own address, and 127.0.0.1: */
+#define LWIP_HAVE_LOOPIF            1      /* ... lo (net_poll runs it) */
 #define LWIP_NETIF_HOSTNAME         1
 #define LWIP_STATS                  0
 #define LWIP_SO_RCVBUF              0

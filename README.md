@@ -599,6 +599,17 @@ a host port in). The shell's commands, also in the desktop's Command Prompts:
 | `PING host [count]` | ICMP echo, by address or name |
 | `HOST name` | a DNS lookup |
 
+Programs have it too: AF_INET sockets (`kernel/src/net/sock.c`, TCP and
+UDP over lwIP's callback API; the `F_INET` files of `kernel/src/linux`) -
+connect, listen and accept, send and receive (to/from, msg), blocking or
+not, poll/epoll, `SO_ERROR`, `TCP_NODELAY`, loopback (127.0.0.1). When
+there's no `/etc/resolv.conf`, a program reading it gets the name servers
+DHCP gave (musl's resolver works unchanged). So busybox's `wget`, `nc`,
+`nslookup` work from a Command Prompt:
+
+    sh -c "wget -qO- http://example.com/ | head"
+    nslookup example.com
+
 lwIP runs in the kernel, polled from the shell's idle loop and the
 scheduler (the kernel isn't preempted, so it has one caller at a time).
 

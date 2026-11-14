@@ -11,6 +11,7 @@ int  vnet_recv(void *buf, unsigned max);         /* a frame's length, or 0 */
 void net_init(void);                             /* the card, DHCP */
 void net_poll(void);                             /* frames in, timers: call often */
 int  net_up(void);                               /* an address yet? */
+int  net_resolv_conf(char *buf, int cap);        /* "nameserver ..." lines; their length */
 unsigned long net_now_ms(void);
 
 void net_cmd_ifconfig(int argc, char **argv);    /* the shell's commands */

@@ -737,7 +737,7 @@ static void execute_command(char *cmdline)
     else if (my_strcmp(argv[0], "IFCONFIG") == 0 || my_strcmp(argv[0], "IPCONFIG") == 0) {
         net_cmd_ifconfig(argc, argv);
     }
-    else if (my_strcmp(argv[0], "HOST") == 0 || my_strcmp(argv[0], "NSLOOKUP") == 0) {
+    else if (my_strcmp(argv[0], "HOST") == 0) {
         net_cmd_host(argc, argv);
     }
     else if (my_strcmp(argv[0], "USB") == 0) {

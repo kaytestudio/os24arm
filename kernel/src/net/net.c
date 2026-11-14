@@ -91,6 +91,26 @@ void net_init(void)
 
 int net_up(void) { return have_card && !ip4_addr_isany_val(*netif_ip4_addr(&nif)); }
 
+/* /etc/resolv.conf, as DHCP told it: the name servers (the Linux layer
+ * shows this when there's no file) */
+int net_resolv_conf(char *buf, int cap)
+{
+    int n = 0;
+    if (!have_card || cap < 64) return 0;
+    const char *head = "# from DHCP (the kernel's lan0)\n";
+    for (const char *c = head; *c && n < cap - 1; c++) buf[n++] = *c;
+    for (int i = 0; i < DNS_MAX_SERVERS; i++) {
+        const ip_addr_t *d = dns_getserver((u8_t)i);
+        if (ip_addr_isany(d)) continue;
+        const char *a = ipaddr_ntoa(d), *k = "nameserver ";
+        for (const char *c = k; *c && n < cap - 1; c++) buf[n++] = *c;
+        for (const char *c = a; *c && n < cap - 1; c++) buf[n++] = *c;
+        if (n < cap - 1) buf[n++] = '\n';
+    }
+    buf[n] = 0;
+    return n;
+}
+
 void net_poll(void)
 {
     if (!have_card) return;
@@ -105,6 +125,7 @@ void net_poll(void)
         pbuf_take(p, rxbuf, (u16_t)n);
         if (nif.input(p, &nif) != ERR_OK) pbuf_free(p);
     }
+    netif_poll_all();                                   /* (loopback: what was sent to us) */
     sys_check_timeouts();
     depth--;
 }
