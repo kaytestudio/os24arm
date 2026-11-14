@@ -450,3 +450,23 @@ bool virtio_gpu_set_mode(void *fb_addr, uint32_t width, uint32_t height)
     virtio_gpu_flush(0, 0, (int)width, (int)height);
     return true;
 }
+
+/* Before powering off: the scanout let go of (no resource on it) and the
+ * resource freed - the host's display isn't left showing guest memory
+ * that's about to disappear (QEMU's cocoa display crashed on exit so). */
+void virtio_gpu_shutdown(void)
+{
+    if (!g_available) return;
+    virtio_gpu_set_scanout_t scan;
+    memset(&scan, 0, sizeof(scan));
+    scan.hdr.type    = VIRTIO_GPU_CMD_SET_SCANOUT;
+    scan.scanout_id  = GPU_SCANOUT_ID;
+    scan.resource_id = 0;                               /* (none: the display off) */
+    gpu_cmd_nodata(&scan, sizeof(scan), "SET_SCANOUT (off)");
+    virtio_gpu_ctrl_hdr_t unref[2];
+    memset(unref, 0, sizeof unref);
+    unref[0].type = VIRTIO_GPU_CMD_RESOURCE_UNREF;
+    ((uint32_t *)&unref[1])[0] = g_res;
+    gpu_cmd_nodata(unref, sizeof(virtio_gpu_ctrl_hdr_t) + 8, "RESOURCE_UNREF");
+    g_available = false;
+}

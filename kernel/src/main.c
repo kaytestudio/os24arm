@@ -647,6 +647,7 @@ static void system_shutdown(void)
         cmd_umount(2, uv);
     }
     kprintf("\nShutdown has completed. It is now safe to turn off your computer.\n");
+    virtio_gpu_shutdown();                              /* (the host's display let go of first) */
     hyp_system_off();
     for (;;) __asm__ volatile("wfi");                 /* no PSCI: stay halted */
 }

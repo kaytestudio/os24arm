@@ -51,5 +51,6 @@ bool virtio_gpu_probe(void);
 bool virtio_gpu_host_size(uint32_t *w, uint32_t *h);
 bool virtio_gpu_resized(uint32_t *w, uint32_t *h);
 bool virtio_gpu_set_mode(void *fb_addr, uint32_t width, uint32_t height);
+void virtio_gpu_shutdown(void);                /* before powering off: the display let go of */
 
 #endif /* GUI_VIRTIO_GPU_H */
