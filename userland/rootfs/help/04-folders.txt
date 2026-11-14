@@ -3,6 +3,8 @@ A folder window shows what's in a folder. Its menu bar: Folder (Open parent, Cre
 
 Views: Icon view (the objects as icons), Tree view (the folders inside, as a tree: click + to open a branch, - to close it) and Details view (name, size and when it was last written).
 
+Sorting: View > Sort by name, type, size or last write - or, in the Details view, click a column's heading (again: the other way round). Folders always come first. Each folder window keeps its own order.
+
 Double-click a folder to open it, a program to run it, a file to edit it. Selected > Properties tells you about an object.
 
 Selecting several objects: hold Ctrl and click to add one (or take it away again), hold Shift and click to select everything from the last one to this one, or drag a rubber band around them from an empty part of the folder. Ctrl+A selects everything. Dragging any of the selected objects takes them all; Del or the Shredder deletes them all, after one question.

@@ -604,7 +604,21 @@ inside the kernel, as it used to.)
 
 ## 9. The GUI
 
-`GUI` starts a small Wayland-style compositor (`kernel/src/gui/wayland.c`)
+**The desktop: the Workplace Shell.** With a display (`scripts/run-vm.sh
+--wayland --hvf`), the system boots into an OS/2 Warp 4 style desktop:
+`userland/wps`, a Wayland compositor in C++ on wlroots, running as a
+Linux-ABI program from the USB stick (drive D:). It has the blue desktop
+with its objects (OS/2 System, the Assistance Center, Drives, Command
+Prompt, Drive D, Programs, Window List, Shut Down, the Shredder), the
+WarpCenter along the top, OS/2 window frames on every window, folder
+windows in Icon, Tree and Details views (sorted by name, type, size or
+date) with drag and drop - moving on a drive, copying across drives -
+shadows, a Startup folder, a Settings notebook, the System Editor, a help
+viewer, and OS/2 programs (CMD.EXE, ...) running as processes of their
+own. The desktop is kept as it was left (`\OS2\WPS.INI`). The details are
+in `userland/README.md` (stage 6); the help is on the desktop.
+
+**The in-kernel GUI.** `GUI` starts a small Wayland-style compositor (`kernel/src/gui/wayland.c`)
 with four switchable "workplaces" (virtual desktops) — **Cmd+Escape** in the
 display window cycles between them. Backed by `virtio-gpu`/`ramfb` for the
 framebuffer and `virtio-input` for keyboard/pointer events (see `run-gui` in

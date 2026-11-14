@@ -370,6 +370,8 @@ struct Window {
     std::vector<Node> nodes;                      /* TREE */
     int sel = -1, scroll = 0;                     /* scroll: in rows */
     std::set<int> marks;                          /* the selected objects (sel: the one at the cursor) */
+    int sort = -1;                                /* -1 as listed, 0 name, 1 type, 2 size, 3 last write */
+    bool desc = false;                            /* ... backwards */
     bool banding = false;                         /* a rubber band being drawn: */
     int bx0 = 0, by0 = 0, bx1 = 0, by1 = 0;       /* ... its corners, in the content */
     /* INFO (Properties, About, dialogs) */
@@ -1023,10 +1025,15 @@ static void draw_details_view(Window *w, pixman_image_t *im, int ox, int oy)
     int base = text_ascent(TEXT_UI) / 2 - 1 + TROW / 2;
     struct { int x, w; const char *t; } head[] = {
         { 0, tc, "Icon" }, { tc, sc - tc, "Title" }, { sc, dc - sc, "Size" }, { dc, view_w(w) - dc, "Last write" } };
-    for (auto &h : head) {
+    static const int col_sort[4] = { 1, 0, 2, 3 };              /* Icon: by type */
+    for (int k = 0; k < 4; k++) {
+        auto &h = head[k];
         fill(im, ox + h.x, oy, h.w, TROW, C_FACE);
         bevel(im, ox + h.x, oy, h.w, TROW, true, 1);
-        text_draw(im, TEXT_UI, ox + h.x + 5, oy + base, h.t, C_TEXT, ox + h.x + h.w - 2);
+        int e = text_draw(im, TEXT_UI, ox + h.x + 5, oy + base, h.t, C_TEXT, ox + h.x + h.w - 2);
+        if (w->sort == col_sort[k] && e + 14 < ox + h.x + h.w)
+            for (int r = 0; r < 4; r++)                              /* up: A to Z; down: backwards */
+                fill(im, e + 6 + (w->desc ? r : 3 - r), oy + TROW / 2 - 2 + r, 1 + 2 * (w->desc ? 3 - r : r), 1, C_SHADOW);
     }
     for (int i = w->scroll; i < (int)w->objects.size(); i++) {
         const Object &o = w->objects[i];
@@ -1216,6 +1223,39 @@ static void toggle_node(Window *w, int i)
     }
 }
 
+/* the folder's objects in the order chosen (folders first, as always) */
+static const char *sort_names[] = { "name", "type", "size", "last write" };
+static void sort_objects(Window *w)
+{
+    if (w->sort < 0) return;
+    auto ext = [](const Object &o) {
+        size_t d = o.label.rfind('.');
+        return d == std::string::npos ? std::string() : o.label.substr(d + 1);
+    };
+    int k = w->sort;
+    bool desc = w->desc;
+    std::stable_sort(w->objects.begin(), w->objects.end(), [&](const Object &a, const Object &b) {
+        bool fa = a.action == A_FOLDER, fb = b.action == A_FOLDER;
+        if (fa != fb) return fa;
+        int c = 0;
+        if (k == 1) c = strcasecmp(ext(a).c_str(), ext(b).c_str());
+        else if (k == 2) c = a.size < b.size ? -1 : a.size > b.size;
+        else if (k == 3) c = a.mtime < b.mtime ? -1 : a.mtime > b.mtime;
+        if (c == 0) c = strcasecmp(a.label.c_str(), b.label.c_str());
+        return desc ? c > 0 : c < 0;
+    });
+}
+
+static void load_folder(Window *w);
+static void set_sort(Window *w, int k)
+{
+    if (w->sort == k) w->desc = !w->desc;
+    else { w->sort = k; w->desc = k >= 2; }                 /* (sizes, dates: the biggest, newest first) */
+    load_folder(w);
+    draw_window(w);
+    save_state();
+}
+
 static void load_folder(Window *w)
 {
     select_one(w, -1);
@@ -1225,6 +1265,7 @@ static void load_folder(Window *w)
         toggle_node(w, 0);
     } else {
         w->objects = folder_objects(w->path);
+        sort_objects(w);
     }
 }
 
@@ -2184,6 +2225,13 @@ static std::vector<Menu::Item> folder_menu(Window *w, int which)
             { "Tree view", [w] { set_view(w, Window::TREE); } },
             { "Details view", [w] { set_view(w, Window::DETAILS); } } };
         v[w->view].checked = true;
+        if (w->view != Window::TREE) {
+            v.push_back({ "", nullptr });
+            for (int k = 0; k < 4; k++) {
+                v.push_back({ std::string("Sort by ") + sort_names[k], [w, k] { set_sort(w, k); } });
+                v.back().checked = w->sort == k;
+            }
+        }
         return v; }
     case 3: return {
         { "Open", [w] { activate(w, w->sel); }, any },
@@ -2860,12 +2908,12 @@ static void save_state()
     for (const Object &o : S.startup) fprintf(f, "startup %s|%s\n", o.path.c_str(), o.label.c_str());
     for (Window *w : S.windows)
         if (w->kind == Window::FOLDER && w->mapped)
-            fprintf(f, "folder %d %d %d %d %d %s|%s\n", (int)w->view, w->x, w->y, w->cw, w->ch,
+            fprintf(f, "folder %d %d %d %d %d %d %d %s|%s\n", (int)w->view, w->x, w->y, w->cw, w->ch, w->sort, w->desc ? 1 : 0,
                     w->path.c_str(), w->name.c_str());
     if (fclose(f) == 0) rename(tmp.c_str(), state_file().c_str());
 }
 
-struct Saved { int view, x, y, w, h; std::string path, name; };
+struct Saved { int view, x, y, w, h; std::string path, name; int sort = -1, desc = 0; };
 static std::vector<Saved> saved_folders;
 
 static void load_state()
@@ -2888,7 +2936,13 @@ static void load_state()
             if (bar != std::string::npos && resolve_shadow(rest.substr(0, bar), rest.substr(bar + 1), &sh))
                 (st ? S.startup : S.shadows).push_back(sh);
         }
-        else if (sscanf(line, "folder %d %d %d %d %d %n", &a, &b, &c, &d, &e, &n) == 5 && n) {
+        else if (int so, de; sscanf(line, "folder %d %d %d %d %d %d %d %n", &a, &b, &c, &d, &e, &so, &de, &n) == 7 && n) {
+            std::string rest = line + n;
+            size_t bar = rest.find('|');
+            if (bar == std::string::npos || a < 0 || a > 2) continue;
+            saved_folders.push_back({ a, b, c, d, e, rest.substr(0, bar), rest.substr(bar + 1), std::clamp(so, -1, 3), de });
+        }
+        else if (n = 0, sscanf(line, "folder %d %d %d %d %d %n", &a, &b, &c, &d, &e, &n) == 5 && n) {
             std::string rest = line + n;
             size_t bar = rest.find('|');
             if (bar == std::string::npos || a < 0 || a > 2) continue;
@@ -2908,6 +2962,7 @@ static void restore_folders()
         open_folder(s.path, s.name, s.view);
         Window *w = S.active;
         if (!w || w->kind != Window::FOLDER || w->path != s.path) continue;
+        if (s.sort >= 0 && w->view != Window::TREE) { w->sort = s.sort; w->desc = s.desc; load_folder(w); }
         w->cw = std::clamp(s.w, 160, S.W);
         w->ch = std::clamp(s.h, 80, S.H);
         w->x = std::clamp(s.x, -w->fw() + 40, S.W - 40);
@@ -3246,6 +3301,12 @@ static void folder_click(Window *w, int cx, int cy, uint32_t time, bool right)
         }
         clamp_scroll(w);
         draw_window(w);
+        return;
+    }
+    if (w->view == Window::DETAILS && !right && cy >= MENUBAR && cy < MENUBAR + TROW) {   /* a column's heading */
+        int tc, sc, dc;
+        details_cols(w, &tc, &sc, &dc);
+        set_sort(w, cx < tc ? 1 : cx < sc ? 0 : cx < dc ? 2 : 3);
         return;
     }
     bool box;

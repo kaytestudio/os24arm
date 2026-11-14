@@ -228,7 +228,8 @@ platform-specific are new code.
    and close buttons). Folders open as windows of the real directories
    (UNIXROOT's and the system's folders stay hidden), with a menu bar -
    Folder (Open parent, Refresh now, Close), Edit (Select all), View
-   (Icon, Tree and Details views), Selected (Open, Open as Tree view,
+   (Icon, Tree and Details views; Sort by name, type, size or last
+   write - or a click on a Details column's heading), Selected (Open, Open as Tree view,
    Properties), Help - and a scroll bar. Double-click a folder to open
    it, a program (Linux or OS/2) to run it in a prompt, a file to edit
    it. Right-click an object for its menu. Drag an
