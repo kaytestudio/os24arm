@@ -218,7 +218,7 @@ platform-specific are new code.
    is a wlroots compositor in C++17, linked with the system's own libc++
    (the `libcxx-devel` and `llvm` packages), in the style of OS/2 Warp 4:
    the blue desktop with its objects (OS/2 System, Drives, Command Prompt,
-   Drive D, Programs, Window List; Shut Down bottom right - double-click
+   Drive D, Programs, Window List; Shut Down and the Shredder bottom right - double-click
    one, right-click the desktop for the system menu), the WarpCenter
    along the top (system menu, Window List, Command Prompt, Drives,
    Programs, the active window, the clock), and an OS/2 frame on every
@@ -232,7 +232,12 @@ platform-specific are new code.
    Properties), Help - and a scroll bar. Double-click a folder to open
    it, a program to run it in a prompt, a file to edit it; an OS/2 (LX)
    program says to RUN it at the system console (the LX loader runs
-   there only, so far). Right-click an object for its menu. Keys in a
+   there only, so far). Right-click an object for its menu. Drag an
+   object (left button) onto a folder, a folder window or a drive: on the
+   same drive it moves, to another drive it's copied (OS/2's rule - Shift
+   forces a move, Ctrl a copy; Esc cancels the drag); onto the Shredder
+   (bottom right) it's deleted, after a confirmation. Folder > Create new
+   folder; Selected > Rename... (F2) and Delete... (Del). Keys in a
    folder: arrows, Home/End, Page Up/Down, Enter opens, Backspace the
    parent, F5 refreshes, F10 the menu bar (arrows, Enter, Esc); in a
    Tree view Right/+ expands and Left/- collapses.

@@ -212,7 +212,7 @@ static void gradient_h(pixman_image_t *im, int x, int y, int w, int h, uint32_t 
 
 /* ── icons: drawn here, OS/2 Warp in spirit ─────────────────────────── */
 enum Icon { I_FOLDER, I_FILE, I_TEXT, I_PROGRAM, I_PROMPT, I_DRIVE, I_SYSTEM, I_PROGRAMS,
-            I_WINLIST, I_SHUTDOWN, I_DRIVES, I_COUNT };
+            I_WINLIST, I_SHUTDOWN, I_DRIVES, I_SHREDDER, I_COUNT };
 
 static void disc(pixman_image_t *im, int cx, int cy, int r, uint32_t c)
 {
@@ -287,6 +287,14 @@ static void draw_icon(pixman_image_t *im, int i, int x, int y, int s)
         fill(im, x + S(5), y + S(4), S(22), S(4), C_TITLE);
         for (int l = 0; l < 5; l++) fill(im, x + S(8), y + S(11 + 3 * l), S(16), S(2), C_SHADOW);
         break;
+    case I_SHREDDER:
+        boxed(im, x + S(4), y + S(14), S(24), S(16), C_FACE);                 /* the bin */
+        fill(im, x + S(4) + 1, y + S(14) + 1, S(24) - 2, 1, C_LIGHT);
+        fill(im, x + S(7), y + S(17), S(18), std::max(1, S(2)), C_DARK);       /* the slot */
+        boxed(im, x + S(9), y + S(2), S(14), S(15), C_WHITE);                 /* the paper going in */
+        for (int l = 0; l < 3; l++) fill(im, x + S(11), y + S(5 + 3 * l), S(10), 1, C_SHADOW);
+        for (int k = 0; k < 4; k++) fill(im, x + S(8 + 5 * k), y + S(22), std::max(1, S(2)), S(6), C_SHADOW);  /* strips */
+        break;
     case I_SHUTDOWN:
         disc(im, x + S(16), y + S(16), S(13), 0xFF801010);
         disc(im, x + S(16), y + S(16), S(11), 0xFFD02020);
@@ -298,7 +306,7 @@ static void draw_icon(pixman_image_t *im, int i, int x, int y, int s)
 }
 
 /* ── objects: what an icon stands for ───────────────────────────────── */
-enum Action { A_NONE, A_FOLDER, A_RUN, A_OS2RUN, A_EDIT, A_SCRIPT, A_PROMPT, A_PROGRAMS, A_WINLIST,
+enum Action { A_NONE, A_FOLDER, A_RUN, A_OS2RUN, A_EDIT, A_SHREDDER, A_SCRIPT, A_PROMPT, A_PROGRAMS, A_WINLIST,
               A_SHUTDOWN };
 struct Object {
     std::string label;
@@ -339,9 +347,14 @@ struct Window {
     std::vector<Node> nodes;                      /* TREE */
     int sel = -1, scroll = 0;                     /* scroll: in rows */
     bool all = false;                             /* Edit > Select all */
-    /* INFO (Properties, About) */
+    /* INFO (Properties, About, dialogs) */
     std::string info_title;
     std::vector<std::string> lines;
+    struct Button { std::string label; std::function<void(Window *)> run; };
+    std::vector<Button> buttons;                  /* the first: Enter */
+    bool editing = false;                         /* an entry field */
+    bool edit_all = false;                        /* its text selected: typing replaces it */
+    std::string edit;
     /* WINLIST */
     int lsel = -1;
 
@@ -394,10 +407,19 @@ struct Server {
 
     /* pointer grabs */
     enum Mode { NONE, MOVE, RESIZE, THUMB } mode = NONE;
-    Window *grab = nullptr;
+    Window *grab = nullptr;                      /* (also: a window going away ends a drag) */
     uint32_t grab_edges = 0;
     double gx, gy;
     int gwx, gwy, gcw, gch;
+
+    /* dragging an object */
+    struct Drag {
+        bool armed = false, active = false;
+        Window *src = nullptr;
+        Object obj;
+        double x0 = 0, y0 = 0;
+        Picture pic;
+    } drag;
 
     /* double clicks */
     uint32_t last_click = 0;
@@ -435,6 +457,7 @@ static void focus(Window *w);
 
 static std::string dos_path(const std::string &p);
 static void os2_program(const Object &o);
+static void open_info(const std::string &title, std::vector<std::string> lines);
 static void run_object(const Object &o)
 {
     switch (o.action) {
@@ -444,7 +467,8 @@ static void run_object(const Object &o)
     case A_WINLIST:  toggle_winlist(); break;
     case A_SHUTDOWN: spawn({ sys("os2cmd"), "SHUTDOWN" }); break;
     case A_RUN:    { auto v = terminal(true); v.push_back(o.path); spawn(v); break; }
-    case A_OS2RUN:   os2_program(o); break;     /* (the LX loader: the console's) */
+    case A_OS2RUN:   os2_program(o); break;
+    case A_SHREDDER: open_info("Shredder", { "Shredder", "Drag an object here to delete it." }); break;     /* (the LX loader: the console's) */
     case A_SCRIPT: { auto v = terminal(true); v.push_back(sys("busybox")); v.push_back("sh");
                      v.push_back(o.path); spawn(v); break; }
     case A_EDIT:   { auto v = terminal(); v.push_back(sys("busybox")); v.push_back("vi");
@@ -552,7 +576,8 @@ static void draw_desktop()
     S.desk_pos.clear();
     for (size_t i = 0; i < S.desk_objs.size(); i++) {
         int x, y;
-        if (S.desk_objs[i].action == A_SHUTDOWN) { x = S.W - 70; y = S.H - 80; }
+        if (S.desk_objs[i].action == A_SHREDDER) { x = S.W - 70; y = S.H - 80; }
+        else if (S.desk_objs[i].action == A_SHUTDOWN) { x = S.W - 140; y = S.H - 80; }
         else { x = 18; y = BAR + 16 + (int)i * 72; }
         S.desk_pos.push_back({ x, y });
         draw_icon(im, S.desk_objs[i].icon, x + 11, y, 32);
@@ -922,14 +947,6 @@ static void draw_folder_content(Window *w, pixman_image_t *im, int ox, int oy)
     draw_scrollbar(w, im, ox, oy);
 }
 
-static void draw_info_content(Window *w, pixman_image_t *im, int ox, int oy)
-{
-    fill(im, ox, oy, w->cw, w->ch, C_FACE);
-    int y = oy + 12;
-    for (size_t i = 0; i < w->lines.size(); i++, y += ROW)
-        text_draw(im, i == 0 ? TEXT_BOLD : TEXT_UI, ox + 14, y + text_ascent(TEXT_UI), w->lines[i].c_str(), C_TEXT,
-                  ox + w->cw - 6);
-}
 
 /* ── window management ─────────────────────────────────────────────── */
 static void place(Window *w)
@@ -1025,7 +1042,7 @@ static Window *new_internal(Window::Kind k, int cw, int ch, Window **slot = null
     w->tree->node.data = &w->tag;
     w->mapped = true;
     S.windows.push_back(w);
-    place(w);
+    if (k != Window::INFO) place(w);              /* (dialogs: the caller centres them) */
     focus(w);
     return w;
 }
@@ -1139,16 +1156,289 @@ static std::string dos_path(const std::string &p)
 }
 
 /* Properties, About: a window of lines */
-static void open_info(const std::string &title, std::vector<std::string> lines)
+/* ── dialogs: lines of text, maybe an entry field, buttons ───────────── */
+static const int DLG_BTN_H = 24, DLG_EDIT_H = 22;
+
+static int dialog_button_w(const Window::Button &b) { return std::max(76, text_width(TEXT_UI, b.label.c_str()) + 24); }
+
+/* button i's rectangle, in content coordinates */
+static void dialog_button_rect(const Window *w, int i, int *x, int *y, int *bw)
 {
-    int w = 200;
+    *x = 14;
+    for (int k = 0; k < i; k++) *x += dialog_button_w(w->buttons[k]) + 8;
+    *y = w->ch - DLG_BTN_H - 10;
+    *bw = dialog_button_w(w->buttons[i]);
+}
+
+static int dialog_button_at(const Window *w, int cx, int cy)
+{
+    for (int i = 0; i < (int)w->buttons.size(); i++) {
+        int x, y, bw;
+        dialog_button_rect(w, i, &x, &y, &bw);
+        if (cx >= x && cx < x + bw && cy >= y && cy < y + DLG_BTN_H) return i;
+    }
+    return -1;
+}
+
+static void draw_info_content(Window *w, pixman_image_t *im, int ox, int oy)
+{
+    fill(im, ox, oy, w->cw, w->ch, C_FACE);
+    int y = oy + 12;
+    for (size_t i = 0; i < w->lines.size(); i++, y += ROW)
+        text_draw(im, i == 0 ? TEXT_BOLD : TEXT_UI, ox + 14, y + text_ascent(TEXT_UI), w->lines[i].c_str(), C_TEXT,
+                  ox + w->cw - 6);
+    if (w->editing) {
+        int fx = ox + 14, fy = y + 4, fw = w->cw - 28;
+        fill(im, fx, fy, fw, DLG_EDIT_H, C_WHITE);
+        bevel(im, fx, fy, fw, DLG_EDIT_H, false, 2);
+        int base = fy + DLG_EDIT_H / 2 + text_ascent(TEXT_UI) / 2 - 1;
+        int tw = text_width(TEXT_UI, w->edit.c_str());
+        if (w->edit_all && !w->edit.empty()) fill(im, fx + 4, fy + 3, std::min(tw + 2, fw - 8), DLG_EDIT_H - 6, C_SEL);
+        text_draw(im, TEXT_UI, fx + 5, base, w->edit.c_str(), w->edit_all ? C_WHITE : C_TEXT, fx + fw - 4);
+        int cx = std::min(fx + fw - 4, fx + 5 + tw + 1);
+        fill(im, cx, fy + 4, 1, DLG_EDIT_H - 8, C_DARK);                 /* the caret */
+    }
+    for (int i = 0; i < (int)w->buttons.size(); i++) {
+        int x, by, bw;
+        dialog_button_rect(w, i, &x, &by, &bw);
+        x += ox; by += oy;
+        if (i == 0) { fill(im, x - 1, by - 1, bw + 2, DLG_BTN_H + 2, C_DARK); }   /* the default */
+        fill(im, x, by, bw, DLG_BTN_H, C_FACE);
+        bevel(im, x, by, bw, DLG_BTN_H, true, 2);
+        const char *l = w->buttons[i].label.c_str();
+        text_draw(im, TEXT_UI, x + (bw - text_width(TEXT_UI, l)) / 2, by + DLG_BTN_H / 2 + text_ascent(TEXT_UI) / 2 - 1,
+                  l, C_TEXT, 0);
+    }
+}
+
+/* runs button i (Enter: the first), then closes the dialog */
+static void dialog_press(Window *w, int i)
+{
+    if (i >= 0 && i < (int)w->buttons.size() && w->buttons[i].run) {
+        auto run = w->buttons[i].run;
+        run(w);
+    }
+    close_window(w);
+}
+
+static Window *open_dialog(const std::string &title, std::vector<std::string> lines,
+                           std::vector<Window::Button> buttons, const std::string *edit = nullptr)
+{
+    if (buttons.empty()) buttons.push_back({ "OK", nullptr });
+    int w = 220, bw = 14;
     for (size_t i = 0; i < lines.size(); i++)
         w = std::max(w, text_width(i == 0 ? TEXT_BOLD : TEXT_UI, lines[i].c_str()) + 32);
-    Window *iw = new_internal(Window::INFO, std::min(w, S.W - 40), (int)lines.size() * ROW + 24, nullptr,
-                              [&](Window *x) { x->info_title = title; x->lines = std::move(lines); });
-    iw->x = (S.W - iw->fw()) / 2;
-    iw->y = (S.H - iw->fh()) / 3;
-    wlr_scene_node_set_position(&iw->tree->node, iw->x, iw->y);
+    for (auto &b : buttons) bw += dialog_button_w(b) + 8;
+    w = std::max(w, bw + 6);
+    if (edit) w = std::max(w, 320);
+    int h = (int)lines.size() * ROW + 12 + (edit ? DLG_EDIT_H + 10 : 0) + DLG_BTN_H + 22;
+    Window *d = new_internal(Window::INFO, std::min(w, S.W - 40), h, nullptr, [&](Window *x) {
+        x->info_title = title;
+        x->lines = std::move(lines);
+        x->buttons = std::move(buttons);
+        if (edit) { x->editing = true; x->edit = *edit; x->edit_all = true; }
+    });
+    d->x = (S.W - d->fw()) / 2;
+    d->y = (S.H - d->fh()) / 3;
+    wlr_scene_node_set_position(&d->tree->node, d->x, d->y);
+    return d;
+}
+
+static void open_info(const std::string &title, std::vector<std::string> lines)
+{
+    open_dialog(title, std::move(lines), {});
+}
+
+static void error_box(const std::string &what, const std::string &why)
+{
+    open_dialog("Workplace Shell", { "Error", what, why }, {});
+}
+
+/* ── file operations ────────────────────────────────────────────────── */
+static std::string parent_of(const std::string &p)
+{
+    size_t s = p.rfind('/');
+    return s == 0 || s == std::string::npos ? "/" : p.substr(0, s);
+}
+static std::string leaf_of(const std::string &p) { return p.substr(p.rfind('/') + 1); }
+static std::string join(const std::string &dir, const std::string &name) { return (dir == "/" ? "" : dir) + "/" + name; }
+static bool real_dir(const std::string &p) { return !p.empty() && p.rfind("::", 0) != 0; }
+/* the drive a path is on: D: (the stick, /h) or C: */
+static char drive_of(const std::string &p) { return p == "/h" || p.rfind("/h/", 0) == 0 ? 'D' : 'C'; }
+/* can it be moved, copied, renamed, deleted? (not the drives, nor the desktop's own objects) */
+static bool movable(const Object &o) { return real_dir(o.path) && o.path != "/" && o.path != "/h"; }
+
+static bool copy_tree(const std::string &from, const std::string &to)
+{
+    struct stat st;
+    if (lstat(from.c_str(), &st) != 0) return false;
+    if (S_ISDIR(st.st_mode)) {
+        if (mkdir(to.c_str(), (st.st_mode & 0777) | 0700) != 0) return false;
+        DIR *d = opendir(from.c_str());
+        if (!d) return false;
+        bool ok = true;
+        while (dirent *e = readdir(d)) {
+            if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+            ok = copy_tree(join(from, e->d_name), join(to, e->d_name)) && ok;
+        }
+        closedir(d);
+        return ok;
+    }
+    if (S_ISLNK(st.st_mode)) {
+        char t[1024];
+        ssize_t n = readlink(from.c_str(), t, sizeof t - 1);
+        if (n < 0) return false;
+        t[n] = 0;
+        return symlink(t, to.c_str()) == 0;
+    }
+    int in = open(from.c_str(), O_RDONLY);
+    if (in < 0) return false;
+    int out = open(to.c_str(), O_WRONLY | O_CREAT | O_EXCL, st.st_mode & 0777);
+    if (out < 0) { close(in); return false; }
+    static char buf[65536];
+    bool ok = true;
+    for (;;) {
+        ssize_t n = read(in, buf, sizeof buf);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) { ok = n == 0; break; }
+        for (ssize_t o = 0; o < n;) {
+            ssize_t m = write(out, buf + o, n - o);
+            if (m < 0 && errno == EINTR) continue;
+            if (m <= 0) { ok = false; break; }
+            o += m;
+        }
+        if (!ok) break;
+    }
+    close(in);
+    if (close(out) != 0) ok = false;
+    return ok;
+}
+
+static bool remove_tree(const std::string &p)
+{
+    struct stat st;
+    if (lstat(p.c_str(), &st) != 0) return false;
+    if (!S_ISDIR(st.st_mode)) return unlink(p.c_str()) == 0;
+    DIR *d = opendir(p.c_str());
+    if (!d) return false;
+    bool ok = true;
+    while (dirent *e = readdir(d)) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        ok = remove_tree(join(p, e->d_name)) && ok;
+    }
+    closedir(d);
+    return rmdir(p.c_str()) == 0 && ok;
+}
+
+/* every folder window showing dir (and every Tree view) sees the change */
+static void refresh_dir(const std::string &dir)
+{
+    for (Window *w : S.windows)
+        if (w->kind == Window::FOLDER && (w->path == dir || w->view == Window::TREE)) {
+            int sel = w->sel, scroll = w->scroll;
+            if (w->view == Window::TREE) {
+                /* keep what's open: reopen the same folders */
+                std::vector<std::string> open;
+                for (auto &n : w->nodes) if (n.open) open.push_back(n.path);
+                load_folder(w);
+                for (size_t i = 0; i < w->nodes.size(); i++)
+                    if (!w->nodes[i].open && w->nodes[i].kids &&
+                        std::find(open.begin(), open.end(), w->nodes[i].path) != open.end())
+                        toggle_node(w, (int)i);
+            } else {
+                load_folder(w);
+            }
+            w->sel = sel < item_count(w) ? sel : -1;
+            w->scroll = scroll;
+            draw_window(w);
+        }
+}
+
+/* moves or copies src into the folder dir: OS/2's rule - the same drive
+ * moves, another drive copies; Shift forces a move, Ctrl a copy */
+static void transfer(const std::string &src, const std::string &dir, bool copy)
+{
+    std::string name = leaf_of(src), dst = join(dir, name);
+    if (parent_of(src) == dir && !copy) return;                       /* already there */
+    if (dir == src || dir.rfind(src + "/", 0) == 0) {
+        error_box("Can't put " + name + " inside itself.", "");
+        return;
+    }
+    struct stat st;
+    if (lstat(dst.c_str(), &st) == 0) {
+        error_box(name + " is already in " + dos_path(dir) + ".", "Rename one of them first.");
+        return;
+    }
+    bool ok;
+    if (copy) ok = copy_tree(src, dst);
+    else {
+        ok = rename(src.c_str(), dst.c_str()) == 0;
+        if (!ok && errno == EXDEV) ok = copy_tree(src, dst) && remove_tree(src);
+    }
+    if (!ok) error_box(std::string(copy ? "Can't copy " : "Can't move ") + name + " to " + dos_path(dir) + ":",
+                       strerror(errno));
+    refresh_dir(dir);
+    if (!copy) refresh_dir(parent_of(src));
+}
+
+static void confirm_delete(const std::string &path)
+{
+    std::string name = leaf_of(path);
+    struct stat st;
+    bool dir = stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+    open_dialog("Confirm delete", {
+            name, std::string("Are you sure you want to delete this ") + (dir ? "folder and everything in it?" : "object?"),
+            dos_path(path) },
+        { { "Delete", [path, name](Window *) {
+              if (!remove_tree(path)) error_box("Can't delete " + name + ":", strerror(errno));
+              refresh_dir(parent_of(path));
+          } },
+          { "Cancel", nullptr } });
+}
+
+static void rename_dialog(const std::string &path)
+{
+    std::string name = leaf_of(path);
+    open_dialog(name + " - Rename", { "Rename", "New name for " + name + ":" },
+        { { "Rename", [path](Window *d) {
+              std::string nn = d->edit;
+              if (nn.empty() || nn == leaf_of(path)) return;
+              if (nn.find('/') != std::string::npos || nn.find('\\') != std::string::npos || nn == "." || nn == "..") {
+                  error_box("A name can't contain \\ or /.", ""); return;
+              }
+              std::string to = join(parent_of(path), nn);
+              struct stat st;
+              if (lstat(to.c_str(), &st) == 0) { error_box(nn + " already exists.", ""); return; }
+              if (rename(path.c_str(), to.c_str()) != 0) error_box("Can't rename " + leaf_of(path) + ":", strerror(errno));
+              refresh_dir(parent_of(path));
+          } },
+          { "Cancel", nullptr } }, &name);
+}
+
+static void create_folder(Window *w)
+{
+    if (!real_dir(w->path)) { error_box("Folders can't be made here.", "Open a drive first."); return; }
+    std::string base = "New Folder", name = base;
+    struct stat st;
+    for (int i = 1; lstat(join(w->path, name).c_str(), &st) == 0; i++) name = base + ":" + std::to_string(i);
+    if (mkdir(join(w->path, name).c_str(), 0755) != 0) { error_box("Can't create a folder:", strerror(errno)); return; }
+    refresh_dir(w->path);
+    if (w->view != Window::TREE)
+        for (int i = 0; i < (int)w->objects.size(); i++)
+            if (w->objects[i].label == name) { w->sel = i; ensure_visible(w, i); draw_window(w); break; }
+}
+
+/* what's selected in a folder, as an object */
+static bool selected_object(Window *w, Object *o)
+{
+    if (w->sel < 0 || w->all) return false;
+    if (w->view == Window::TREE) {
+        const Node &n = w->nodes[w->sel];
+        *o = { n.name, I_FOLDER, A_FOLDER, n.path };
+    } else {
+        *o = w->objects[w->sel];
+    }
+    return true;
 }
 
 /* OS/2 (LX) programs are run by the kernel's loader, at the system console
@@ -1229,6 +1519,7 @@ static void forget(Window *w)
     if (S.grab == w) { S.grab = nullptr; S.mode = Server::NONE; }
     if (S.winlist == w) S.winlist = nullptr;
     if (S.menu && S.menu->owner == w) { S.menu->owner = nullptr; close_menu(); }
+    if (S.drag.src == w) S.drag.src = nullptr;
     if (S.active == w) { S.active = nullptr; focus_next_visible(w); }
     redraw_winlist();
     draw_bar();
@@ -1459,9 +1750,12 @@ static std::vector<Menu::Item> folder_menu(Window *w, int which)
 {
     bool any = w->sel >= 0 && !w->all;
     bool folder = any && (w->view == Window::TREE || w->objects[w->sel].action == A_FOLDER);
+    Object so;
+    bool can_change = any && selected_object(w, &so) && movable(so);
     switch (which) {
     case 0: return {
         { "Open parent", [w] { open_parent(w); } },
+        { "Create new folder", [w] { create_folder(w); }, real_dir(w->path) },
         { "Refresh now", [w] { load_folder(w); draw_window(w); } },
         { "", nullptr },
         { "Close", [w] { close_window(w); } } };
@@ -1481,6 +1775,9 @@ static std::vector<Menu::Item> folder_menu(Window *w, int which)
               if (w->view == Window::TREE) open_folder(w->nodes[w->sel].path, w->nodes[w->sel].name, Window::TREE);
               else open_folder(w->objects[w->sel].path, w->objects[w->sel].label, Window::TREE);
           }, folder },
+        { "", nullptr },
+        { "Rename...", [w] { Object o; if (selected_object(w, &o)) rename_dialog(o.path); }, can_change },
+        { "Delete...", [w] { Object o; if (selected_object(w, &o)) confirm_delete(o.path); }, can_change },
         { "", nullptr },
         { "Properties", [w] { properties(w); }, any } };
     default: return {
@@ -1580,6 +1877,87 @@ static bool double_click(uint32_t time, const void *target, int index)
     return dbl;
 }
 
+/* ── drag and drop: an object onto a folder, a drive or the Shredder ── */
+static void drag_arm(Window *src, const Object &o)
+{
+    if (!movable(o)) return;
+    S.drag = Server::Drag();
+    S.drag.armed = true;
+    S.drag.src = src;
+    S.drag.obj = o;
+    S.drag.x0 = S.cursor->x;
+    S.drag.y0 = S.cursor->y;
+}
+
+static void drag_cancel()
+{
+    S.drag.pic.destroy();
+    S.drag = Server::Drag();
+}
+
+static void drag_motion()
+{
+    Server::Drag &d = S.drag;
+    double lx = S.cursor->x, ly = S.cursor->y;
+    if (!d.active) {
+        if (std::abs(lx - d.x0) < 6 && std::abs(ly - d.y0) < 6) return;
+        d.active = true;
+        PixBuf *pb = pixbuf_new(32, 32);
+        draw_icon(pb->img, d.obj.icon, 0, 0, 32);
+        d.pic.show(S.t_menu, pb, nullptr);
+    }
+    wlr_scene_node_set_position(&d.pic.node->node, (int)lx - 16, (int)ly - 16);
+}
+
+static Hit hit_at(double lx, double ly);
+static int folder_item_at(Window *w, int cx, int cy, bool *box);
+
+/* where the object was dropped: a folder's path, "::shredder", or "" */
+static std::string drop_target(double lx, double ly)
+{
+    wlr_scene_node_set_enabled(&S.drag.pic.node->node, false);
+    Hit h = hit_at(lx, ly);
+    if (!h.tag) return "";
+    if (h.tag->k == Tag::DESK) {
+        for (size_t k = 0; k < S.desk_pos.size(); k++) {
+            int x = S.desk_pos[k].first, y = S.desk_pos[k].second;
+            if (lx >= x && lx < x + 56 && ly >= y && ly < y + 54) {
+                const Object &o = S.desk_objs[k];
+                if (o.action == A_SHREDDER) return "::shredder";
+                if (o.action == A_FOLDER && real_dir(o.path)) return o.path;
+            }
+        }
+        return "";
+    }
+    if (h.tag->k != Tag::WIN || h.tag->w->kind != Window::FOLDER) return "";
+    Window *w = h.tag->w;
+    int cx = (int)lx - w->x - B, cy = (int)ly - w->y - B - T;
+    bool box;
+    int i = folder_item_at(w, cx, cy, &box);
+    if (i >= 0) {
+        std::string p = w->view == Window::TREE ? w->nodes[i].path
+                      : w->objects[i].action == A_FOLDER ? w->objects[i].path : "";
+        if (real_dir(p)) return p;
+    }
+    return real_dir(w->path) ? w->path : "";
+}
+
+static void drag_drop()
+{
+    Server::Drag d = S.drag;
+    std::string target = d.active ? drop_target(S.cursor->x, S.cursor->y) : "";
+    bool was_active = d.active;
+    drag_cancel();
+    if (!was_active || target.empty()) return;
+    if (target == "::shredder") { confirm_delete(d.obj.path); return; }
+    wlr_keyboard *kb = wlr_seat_get_keyboard(S.seat);
+    uint32_t mods = kb ? wlr_keyboard_get_modifiers(kb) : 0;
+    bool copy = drive_of(d.obj.path) != drive_of(target);
+    if (mods & WLR_MODIFIER_CTRL) copy = true;
+    if (mods & WLR_MODIFIER_SHIFT) copy = false;
+    transfer(d.obj.path, target, copy);
+}
+
 /* which item is at (cx, cy) in a folder's content; *box: on a Tree +/- box */
 static int folder_item_at(Window *w, int cx, int cy, bool *box)
 {
@@ -1637,6 +2015,8 @@ static void folder_click(Window *w, int cx, int cy, uint32_t time, bool right)
     w->sel = i;
     w->all = false;
     draw_window(w);
+    Object o;
+    if (!right && !dbl && selected_object(w, &o)) drag_arm(w, o);
     int sx = w->x + B + cx, sy = w->y + B + T + cy;
     if (right) open_menu(sx, sy, folder_menu(w, i >= 0 ? 3 : 2), w);
     else if (dbl) activate(w, i);
@@ -1644,7 +2024,10 @@ static void folder_click(Window *w, int cx, int cy, uint32_t time, bool right)
 
 static void content_click(Window *w, int cx, int cy, uint32_t time, bool right)
 {
-    if (w->kind == Window::FOLDER) {
+    if (w->kind == Window::INFO) {
+        int b = dialog_button_at(w, cx, cy);
+        if (b >= 0 && !right) dialog_press(w, b);
+    } else if (w->kind == Window::FOLDER) {
         folder_click(w, cx, cy, time, right);
     } else if (w->kind == Window::WINLIST) {
         auto list = listed_windows();
@@ -1660,6 +2043,7 @@ static void content_click(Window *w, int cx, int cy, uint32_t time, bool right)
 static void pointer_motion(uint32_t time)
 {
     double lx = S.cursor->x, ly = S.cursor->y;
+    if (S.drag.armed) { drag_motion(); return; }
     if (S.mode == Server::MOVE && S.grab) {
         Window *w = S.grab;
         w->x = S.gwx + (int)(lx - S.gx);
@@ -1719,6 +2103,7 @@ static void pointer_button(wlr_pointer_button_event *e)
 {
     double lx = S.cursor->x, ly = S.cursor->y;
     if (e->state == WL_POINTER_BUTTON_STATE_RELEASED) {
+        if (S.drag.armed) { drag_drop(); return; }
         if (S.mode != Server::NONE) {
             Window *w = S.grab;
             S.mode = Server::NONE; S.grab = nullptr;
@@ -1829,11 +2214,30 @@ static void pointer_axis(wlr_pointer_axis_event *e)
 struct Keyboard { wlr_keyboard *kb; Listener key, mods, destroy; };
 
 /* keys for the compositor's own windows (folders, Window List, info) */
-static bool internal_key(Window *w, xkb_keysym_t sym)
+static bool internal_key(Window *w, xkb_keysym_t sym, const char *utf8)
 {
     if (w->kind == Window::INFO) {
-        if (sym == XKB_KEY_Return || sym == XKB_KEY_KP_Enter || sym == XKB_KEY_Escape) { close_window(w); return true; }
-        return false;
+        if (sym == XKB_KEY_Return || sym == XKB_KEY_KP_Enter) { dialog_press(w, 0); return true; }
+        if (sym == XKB_KEY_Escape) { close_window(w); return true; }
+        if (!w->editing) return false;
+        if (w->edit_all && (sym == XKB_KEY_BackSpace || sym == XKB_KEY_Delete ||
+                            (utf8 && (unsigned char)utf8[0] >= 0x20 && utf8[0] != 0x7F))) {
+            w->edit.clear();                                     /* typing replaces the selection */
+            w->edit_all = false;
+            if (sym == XKB_KEY_BackSpace || sym == XKB_KEY_Delete) { draw_window(w); return true; }
+        }
+        if (sym == XKB_KEY_Left || sym == XKB_KEY_Right || sym == XKB_KEY_End || sym == XKB_KEY_Home) {
+            w->edit_all = false;                                 /* (the caret stays at the end) */
+        } else if (sym == XKB_KEY_BackSpace) {
+            while (!w->edit.empty() && (w->edit.back() & 0xC0) == 0x80) w->edit.pop_back();   /* a whole UTF-8 character */
+            if (!w->edit.empty()) w->edit.pop_back();
+        } else if (utf8 && (unsigned char)utf8[0] >= 0x20 && utf8[0] != 0x7F && w->edit.size() < 200) {
+            w->edit += utf8;
+        } else {
+            return false;
+        }
+        draw_window(w);
+        return true;
     }
     if (w->kind == Window::WINLIST) {
         auto list = listed_windows();
@@ -1858,6 +2262,14 @@ static bool internal_key(Window *w, xkb_keysym_t sym)
     case XKB_KEY_F10: open_folder_menu(w, 0); return true;
     case XKB_KEY_F5: load_folder(w); draw_window(w); return true;
     case XKB_KEY_BackSpace: open_parent(w); return true;
+    case XKB_KEY_Delete: case XKB_KEY_F2: {
+        Object o;
+        if (selected_object(w, &o) && movable(o)) {
+            if (sym == XKB_KEY_Delete) confirm_delete(o.path);
+            else rename_dialog(o.path);
+        }
+        return true;
+    }
     case XKB_KEY_Return: case XKB_KEY_KP_Enter: activate(w, w->sel); return true;
     case XKB_KEY_Up: s = s < 0 ? 0 : s - cols; break;
     case XKB_KEY_Down: s = s < 0 ? 0 : s + cols; break;
@@ -1932,8 +2344,11 @@ static void new_keyboard(wlr_input_device *dev)
             int n = xkb_state_key_get_syms(k->kb->xkb_state, e->keycode + 8, &syms);
             uint32_t mods = wlr_keyboard_get_modifiers(k->kb);
             for (int i = 0; i < n; i++) if (binding(mods, syms[i])) return;
+            if (S.drag.armed && n && syms[0] == XKB_KEY_Escape) { drag_cancel(); return; }
             if (S.menu && n) { menu_key(syms[0]); return; }
-            if (S.active && !S.active->top && n && internal_key(S.active, syms[0])) return;
+            char utf8[16] = "";
+            xkb_state_key_get_utf8(k->kb->xkb_state, e->keycode + 8, utf8, sizeof utf8);
+            if (S.active && !S.active->top && n && internal_key(S.active, syms[0], utf8)) return;
         }
         wlr_seat_set_keyboard(S.seat, k->kb);
         wlr_seat_keyboard_notify_key(S.seat, e->time_msec, e->keycode, e->state);
@@ -2040,6 +2455,7 @@ int main(int argc, char **argv)
         { "Programs", I_PROGRAMS, A_PROGRAMS, "" },
         { "Window List", I_WINLIST, A_WINLIST, "" },
         { "Shut Down", I_SHUTDOWN, A_SHUTDOWN, "" },
+        { "Shredder", I_SHREDDER, A_SHREDDER, "" },
     };
 
     S.new_output.connect(&S.backend->events.new_output, [](void *d) { new_output(static_cast<wlr_output *>(d)); });
