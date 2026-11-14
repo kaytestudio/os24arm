@@ -9,6 +9,7 @@
 #include "hpfs.h"
 #include "linux_abi.h"
 #include "net/net.h"
+#include "os2warp_version.h"
 #include "kio.h"
 #include "basic.h"
 #include "gui/framebuffer.h"
@@ -267,7 +268,7 @@ static void cmd_ver(void)
 {
     uart_puts("\r\n");
     uart_puts("OS/2 Warp Version 4.52 (ARM64 Edition)\r\n");
-    uart_puts("Internal revision: Bare Metal Build\r\n");
+    uart_puts("Internal revision: build " OS2WARP_REVISION " (" OS2WARP_BUILD_DATE ")\r\n");
     uart_puts("Kernel: 4.52.001\r\n");
     uart_puts("Platform: ARM64 Cortex-A72\r\n");
     uart_puts("Target: QEMU virt machine\r\n");

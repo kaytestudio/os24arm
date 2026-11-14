@@ -5,6 +5,6 @@ Shadows: drop a file, a folder or a program from a folder window onto an empty p
 
 The Startup folder (in OS/2 System): the shadows you drop into it are started every time the desktop starts.
 
-The Settings notebook: right-click an empty part of the desktop and choose Properties. The Background page sets the desktop's colour and pattern, the Window page the title bars' colours. Changes show at once.
+The Settings notebook: right-click an empty part of the desktop and choose Properties. The Background page sets the desktop's colour and pattern, and whether the version shows at the bottom left (the system's build and the Workplace Shell's); the Window page sets the title bars' colours. Changes show at once.
 
 The desktop is kept as you leave it - where its objects are, its shadows, the folder windows that are open and where they are, and your settings - in \OS2\WPS.INI on drive D.

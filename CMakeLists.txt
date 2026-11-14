@@ -514,6 +514,12 @@ include_directories(
 
 # ── Sub-projects ──────────────────────────────────────────────────────────────
 add_subdirectory(bootloader)
+# The build's version (git describe, the date): generated/os2warp_version.h
+add_custom_target(os2warp_version ALL
+        COMMAND ${CMAKE_COMMAND} -DOUT=${CMAKE_BINARY_DIR}/generated/os2warp_version.h
+                -DSRC=${CMAKE_SOURCE_DIR} -P ${CMAKE_SOURCE_DIR}/cmake/version.cmake
+        BYPRODUCTS ${CMAKE_BINARY_DIR}/generated/os2warp_version.h
+        COMMENT "Build version")
 add_subdirectory(kernel)
 if(TARGET_ARCH STREQUAL "aarch64")
     # DOS commands, REXX and the filesystem drivers are only linked into

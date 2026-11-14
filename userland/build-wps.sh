@@ -59,7 +59,8 @@ O="$GEN/obj"; mkdir -p "$O"
 # shellcheck disable=SC2086
 "$CLANG" "${BASE[@]}" "${CINC[@]}" -std=c11 -w -c "$ROOT/userland/wps/image.c" -o "$O/image.o"   # (stb_image, as it comes)
 # shellcheck disable=SC2086
-"$CLANG" -x c++ "${BASE[@]}" "${CXXINC[@]}" -std=c++17 -fno-exceptions -fno-rtti \
+WPS_REV="$(git -C "$ROOT" describe --always --dirty --abbrev=7 2>/dev/null || echo unknown)"
+"$CLANG" -x c++ "${BASE[@]}" "${CXXINC[@]}" -std=c++17 -fno-exceptions -fno-rtti -DWPS_REVISION="\"$WPS_REV\"" \
     -Wno-c99-designator -Wno-missing-field-initializers -Wno-keyword-macro $PC_CFLAGS \
     -c "$ROOT/userland/wps/wps.cpp" -o "$O/wps.o"
 # shellcheck disable=SC2086

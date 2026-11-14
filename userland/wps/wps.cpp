@@ -43,6 +43,7 @@
 #include <spawn.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <sys/utsname.h>
 #include <unistd.h>
 
 extern "C" {
@@ -81,6 +82,9 @@ extern "C" {
 }
 #include "text.h"
 #include "image.h"
+#ifndef WPS_REVISION
+#define WPS_REVISION "unknown"
+#endif
 
 extern char **environ;
 
@@ -464,6 +468,7 @@ struct Server {
     uint32_t desk_color = C_DESK;                /* the Settings notebook's: the background, */
     bool pattern = true;                         /* ... with the pattern, */
     int scheme = 0;                              /* ... and the title bars' colours */
+    bool show_version = true;                    /* the version, bottom left (as ReactOS does) */
     int desk_sel = -1;
 
     std::vector<Window *> windows;               /* back to front */
@@ -742,6 +747,26 @@ static void draw_desktop()
         S.desk_pos.push_back({ x, y });
         draw_icon(im, S.desk_objs[i].icon, x + 11, y, 32);
         draw_label(im, x + 27, y + 36, S.desk_objs[i].label, (int)i == S.desk_sel, true, S.desk_objs[i].shadow);
+    }
+    if (S.show_version) {                                /* the version, bottom left */
+        static std::string l1, l2;
+        if (l1.empty()) {
+            struct utsname u;
+            std::string kern = uname(&u) == 0 ? u.version : "";   /* "OS/2 Warp 4.52 <rev> <date>" */
+            std::string rev, date;
+            if (kern.rfind("OS/2 Warp ", 0) == 0) {
+                size_t a = kern.find(' ', 10), b = kern.rfind(' ');
+                if (a != std::string::npos && b > a) { rev = kern.substr(a + 1, b - a - 1); date = kern.substr(b + 1); }
+            }
+            l1 = "OS/2 Warp 4.52 for ARM64";
+            l2 = (rev.empty() ? std::string("Build unknown") : "Build " + rev + " (" + date + ")") +
+                 "  -  Workplace Shell " WPS_REVISION;
+        }
+        int y2 = S.H - 10, y1 = y2 - text_height(TEXT_BOLD) - 1;
+        text_draw(im, TEXT_BOLD, 13, y1 + 1, l1.c_str(), C_DARK, 0);
+        text_draw(im, TEXT_BOLD, 12, y1, l1.c_str(), C_WHITE, 0);
+        text_draw(im, TEXT_SMALL, 13, y2 + 1, l2.c_str(), C_DARK, 0);
+        text_draw(im, TEXT_SMALL, 12, y2, l2.c_str(), 0xFFE0E8FF, 0);
     }
     S.desk.show(S.t_desk, pb, &S.desk_tag);
 }
@@ -1434,6 +1459,8 @@ static void draw_notebook_content(Window *w, pixman_image_t *im, int ox, int oy)
         }
         nb_check(im, ox + 24, oy + NB_CHECK_Y, S.pattern);
         text_draw(im, TEXT_UI, ox + 44, oy + NB_CHECK_Y + 11, "Pattern", C_TEXT, 0);
+        nb_check(im, ox + 124, oy + NB_CHECK_Y, S.show_version);
+        text_draw(im, TEXT_UI, ox + 144, oy + NB_CHECK_Y + 11, "Show the version", C_TEXT, 0);
         /* what it looks like */
         int px = ox + 24, py = oy + NB_CHECK_Y + 28, pwid = std::min(240, pw - 40), ph = w->ch - (NB_CHECK_Y + 28) - 22;
         fill(im, px, py, pwid, ph, S.desk_color);
@@ -1476,6 +1503,7 @@ static void notebook_click(Window *w, int cx, int cy)
             if (cx >= x && cx < x + NB_SW && cy >= y && cy < y + NB_SH) { S.desk_color = palette[i]; apply_settings(); return; }
         }
         if (cx >= 20 && cx < 100 && cy >= NB_CHECK_Y - 2 && cy < NB_CHECK_Y + 16) { S.pattern = !S.pattern; apply_settings(); }
+        if (cx >= 120 && cx < 260 && cy >= NB_CHECK_Y - 2 && cy < NB_CHECK_Y + 16) { S.show_version = !S.show_version; apply_settings(); }
     } else {
         for (int i = 0; i < NSCHEMES; i++) {
             int y = NB_SCHEME_Y + i * NB_SCHEME_ROW;
@@ -4063,7 +4091,8 @@ static void save_state()
     if (!f) return;
     fprintf(f, "# Workplace Shell: the desktop as it was left (written by wps)\n");
     for (auto &p : S.desk_place) fprintf(f, "icon %d %d %s\n", p.second.first, p.second.second, p.first.c_str());
-    fprintf(f, "background %06X %d\nscheme %d\n", (unsigned)(S.desk_color & 0xFFFFFF), S.pattern ? 1 : 0, S.scheme);
+    fprintf(f, "background %06X %d\nscheme %d\nversion %d\n", (unsigned)(S.desk_color & 0xFFFFFF), S.pattern ? 1 : 0,
+            S.scheme, S.show_version ? 1 : 0);
     for (const Object &o : S.shadows) fprintf(f, "shadow %s|%s\n", o.path.c_str(), o.label.c_str());
     for (const Object &o : S.startup) fprintf(f, "startup %s|%s\n", o.path.c_str(), o.label.c_str());
     for (Window *w : S.windows)
@@ -4088,6 +4117,7 @@ static void load_state()
         if (sscanf(line, "icon %d %d %n", &a, &b, &n) == 2 && n) S.desk_place[line + n] = { a, b };
         else if (sscanf(line, "background %x %d", &rgb, &a) == 2) { S.desk_color = 0xFF000000u | rgb; S.pattern = a != 0; }
         else if (sscanf(line, "scheme %d", &a) == 1 && a >= 0 && a < NSCHEMES) S.scheme = a;
+        else if (sscanf(line, "version %d", &a) == 1) S.show_version = a != 0;
         else if (!strncmp(line, "shadow ", 7) || !strncmp(line, "startup ", 8)) {
             bool st = line[1] == 't';
             std::string rest = line + (st ? 8 : 7);

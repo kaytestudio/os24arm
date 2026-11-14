@@ -111,9 +111,13 @@ endif()
 
 # ── Kernel executable ─────────────────────────────────────────────────────────
 add_executable(os2warp_kernel ${KERNEL_SOURCES})
+if(TARGET os2warp_version)
+    add_dependencies(os2warp_kernel os2warp_version)
+endif()
 
 # ── Include directories ───────────────────────────────────────────────────────
 target_include_directories(os2warp_kernel PRIVATE
+        ${CMAKE_BINARY_DIR}/generated           # os2warp_version.h
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_SOURCE_DIR}/fs/ext4
         ${CMAKE_SOURCE_DIR}/fs/btrfs

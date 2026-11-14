@@ -92,6 +92,7 @@
 #include "lx_vfs.h"
 #include "net/sock.h"
 #include "net/net.h"
+#include "os2warp_version.h"
 
 extern void cpu_switch(lx_u64 *save, const lx_u64 *load);
 extern void el0_start(void);
@@ -4456,7 +4457,8 @@ static void proc_gen(const char *path, pbuf_t *p)
             pb_s(p, "\nprocs_blocked 0\n");
             (void)ngroups;
         } else if (!kstrcmp(leaf, "version")) {
-            pb_s(p, "Linux version 6.1.0-os2warp-linux-abi (os2warp) #3 SMP\n");
+            pb_s(p, "Linux version 6.1.0-os2warp-linux-abi (os2warp) OS/2 Warp " OS2WARP_VERSION
+                    " ARM64, build " OS2WARP_REVISION " " OS2WARP_BUILD_DATE "\n");
         } else if (!kstrcmp(leaf, "cpuinfo")) {
             lx_u64 midr;
             __asm__ volatile("mrs %0, midr_el1" : "=r"(midr));
@@ -5323,8 +5325,10 @@ static s64 sys_clock_nanosleep(lx_u64 clk, lx_u64 flags, lx_u64 req, lx_u64 rem)
 static s64 sys_uname(lx_u64 up)
 {
     if (!uok(up, 6 * 65, 1)) return -EFAULT;
+    /* (Linux to the programs, which ask so; the version field: the build) */
     static const char *const f[6] = { "Linux", "os2warp", "6.1.0-os2warp-linux-abi",
-                                      "#3 stage3", "aarch64", "(none)" };
+                                      "OS/2 Warp " OS2WARP_VERSION " " OS2WARP_REVISION " " OS2WARP_BUILD_DATE,
+                                      "aarch64", "(none)" };
     char *u = (char *)(uintptr_t)up;
     kmemset(u, 0, 6 * 65);
     for (int i = 0; i < 6; i++) kstrncpy(u + 65 * i, f[i], 64);
