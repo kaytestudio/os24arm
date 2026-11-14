@@ -279,8 +279,9 @@ platform-specific are new code.
    WebExplorer (on the desktop, and in Connections) is a web browser of
    the shell's own: busybox's wget fetches (HTTP, and HTTPS through its own
    TLS - certificates not checked), a parser here takes the HTML apart
-   (headings, paragraphs, lists, pre, links, anchors, entities; scripts,
-   styles and forms left out, pictures as their names) and lays the text
+   (headings, paragraphs, lists, pre, links, anchors, entities, forms -
+   text fields, submit buttons, hidden fields, a select's choice, sent by
+   GET or POST; scripts and styles left out, pictures as their names) and lays the text
    out to the window. Back, Forward, Reload, Home, an address bar
    (Ctrl+L), the link under the pointer in the status line.
    The Assistance Center (on the desktop, F1, a folder's Help menu) is

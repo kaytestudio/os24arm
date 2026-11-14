@@ -3035,12 +3035,15 @@ static void ask_host(const std::string &title, const std::string &what,
  * window's width. Pictures show as their names; scripts and styles not at
  * all. */
 struct WebItem {                       /* what the parser makes: text, or a break */
-    enum Kind { TEXT, PARA, LINE, RULE, ANCHOR } kind;   /* (ANCHOR: text is an id) */
+    enum Kind { TEXT, PARA, LINE, RULE, ANCHOR, FIELD, BUTTON } kind;   /* (ANCHOR: text is an id) */
+    int form = -1, field = -1, size = 20;     /* FIELD, BUTTON: which (BUTTON: text its label) */
     std::string text;
     int font = TEXT_BODY, link = -1, indent = 0;
     bool pre = false;
 };
-struct WebSeg { int x, y, w, h, base, font, link; uint32_t color; std::string text; };
+struct WebSeg { int x, y, w, h, base, font, link; uint32_t color; std::string text; int box = 0, form = -1, field = -1; };
+struct WebField { std::string name, value, type; };       /* type: text, password, hidden, submit */
+struct WebForm { std::string action, method; std::vector<WebField> fields; };
 struct Web {
     std::string url, title, status;
     std::vector<WebItem> items;
@@ -3050,8 +3053,11 @@ struct Web {
     std::map<std::string, int> anchors;     /* id -> where it is (laid out) */
     std::string jump;                       /* a #fragment to go to once laid out */
     bool loading = false, editing = false;
-    std::vector<std::string> history;
+    std::vector<std::string> history, posts;   /* where, and what was sent (a POST form's), each step */
     int hpos = -1;
+    std::vector<WebForm> forms;
+    int fform = -1, ffield = -1;              /* the field being typed in */
+    std::string post;                         /* the page's own POST data (Reload sends it again) */
 };
 
 static const char *WEB_HOME = "about:home";
@@ -3062,14 +3068,16 @@ static const char *web_buttons[] = { "Back", "Forward", "Reload", "Home" };
 static const char *web_home_html =
     "<title>WebExplorer</title><h1>WebExplorer</h1>"
     "<p>Welcome to the World Wide Web, from OS/2 Warp for ARM64.</p>"
+    "<p>Search Wikipedia:</p><form action=\"https://en.wikipedia.org/w/index.php\" method=\"get\">"
+    "<input type=\"text\" name=\"search\" size=\"40\"> <input type=\"submit\" value=\"Search\"></form>"
     "<p>Type an address above (Ctrl+L), or start here:</p><ul>"
     "<li><a href=\"https://example.com/\">Example Domain</a></li>"
     "<li><a href=\"http://info.cern.ch/hypertext/WWW/TheProject.html\">The World Wide Web project</a> - the first web site</li>"
-    "<li><a href=\"https://lite.duckduckgo.com/lite/\">DuckDuckGo Lite</a> - search the web</li>"
+    "<li><a href=\"https://wiby.me/\">Wiby</a> - search the web of simple pages</li>"
     "<li><a href=\"https://en.wikipedia.org/wiki/OS/2\">OS/2</a> on Wikipedia</li>"
     "<li><a href=\"https://text.npr.org/\">NPR</a> - the news, as text</li></ul>"
-    "<p>WebExplorer shows a page's text and its links; pictures appear as their names, and "
-    "neither scripts nor forms run. Secure (https) pages come encrypted, but their certificates "
+    "<p>WebExplorer shows a page's text, its links and its forms; pictures appear as their names, "
+    "and scripts don't run. Secure (https) pages come encrypted, but their certificates "
     "aren't checked.</p><p>Keys: Ctrl+L the address, Backspace back, F5 reload, the arrows and "
     "Page Up/Down to scroll.</p>";
 
@@ -3139,12 +3147,14 @@ static void html_parse(Web *wb, const std::string &html, bool plain)
     wb->items.clear();
     wb->links.clear();
     wb->title.clear();
+    wb->forms.clear();
+    wb->fform = wb->ffield = -1;
     if (plain) {                                          /* text/plain: as it is */
         WebItem it; it.kind = WebItem::TEXT; it.text = html; it.font = TEXT_MONO; it.pre = true;
         wb->items.push_back(it);
         return;
     }
-    int bold = 0, pre = 0, mono = 0, heading = 0, skip = 0, indent = 0, link = -1, in_title = 0;
+    int bold = 0, pre = 0, mono = 0, heading = 0, skip = 0, indent = 0, link = -1, in_title = 0, form = -1;
     std::vector<int> olnum;
     auto brk = [&](WebItem::Kind k) { WebItem it; it.kind = k; it.indent = indent; wb->items.push_back(it); };
     auto text = [&](const std::string &t) {
@@ -3202,6 +3212,85 @@ static void html_parse(Web *wb, const std::string &html, bool plain)
         std::string name = tag.substr(a, b - a);
         for (char &c : name) c = (char)tolower((unsigned char)c);
         if (name.empty()) continue;
+        /* forms: their fields, buttons (and select's choice, a textarea's text, unseen) */
+        if (name == "form") {
+            if (close) form = -1;
+            else {
+                std::string act = attr_of(tag, "action"), m = attr_of(tag, "method");
+                for (char &c : m) c = (char)tolower((unsigned char)c);
+                wb->forms.push_back({ act.empty() ? wb->url : url_resolve(wb->url, act), m == "post" ? "post" : "get", {} });
+                form = (int)wb->forms.size() - 1;
+            }
+            continue;
+        }
+        if (!close && form >= 0 && (name == "input" || name == "button" || name == "textarea" || name == "select")) {
+            WebForm &f = wb->forms[form];
+            std::string type = attr_of(tag, "type"), nm = attr_of(tag, "name"), val = attr_of(tag, "value");
+            for (char &c : type) c = (char)tolower((unsigned char)c);
+            std::string inner;                             /* button, textarea, select: up to the end */
+            if (name != "input") {
+                std::string end = "</" + name;
+                size_t k = i, f2 = std::string::npos;
+                for (;;) {
+                    f2 = html.find("</", k);
+                    if (f2 == std::string::npos || !strncasecmp(html.c_str() + f2, end.c_str(), end.size())) break;
+                    k = f2 + 2;
+                }
+                inner = html.substr(i, f2 == std::string::npos ? std::string::npos : f2 - i);
+                if (f2 == std::string::npos) i = n; else { size_t g = html.find('>', f2); i = g == std::string::npos ? n : g + 1; }
+            }
+            auto strip = [](const std::string &h) {        /* tags out, spaces tidied */
+                std::string o; bool in = false, sp = false;
+                for (char c : h) {
+                    if (c == '<') in = true; else if (c == '>') in = false;
+                    else if (!in) { if (c == ' ' || c == '\n' || c == '\t' || c == '\r') { if (!sp && !o.empty()) o += ' '; sp = true; } else { o += c; sp = false; } }
+                }
+                while (!o.empty() && o.back() == ' ') o.pop_back();
+                return html_text(o);
+            };
+            if (name == "select") {                        /* its chosen option (or the first), as it is */
+                std::string chosen, first;
+                size_t k = 0;
+                while ((k = inner.find("<option", k)) != std::string::npos) {
+                    size_t g = inner.find('>', k);
+                    if (g == std::string::npos) break;
+                    std::string ot = inner.substr(k + 1, g - k - 1);
+                    std::string v = attr_of(ot, "value");
+                    if (v.empty()) { size_t e2 = inner.find('<', g); v = strip(inner.substr(g + 1, e2 == std::string::npos ? std::string::npos : e2 - g - 1)); }
+                    if (first.empty()) first = v;
+                    std::string low = ot; for (char &c : low) c = (char)tolower((unsigned char)c);
+                    if (low.find("selected") != std::string::npos) chosen = v;
+                    k = g;
+                }
+                if (!nm.empty()) f.fields.push_back({ nm, chosen.empty() ? first : chosen, "hidden" });
+                continue;
+            }
+            if (name == "textarea") type = "text", val = html_text(inner);
+            if (name == "button") { if (type == "button" || type == "reset") continue; type = "submit"; if (val.empty()) val = ""; }
+            if (type.empty()) type = "text";
+            if (type == "hidden") { if (!nm.empty()) f.fields.push_back({ nm, val, "hidden" }); continue; }
+            if (type == "checkbox" || type == "radio") {
+                std::string low = tag; for (char &c : low) c = (char)tolower((unsigned char)c);
+                if (low.find("checked") != std::string::npos && !nm.empty()) f.fields.push_back({ nm, val.empty() ? "on" : val, "hidden" });
+                continue;
+            }
+            if (type == "submit" || type == "image") {
+                std::string label = name == "button" ? strip(inner) : (val.empty() ? std::string("Submit") : val);
+                if (label.empty()) label = val.empty() ? "Submit" : val;
+                f.fields.push_back({ nm, val, "submit" });
+                WebItem it; it.kind = WebItem::BUTTON; it.text = label; it.form = form; it.field = (int)f.fields.size() - 1;
+                it.indent = indent;
+                wb->items.push_back(it);
+                continue;
+            }
+            if (type == "reset" || type == "button" || type == "file") continue;
+            f.fields.push_back({ nm, val, type == "password" ? "password" : "text" });
+            WebItem it; it.kind = WebItem::FIELD; it.form = form; it.field = (int)f.fields.size() - 1; it.indent = indent;
+            std::string sz = attr_of(tag, "size");
+            it.size = sz.empty() ? 24 : std::clamp(atoi(sz.c_str()), 4, 60);
+            wb->items.push_back(it);
+            continue;
+        }
         if (name == "script" || name == "style" || name == "noscript" || name == "svg" || name == "template" ||
             name == "select" || name == "textarea" || name == "button") {
             if (!close) {                                  /* to its end, unread */
@@ -3288,7 +3377,10 @@ static void web_layout(Web *wb, int width)
     auto flush = [&]() {
         if (line.empty()) return;
         int asc = 0, hh = 0;
-        for (auto &s : line) { asc = std::max(asc, text_ascent(s.font)); hh = std::max(hh, text_height(s.font)); }
+        for (auto &s : line) {
+            int a = text_ascent(s.font) + (s.box ? 4 : 0), hgt = text_height(s.font) + (s.box ? 8 : 0);
+            asc = std::max(asc, a); hh = std::max(hh, hgt);
+        }
         for (auto &s : line) { s.y = y; s.base = y + asc; s.h = hh + 3; wb->segs.push_back(s); }
         y += hh + 3;
         line.clear();
@@ -3298,6 +3390,18 @@ static void web_layout(Web *wb, int width)
     x = left(0);
     for (const WebItem &it : wb->items) {
         if (it.kind == WebItem::ANCHOR) { wb->anchors[it.text] = std::max(0, y - 4); continue; }
+        if (it.kind == WebItem::FIELD || it.kind == WebItem::BUTTON) {      /* a box in the line */
+            if (line.empty()) { cur_indent = it.indent; x = left(cur_indent); }
+            int bw = it.kind == WebItem::FIELD ? std::clamp(it.size * 8, 80, right - left(cur_indent))
+                                              : text_width(TEXT_BODY, it.text.c_str()) + 24;
+            if (!line.empty() && x + bw > right) flush();
+            WebSeg sg{ x, 0, bw, 0, 0, TEXT_BODY, -1, C_TEXT, it.text };
+            sg.box = it.kind == WebItem::FIELD ? 1 : 2;
+            sg.form = it.form; sg.field = it.field;
+            line.push_back(sg);
+            x += bw + 6;
+            continue;
+        }
         if (it.kind != WebItem::TEXT) {
             bool had = !line.empty();
             flush();
@@ -3455,7 +3559,7 @@ static std::string slurp(const std::string &path)
     return s;
 }
 
-static void web_go(Window *w, std::string url, bool push = true)
+static void web_go(Window *w, std::string url, bool push = true, const std::string &post = "")
 {
     Web *wb = w->web.get();
     if (url.find("://") == std::string::npos && url.rfind("about:", 0) != 0) url = "http://" + url;
@@ -3468,9 +3572,11 @@ static void web_go(Window *w, std::string url, bool push = true)
         return;
     }
     wb->jump = frag;
+    wb->post = post;
     if (push) {
-        if (wb->hpos + 1 < (int)wb->history.size()) wb->history.resize(wb->hpos + 1);
+        if (wb->hpos + 1 < (int)wb->history.size()) { wb->history.resize(wb->hpos + 1); wb->posts.resize(wb->hpos + 1); }
         wb->history.push_back(url);
+        wb->posts.push_back(post);
         wb->hpos = (int)wb->history.size() - 1;
     }
     wb->editing = false;
@@ -3483,7 +3589,9 @@ static void web_go(Window *w, std::string url, bool push = true)
     std::string hdr = "/tmp/webexplorer." + std::to_string(getpid()) + "." + std::to_string(seq) + ".hdr";
     std::string qurl;                                       /* (in quotes for sh: no quote of its own) */
     for (char c : url) { if (c == '\'') qurl += "%27"; else if ((unsigned char)c >= 0x20) qurl += c; }
-    std::string cmd = "exec " + sys("busybox") + " wget -q -S -T 30 -U '" + WEB_UA + "' -O - '" + qurl + "' 2>" + hdr;
+    std::string cmd = "exec " + sys("busybox") + " wget -q -S -T 30 -U '" + WEB_UA + "'" +
+                      (post.empty() ? std::string() : " --post-data '" + post + "'") +   /* (url-encoded: no quotes) */
+                      " -O - '" + qurl + "' 2>" + hdr;
     std::shared_ptr<Web> keep = w->web;                     /* (the window may close meanwhile) */
     run_capture({ sys("busybox"), "sh", "-c", cmd }, [keep, seq, url, hdr](const std::string &body) {
         Window *w = web_window(keep.get());
@@ -3564,6 +3672,24 @@ static void draw_web_content(Window *w, pixman_image_t *im, int ox, int oy)
         int y = py + s.y - w->scroll;
         if (y + s.h < py) continue;
         if (y > py + ph) break;
+        if (s.box) {                                        /* a form's field or button */
+            int bx = px + s.x, by = y + 1, bh = s.h - 4;
+            if (s.box == 2) {
+                fill(im, bx, by, s.w, bh, C_FACE);
+                bevel(im, bx, by, s.w, bh, true, 2);
+                int tw = text_width(TEXT_BODY, s.text.c_str());
+                text_draw(im, TEXT_BODY, bx + (s.w - tw) / 2, py + s.base - w->scroll, s.text.c_str(), C_TEXT, 0);
+            } else {
+                const WebField &fd = wb->forms[s.form].fields[s.field];
+                bool focus = wb->fform == s.form && wb->ffield == s.field;
+                fill(im, bx, by, s.w, bh, C_WHITE);
+                bevel(im, bx, by, s.w, bh, false, 2);
+                std::string v = fd.type == "password" ? std::string(fd.value.size(), '*') : fd.value;
+                int e = text_draw(im, TEXT_BODY, bx + 5, py + s.base - w->scroll, v.c_str(), C_TEXT, bx + s.w - 4);
+                if (focus && S.active == w) fill(im, std::min(e + 1, bx + s.w - 4), by + 3, 1, bh - 6, C_DARK);
+            }
+            continue;
+        }
         if (s.text.empty()) { fill(im, px + s.x, y, s.w, s.h, s.color); continue; }    /* a rule */
         uint32_t c = s.link >= 0 && s.link == wb->hover ? 0xFFB01818 : s.color;
         text_draw(im, s.font, px + s.x, py + s.base - w->scroll, s.text.c_str(), c, 0);
@@ -3583,6 +3709,49 @@ static void draw_web_content(Window *w, pixman_image_t *im, int ox, int oy)
     std::string st = wb->hover >= 0 && wb->hover < (int)wb->links.size() ? wb->links[wb->hover] : wb->status;
     text_draw(im, TEXT_UI, ox + 8, oy + w->ch - WEB_STATUS / 2 + text_ascent(TEXT_UI) / 2 - 1, st.c_str(),
               wb->loading ? 0xFF1C3C9C : C_TEXT, ox + w->cw - 8);
+}
+
+static std::string url_encode(const std::string &v)
+{
+    static const char *hex = "0123456789ABCDEF";
+    std::string o;
+    for (unsigned char c : v) {
+        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') o += (char)c;
+        else if (c == ' ') o += '+';
+        else { o += '%'; o += hex[c >> 4]; o += hex[c & 15]; }
+    }
+    return o;
+}
+
+/* sends form f (button: the submit button pressed, or -1) */
+static void web_submit(Window *w, int f, int button)
+{
+    Web *wb = w->web.get();
+    if (f < 0 || f >= (int)wb->forms.size()) return;
+    const WebForm &fm = wb->forms[f];
+    std::string q;
+    for (int k = 0; k < (int)fm.fields.size(); k++) {
+        const WebField &fd = fm.fields[k];
+        if (fd.name.empty() || (fd.type == "submit" && k != button)) continue;
+        if (!q.empty()) q += '&';
+        q += url_encode(fd.name) + "=" + url_encode(fd.value);
+    }
+    if (fm.method == "post") { web_go(w, fm.action, true, q); return; }
+    std::string a = fm.action;
+    size_t qm = a.find('?');
+    if (qm != std::string::npos) a = a.substr(0, qm);
+    web_go(w, q.empty() ? a : a + "?" + q);
+}
+
+/* the field or button at (cx, cy): its seg, or 0 */
+static const WebSeg *web_box_at(Window *w, int cx, int cy)
+{
+    Web *wb = w->web.get();
+    int y = cy - WEB_TOOL + w->scroll;
+    if (cy < WEB_TOOL || cy >= w->ch - WEB_STATUS) return nullptr;
+    for (const WebSeg &s : wb->segs)
+        if (s.box && cx >= s.x && cx < s.x + s.w && y >= s.y && y < s.y + s.h) return &s;
+    return nullptr;
 }
 
 static int web_link_at(Window *w, int cx, int cy)
@@ -3611,9 +3780,9 @@ static void web_click(Window *w, int cx, int cy)
         for (int i = 0; i < 4; i++) {
             int bx = 8 + i * (web_btn_w() + 4);
             if (cx < bx || cx >= bx + web_btn_w()) continue;
-            if (i == 0 && wb->hpos > 0) { wb->hpos--; web_go(w, wb->history[wb->hpos], false); }
-            if (i == 1 && wb->hpos + 1 < (int)wb->history.size()) { wb->hpos++; web_go(w, wb->history[wb->hpos], false); }
-            if (i == 2) web_go(w, wb->url, false);
+            if (i == 0 && wb->hpos > 0) { wb->hpos--; web_go(w, wb->history[wb->hpos], false, wb->posts[wb->hpos]); }
+            if (i == 1 && wb->hpos + 1 < (int)wb->history.size()) { wb->hpos++; web_go(w, wb->history[wb->hpos], false, wb->posts[wb->hpos]); }
+            if (i == 2) web_go(w, wb->url, false, wb->post);
             if (i == 3) web_go(w, WEB_HOME);
             return;
         }
@@ -3621,6 +3790,12 @@ static void web_click(Window *w, int cx, int cy)
         return;
     }
     if (wb->editing) { wb->editing = false; draw_window(w); }
+    if (const WebSeg *b = web_box_at(w, cx, cy)) {
+        if (b->box == 2) { wb->fform = wb->ffield = -1; web_submit(w, b->form, b->field); }
+        else { wb->fform = b->form; wb->ffield = b->field; draw_window(w); }
+        return;
+    }
+    if (wb->fform >= 0) { wb->fform = wb->ffield = -1; draw_window(w); }
     int l = web_link_at(w, cx, cy);
     if (l >= 0) web_go(w, wb->links[l]);
 }
@@ -3652,11 +3827,31 @@ static bool web_key(Window *w, xkb_keysym_t sym, const char *utf8)
         draw_window(w);
         return true;
     }
+    if (wb->fform >= 0 && wb->fform < (int)wb->forms.size()) {          /* typing in a form's field */
+        WebField &fd = wb->forms[wb->fform].fields[wb->ffield];
+        if (sym == XKB_KEY_Return || sym == XKB_KEY_KP_Enter) { int f = wb->fform; wb->fform = wb->ffield = -1; web_submit(w, f, -1); return true; }
+        if (sym == XKB_KEY_Escape) { wb->fform = wb->ffield = -1; draw_window(w); return true; }
+        if (sym == XKB_KEY_Tab) {                          /* the next field of the form */
+            int f = wb->fform;
+            for (int k = wb->ffield + 1; k < (int)wb->forms[f].fields.size(); k++)
+                if (wb->forms[f].fields[k].type == "text" || wb->forms[f].fields[k].type == "password") { wb->ffield = k; break; }
+            draw_window(w);
+            return true;
+        }
+        if (sym == XKB_KEY_BackSpace) {
+            while (!fd.value.empty() && (fd.value.back() & 0xC0) == 0x80) fd.value.pop_back();
+            if (!fd.value.empty()) fd.value.pop_back();
+        } else if (!ctrl && utf8 && (unsigned char)utf8[0] >= 0x20 && utf8[0] != 0x7F) {
+            fd.value += utf8;
+        } else return false;
+        draw_window(w);
+        return true;
+    }
     int ph = web_view_h(w);
     switch (sym) {
     case XKB_KEY_l: case XKB_KEY_L: if (!ctrl) return false; web_edit_address(w); return true;
-    case XKB_KEY_F5: web_go(w, wb->url, false); return true;
-    case XKB_KEY_BackSpace: if (wb->hpos > 0) { wb->hpos--; web_go(w, wb->history[wb->hpos], false); } return true;
+    case XKB_KEY_F5: web_go(w, wb->url, false, wb->post); return true;
+    case XKB_KEY_BackSpace: if (wb->hpos > 0) { wb->hpos--; web_go(w, wb->history[wb->hpos], false, wb->posts[wb->hpos]); } return true;
     case XKB_KEY_Up: w->scroll -= 40; break;
     case XKB_KEY_Down: w->scroll += 40; break;
     case XKB_KEY_Prior: w->scroll -= ph - 40; break;
@@ -4135,8 +4330,8 @@ static void content_click(Window *w, int cx, int cy, uint32_t time, bool right)
         else {
             int l = web_link_at(w, cx, cy);
             std::vector<Menu::Item> items = {
-                { "Back", [w] { Web *wb = w->web.get(); if (wb->hpos > 0) { wb->hpos--; web_go(w, wb->history[wb->hpos], false); } } },
-                { "Reload", [w] { web_go(w, w->web->url, false); } } };
+                { "Back", [w] { Web *wb = w->web.get(); if (wb->hpos > 0) { wb->hpos--; web_go(w, wb->history[wb->hpos], false, wb->posts[wb->hpos]); } } },
+                { "Reload", [w] { web_go(w, w->web->url, false, w->web->post); } } };
             if (l >= 0) {
                 std::string u = w->web->links[l];
                 items.insert(items.begin(), { "Open link", [w, u] { web_go(w, u); } });
