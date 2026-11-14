@@ -565,10 +565,12 @@ static void debug_cmd_hex(int argc, char **argv)
  * breakpoint/single-step support (see this file's G/P/T comment). */
 static void debug_cmd_registers(void)
 {
-    unsigned long sp, currentel, daif;
+    unsigned long sp, currentel = 0, daif = 0;
     __asm__ volatile("mov %0, sp" : "=r"(sp));
-    __asm__ volatile("mrs %0, CurrentEL" : "=r"(currentel));
-    __asm__ volatile("mrs %0, DAIF" : "=r"(daif));
+    if (!uart_user_services()) {                    /* (a process, at EL0, may not read these) */
+        __asm__ volatile("mrs %0, CurrentEL" : "=r"(currentel));
+        __asm__ volatile("mrs %0, DAIF" : "=r"(daif));
+    }
 
     uart_puts("SP=");
     debug_print_hex(sp);

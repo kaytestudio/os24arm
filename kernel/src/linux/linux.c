@@ -2217,7 +2217,8 @@ static int load_lx(mmu_as_t *as, const char *path, lx_u64 *entry, lx_u64 *x0, lx
     pg->svc.exit = (void (*)(int))lx_stub(lxs_exit);
     void **ops = (void **)&pg->vfs;                       /* (the struct's 15 calls, in order) */
     for (int i = 0; i < 15; i++) ops[i] = (void *)(uintptr_t)(lx_stub(lxs_vfs) + 8 * (lx_u64)i);
-    kstrncpy(pg->cwd, cur && cur->g ? cur->g->cwd : "/", sizeof pg->cwd);
+    if (cur && cur->g) kstrncpy(pg->cwd, cur->g->cwd, sizeof pg->cwd);
+    else lx_shell_cwd(pg->cwd, sizeof pg->cwd);          /* RUN at the console: the shell's */
     if (mmu_as_protect(as, LX_LOAD_BASE, in.code_size, RX) || mmu_as_protect(as, LX_STUBS_VA, PAGE, RX))
         goto out;
     lx_sync_code(LX_LOAD_BASE, in.code_size);
@@ -5669,9 +5670,14 @@ int linux_run(const char *path, int argc, char **argv)
     vma_insert(init->g, &sv);
     if (lx_lr) lx_vmas(init->g);
     kstrncpy(init->g->cwd, "/", sizeof init->g->cwd);
+    if (lx_lr) lx_shell_cwd(init->g->cwd, sizeof init->g->cwd);
     kstrncpy(init->g->exe, path, sizeof init->g->exe);
     set_cmdline(init->g, argbuf, argc);
     tty_defaults(&console_tty);
+    if (lx_lr) {                     /* an OS/2 program reads keys one at a time and echoes them */
+        console_tty.tio.lflag &= ~(T_ICANON | T_ECHO);
+        console_tty.tio.iflag &= ~T_ICRNL;
+    }
     console_tty.used = 1;
     console_tty.out = con_out;
     console_tty.pump = con_pump;

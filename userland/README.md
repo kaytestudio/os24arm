@@ -268,8 +268,8 @@ platform-specific are new code.
    the clock `clock_gettime`; the handles it opens are closed when it
    ends. The programs' `uart.c` uses those instead of the UART when
    they're there; the terminal is raw while one runs (they echo
-   themselves). At the system console `RUN` still runs them inside the
-   kernel.
+   themselves). `RUN` at the system console starts them the same way,
+   in the shell's directory, the console raw while they run.
 
    `userland/apps/os2cmd.c` relays a terminal to `/dev/os2cmd`, which runs
    each line in the shell of `kernel/src/main.c` - DIR, COPY, MOUNT, USB,

@@ -329,6 +329,11 @@ int lx_exec_image(const void *image, uint32_t image_size)
     return entry(&lx_svc);
 }
 
+void lx_shell_cwd(char *buf, uint32_t size)
+{
+    if (DosQueryCurrentDir(buf, size) != NO_ERROR || buf[0] != '/') { buf[0] = '/'; buf[1] = 0; }
+}
+
 int lx_exec_file(const char *path)
 {
     /* vfs_* wants an absolute path (find_mount() only matches paths

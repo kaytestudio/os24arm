@@ -375,6 +375,8 @@ static void cmd_runtest(void)
 }
 #endif
 
+extern void DosResolvePath(const char *in, char *out, uint32_t out_size);
+
 static void cmd_run(int argc, char **argv)
 {
     if (argc < 2) {
@@ -383,6 +385,19 @@ static void cmd_run(int argc, char **argv)
     }
 
     uart_puts("\r\n");
+    /* As a process (kernel/src/linux: its own address space, at EL0) - a
+     * program that fails ends alone; the kernel is only the fallback. */
+    char resolved[VFS_PATH_MAX];
+    DosResolvePath(argv[1], resolved, sizeof resolved);
+    vfs_stat_t st;
+    if (vfs_stat(resolved, &st) == VFS_OK) {
+        argv[1] = resolved;
+        int status = linux_run(resolved, argc - 1, argv + 1);
+        if (status >= 0) {
+            if (status != 0) kprintf("\n[LX] %s ended with status %d\n", resolved, status);
+            return;
+        }
+    }
     int rc = lx_exec_file(argv[1]);
 
     /* If the loaded program was a normal function that returned (e.g.

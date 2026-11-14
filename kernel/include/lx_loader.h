@@ -68,6 +68,8 @@ typedef struct {
 } lx_image_info_t;
 int lx_check_image(const void *image, uint32_t image_size, lx_image_info_t *info);
 int lx_place_image(const void *image, uint32_t image_size);
+/* The kernel shell's current directory (a VFS path): where RUN starts one. */
+void lx_shell_cwd(char *buf, uint32_t size);
 
 /* Load and run an LX image already sitting in memory (e.g. embedded in
  * the kernel image via .incbin). Same semantics as lx_exec_file(). */
