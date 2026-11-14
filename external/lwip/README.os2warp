@@ -2,6 +2,6 @@ lwIP 2.2.0 (STABLE-2_2_0_RELEASE), the TCP/IP stack of the kernel's
 networking (kernel/src/net). From
 https://github.com/lwip-tcpip/lwip/archive/refs/tags/STABLE-2_2_0_RELEASE.tar.gz
 (SHA-256 631bead5344605141ab5367dc7913eb81671469d5467c40cdb29701313855afe),
-unchanged; only what's built is here: src/core (IPv4), src/netif/ethernet.c,
+unchanged; only what's built is here: src/core (IPv4 and IPv6), src/netif/ethernet.c,
 src/include (without apps and compat). BSD licence: COPYING.
 The kernel's own configuration is kernel/src/net/lwipopts.h and arch/cc.h.

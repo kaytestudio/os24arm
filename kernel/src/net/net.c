@@ -16,11 +16,29 @@
 #include "lwip/icmp.h"
 #include "lwip/inet_chksum.h"
 #include "lwip/ip4.h"
+#include "lwip/ip6.h"
+#include "lwip/icmp6.h"
+#include "lwip/prot/ip6.h"
+#include "netif/ethernet.h"
+#include "lwip/ethip6.h"
 #include "lwip/prot/ip4.h"
 #include "lwip/timeouts.h"
 #include "netif/ethernet.h"
 
 static struct netif nif;
+
+/* an address as text, IPv6 in lower case (lwIP writes capitals) */
+static const char *addr_text(const ip_addr_t *a)
+{
+    static char b[2][48];
+    static int k;
+    char *o = b[k ^= 1];
+    const char *t = ipaddr_ntoa(a);
+    int i = 0;
+    for (; t[i] && i < 47; i++) o[i] = (t[i] >= 'A' && t[i] <= 'F') ? (char)(t[i] + 32) : t[i];
+    o[i] = 0;
+    return o;
+}
 static int have_card, announced;
 static uint8_t rxbuf[2048];
 
@@ -56,10 +74,11 @@ static err_t nif_init(struct netif *n)
 {
     n->name[0] = 'l'; n->name[1] = 'n';                 /* lan0, as OS/2 called it */
     n->output = etharp_output;
+    n->output_ip6 = ethip6_output;
     n->linkoutput = linkoutput;
     n->mtu = 1500;
     n->hwaddr_len = 6;
-    n->flags = NETIF_FLAG_BROADCAST | NETIF_FLAG_ETHARP | NETIF_FLAG_ETHERNET | NETIF_FLAG_LINK_UP;
+    n->flags = NETIF_FLAG_BROADCAST | NETIF_FLAG_ETHARP | NETIF_FLAG_ETHERNET | NETIF_FLAG_LINK_UP | NETIF_FLAG_MLD6;
     return ERR_OK;
 }
 
@@ -82,6 +101,8 @@ void net_init(void)
     netif_set_hostname(&nif, "os2warp");
     netif_set_status_callback(&nif, status_cb);
     netif_set_default(&nif);
+    netif_create_ip6_linklocal_address(&nif, 1);        /* IPv6: fe80::, then SLAAC from the router */
+    netif_set_ip6_autoconfig_enabled(&nif, 1);
     netif_set_up(&nif);
     dhcp_start(&nif);
     have_card = 1;
@@ -102,7 +123,7 @@ int net_resolv_conf(char *buf, int cap)
     for (int i = 0; i < DNS_MAX_SERVERS; i++) {
         const ip_addr_t *d = dns_getserver((u8_t)i);
         if (ip_addr_isany(d)) continue;
-        const char *a = ipaddr_ntoa(d), *k = "nameserver ";
+        const char *a = addr_text(d), *k = "nameserver ";
         for (const char *c = k; *c && n < cap - 1; c++) buf[n++] = *c;
         for (const char *c = a; *c && n < cap - 1; c++) buf[n++] = *c;
         if (n < cap - 1) buf[n++] = '\n';
@@ -154,9 +175,14 @@ void net_cmd_ifconfig(int argc, char **argv)
     kprintf("      inet %s", ip4addr_ntoa(netif_ip4_addr(&nif)));
     kprintf("  netmask %s", ip4addr_ntoa(netif_ip4_netmask(&nif)));
     kprintf("  gateway %s\n", ip4addr_ntoa(netif_ip4_gw(&nif)));
+    for (int i = 0; i < LWIP_IPV6_NUM_ADDRESSES; i++)    /* IPv6: link-local, SLAAC */
+        if (ip6_addr_isvalid(netif_ip6_addr_state(&nif, i)))
+            kprintf("      inet6 %s%s\n", addr_text(netif_ip_addr6(&nif, i)),
+                    ip6_addr_islinklocal(netif_ip6_addr(&nif, i)) ? "  (link)" :
+                    ip6_addr_istentative(netif_ip6_addr_state(&nif, i)) ? "  (tentative)" : "");
     for (int i = 0; i < DNS_MAX_SERVERS; i++) {
         const ip_addr_t *d = dns_getserver((u8_t)i);
-        if (!ip_addr_isany(d)) kprintf("      nameserver %s\n", ipaddr_ntoa(d));
+        if (!ip_addr_isany(d)) kprintf("      nameserver %s\n", addr_text(d));
     }
 }
 
@@ -202,7 +228,7 @@ void net_cmd_host(int argc, char **argv)
     if (argc < 2) { kprintf("\nUsage: HOST name\n"); return; }
     if (!need_net()) return;
     ip_addr_t a;
-    if (resolve(argv[1], &a) == 0) kprintf("\n%s has address %s\n", argv[1], ipaddr_ntoa(&a));
+    if (resolve(argv[1], &a) == 0) kprintf("\n%s has address %s\n", argv[1], addr_text(&a));
 }
 
 /* PING: ICMP echo, through a raw pcb */
@@ -213,15 +239,15 @@ static u8_t ping_ttl;
 
 static u8_t ping_recv(void *arg, struct raw_pcb *pcb, struct pbuf *p, const ip_addr_t *addr)
 {
-    (void)arg; (void)pcb; (void)addr;
-    struct ip_hdr *iph = (struct ip_hdr *)p->payload;
-    u16_t hl = (u16_t)(IPH_HL(iph) * 4);
+    (void)arg; (void)pcb;
+    int v6 = IP_IS_V6(addr);
+    u16_t hl = v6 ? 40 : (u16_t)(IPH_HL((struct ip_hdr *)p->payload) * 4);   /* (its IP header first) */
     if (p->tot_len >= hl + sizeof(struct icmp_echo_hdr)) {
         struct icmp_echo_hdr e;
         pbuf_copy_partial(p, &e, sizeof e, hl);
-        if (e.type == ICMP_ER && e.id == lwip_htons(ping_id) && e.seqno == lwip_htons(ping_seq)) {
+        if (e.type == (v6 ? ICMP6_TYPE_EREP : ICMP_ER) && e.id == lwip_htons(ping_id) && e.seqno == lwip_htons(ping_seq)) {
             ping_rtt = net_now_ms() - ping_t0;
-            ping_ttl = IPH_TTL(iph);
+            ping_ttl = v6 ? ((u8_t *)p->payload)[7] : IPH_TTL((struct ip_hdr *)p->payload);   /* (TTL, hop limit) */
             ping_got = 1;
             pbuf_free(p);
             return 1;                                   /* ours */
@@ -252,24 +278,26 @@ void net_cmd_ping(int argc, char **argv)
     ip_addr_t to;
     if (resolve(host, &to) != 0) return;
     if (count < 1) count = 1;
-    struct raw_pcb *pcb = raw_new(IP_PROTO_ICMP);
+    int v6 = IP_IS_V6(&to);
+    struct raw_pcb *pcb = v6 ? raw_new_ip_type(IPADDR_TYPE_V6, IP6_NEXTH_ICMP6) : raw_new_ip_type(IPADDR_TYPE_V4, IP_PROTO_ICMP);
     if (!pcb) { kprintf("\nPING: out of memory\n"); return; }
+    if (v6) { pcb->chksum_reqd = 1; pcb->chksum_offset = 2; }   /* (lwIP sums ICMPv6: the pseudo header) */
     raw_recv(pcb, ping_recv, 0);
-    raw_bind(pcb, IP_ADDR_ANY);
-    kprintf("\nPING %s (%s): 56 data bytes\n", host, ipaddr_ntoa(&to));
+    raw_bind(pcb, v6 ? IP6_ADDR_ANY : IP4_ADDR_ANY);
+    kprintf("\nPING %s (%s): 56 data bytes\n", host, addr_text(&to));
     int sent = 0, got = 0;
     unsigned long total = 0;
     for (int i = 0; i < count; i++) {
         struct pbuf *p = pbuf_alloc(PBUF_IP, sizeof(struct icmp_echo_hdr) + 56, PBUF_RAM);
         if (!p) break;
         struct icmp_echo_hdr *e = (struct icmp_echo_hdr *)p->payload;
-        ICMPH_TYPE_SET(e, ICMP_ECHO);
+        ICMPH_TYPE_SET(e, v6 ? ICMP6_TYPE_EREQ : ICMP_ECHO);
         ICMPH_CODE_SET(e, 0);
         e->id = lwip_htons(ping_id);
         e->seqno = lwip_htons(++ping_seq);
         for (int k = 0; k < 56; k++) ((u8_t *)p->payload)[sizeof *e + k] = (u8_t)k;
         e->chksum = 0;
-        e->chksum = inet_chksum(e, (u16_t)p->len);
+        if (!v6) e->chksum = inet_chksum(e, (u16_t)p->len);
         ping_got = 0;
         ping_t0 = net_now_ms();
         raw_sendto(pcb, p, &to);
@@ -280,7 +308,7 @@ void net_cmd_ping(int argc, char **argv)
         if (r == 0) {
             got++;
             total += ping_rtt;
-            kprintf("64 bytes from %s: icmp_seq=%d ttl=%d time=%u ms\n", ipaddr_ntoa(&to), ping_seq, ping_ttl, (unsigned)ping_rtt);
+            kprintf("64 bytes from %s: icmp_seq=%d ttl=%d time=%u ms\n", addr_text(&to), ping_seq, ping_ttl, (unsigned)ping_rtt);
             volatile int never = 0;
             if (i + 1 < count && wait_for(&never, 1000 - (ping_rtt < 1000 ? ping_rtt : 999)) < 0) break;
         } else {

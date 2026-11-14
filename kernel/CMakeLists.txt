@@ -127,7 +127,7 @@ target_include_directories(os2warp_kernel PRIVATE
 # ── lwIP: the TCP/IP stack (external/lwip, configured by src/net/lwipopts.h) ─
 if(TARGET_ARCH STREQUAL "aarch64" AND NOT TARGET_PLATFORM STREQUAL "RPI3")
     set(LWIP_DIR ${CMAKE_SOURCE_DIR}/external/lwip/src)
-    file(GLOB LWIP_SOURCES ${LWIP_DIR}/core/*.c ${LWIP_DIR}/core/ipv4/*.c)
+    file(GLOB LWIP_SOURCES ${LWIP_DIR}/core/*.c ${LWIP_DIR}/core/ipv4/*.c ${LWIP_DIR}/core/ipv6/*.c)
     list(APPEND LWIP_SOURCES ${LWIP_DIR}/netif/ethernet.c)
     add_library(lwip STATIC ${LWIP_SOURCES})
     target_include_directories(lwip PUBLIC

@@ -24,7 +24,17 @@
 #define LWIP_NO_UNISTD_H            1      /* (ssize_t: arch/cc.h) */
 
 #define LWIP_IPV4                   1
-#define LWIP_IPV6                   0
+#define LWIP_IPV6                   1      /* and IPv6: addresses by SLAAC (router advertisements) */
+#define LWIP_IPV6_AUTOCONFIG        1
+#define LWIP_IPV6_SEND_ROUTER_SOLICIT 1
+#define LWIP_IPV6_MLD               1
+#define LWIP_ICMP6                  1
+#define LWIP_IPV6_NUM_ADDRESSES     3      /* link-local, and two from prefixes */
+#define LWIP_IPV6_DHCP6             0
+#define LWIP_ND6_RDNSS_MAX_DNS_SERVERS 0   /* (the name servers: DHCPv4's) */
+#define LWIP_ND6_QUEUEING           1
+#define MEMP_NUM_MLD6_GROUP         8
+#define IPV6_FRAG_COPYHEADER        1      /* (64-bit pointers) */
 #define LWIP_ARP                    1
 #define LWIP_ETHERNET               1
 #define LWIP_ICMP                   1
