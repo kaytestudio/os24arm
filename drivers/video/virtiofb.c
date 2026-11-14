@@ -2,8 +2,13 @@
  * @file virtiofb.c
  * @brief VirtIO GPU Framebuffer Driver for OS/2 Warp ARM64
  * 
- * Provides a simple framebuffer interface for QEMU virt machine.
- * Supports: 1024x768 @ 32-bit RGBA, double buffering, page flipping
+ * Provides a simple framebuffer interface for QEMU virt machine: 32-bit
+ * XRGB, double buffering, at the size the host's display has (QEMU:
+ * -device virtio-gpu-device,xres=1920,yres=1080) and following it when
+ * it changes (QEMU's window resized: fb_check_resize). The memory is
+ * reserved once for the largest size (FB_MAX_*), so what programs map of
+ * it (/dev/fb0) stays good whatever the size; the image is always packed
+ * tightly in it (stride = width * 4). ramfb: 1024x768 only.
  */
 
 #include "types.h"
@@ -21,14 +26,19 @@ extern void mem_free(void *ptr);
 extern void *mmu_frames_alloc(unsigned long n) __attribute__((weak));
 
 /* ── Framebuffer Configuration ────────────────────────────────────────────── */
-#define FB_WIDTH        1024
+#define FB_WIDTH        1024    /* without a size from the host (ramfb, ...) */
 #define FB_HEIGHT       768
+#define FB_MAX_W        2560    /* the most there's memory for (16 MB) */
+#define FB_MAX_H        1600
+#define FB_MIN_W        640
+#define FB_MIN_H        480
 #define FB_BPP          32      /* Bits per pixel (RGBA8888) */
 #define FB_STRIDE       (FB_WIDTH * (FB_BPP / 8))
-#define FB_SIZE         (FB_STRIDE * FB_HEIGHT)
+#define FB_SIZE         (FB_MAX_W * FB_MAX_H * (FB_BPP / 8))
 
 /* ── Framebuffer State ────────────────────────────────────────────────────── */
 typedef struct {
+    int cap_w, cap_h;       /* what the memory has room for */
     uint32_t *pixels;       /* Front buffer (displayed) */
     uint32_t *backbuffer;   /* Back buffer (drawn to) */
     int width;
@@ -39,6 +49,17 @@ typedef struct {
 } framebuffer_t;
 
 static framebuffer_t fb = {0};
+
+/* A size the memory has room for, and no smaller than usable */
+static void fit_size(uint32_t *w, uint32_t *h)
+{
+    uint32_t cw = fb.cap_w ? (uint32_t)fb.cap_w : FB_MAX_W, ch = fb.cap_h ? (uint32_t)fb.cap_h : FB_MAX_H;
+    if (*w > cw) *w = cw;
+    if (*h > ch) *h = ch;
+    if (*w < FB_MIN_W) *w = FB_MIN_W;
+    if (*h < FB_MIN_H) *h = FB_MIN_H;
+    *w &= ~7u;                                         /* (whole groups of 8: tidy rows) */
+}
 
 /**
  * @brief Initialize framebuffer driver
@@ -56,16 +77,21 @@ bool fb_init_driver(void)
 
     uart_puts("[FB] Initializing framebuffer...\r\n");
 
-    /* Front buffer: page frames if there are any, else the heap */
+    /* Front buffer: page frames (room for the largest size), else the
+     * heap (1024x768 then) */
+    int cap_w = FB_MAX_W, cap_h = FB_MAX_H;
     fb.pixels = mmu_frames_alloc ? (uint32_t *)mmu_frames_alloc((FB_SIZE + 4095) / 4096) : 0;
-    if (!fb.pixels) fb.pixels = (uint32_t *)mem_alloc(FB_SIZE);
+    if (!fb.pixels) { cap_w = FB_WIDTH; cap_h = FB_HEIGHT; fb.pixels = (uint32_t *)mem_alloc((size_t)cap_w * cap_h * 4); }
     if (!fb.pixels) {
         uart_puts("[FB] ERROR: Failed to allocate front buffer\r\n");
         return false;
     }
+    fb.cap_w = cap_w;
+    fb.cap_h = cap_h;
 
-    /* Allocate back buffer for double buffering */
-    fb.backbuffer = (uint32_t *)mem_alloc(FB_SIZE);
+    /* Allocate back buffer for double buffering (the kernel's own GUI) */
+    fb.backbuffer = mmu_frames_alloc && cap_w == FB_MAX_W ? (uint32_t *)mmu_frames_alloc((FB_SIZE + 4095) / 4096)
+                                                         : (uint32_t *)mem_alloc((size_t)cap_w * cap_h * 4);
     if (!fb.backbuffer) {
         uart_puts("[FB] WARNING: No double buffering (low memory)\r\n");
         fb.backbuffer = fb.pixels;  /* Use single buffer */
@@ -74,21 +100,26 @@ bool fb_init_driver(void)
         fb.double_buffer = true;
     }
 
-    fb.width = FB_WIDTH;
-    fb.height = FB_HEIGHT;
-    fb.stride = FB_STRIDE;
+    /* The size: the host's display, if it has one (virtio-gpu) */
+    uint32_t hw = FB_WIDTH, hh = FB_HEIGHT;
+    int gpu = virtio_gpu_probe();
+    if (gpu && virtio_gpu_host_size(&hw, &hh)) fit_size(&hw, &hh);
+    else { hw = FB_WIDTH; hh = FB_HEIGHT; }
+    fb.width = (int)hw;
+    fb.height = (int)hh;
+    fb.stride = fb.width * 4;
     fb.initialized = true;
 
     /* Clear screen to black */
-    for (int i = 0; i < FB_WIDTH * FB_HEIGHT; i++) {
+    for (int i = 0; i < fb.cap_w * fb.cap_h; i++) {
         fb.pixels[i] = 0xFF000000;  /* Black (ARGB) */
         if (fb.double_buffer) {
             fb.backbuffer[i] = 0xFF000000;
         }
     }
 
-    kprintf("[FB] Framebuffer ready: %dx%d @ %d-bit\r\n",
-            FB_WIDTH, FB_HEIGHT, FB_BPP);
+    kprintf("[FB] Framebuffer ready: %dx%d @ %d-bit (room for %dx%d)\r\n",
+            fb.width, fb.height, FB_BPP, fb.cap_w, fb.cap_h);
     kprintf("[FB] Front buffer: 0x%p\r\n", fb.pixels);
     kprintf("[FB] Back buffer:  0x%p\r\n", fb.backbuffer);
     kprintf("[FB] Double buffering: %s\r\n",
@@ -99,8 +130,11 @@ bool fb_init_driver(void)
      * Fall back to ramfb (if attached via -device ramfb) when no
      * virtio-gpu-device is present; ramfb needs no ongoing fb_present()
      * traffic since QEMU just polls this RAM continuously. */
-    if (!virtio_gpu_init(fb.pixels, (uint32_t)FB_WIDTH, (uint32_t)FB_HEIGHT, (uint32_t)FB_STRIDE)) {
+    if (!gpu || !virtio_gpu_set_mode(fb.pixels, (uint32_t)fb.width, (uint32_t)fb.height)) {
+        fb.width = FB_WIDTH; fb.height = FB_HEIGHT; fb.stride = FB_STRIDE;
         ramfb_init(fb.pixels, (uint32_t)FB_WIDTH, (uint32_t)FB_HEIGHT, (uint32_t)FB_STRIDE);
+    } else {
+        uart_puts("[GPU] virtio-gpu 2D scanout ready\r\n");
     }
 
     return true;
@@ -120,13 +154,33 @@ void fb_get_info(int *width, int *height, int *bpp)
  * that a rectangle of it changed (virtio-gpu; ramfb needs nothing). */
 uint32_t *fb_front(void) { return fb.initialized ? fb.pixels : 0; }
 
+/* The memory behind the front buffer, in bytes (all of it can be mapped) */
+unsigned long fb_capacity(void) { return fb.initialized ? (unsigned long)fb.cap_w * fb.cap_h * 4 : 0; }
+
+/* Has the host's display changed size? Then the image is shown at the new
+ * size (cleared: what was there is laid out for the old width) - 1 if so. */
+int fb_check_resize(void)
+{
+    uint32_t w, h;
+    if (!fb.initialized || !virtio_gpu_resized(&w, &h)) return 0;
+    fit_size(&w, &h);
+    if ((int)w == fb.width && (int)h == fb.height) return 0;
+    for (int i = 0; i < (int)(w * h); i++) fb.pixels[i] = 0xFF000000;
+    if (!virtio_gpu_set_mode(fb.pixels, w, h)) return 0;
+    fb.width = (int)w;
+    fb.height = (int)h;
+    fb.stride = fb.width * 4;
+    kprintf("[FB] display resized: %dx%d\r\n", fb.width, fb.height);
+    return 1;
+}
+
 void fb_flush(int x, int y, int w, int h)
 {
     if (!fb.initialized) return;
     if (x < 0) { w += x; x = 0; }
     if (y < 0) { h += y; y = 0; }
-    if (x + w > FB_WIDTH) w = FB_WIDTH - x;
-    if (y + h > FB_HEIGHT) h = FB_HEIGHT - y;
+    if (x + w > fb.width) w = fb.width - x;
+    if (y + h > fb.height) h = fb.height - y;
     if (w > 0 && h > 0) virtio_gpu_flush(x, y, w, h);
 }
 
@@ -149,7 +203,7 @@ void fb_present(void)
 
     if (fb.double_buffer) {
         /* Copy back buffer to front buffer */
-        for (int i = 0; i < FB_WIDTH * FB_HEIGHT; i++) {
+        for (int i = 0; i < fb.width * fb.height; i++) {
             fb.pixels[i] = fb.backbuffer[i];
         }
     }
@@ -157,7 +211,7 @@ void fb_present(void)
     /* ramfb needs nothing here - QEMU polls that RAM continuously. A
      * real virtio-gpu scanout does need an explicit sync, since the host
      * only re-reads the backing buffer on TRANSFER_TO_HOST_2D. */
-    virtio_gpu_flush(0, 0, FB_WIDTH, FB_HEIGHT);
+    virtio_gpu_flush(0, 0, fb.width, fb.height);
 }
 
 /**

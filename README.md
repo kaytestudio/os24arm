@@ -638,7 +638,10 @@ inside the kernel, as it used to.)
 ## 9. The GUI
 
 **The desktop: the Workplace Shell.** With a display (`scripts/run-vm.sh
---wayland --hvf`), the system boots into an OS/2 Warp 4 style desktop:
+--wayland --hvf`; 1920x1080 to start with, `RES=1600x900` for another size,
+and the window can be resized - the desktop follows it, up to 2560x1600:
+the kernel's virtio-gpu driver takes the host's display size and its
+"display changed" event, `drivers/video/virtiofb.c`), the system boots into an OS/2 Warp 4 style desktop:
 `userland/wps`, a Wayland compositor in C++ on wlroots, running as a
 Linux-ABI program from the USB stick (drive D:). It has the blue desktop
 with its objects (OS/2 System, the Assistance Center, Connections, Drives, Command

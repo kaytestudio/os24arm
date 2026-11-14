@@ -74,6 +74,7 @@ typedef unsigned long uint64_t;
 /* virtio-gpu control queue command types (include/uapi/linux/virtio_gpu.h) */
 #define VIRTIO_GPU_CMD_GET_DISPLAY_INFO         0x0100
 #define VIRTIO_GPU_CMD_RESOURCE_CREATE_2D       0x0101
+#define VIRTIO_GPU_CMD_RESOURCE_UNREF           0x0102
 #define VIRTIO_GPU_CMD_SET_SCANOUT              0x0103
 #define VIRTIO_GPU_CMD_RESOURCE_FLUSH           0x0104
 #define VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D      0x0105
@@ -91,7 +92,9 @@ typedef unsigned long uint64_t;
 
 /* Fixed single resource: this driver only ever backs one full-screen 2D
  * scanout, never allocates a second resource. */
-#define GPU_RESOURCE_ID  1
+#define GPU_RESOURCE_ID  1               /* (and 2: the size before, swapped on a resize) */
+#define VIRTIO_MMIO_CONFIG 0x100           /* the device's configuration */
+#define VIRTIO_GPU_EVENT_DISPLAY 1        /* config events_read (+0), events_clear (+4) */
 #define GPU_SCANOUT_ID   0
 
 #pragma pack(push, 1)
@@ -202,6 +205,7 @@ typedef struct {
 static vgpu_dev_t g_gpu;
 static bool     g_available = false;
 static uint32_t g_stride    = 0;
+static uint32_t g_res       = GPU_RESOURCE_ID;   /* the resource on the scanout now */
 
 static inline uint32_t mmio_read(uintptr_t base, uint32_t off)
 {
@@ -271,14 +275,14 @@ void virtio_gpu_flush(int x, int y, int w, int h)
     xfer.r.width     = (uint32_t)w;
     xfer.r.height    = (uint32_t)h;
     xfer.offset      = (uint64_t)y * g_stride + (uint64_t)x * 4;
-    xfer.resource_id = GPU_RESOURCE_ID;
+    xfer.resource_id = g_res;
     if (!gpu_cmd_nodata(&xfer, sizeof(xfer), "TRANSFER_TO_HOST_2D")) return;
 
     virtio_gpu_resource_flush_t flush;
     memset(&flush, 0, sizeof(flush));
     flush.hdr.type    = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
     flush.r           = xfer.r;
-    flush.resource_id = GPU_RESOURCE_ID;
+    flush.resource_id = g_res;
     gpu_cmd_nodata(&flush, sizeof(flush), "RESOURCE_FLUSH");
 }
 
@@ -293,7 +297,16 @@ bool virtio_gpu_init(void *fb_addr, uint32_t width, uint32_t height, uint32_t st
         uart_puts("[GPU] virtio-gpu: only tightly-packed (stride == width*4) buffers supported\r\n");
         return false;
     }
+    if (!virtio_gpu_probe()) return false;
+    if (!virtio_gpu_set_mode(fb_addr, width, height)) return false;
+    uart_puts("[GPU] virtio-gpu 2D scanout ready\r\n");
+    return true;
+}
 
+/* Finds the device and sets up its control queue (once). */
+bool virtio_gpu_probe(void)
+{
+    if (g_gpu.ready) return true;
     memset(&g_gpu, 0, sizeof(g_gpu));
 
     uintptr_t base = 0;
@@ -361,24 +374,46 @@ bool virtio_gpu_init(void *fb_addr, uint32_t width, uint32_t height, uint32_t st
 
     g_gpu.ready = true;
     kprintf("[GPU] virtio-gpu control queue ready at %p\r\n", (void *)base);
+    return true;
+}
 
-    /* Informational only - we still drive our own fixed width/height,
-     * not whatever the host reports here. */
+/* The host's size for the display (its window, under QEMU): 0 if it has
+ * none to say. */
+bool virtio_gpu_host_size(uint32_t *w, uint32_t *h)
+{
+    if (!g_gpu.ready) return false;
     virtio_gpu_ctrl_hdr_t get_di;
     memset(&get_di, 0, sizeof(get_di));
     get_di.type = VIRTIO_GPU_CMD_GET_DISPLAY_INFO;
-    virtio_gpu_resp_display_info_t di_resp;
-    if (gpu_ctrlq_submit(&get_di, sizeof(get_di), &di_resp, sizeof(di_resp)) &&
-        di_resp.hdr.type == VIRTIO_GPU_RESP_OK_DISPLAY_INFO) {
-        kprintf("[GPU] host scanout0: %ux%u enabled=%u\r\n",
-                di_resp.pmodes[0].r.width, di_resp.pmodes[0].r.height,
-                di_resp.pmodes[0].enabled);
-    }
+    static virtio_gpu_resp_display_info_t di;
+    if (!gpu_ctrlq_submit(&get_di, sizeof(get_di), &di, sizeof(di)) ||
+        di.hdr.type != VIRTIO_GPU_RESP_OK_DISPLAY_INFO || !di.pmodes[0].r.width || !di.pmodes[0].r.height)
+        return false;
+    *w = di.pmodes[0].r.width;
+    *h = di.pmodes[0].r.height;
+    return true;
+}
 
+/* Has the host's display changed size (QEMU: its window was resized)?
+ * The event is taken; true with the new size. */
+bool virtio_gpu_resized(uint32_t *w, uint32_t *h)
+{
+    if (!g_available) return false;
+    if (!(mmio_read(g_gpu.base, VIRTIO_MMIO_CONFIG + 0) & VIRTIO_GPU_EVENT_DISPLAY)) return false;
+    mmio_write(g_gpu.base, VIRTIO_MMIO_CONFIG + 4, VIRTIO_GPU_EVENT_DISPLAY);   /* events_clear */
+    return virtio_gpu_host_size(w, h);
+}
+
+/* Shows the tightly packed width x height buffer at fb_addr: a new
+ * resource on the scanout, the old one let go of. */
+bool virtio_gpu_set_mode(void *fb_addr, uint32_t width, uint32_t height)
+{
+    uint32_t old = g_available ? g_res : 0, res = old == GPU_RESOURCE_ID ? GPU_RESOURCE_ID + 1 : GPU_RESOURCE_ID;
+    uint32_t stride = width * 4;
     virtio_gpu_resource_create_2d_t create;
     memset(&create, 0, sizeof(create));
     create.hdr.type    = VIRTIO_GPU_CMD_RESOURCE_CREATE_2D;
-    create.resource_id = GPU_RESOURCE_ID;
+    create.resource_id = res;
     create.format      = VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM;
     create.width       = width;
     create.height      = height;
@@ -387,7 +422,7 @@ bool virtio_gpu_init(void *fb_addr, uint32_t width, uint32_t height, uint32_t st
     virtio_gpu_resource_attach_backing_1_t attach;
     memset(&attach, 0, sizeof(attach));
     attach.hdr.type     = VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING;
-    attach.resource_id  = GPU_RESOURCE_ID;
+    attach.resource_id  = res;
     attach.nr_entries   = 1;
     attach.entry.addr   = (uint64_t)(uintptr_t)fb_addr;
     attach.entry.length = stride * height;
@@ -396,18 +431,22 @@ bool virtio_gpu_init(void *fb_addr, uint32_t width, uint32_t height, uint32_t st
     virtio_gpu_set_scanout_t scan;
     memset(&scan, 0, sizeof(scan));
     scan.hdr.type     = VIRTIO_GPU_CMD_SET_SCANOUT;
-    scan.r.x           = 0;
-    scan.r.y           = 0;
-    scan.r.width        = width;
-    scan.r.height       = height;
+    scan.r.width       = width;
+    scan.r.height      = height;
     scan.scanout_id    = GPU_SCANOUT_ID;
-    scan.resource_id   = GPU_RESOURCE_ID;
+    scan.resource_id   = res;
     if (!gpu_cmd_nodata(&scan, sizeof(scan), "SET_SCANOUT")) return false;
 
+    if (old) {                                          /* (the size before: gone) */
+        virtio_gpu_ctrl_hdr_t unref[2];
+        memset(unref, 0, sizeof unref);
+        unref[0].type = VIRTIO_GPU_CMD_RESOURCE_UNREF;
+        ((uint32_t *)&unref[1])[0] = old;               /* struct { hdr; u32 resource_id; u32 pad } */
+        gpu_cmd_nodata(unref, sizeof(virtio_gpu_ctrl_hdr_t) + 8, "RESOURCE_UNREF");
+    }
+    g_res       = res;
     g_stride    = stride;
     g_available = true;
-    uart_puts("[GPU] virtio-gpu 2D scanout ready\r\n");
-
     virtio_gpu_flush(0, 0, (int)width, (int)height);
     return true;
 }

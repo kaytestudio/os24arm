@@ -28,6 +28,9 @@
 #                kernel's own hypervisor (VM TEST; not with --test)
 #   -h, --help
 #
+# --wayland: the display starts at 1920x1080 (RES=WIDTHxHEIGHT for another
+# size, up to 2560x1600) and follows the window when it's resized.
+#
 # Every run has a network card (virtio-net, QEMU's user networking: the
 # guest is 10.0.2.15 by DHCP, the host 10.0.2.2, DNS 10.0.2.3): PING,
 # IFCONFIG, HOST at the prompt. NET_FWD=",hostfwd=tcp::8080-:80" in the
@@ -105,7 +108,14 @@ if [ "$WAYLAND" = 1 ]; then
     fi
     USB_OPT=(-device qemu-xhci -device usb-kbd -device usb-tablet
              -device usb-storage,drive=stick -drive "if=none,id=stick,file=$STICK,format=raw")
-    DISPLAY_OPT=(-global virtio-mmio.force-legacy=false -device virtio-gpu-device -display default)
+    # HD to start with (RES=1600x900 for another size), and a window that
+    # can be resized: the desktop follows it (zoom-to-fit: QEMU's cocoa
+    # window is only resizable so; elsewhere QEMU ignores the option)
+    RES="${RES:-1920x1080}"
+    DISP=default
+    [ "$(uname)" = Darwin ] && DISP="cocoa,zoom-to-fit=on"
+    DISPLAY_OPT=(-global virtio-mmio.force-legacy=false
+                 -device "virtio-gpu-device,xres=${RES%x*},yres=${RES#*x}" -display "$DISP")
 fi
 
 if [ "$HVF" = 1 ]; then

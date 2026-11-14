@@ -4918,7 +4918,34 @@ static void new_keyboard(wlr_input_device *dev)
 }
 
 /* ── output ─────────────────────────────────────────────────────────── */
-struct Output { wlr_output *o; Listener frame, state, destroy; };
+struct Output { wlr_output *o; Listener frame, state, commit, destroy; };
+
+/* The screen changed size (the display was resized: QEMU's window): the
+ * desktop and the WarpCenter again, maximized windows to the new size,
+ * the others back on it. */
+static void screen_resized(int w, int h)
+{
+    if (w == S.W && h == S.H) return;
+    S.W = w;
+    S.H = h;
+    close_menu();
+    draw_desktop();
+    draw_bar();
+    for (Window *win : S.windows) {
+        if (!win->mapped) continue;
+        if (win->maximized) {                             /* (still: to the new size) */
+            int cw = S.W - 2 * B, ch = S.H - BAR - 2 * B - T;
+            win->x = 0; win->y = BAR;
+            if (win->top) wlr_xdg_toplevel_set_size(win->top, cw, ch);
+            else { win->cw = cw; win->ch = ch; }
+        } else {
+            win->x = std::clamp(win->x, 40 - win->fw(), std::max(0, S.W - 60));
+            win->y = std::clamp(win->y, BAR - T, std::max(BAR, S.H - 40));
+        }
+        wlr_scene_node_set_position(&win->tree->node, win->x, win->y);
+        draw_window(win);
+    }
+}
 
 static void new_output(wlr_output *o)
 {
@@ -4940,6 +4967,10 @@ static void new_output(wlr_output *o)
     });
     out->state.connect(&o->events.request_state, [o](void *d) {
         wlr_output_commit_state(o, static_cast<wlr_output_event_request_state *>(d)->state);
+    });
+    out->commit.connect(&o->events.commit, [o](void *d) {
+        auto *e = static_cast<wlr_output_event_commit *>(d);
+        if (o == S.output && (e->state->committed & WLR_OUTPUT_STATE_MODE)) screen_resized(o->width, o->height);
     });
     out->destroy.connect(&o->events.destroy, [out](void *) { delete out; });
     wlr_output_layout_output *lo = wlr_output_layout_add_auto(S.layout, o);

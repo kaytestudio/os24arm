@@ -102,6 +102,8 @@ extern void net_poll(void) __attribute__((weak));      /* the network (kernel/sr
  * and /dev/input/event*; weak, so boards without them still link. */
 extern int       fb_init_driver(void) __attribute__((weak));
 extern uint32_t *fb_front(void) __attribute__((weak));
+extern unsigned long fb_capacity(void) __attribute__((weak));   /* all of the memory (drivers/video/virtiofb.c) */
+extern int fb_check_resize(void) __attribute__((weak));         /* the host's display resized? */
 extern void      fb_flush(int x, int y, int w, int h) __attribute__((weak));
 extern void      fb_get_info(int *w, int *h, int *bpp) __attribute__((weak));
 extern int       usbkbd_poll_raw(int *usage, int *down) __attribute__((weak));
@@ -1505,9 +1507,10 @@ static int fb_geom(int *w, int *h, lx_u64 *size)
         if (!fb_init_driver || !fb_init_driver() || !fb_front()) return -ENODEV;
         frames_kept += (long)(before - mmu_frames_free_count());   /* the framebuffer stays */
     }
+    if (fb_check_resize) fb_check_resize();             /* (QEMU's window resized: the new size) */
     int bpp;
     fb_get_info(w, h, &bpp);
-    *size = (lx_u64)*w * *h * 4;
+    *size = fb_capacity ? fb_capacity() : (lx_u64)*w * *h * 4;   /* (mappable: all of it) */
     return 0;
 }
 

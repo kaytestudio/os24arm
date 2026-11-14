@@ -67,6 +67,7 @@ struct os2_backend {
     size_t fb_size;
     int width, height, stride;
     int damage_ioctl;               /* 1 works, 0 unknown, -1 use FBIOPAN_DISPLAY */
+    struct wl_event_source *size_timer;   /* the display's size, now and then (it can change) */
     bool started;
     struct os2_output *output;
     struct os2_keyboard *keyboard;
@@ -325,6 +326,33 @@ static void add_inputs(struct os2_backend *b)
     }
 }
 
+/* The display's size can change (os2warp: QEMU's window resized): the
+ * framebuffer reports the new one, and the output asks the compositor for
+ * that mode (wlr_output's request_state). The mapping covers all of the
+ * framebuffer's memory, so it stays good. */
+static int check_size(void *data)
+{
+    struct os2_backend *b = data;
+    wl_event_source_timer_update(b->size_timer, 250);
+    struct fb_var_screeninfo v;
+    struct fb_fix_screeninfo f;
+    if (ioctl(b->fb_fd, FBIOGET_VSCREENINFO, &v) || ioctl(b->fb_fd, FBIOGET_FSCREENINFO, &f)) return 0;
+    if ((int)v.xres == b->width && (int)v.yres == b->height) return 0;
+    if ((size_t)f.line_length * v.yres > b->fb_size) return 0;   /* (wouldn't fit what's mapped) */
+    wlr_log(WLR_INFO, "os2: %s is %ux%u now", b->fb_path, v.xres, v.yres);
+    b->width = (int)v.xres;
+    b->height = (int)v.yres;
+    b->stride = (int)f.line_length;
+    if (b->output) {
+        struct wlr_output_state st;
+        wlr_output_state_init(&st);
+        wlr_output_state_set_custom_mode(&st, b->width, b->height, REFRESH_MHZ);
+        wlr_output_send_request_state(&b->output->wlr, &st);
+        wlr_output_state_finish(&st);
+    }
+    return 0;
+}
+
 /* ── Backend ──────────────────────────────────────────────────────────── */
 static bool backend_start(struct wlr_backend *wb)
 {
@@ -343,6 +371,8 @@ static bool backend_start(struct wlr_backend *wb)
     o->frame_timer = wl_event_loop_add_timer(b->loop, send_frame, o);
     b->output = o;
     b->started = true;
+    b->size_timer = wl_event_loop_add_timer(b->loop, check_size, b);
+    wl_event_source_timer_update(b->size_timer, 250);
     wl_signal_emit_mutable(&wb->events.new_output, &o->wlr);
     add_inputs(b);
     return true;
@@ -351,6 +381,7 @@ static bool backend_start(struct wlr_backend *wb)
 static void backend_destroy(struct wlr_backend *wb)
 {
     struct os2_backend *b = get_backend(wb);
+    if (b->size_timer) wl_event_source_remove(b->size_timer);
     if (b->output) wlr_output_destroy(&b->output->wlr);
     if (b->keyboard) {
         wl_event_source_remove(b->keyboard->src);
@@ -411,6 +442,7 @@ struct wlr_backend *wlr_os2_backend_create(struct wl_event_loop *loop, const cha
     b->height = (int)v.yres;
     b->stride = (int)f.line_length;
     b->fb_size = (size_t)b->stride * v.yres;
+    if (f.smem_len > b->fb_size) b->fb_size = f.smem_len;   /* (all of it: room to grow) */
     b->fb = mmap(NULL, b->fb_size, PROT_READ | PROT_WRITE, MAP_SHARED, b->fb_fd, 0);
     if (b->fb == MAP_FAILED) {
         wlr_log(WLR_ERROR, "os2: mmap %s: %s", b->fb_path, strerror(errno));

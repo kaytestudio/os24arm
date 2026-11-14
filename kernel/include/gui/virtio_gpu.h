@@ -45,4 +45,11 @@ bool virtio_gpu_available(void);
  * find a device. */
 void virtio_gpu_flush(int x, int y, int w, int h);
 
+/* The host's display size (QEMU: its window), a change of it (resized:
+ * the event taken, the new size), and showing a buffer at a size. */
+bool virtio_gpu_probe(void);
+bool virtio_gpu_host_size(uint32_t *w, uint32_t *h);
+bool virtio_gpu_resized(uint32_t *w, uint32_t *h);
+bool virtio_gpu_set_mode(void *fb_addr, uint32_t width, uint32_t height);
+
 #endif /* GUI_VIRTIO_GPU_H */
