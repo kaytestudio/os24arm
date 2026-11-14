@@ -4,26 +4,52 @@
 # installed name-version-release, files: what it installed, info: its
 # description), so packages can be listed, upgraded and removed.
 #
-#   rpm -i PACKAGE...     install (a file, or a name: \OS2\RPMS\<name>-*.rpm)
+#   rpm -i PACKAGE...     install (a file, an http(s):// address, or a name:
+#                         \OS2\RPMS\<name>-*.rpm, else from the repository)
 #   rpm -U PACKAGE...     upgrade, or install
 #   rpm -e NAME...        remove
 #   rpm -q NAME...        is it installed?      rpm -qa   every package
 #   rpm -qi NAME          its description       rpm -ql NAME   its files
 #   rpm -qp[il] FILE      a package file (not installed)
+#   rpm -qA               what the repository has
+# The repository: the address in /etc/rpm.repo (one line), else
+# http://10.0.2.2:8080/ - the Mac or PC QEMU runs on, serving packages with
+# userland/serve-rpms.sh; it has an index.txt of its package files.
 # Packages are made on the Mac by userland/build-rpms.sh.
 BB=/h/OS2/busybox
 DB=/var/lib/rpm
 REPO=/h/OS2/RPMS
+NETREPO="$(cat /etc/rpm.repo 2>/dev/null | head -1)"
+[ -n "$NETREPO" ] || NETREPO=http://10.0.2.2:8080/
+case "$NETREPO" in */) ;; *) NETREPO="$NETREPO/" ;; esac
+TMPD=/tmp/rpm.$$
+trap 'rm -rf "$TMPD"' EXIT
 
 die() { echo "rpm: $*" >&2; exit 1; }
 
-# a package argument: a file, or a name found in the system's RPMS folder
+# a package file fetched to $TMPD (the address; its name in the end)
+fetch() {
+    mkdir -p "$TMPD"
+    out="$TMPD/$(basename "$1")"
+    echo "rpm: fetching $1" >&2
+    $BB wget -q -O "$out" "$1" || { rm -f "$out"; die "$1: can't fetch it"; }
+    echo "$out"
+}
+
+# the repository's index: its package files, one a line
+netindex() { $BB wget -q -T 10 -O - "${NETREPO}index.txt" 2>/dev/null; }
+
+# a package argument: a file, an address, or a name - in the system's
+# RPMS folder, else in the repository (its newest)
 pkgfile() {
     if [ -f "$1" ]; then echo "$1"; return; fi
+    case "$1" in http://*|https://*) fetch "$1"; return ;; esac
     for f in "$REPO/$1"-[0-9]*.rpm "$REPO/$1"; do
         [ -f "$f" ] && { echo "$f"; return; }
     done
-    die "$1: no such package file (and none in $REPO)"
+    n="$(netindex | grep -E "^$1-[0-9][^/]*\.rpm\$" | sort | tail -1)"
+    [ -n "$n" ] && { fetch "$NETREPO$n"; return; }
+    die "$1: no such package (not in $REPO, nor at $NETREPO)"
 }
 
 pkgname() { $BB rpm -qpi "$1" | sed -n 's/^Name *: //p'; }
@@ -78,7 +104,10 @@ rpm - packages for UNIXROOT (D:)
   rpm -qi NAME          its description
   rpm -ql NAME          its files
   rpm -qp[il] FILE      a package file (not installed)
-Packages here: \OS2\RPMS (binutils, make, musl-devel, tcc, llvm, libcxx-devel)
+  rpm -qA               what the repository has
+A PACKAGE is a file, an http(s):// address, or a name: from \OS2\RPMS
+(binutils, make, musl-devel, tcc, llvm, libcxx-devel), else the repository
+- /etc/rpm.repo's address, or http://10.0.2.2:8080/ (userland/serve-rpms.sh).
 USAGE
 }
 [ $# -ge 1 ] || { usage; exit 1; }
@@ -95,6 +124,9 @@ case "$op" in
                  done; exit $rc ;;
     -qi)         for p; do [ -f "$DB/$p/info" ] || die "package $p is not installed"; cat "$DB/$p/info"; done ;;
     -ql)         for p; do [ -f "$DB/$p/files" ] || die "package $p is not installed"; cat "$DB/$p/files"; done ;;
+    -qA)         idx="$(netindex)" || true
+                 [ -n "$idx" ] || die "the repository $NETREPO doesn't answer"
+                 echo "$idx" | sed -n 's/\.[a-z0-9_]*\.rpm$//p' ;;
     -qp|-qpi|-qpl|-qpc|-qpd|-qip|-qlp)
                  for p; do $BB rpm "$op" "$(pkgfile "$p")"; done ;;
     -h|--help)   usage ;;

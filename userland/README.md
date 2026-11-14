@@ -66,8 +66,13 @@ platform-specific are new code.
      0x60000000. With musl-devel (and libcxx-devel for C++), `clang hi.c
      -o hi` and `clang++ -O2 x.cpp -o x` build programs that run here.
    - On the system, `rpm` (userland/rootfs/rpm, busybox's rpm underneath,
-     a database in /var/lib/rpm): `rpm -i binutils` (a file, or a name from
-     \OS2\RPMS), `-U`, `-e`, `-q`, `-qa`, `-qi`, `-ql`, `-qp[il]`.
+     a database in /var/lib/rpm): `rpm -i binutils` (a file, an http(s)://
+     address, or a name - from \OS2\RPMS, else from the repository), `-U`,
+     `-e`, `-q`, `-qa`, `-qi`, `-ql`, `-qp[il]`, `-qA` (what the repository
+     has). The repository: /etc/rpm.repo's address, else
+     http://10.0.2.2:8080/ - the host, where `userland/serve-rpms.sh`
+     serves build/userland/rpms with an index.txt. (In `sh`, `rpm` is
+     busybox's applet: busybox prefers its applets; /h/OS2/rpm is this one.)
    - From the OS/2 prompt, arguments that are OS/2 paths (D:\x.s, src\x.c)
      reach programs as the paths they can open; `#!` scripts run (an
      interpreter that isn't there is busybox's applet of that name).

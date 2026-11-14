@@ -7,6 +7,13 @@ Drive D holds UNIXROOT: the place where the system's ported programs live, as on
   rpm -e package          remove it
   rpm -qi package         about it;  rpm -ql package   its files
 
+  rpm -i http://host/x.rpm   install one from the network
+  rpm -qA                     what the repository has
+
+A package named alone comes from \OS2\RPMS, else from the repository: the address in \ETC\RPM.REPO on drive D, or http://10.0.2.2:8080/ - under QEMU that's the Mac or PC it runs on, where userland/serve-rpms.sh serves the packages built there.
+
+(In a sh script, rpm is busybox's own simpler one; the Command Prompt's rpm is the whole thing - /h/OS2/rpm from sh.)
+
 Packages on the stick: binutils, make, musl-devel (the C library's headers), tcc, llvm (clang and lld) and libcxx-devel (C++).
 
 Writing a program: install musl-devel and llvm, then
