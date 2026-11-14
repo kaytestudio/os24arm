@@ -3152,7 +3152,7 @@ static const char *web_home_html =
     "<p>WebExplorer shows a page's text, pictures, links and forms, in the colours its style sheets "
     "give; scripts don't run. Secure (https) pages come encrypted, but their certificates "
     "aren't checked.</p><p>Keys: Ctrl+L the address, Backspace back, F5 reload, the arrows and "
-    "Page Up/Down to scroll.</p>";
+    "Page Up/Down to scroll. <a href=\"about:cookies\">about:cookies</a> shows what sites have left.</p>";
 
 /* ── the HTML ───────────────────────────────────────────────────────── */
 static void utf8_put(std::string &s, unsigned cp)
@@ -4124,6 +4124,216 @@ static Window *web_window(Web *wb)
     return nullptr;
 }
 
+/* ── cookies: what sites leave (Set-Cookie) and get back (Cookie) ──────
+ * The jar keeps them by domain and path (RFC 6265's rules, mostly); the
+ * ones that last (Expires, Max-Age) are kept in \OS2\cookies.txt for the
+ * next time. wget sends them (--header), and its -S shows what comes. */
+struct Cookie {
+    std::string name, value, domain, path;
+    long long expires = 0;                  /* 0: for this session */
+    bool secure = false, host_only = true;
+};
+static std::vector<Cookie> cookie_jar;
+static bool cookies_loaded = false;
+
+static std::string cookie_file() { return sys("cookies.txt"); }
+
+static void url_parts(const std::string &url, std::string &host, std::string &path, bool &https)
+{
+    https = !strncasecmp(url.c_str(), "https://", 8);
+    size_t s = url.find("://");
+    s = s == std::string::npos ? 0 : s + 3;
+    size_t e = url.find_first_of("/?#", s);
+    host = url.substr(s, e == std::string::npos ? std::string::npos : e - s);
+    size_t at = host.rfind('@');
+    if (at != std::string::npos) host = host.substr(at + 1);
+    if (!host.empty() && host[0] == '[') host = host.substr(1, host.find(']') - 1);   /* ([v6]) */
+    else if (host.find(':') != std::string::npos) host = host.substr(0, host.find(':'));
+    for (char &c : host) c = (char)tolower((unsigned char)c);
+    path = e == std::string::npos || url[e] != '/' ? "/" : url.substr(e, url.find_first_of("?#", e) - e);
+}
+
+static bool cookie_domain_ok(const std::string &host, const std::string &dom)
+{
+    return host == dom || (host.size() > dom.size() && !host.compare(host.size() - dom.size(), dom.size(), dom) &&
+                           host[host.size() - dom.size() - 1] == '.');
+}
+
+static void cookies_save()
+{
+    std::string tmp = cookie_file() + ".new";
+    FILE *f = fopen(tmp.c_str(), "w");
+    if (!f) return;
+    fprintf(f, "# WebExplorer's cookies: domain host-only path secure expires name value\n");
+    for (auto &c : cookie_jar)
+        if (c.expires)
+            fprintf(f, "%s\t%d\t%s\t%d\t%lld\t%s\t%s\n", c.domain.c_str(), c.host_only, c.path.c_str(), c.secure,
+                    c.expires, c.name.c_str(), c.value.c_str());
+    fclose(f);
+    rename(tmp.c_str(), cookie_file().c_str());
+}
+
+static void cookies_load()
+{
+    if (cookies_loaded) return;
+    cookies_loaded = true;
+    FILE *f = fopen(cookie_file().c_str(), "r");
+    if (!f) return;
+    char line[8192];
+    long long now = time(nullptr);
+    while (fgets(line, sizeof line, f)) {
+        if (line[0] == '#') continue;
+        std::vector<std::string> v;
+        std::string l(line);
+        while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
+        size_t i = 0;
+        for (;;) {
+            size_t t = l.find('\t', i);
+            v.push_back(l.substr(i, t == std::string::npos ? std::string::npos : t - i));
+            if (t == std::string::npos) break;
+            i = t + 1;
+        }
+        if (v.size() != 7) continue;
+        Cookie c;
+        c.domain = v[0]; c.host_only = v[1] == "1"; c.path = v[2]; c.secure = v[3] == "1";
+        c.expires = atoll(v[4].c_str()); c.name = v[5]; c.value = v[6];
+        if (c.expires > now) cookie_jar.push_back(c);
+    }
+    fclose(f);
+}
+
+/* a Set-Cookie: header from url */
+static void cookie_take(const std::string &url, const std::string &hdr)
+{
+    cookies_load();
+    std::string host, upath;
+    bool https;
+    url_parts(url, host, upath, https);
+    auto trim = [](std::string t) {
+        while (!t.empty() && isspace((unsigned char)t[0])) t.erase(0, 1);
+        while (!t.empty() && isspace((unsigned char)t.back())) t.pop_back();
+        return t;
+    };
+    std::vector<std::string> parts;
+    for (size_t i = 0;;) {
+        size_t s = hdr.find(';', i);
+        parts.push_back(trim(hdr.substr(i, s == std::string::npos ? std::string::npos : s - i)));
+        if (s == std::string::npos) break;
+        i = s + 1;
+    }
+    size_t eq = parts[0].find('=');
+    if (eq == std::string::npos || eq == 0) return;
+    Cookie c;
+    c.name = trim(parts[0].substr(0, eq));
+    c.value = trim(parts[0].substr(eq + 1));
+    if (c.value.size() >= 2 && c.value[0] == '"' && c.value.back() == '"') c.value = c.value.substr(1, c.value.size() - 2);
+    for (char ch : c.name + c.value) if ((unsigned char)ch < 0x20 || ch == '\'' || ch == '\t') return;   /* (none we'd send) */
+    c.domain = host;
+    size_t ls = upath.rfind('/');
+    c.path = ls == 0 || ls == std::string::npos ? "/" : upath.substr(0, ls);   /* (the default: its directory) */
+    long long now = time(nullptr);
+    bool gone = false, age = false;
+    for (size_t k = 1; k < parts.size(); k++) {
+        size_t e = parts[k].find('=');
+        std::string a = trim(parts[k].substr(0, e)), v = e == std::string::npos ? "" : trim(parts[k].substr(e + 1));
+        for (char &ch : a) ch = (char)tolower((unsigned char)ch);
+        if (a == "domain" && !v.empty()) {
+            if (v[0] == '.') v.erase(0, 1);
+            for (char &ch : v) ch = (char)tolower((unsigned char)ch);
+            if (!cookie_domain_ok(host, v) || v.find('.') == std::string::npos) return;   /* (not its to set) */
+            c.domain = v;
+            c.host_only = false;
+        } else if (a == "path" && !v.empty() && v[0] == '/') {
+            c.path = v;
+        } else if (a == "secure") {
+            c.secure = true;
+        } else if (a == "max-age") {
+            long long s = atoll(v.c_str());
+            age = true;
+            if (s <= 0) gone = true; else c.expires = now + s;
+        } else if (a == "expires" && !age) {
+            struct tm tm = {};
+            const char *p = strchr(v.c_str(), ',');                  /* "Wed, 21 Oct 2026 07:28:00 GMT" */
+            p = p ? p + 1 : v.c_str();
+            while (*p == ' ') p++;
+            if (strptime(p, "%d %b %Y %H:%M:%S", &tm) || strptime(p, "%d-%b-%Y %H:%M:%S", &tm) || strptime(p, "%d-%b-%y %H:%M:%S", &tm)) {
+                long long t = (long long)timegm(&tm);
+                if (t <= now) gone = true; else c.expires = t;
+            }
+        }
+    }
+    if (c.secure && !https) return;
+    bool lasting = c.expires != 0;
+    for (size_t k = 0; k < cookie_jar.size(); k++) {
+        Cookie &o = cookie_jar[k];
+        if (o.name == c.name && o.domain == c.domain && o.path == c.path) {
+            lasting = lasting || o.expires;
+            cookie_jar.erase(cookie_jar.begin() + (long)k);
+            break;
+        }
+    }
+    if (!gone) {
+        if (cookie_jar.size() >= 600) cookie_jar.erase(cookie_jar.begin());   /* (the oldest goes) */
+        cookie_jar.push_back(c);
+    }
+    if (lasting || gone) cookies_save();
+}
+
+/* the cookies for url: wget's --header argument (quoted for sh), or "" */
+static std::string cookie_arg(const std::string &url)
+{
+    cookies_load();
+    std::string host, path;
+    bool https;
+    url_parts(url, host, path, https);
+    if (strncasecmp(url.c_str(), "http", 4)) return "";
+    long long now = time(nullptr);
+    std::vector<const Cookie *> send;
+    for (auto &c : cookie_jar) {
+        if (c.expires && c.expires <= now) continue;
+        if (c.secure && !https) continue;
+        if (c.host_only ? host != c.domain : !cookie_domain_ok(host, c.domain)) continue;
+        if (path.compare(0, c.path.size(), c.path) ||
+            (path.size() > c.path.size() && c.path.back() != '/' && path[c.path.size()] != '/')) continue;
+        send.push_back(&c);
+    }
+    if (send.empty()) return "";
+    std::stable_sort(send.begin(), send.end(), [](const Cookie *a, const Cookie *b) { return a->path.size() > b->path.size(); });
+    std::string v;
+    for (auto *c : send) { if (!v.empty()) v += "; "; v += c->name + "=" + c->value; }
+    return " --header 'Cookie: " + v + "'";
+}
+
+/* about:cookies - what the jar holds */
+static std::string cookies_page()
+{
+    cookies_load();
+    std::map<std::string, std::vector<const Cookie *>> by;
+    for (auto &c : cookie_jar) by[c.domain].push_back(&c);
+    auto esc = [](const std::string &t) {
+        std::string o;
+        for (char c : t) { if (c == '<') o += "&lt;"; else if (c == '&') o += "&amp;"; else o += c; }
+        return o;
+    };
+    std::string h = "<title>Cookies</title><h1>Cookies</h1><p>What web sites have left with WebExplorer, to have back "
+                    "when it visits them: logins, choices. The ones with a date are kept (in \\OS2\\cookies.txt); "
+                    "the others go when the desktop does.</p>";
+    if (by.empty()) h += "<p>There are none.</p>";
+    else h += "<p><a href=\"about:cookies?clear\">Throw them all away</a></p>";
+    for (auto &d : by) {
+        h += "<h2>" + esc(d.first) + "</h2><ul>";
+        for (auto *c : d.second) {
+            std::string v = c->value.size() > 40 ? c->value.substr(0, 40) + "..." : c->value;
+            char when[64] = "this session";
+            if (c->expires) { time_t t = (time_t)c->expires; strftime(when, sizeof when, "until %Y-%m-%d", gmtime(&t)); }
+            h += "<li><b>" + esc(c->name) + "</b> = <code>" + esc(v) + "</code> - " + esc(c->path) + ", " + when +
+                 (c->secure ? ", https only" : "") + "</li>";
+        }
+        h += "</ul>";
+    }
+    return h;
+}
+
 /* ── pictures: fetched after the page, a few at a time, then laid out ── */
 static void web_images_pump(std::shared_ptr<Web> keep);
 static std::string slurp(const std::string &path);
@@ -4175,7 +4385,8 @@ static void web_images_pump(std::shared_ptr<Web> keep)
         }
         std::string q;
         for (char c : url) { if (c == '\'') q += "%27"; else if ((unsigned char)c >= 0x20) q += c; }
-        run_capture({ sys("busybox"), "sh", "-c", "exec " + sys("busybox") + " wget -q -T 30 -U '" + WEB_UA + "' -O - '" + q + "' 2>/dev/null" },
+        run_capture({ sys("busybox"), "sh", "-c", "exec " + sys("busybox") + " wget -q -T 30 -U '" + WEB_UA + "'" + cookie_arg(url) +
+                                                  " -O - '" + q + "' 2>/dev/null" },
                     [keep, url, seq](const std::string &data) {
                         if (keep->seq != seq) { keep->fetching--; return; }   /* (another page by now) */
                         web_image_done(keep, url, data);
@@ -4232,7 +4443,8 @@ static void web_sheets_start(Window *w)
         }
         std::string q;
         for (char ch : url) { if (ch == '\'') q += "%27"; else if ((unsigned char)ch >= 0x20) q += ch; }
-        run_capture({ sys("busybox"), "sh", "-c", "exec " + sys("busybox") + " wget -q -T 20 -U '" + WEB_UA + "' -O - '" + q + "' 2>/dev/null" },
+        run_capture({ sys("busybox"), "sh", "-c", "exec " + sys("busybox") + " wget -q -T 20 -U '" + WEB_UA + "'" + cookie_arg(url) +
+                                                  " -O - '" + q + "' 2>/dev/null" },
                     [keep, seq, k, url, parts, left](const std::string &data) {
                         if (data.size() < (4u << 20)) {
                             if (css_cache_bytes + data.size() > (16u << 20)) { css_cache.clear(); css_cache_bytes = 0; }
@@ -4304,7 +4516,7 @@ static std::string slurp(const std::string &path)
     return s;
 }
 
-static void web_go(Window *w, std::string url, bool push = true, const std::string &post = "")
+static void web_go(Window *w, std::string url, bool push = true, const std::string &post = "", bool again = false)
 {
     Web *wb = w->web.get();
     if (url.find("://") == std::string::npos && url.rfind("about:", 0) != 0)
@@ -4327,6 +4539,17 @@ static void web_go(Window *w, std::string url, bool push = true, const std::stri
     }
     wb->editing = false;
     if (url == WEB_HOME) { web_show(w, url, web_home_html, "text/html"); return; }
+    if (url.rfind("about:cookies", 0) == 0) {
+        if (url == "about:cookies?clear") {
+            cookies_load();
+            cookie_jar.clear();
+            cookies_save();
+            url = "about:cookies";
+            if (wb->hpos >= 0) wb->history[wb->hpos] = url;
+        }
+        web_show(w, url, cookies_page(), "text/html");
+        return;
+    }
     if (url.rfind("file://", 0) == 0) {                     /* a file here */
         std::string path = url.substr(7);
         struct stat st;
@@ -4348,22 +4571,28 @@ static void web_go(Window *w, std::string url, bool push = true, const std::stri
     std::string hdr = "/tmp/webexplorer." + std::to_string(getpid()) + "." + std::to_string(seq) + ".hdr";
     std::string qurl;                                       /* (in quotes for sh: no quote of its own) */
     for (char c : url) { if (c == '\'') qurl += "%27"; else if ((unsigned char)c >= 0x20) qurl += c; }
-    std::string cmd = "exec " + sys("busybox") + " wget -q -S -T 30 -U '" + WEB_UA + "'" +
+    std::string cmd = "exec " + sys("busybox") + " wget -q -S -T 30 -U '" + WEB_UA + "'" + cookie_arg(url) +
                       (post.empty() ? std::string() : " --post-data '" + post + "'") +   /* (url-encoded: no quotes) */
                       " -O - '" + qurl + "' 2>" + hdr;
     std::shared_ptr<Web> keep = w->web;                     /* (the window may close meanwhile) */
-    run_capture({ sys("busybox"), "sh", "-c", cmd }, [keep, seq, url, hdr](const std::string &body) {
+    run_capture({ sys("busybox"), "sh", "-c", cmd }, [keep, seq, url, hdr, again](const std::string &body) {
         Window *w = web_window(keep.get());
         std::string h = slurp(hdr);
         unlink(hdr.c_str());
         if (!w || keep->seq != seq) return;                 /* (gone, or another page asked for) */
-        std::string final = url, type, err;
+        std::string final = url, hop = url, type, err;
+        bool redirect_cookie = false;                       /* (a cookie came with a redirect: wget didn't send it on) */
         size_t i = 0;
-        while (i < h.size()) {                              /* the server's headers (-S): where, what */
+        while (i < h.size()) {                              /* the server's headers (-S): where, what, cookies */
             size_t nl = h.find('\n', i);
             std::string l = h.substr(i, nl == std::string::npos ? std::string::npos : nl - i);
             while (!l.empty() && (l[0] == ' ')) l.erase(0, 1);
             while (!l.empty() && (l.back() == '\r' || l.back() == ' ')) l.pop_back();
+            if (l.rfind("HTTP/", 0) == 0) hop = final;       /* (a response: from where the last one sent it) */
+            else if (!strncasecmp(l.c_str(), "set-cookie:", 11)) {
+                cookie_take(hop, l.substr(11));
+                if (h.find("HTTP/", i) != std::string::npos) redirect_cookie = true;   /* (not the last response's) */
+            }
             if (!strncasecmp(l.c_str(), "location:", 9)) final = url_resolve(final, l.substr(9));
             else if (!strncasecmp(l.c_str(), "content-type:", 13)) { type = l.substr(13); for (char &c : type) c = (char)tolower((unsigned char)c); }
             else if (l.rfind("wget:", 0) == 0) err = l;
@@ -4371,7 +4600,8 @@ static void web_go(Window *w, std::string url, bool push = true, const std::stri
             i = nl + 1;
         }
         if (body.empty() && !err.empty()) { web_error(w, url, err.substr(6)); return; }
-        if (final != url && keep->hpos >= 0) keep->history[keep->hpos] = final;
+        if (final != url && keep->hpos >= 0) { keep->history[keep->hpos] = final; keep->posts[keep->hpos].clear(); }
+        if (final != url && redirect_cookie && !again) { web_go(w, final, false, "", true); return; }   /* (once more, with them) */
         web_show(w, final, body, type);
     });
 }
