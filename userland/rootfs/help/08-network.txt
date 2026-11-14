@@ -1,7 +1,7 @@
 The network
 The computer is on the network through its network card, lan0, which asks the network for an address (DHCP) when the system starts.
 
-WebExplorer (on the desktop, and in Connections) shows web pages: their text, headings, lists and links. Click a link to follow it; Back, Forward, Reload and Home are along the top, the address next to them (Ctrl+L to type one, Enter to go). The status line shows where a link goes. Forms work: click a field and type (Tab: the next field), then Enter or the form's button sends it - the home page has a Wikipedia search. Pictures appear as their names; scripts don't run, so pages that need them (or a picture puzzle to prove you're a person) won't work. Secure (https) pages come encrypted, but their certificates aren't checked.
+WebExplorer (on the desktop, and in Connections) shows web pages: their text, headings, lists and links. Click a link to follow it; Back, Forward, Reload and Home are along the top, the address next to them (Ctrl+L to type one, Enter to go). The status line shows where a link goes. Forms work: click a field and type (Tab: the next field), then Enter or the form's button sends it - the home page has a Wikipedia search. Pictures come in after the page. Pages look as their style sheets say, as far as WebExplorer goes: their colours and background, what's hidden (menus that open with a click stay shut), what's bold, centred or monospaced. Scripts don't run, so pages that need them (or a picture puzzle to prove you're a person) won't work. Secure (https) pages come encrypted, but their certificates aren't checked.
 
 The Connections folder on the desktop:
   WebExplorer      the web

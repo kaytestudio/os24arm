@@ -658,7 +658,7 @@ WarpCenter along the top, OS/2 window frames on every window, folder
 windows in Icon, Tree and Details views (sorted by name, type, size or
 date) with drag and drop - moving on a drive, copying across drives -
 shadows, a Startup folder, a Settings notebook, the System Editor, a help
-viewer, WebExplorer (a web browser: text and links, HTTP and HTTPS), and OS/2 programs (CMD.EXE, ...) running as processes of their
+viewer, WebExplorer (a web browser: text, links, forms and pictures, HTTP and HTTPS, with a little CSS - colours, hidden and centred things, from `<style>`, `style=""` and the pages' style sheets), and OS/2 programs (CMD.EXE, ...) running as processes of their
 own. The desktop is kept as it was left (`\OS2\WPS.INI`). The details are
 in `userland/README.md` (stage 6); the help is on the desktop.
 

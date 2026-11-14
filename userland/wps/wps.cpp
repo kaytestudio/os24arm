@@ -24,6 +24,7 @@
  * (Programs, a layer-shell surface), anything xdg-shell.
  */
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cerrno>
 #include <cstdlib>
@@ -3094,8 +3095,9 @@ static void ask_host(const std::string &title, const std::string &what,
  * doesn't check certificates), read through a pipe without the shell
  * waiting; the HTML is taken apart here into runs of text - headings,
  * paragraphs, lists, preformatted text, links - and laid out to the
- * window's width. Pictures show as their names; scripts and styles not at
- * all. */
+ * window's width, with what its style sheets say of colours, what's
+ * hidden and what's centred (a little CSS, below). Pictures come after
+ * the page; scripts don't run. */
 struct WebItem {                       /* what the parser makes: text, or a break */
     enum Kind { TEXT, PARA, LINE, RULE, ANCHOR, FIELD, BUTTON, IMAGE } kind;   /* (ANCHOR: text is an id) */
     std::string src;                          /* IMAGE: where it is (text: its alt) */
@@ -3103,7 +3105,8 @@ struct WebItem {                       /* what the parser makes: text, or a brea
     int form = -1, field = -1, size = 20;     /* FIELD, BUTTON: which (BUTTON: text its label) */
     std::string text;
     int font = TEXT_BODY, link = -1, indent = 0;
-    bool pre = false;
+    bool pre = false, center = false;
+    uint32_t color = 0;                       /* TEXT: the page's colour for it (0: ours) */
 };
 struct WebSeg { int x, y, w, h, base, font, link; uint32_t color; std::string text; int box = 0, form = -1, field = -1; };
 struct WebField { std::string name, value, type; };       /* type: text, password, hidden, submit */
@@ -3125,6 +3128,9 @@ struct Web {
     std::string post;                         /* the page's own POST data (Reload sends it again) */
     std::map<std::string, WebImg> imgs;       /* the pictures, by address */
     int fetching = 0;                         /* ... being fetched now */
+    uint32_t bg = 0;                          /* the page's background (0: white) */
+    std::string html, css;                    /* the page as it came; its style sheets' text */
+    std::vector<std::string> sheets;          /* its <link rel=stylesheet>s */
 };
 
 static const char *WEB_HOME = "about:home";
@@ -3143,8 +3149,8 @@ static const char *web_home_html =
     "<li><a href=\"https://wiby.me/\">Wiby</a> - search the web of simple pages</li>"
     "<li><a href=\"https://en.wikipedia.org/wiki/OS/2\">OS/2</a> on Wikipedia</li>"
     "<li><a href=\"https://text.npr.org/\">NPR</a> - the news, as text</li></ul>"
-    "<p>WebExplorer shows a page's text, its links and its forms; pictures appear as their names, "
-    "and scripts don't run. Secure (https) pages come encrypted, but their certificates "
+    "<p>WebExplorer shows a page's text, pictures, links and forms, in the colours its style sheets "
+    "give; scripts don't run. Secure (https) pages come encrypted, but their certificates "
     "aren't checked.</p><p>Keys: Ctrl+L the address, Backspace back, F5 reload, the arrows and "
     "Page Up/Down to scroll.</p>";
 
@@ -3207,6 +3213,352 @@ static std::string attr_of(const std::string &tag, const char *name)
     return "";
 }
 
+/* ── styles: a little CSS ────────────────────────────────────────────────
+ * What the page's style sheets (<style>, <link rel=stylesheet>, style="")
+ * say of an element, as far as WebExplorer goes: whether it's shown
+ * (display: none, visibility: hidden, the hidden attribute), its colour
+ * and background, bold, monospaced, centred, and whether a list item or
+ * block sits in the line (display: inline, a flex row's items). Selectors:
+ * a tag, .class, #id and those together, descendants (A B) and children
+ * (A > B) - not siblings, :pseudo-classes or [attributes], whose rules
+ * are passed over (a page with no scripts running looks as one whose
+ * :checked menus are shut). @media: screen, print not,
+ * and min-/max-width as for a window 1024 wide. */
+struct CssDecl {
+    int display = 0;                    /* 0 unsaid, 1 none, 2 inline, 3 block, 4 flex (a row) */
+    bool has_color = false, has_bg = false;
+    uint32_t color = 0, bg = 0;
+    int bold = -1, mono = -1, align = -1;   /* -1 unsaid; align: 0 left, 1 centre, 2 right */
+};
+struct CssSel { std::string tag, id; std::vector<std::string> cls; };
+struct CssRule {
+    CssSel last;                        /* what the element itself must be */
+    std::vector<std::pair<CssSel, bool>> up;   /* then outward: an ancestor (true: the parent) */
+    int spec = 0, order = 0;
+    CssDecl d;
+};
+struct CssFrame {                       /* an open element, as the parser keeps them */
+    std::string name, id;
+    std::vector<std::string> cls;
+    uint32_t color; int bold, mono, align; bool inl, flex;
+};
+struct Css {
+    std::vector<CssRule> rules;
+    std::map<std::string, std::vector<int>> index;   /* "t:div", ".x", "#y", "*" -> its rules */
+};
+
+static bool css_color(std::string v, uint32_t *out)
+{
+    static const struct { const char *n; uint32_t c; } names[] = {
+        { "black", 0x000000 }, { "white", 0xFFFFFF }, { "red", 0xFF0000 }, { "green", 0x008000 },
+        { "blue", 0x0000FF }, { "navy", 0x000080 }, { "maroon", 0x800000 }, { "purple", 0x800080 },
+        { "teal", 0x008080 }, { "olive", 0x808000 }, { "gray", 0x808080 }, { "grey", 0x808080 },
+        { "silver", 0xC0C0C0 }, { "lime", 0x00FF00 }, { "aqua", 0x00FFFF }, { "cyan", 0x00FFFF },
+        { "fuchsia", 0xFF00FF }, { "magenta", 0xFF00FF }, { "yellow", 0xFFFF00 }, { "orange", 0xFFA500 },
+        { "brown", 0xA52A2A }, { "darkblue", 0x00008B }, { "darkred", 0x8B0000 }, { "darkgreen", 0x006400 },
+        { "darkgray", 0xA9A9A9 }, { "darkgrey", 0xA9A9A9 }, { "lightgray", 0xD3D3D3 }, { "lightgrey", 0xD3D3D3 },
+        { "dimgray", 0x696969 }, { "gold", 0xFFD700 }, { "pink", 0xFFC0CB }, { "crimson", 0xDC143C },
+        { "indigo", 0x4B0082 }, { "steelblue", 0x4682B4 }, { "royalblue", 0x4169E1 }, { "whitesmoke", 0xF5F5F5 },
+        { "beige", 0xF5F5DC }, { "ivory", 0xFFFFF0 }, { "linen", 0xFAF0E6 }, { "lightyellow", 0xFFFFE0 },
+        { "lightblue", 0xADD8E6 }, { "darkslategray", 0x2F4F4F }, { "midnightblue", 0x191970 },
+    };
+    for (char &c : v) c = (char)tolower((unsigned char)c);
+    while (!v.empty() && v[0] == ' ') v.erase(0, 1);
+    size_t sp = v.find_first_of(" !");                     /* (the first word: "red !important") */
+    if (v.rfind("rgb", 0) != 0 && sp != std::string::npos) v = v.substr(0, sp);
+    if (v.empty()) return false;
+    if (v[0] == '#') {
+        std::string h = v.substr(1);
+        for (char c : h) if (!isxdigit((unsigned char)c)) return false;
+        if (h.size() == 3 || h.size() == 4) h = std::string() + h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+        if (h.size() != 6 && h.size() != 8) return false;
+        *out = 0xFF000000 | (uint32_t)strtoul(h.substr(0, 6).c_str(), nullptr, 16);
+        return true;
+    }
+    if (v.rfind("rgb", 0) == 0) {
+        size_t p = v.find('(');
+        if (p == std::string::npos) return false;
+        int c[3] = { 0, 0, 0 };
+        const char *s = v.c_str() + p + 1;
+        for (int k = 0; k < 3; k++) {
+            while (*s == ' ' || *s == ',') s++;
+            char *e;
+            double d = strtod(s, &e);
+            if (e == s) return false;
+            if (*e == '%') { d = d * 255 / 100; e++; }
+            c[k] = std::clamp((int)d, 0, 255);
+            s = e;
+        }
+        *out = 0xFF000000u | (uint32_t)c[0] << 16 | (uint32_t)c[1] << 8 | (uint32_t)c[2];
+        return true;
+    }
+    for (auto &n : names) if (v == n.n) { *out = 0xFF000000 | n.c; return true; }
+    return false;
+}
+
+/* "a: b; c: d" -> what of it WebExplorer takes */
+static void css_decls(const std::string &s, CssDecl &d)
+{
+    size_t i = 0;
+    while (i < s.size()) {
+        size_t semi = s.find(';', i);
+        std::string one = s.substr(i, semi == std::string::npos ? std::string::npos : semi - i);
+        i = semi == std::string::npos ? s.size() : semi + 1;
+        size_t colon = one.find(':');
+        if (colon == std::string::npos) continue;
+        std::string p = one.substr(0, colon), v = one.substr(colon + 1);
+        auto trim = [](std::string &t) {
+            while (!t.empty() && isspace((unsigned char)t[0])) t.erase(0, 1);
+            while (!t.empty() && isspace((unsigned char)t.back())) t.pop_back();
+        };
+        trim(p); trim(v);
+        for (char &c : p) c = (char)tolower((unsigned char)c);
+        std::string lv = v;
+        for (char &c : lv) c = (char)tolower((unsigned char)c);
+        size_t imp = lv.find("!important");
+        if (imp != std::string::npos) { lv = lv.substr(0, imp); trim(lv); v = lv; }
+        if (p == "display") {
+            if (lv == "none") d.display = 1;
+            else if (lv == "inline" || lv == "inline-block" || lv == "inline-flex") d.display = 2;
+            else if (lv == "flex") d.display = 4;
+            else if (lv == "block" || lv == "list-item" || lv == "table" || lv == "grid") d.display = 3;
+        } else if (p == "visibility") {
+            if (lv == "hidden" || lv == "collapse") d.display = 1;
+        } else if (p == "color") {
+            uint32_t c;
+            if (css_color(v, &c)) { d.color = c; d.has_color = true; }
+        } else if (p == "background-color" || p == "background") {
+            uint32_t c = 0;
+            std::string first = lv.substr(0, lv.find(' '));
+            if (lv.rfind("rgb", 0) == 0) first = lv;
+            if (css_color(first, &c)) { d.bg = c; d.has_bg = true; }
+        } else if (p == "font-weight") {
+            d.bold = lv == "bold" || lv == "bolder" || atoi(lv.c_str()) >= 600 ? 1 : 0;
+        } else if (p == "font-family") {
+            d.mono = lv.find("mono") != std::string::npos || lv.find("courier") != std::string::npos ? 1 : 0;
+        } else if (p == "text-align") {
+            d.align = lv == "center" ? 1 : lv == "right" ? 2 : 0;
+        }
+    }
+}
+
+static void css_merge(CssDecl &to, const CssDecl &d)
+{
+    if (d.display) to.display = d.display;
+    if (d.has_color) { to.color = d.color; to.has_color = true; }
+    if (d.has_bg) { to.bg = d.bg; to.has_bg = true; }
+    if (d.bold >= 0) to.bold = d.bold;
+    if (d.mono >= 0) to.mono = d.mono;
+    if (d.align >= 0) to.align = d.align;
+}
+
+/* the media a rule is for: one we're like? */
+static bool css_media(std::string m)
+{
+    for (char &c : m) c = (char)tolower((unsigned char)c);
+    size_t i = 0;
+    for (;;) {                                             /* a, b: any of them */
+        size_t comma = m.find(',', i);
+        std::string q = m.substr(i, comma == std::string::npos ? std::string::npos : comma - i);
+        bool ok = true, neg = false;
+        size_t k = q.find_first_not_of(' ');
+        if (k != std::string::npos && !q.compare(k, 4, "not ")) { neg = true; q = q.substr(k + 4); }
+        if (q.find("print") != std::string::npos || q.find("speech") != std::string::npos) ok = false;
+        if (q.find("prefers-color-scheme") != std::string::npos && q.find("dark") != std::string::npos) ok = false;
+        if (q.find("orientation") != std::string::npos && q.find("portrait") != std::string::npos) ok = false;
+        for (const char *f : { "min-width", "max-width" }) {
+            size_t p = 0;
+            while ((p = q.find(f, p)) != std::string::npos) {
+                p += strlen(f);
+                size_t c = q.find(':', p);
+                if (c == std::string::npos) break;
+                double v = atof(q.c_str() + c + 1);
+                size_t u = q.find_first_not_of(" 0123456789.", c + 1);
+                if (u != std::string::npos && (!q.compare(u, 2, "em") || !q.compare(u, 3, "rem"))) v *= 16;
+                if (f[1] == 'i' ? 1024 < v : 1024 > v) ok = false;
+            }
+        }
+        if (neg) ok = !ok;
+        if (ok) return true;
+        if (comma == std::string::npos) return false;
+        i = comma + 1;
+    }
+}
+
+static void css_add(Css &css, const std::string &text)
+{
+    std::string s;                                         /* comments out */
+    for (size_t i = 0; i < text.size(); i++) {
+        if (text[i] == '/' && i + 1 < text.size() && text[i + 1] == '*') {
+            size_t e = text.find("*/", i + 2);
+            if (e == std::string::npos) break;
+            i = e + 1;
+            continue;
+        }
+        s += text[i];
+    }
+    auto block_end = [&](size_t open) {                    /* the } closing the { at open */
+        int depth = 0;
+        for (size_t k = open; k < s.size(); k++) {
+            if (s[k] == '{') depth++;
+            else if (s[k] == '}' && --depth == 0) return k;
+        }
+        return s.size();
+    };
+    std::function<void(size_t, size_t)> rules = [&](size_t i, size_t end) {
+        while (i < end) {
+            size_t open = s.find('{', i), semi = s.find(';', i);
+            if (open == std::string::npos || open >= end) return;
+            std::string head = s.substr(i, open - i);
+            size_t h0 = head.find_first_not_of(" \t\r\n");
+            if (h0 != std::string::npos && head[h0] == '@') {   /* an at-rule */
+                if (semi < open) { i = semi + 1; continue; }    /* (@import ...; @charset ...;) */
+                size_t close = block_end(open);
+                if (!head.compare(h0, 6, "@media") && css_media(head.substr(h0 + 6))) rules(open + 1, close);
+                else if (!head.compare(h0, 9, "@supports")) rules(open + 1, close);
+                i = close + 1;
+                continue;
+            }
+            size_t close = s.find('}', open);
+            if (close == std::string::npos) close = s.size();
+            CssDecl d;
+            css_decls(s.substr(open + 1, close - open - 1), d);
+            i = close + 1;
+            if (!d.display && !d.has_color && !d.has_bg && d.bold < 0 && d.mono < 0 && d.align < 0) continue;
+            size_t a = 0;
+            while (a <= head.size()) {                     /* each of "a, b" */
+                size_t comma = head.find(',', a);
+                std::string sel = head.substr(a, comma == std::string::npos ? std::string::npos : comma - a);
+                a = comma == std::string::npos ? head.size() + 1 : comma + 1;
+                size_t b0 = sel.find_first_not_of(" \t\r\n"), b1 = sel.find_last_not_of(" \t\r\n");
+                if (b0 == std::string::npos) continue;
+                sel = sel.substr(b0, b1 - b0 + 1);
+                CssRule r;
+                bool ok = true;
+                std::vector<CssSel> parts;                 /* left to right, */
+                std::vector<bool> child;                   /* ... and whether each is the next one's parent */
+                size_t k = 0;
+                auto word = [&]() { size_t st = k; while (k < sel.size() && (isalnum((unsigned char)sel[k]) || sel[k] == '-' || sel[k] == '_')) k++; return sel.substr(st, k - st); };
+                while (ok && k < sel.size()) {
+                    CssSel c;
+                    if (sel[k] == '*') k++;
+                    else if (isalpha((unsigned char)sel[k])) { c.tag = word(); for (char &ch : c.tag) ch = (char)tolower((unsigned char)ch); }
+                    while (ok && k < sel.size() && (sel[k] == '.' || sel[k] == '#')) {
+                        char t = sel[k++];
+                        std::string w = word();
+                        if (w.empty()) ok = false;
+                        else if (t == '.') c.cls.push_back(w);
+                        else if (c.id.empty()) c.id = w;
+                        else ok = false;
+                    }
+                    if (!ok) break;
+                    parts.push_back(c);
+                    bool sp = false, gt = false;           /* the combinator after it */
+                    while (k < sel.size() && (isspace((unsigned char)sel[k]) || sel[k] == '>')) { if (sel[k] == '>') gt = true; sp = true; k++; }
+                    if (k < sel.size() && !sp) ok = false;   /* (:pseudo, [attr], + ~: not ours) */
+                    if (k < sel.size()) child.push_back(gt);
+                    if (k < sel.size() && (sel[k] == '+' || sel[k] == '~')) ok = false;
+                }
+                if (!ok || parts.empty() || parts.size() > 8) continue;
+                r.last = parts.back();
+                for (int q = (int)parts.size() - 2; q >= 0; q--) r.up.push_back({ parts[q], child[q] });
+                for (auto &c : parts) r.spec += (c.id.empty() ? 0 : 100) + 10 * (int)c.cls.size() + (c.tag.empty() ? 0 : 1);
+                r.order = (int)css.rules.size();
+                r.d = d;
+                std::string key = !r.last.id.empty() ? "#" + r.last.id : !r.last.cls.empty() ? "." + r.last.cls[0]
+                                 : !r.last.tag.empty() ? "t:" + r.last.tag : "*";
+                css.index[key].push_back((int)css.rules.size());
+                css.rules.push_back(std::move(r));
+            }
+        }
+    };
+    rules(0, s.size());
+}
+
+static bool css_is(const CssSel &c, const std::string &name, const std::string &id, const std::vector<std::string> &cls)
+{
+    if (!c.tag.empty() && c.tag != name) return false;
+    if (!c.id.empty() && c.id != id) return false;
+    for (auto &x : c.cls) if (std::find(cls.begin(), cls.end(), x) == cls.end()) return false;
+    return true;
+}
+
+/* what the rules say of <name ...tag>, inside the open elements fr (its
+ * id and classes to id, cls) */
+static CssDecl css_for(const Css &css, const std::string &name, const std::string &tag,
+                       const std::vector<CssFrame> &fr, std::string &id, std::vector<std::string> &cls)
+{
+    CssDecl d;
+    id = attr_of(tag, "id");
+    std::string cl = attr_of(tag, "class");
+    cls.clear();
+    for (size_t i = 0; i < cl.size();) {
+        size_t e = cl.find_first_of(" \t\n", i);
+        if (e == std::string::npos) e = cl.size();
+        if (e > i) cls.push_back(cl.substr(i, e - i));
+        i = e + 1;
+    }
+    std::vector<int> hit;
+    auto look = [&](const std::string &key) {
+        auto f = css.index.find(key);
+        if (f == css.index.end()) return;
+        for (int r : f->second) {
+            const CssRule &R = css.rules[r];
+            if (!css_is(R.last, name, id, cls)) continue;
+            int pos = (int)fr.size() - 1;                  /* (outward from the parent) */
+            bool all = true;
+            for (auto &u : R.up) {
+                if (u.second) {
+                    if (pos < 0 || !css_is(u.first, fr[pos].name, fr[pos].id, fr[pos].cls)) { all = false; break; }
+                    pos--;
+                } else {
+                    while (pos >= 0 && !css_is(u.first, fr[pos].name, fr[pos].id, fr[pos].cls)) pos--;
+                    if (pos < 0) { all = false; break; }
+                    pos--;
+                }
+            }
+            if (all) hit.push_back(r);
+        }
+    };
+    if (!css.rules.empty()) {
+        look("*");
+        look("t:" + name);
+        if (!id.empty()) look("#" + id);
+        for (auto &c : cls) look("." + c);
+        std::sort(hit.begin(), hit.end());
+        hit.erase(std::unique(hit.begin(), hit.end()), hit.end());
+        std::stable_sort(hit.begin(), hit.end(), [&](int a, int b) { return css.rules[a].spec < css.rules[b].spec; });
+        for (int r : hit) css_merge(d, css.rules[r].d);
+    }
+    /* the old ways: hidden, <font color>, align=, bgcolor= */
+    std::string low = tag;
+    for (char &c : low) c = (char)tolower((unsigned char)c);
+    size_t h = low.find(" hidden");
+    if (h != std::string::npos && (h + 7 == low.size() || strchr(" =/>", low[h + 7]))) d.display = 1;
+    uint32_t c;
+    if ((name == "font" || name == "body") && css_color(attr_of(tag, name == "body" ? "text" : "color"), &c)) { d.color = c; d.has_color = true; }
+    if (css_color(attr_of(tag, "bgcolor"), &c) && (name == "body" || name == "html")) { d.bg = c; d.has_bg = true; }
+    std::string al = attr_of(tag, "align");
+    for (char &ch : al) ch = (char)tolower((unsigned char)ch);
+    if (al == "center" && name != "img" && name != "table") d.align = 1;
+    if (name == "center") d.align = 1;
+    std::string st = attr_of(tag, "style");
+    if (!st.empty()) { CssDecl in; css_decls(st, in); css_merge(d, in); }
+    return d;
+}
+
+/* how bright a colour is, 0..1 (for contrast against the page) */
+static double css_lum(uint32_t c)
+{
+    auto ch = [](uint32_t v) { double x = v / 255.0; return x <= 0.03928 ? x / 12.92 : pow((x + 0.055) / 1.055, 2.4); };
+    return 0.2126 * ch(c >> 16 & 255) + 0.7152 * ch(c >> 8 & 255) + 0.0722 * ch(c & 255);
+}
+static double css_contrast(uint32_t a, uint32_t b)
+{
+    double x = css_lum(a), y = css_lum(b);
+    return (std::max(x, y) + 0.05) / (std::min(x, y) + 0.05);
+}
+
 static std::string url_resolve(const std::string &base, std::string ref);
 
 static void html_parse(Web *wb, const std::string &html, bool plain)
@@ -3216,23 +3568,69 @@ static void html_parse(Web *wb, const std::string &html, bool plain)
     wb->title.clear();
     wb->forms.clear();
     wb->fform = wb->ffield = -1;
+    wb->sheets.clear();
+    wb->bg = 0;
     if (plain) {                                          /* text/plain: as it is */
         WebItem it; it.kind = WebItem::TEXT; it.text = html; it.font = TEXT_MONO; it.pre = true;
         wb->items.push_back(it);
         return;
     }
+    /* the style sheets: the ones fetched (wb->css), then the page's own */
+    Css css;
+    if (!wb->css.empty()) css_add(css, wb->css);
+    for (size_t k = 0; (k = html.find('<', k)) != std::string::npos; k++) {
+        if (!strncasecmp(html.c_str() + k, "<style", 6) && !isalnum((unsigned char)html[k + 6])) {
+            size_t g = html.find('>', k);
+            if (g == std::string::npos) break;
+            std::string t = html.substr(k + 1, g - k - 1);
+            size_t e = g;
+            while ((e = html.find("</", e)) != std::string::npos && strncasecmp(html.c_str() + e, "</style", 7)) e += 2;
+            std::string media = attr_of(t, "media");
+            if (media.empty() || css_media(media)) css_add(css, html.substr(g + 1, e == std::string::npos ? std::string::npos : e - g - 1));
+            if (e == std::string::npos) break;
+            k = e;
+        } else if (!strncasecmp(html.c_str() + k, "<link", 5) && !isalnum((unsigned char)html[k + 5])) {
+            size_t g = html.find('>', k);
+            if (g == std::string::npos) break;
+            std::string t = html.substr(k + 1, g - k - 1), rel = attr_of(t, "rel"), href = attr_of(t, "href"), media = attr_of(t, "media");
+            for (char &c : rel) c = (char)tolower((unsigned char)c);
+            if (rel.find("stylesheet") != std::string::npos && rel.find("alternate") == std::string::npos && !href.empty() &&
+                (media.empty() || css_media(media)) && wb->sheets.size() < 8) {
+                std::string u = url_resolve(wb->url, href);
+                if (!u.empty()) wb->sheets.push_back(u);
+            }
+        } else if (!strncasecmp(html.c_str() + k, "<body", 5)) break;   /* (sheets are in the head) */
+    }
+    /* what's open, and what its style says (inherited inward) */
+    typedef CssFrame Frame;
+    std::vector<Frame> fr{ { "html", "", {}, 0, 0, 0, 0, false, false } };
+    static const char *voids[] = { "br", "hr", "img", "input", "meta", "link", "area", "base", "col", "embed",
+                                   "param", "source", "track", "wbr", nullptr };
+    auto is_in = [](const std::string &nm, const char *const *set) { for (int k = 0; set[k]; k++) if (nm == set[k]) return true; return false; };
+    static const char *optional_end[] = { "p", "li", "dt", "dd", "option", "tr", "td", "th", nullptr };
+    static const char *unframed[] = { "script", "style", "noscript", "svg", "template", "select", "textarea", "button",
+                                      "title", "head", "html", nullptr };
     int bold = 0, pre = 0, mono = 0, heading = 0, skip = 0, indent = 0, link = -1, in_title = 0, form = -1;
     std::vector<int> olnum;
-    auto brk = [&](WebItem::Kind k) { WebItem it; it.kind = k; it.indent = indent; wb->items.push_back(it); };
+    size_t bullet_at = (size_t)-1;                         /* (just after a list item's bullet: no break) */
+    auto brk = [&](WebItem::Kind k) {
+        if (wb->items.size() == bullet_at) return;         /* (a block in an <li> starts by its bullet) */
+        WebItem it; it.kind = k; it.indent = indent; wb->items.push_back(it);
+    };
     auto text = [&](const std::string &t) {
         if (t.empty()) return;
+        if (wb->items.size() == bullet_at && t.find_first_not_of(' ') == std::string::npos) return;   /* (its bullet's space is enough) */
         WebItem it;
         it.kind = WebItem::TEXT;
         it.text = t;
-        it.font = mono || pre ? TEXT_MONO : heading == 1 ? TEXT_H1 : heading == 2 ? TEXT_H2 : (heading || bold) ? TEXT_BODY_BOLD : TEXT_BODY;
+        const Frame &f = fr.back();
+        it.font = mono || pre || f.mono ? TEXT_MONO : heading == 1 ? TEXT_H1 : heading == 2 ? TEXT_H2
+                : (heading || bold || f.bold) ? TEXT_BODY_BOLD : TEXT_BODY;
         it.link = link;
         it.pre = pre > 0;
         it.indent = indent;
+        it.color = f.color;
+        it.center = f.align == 1;
         wb->items.push_back(it);
     };
     size_t i = 0, n = html.size();
@@ -3279,6 +3677,89 @@ static void html_parse(Web *wb, const std::string &html, bool plain)
         std::string name = tag.substr(a, b - a);
         for (char &c : name) c = (char)tolower((unsigned char)c);
         if (name.empty()) continue;
+        bool inl = false;                                  /* (this block element sits in the line) */
+        if (close) {                                       /* its frame (and what's left open in it) shut */
+            for (int k = (int)fr.size() - 1; k > 0; k--)
+                if (fr[k].name == name) { inl = fr[k].inl; fr.resize(k); break; }
+        } else if (name == "html") {                       /* (the root: its id and classes, for selectors) */
+            fr[0].id = attr_of(tag, "id");
+            std::string cl = attr_of(tag, "class");
+            fr[0].cls.clear();
+            for (size_t k = 0; k < cl.size();) {
+                size_t e2 = cl.find(' ', k);
+                if (e2 == std::string::npos) e2 = cl.size();
+                if (e2 > k) fr[0].cls.push_back(cl.substr(k, e2 - k));
+                k = e2 + 1;
+            }
+        } else if (!skip && !in_title && !is_in(name, unframed)) {
+            std::string eid;
+            std::vector<std::string> ecls;
+            CssDecl d = css_for(css, name, tag, fr, eid, ecls);
+            if (d.display == 1 && name != "body") {        /* not shown: to its end, unread */
+                if (is_in(name, voids) || (!tag.empty() && tag.back() == '/')) continue;
+                bool opt = is_in(name, optional_end);
+                std::vector<std::string> inside;
+                size_t k = i, stop = n;
+                while (k < n) {
+                    size_t lt = html.find('<', k);
+                    if (lt == std::string::npos) break;
+                    if (!html.compare(lt, 4, "<!--")) { size_t c2 = html.find("-->", lt + 4); k = c2 == std::string::npos ? n : c2 + 3; continue; }
+                    size_t gt = html.find('>', lt);
+                    if (gt == std::string::npos) break;
+                    bool cl = lt + 1 < n && html[lt + 1] == '/';
+                    size_t a2 = lt + 1 + cl, b2 = a2;
+                    while (b2 < gt && (isalnum((unsigned char)html[b2]) || html[b2] == '-')) b2++;
+                    std::string nm = html.substr(a2, b2 - a2);
+                    for (char &c : nm) c = (char)tolower((unsigned char)c);
+                    k = gt + 1;
+                    if (nm.empty()) continue;
+                    if (!cl) {
+                        if (nm == "script" || nm == "style") {          /* (their text isn't HTML) */
+                            std::string end = "</" + nm;
+                            size_t f = gt;
+                            while ((f = html.find("</", f)) != std::string::npos && strncasecmp(html.c_str() + f, end.c_str(), end.size())) f += 2;
+                            if (f == std::string::npos) { k = n; break; }
+                            k = f;
+                            continue;
+                        }
+                        if (inside.empty() && opt && nm == name) { stop = lt; break; }   /* (the next one: this one's end) */
+                        if (is_in(nm, voids) || html[gt - 1] == '/') continue;
+                        if (is_in(nm, optional_end) && !inside.empty() && inside.back() == nm) continue;
+                        inside.push_back(nm);
+                        continue;
+                    }
+                    auto f = std::find(inside.rbegin(), inside.rend(), nm);
+                    if (f != inside.rend()) { inside.resize(inside.rend() - f - 1); continue; }
+                    if (nm == name) { stop = k; break; }
+                    bool outer = false;
+                    for (auto &x : fr) if (x.name == nm) outer = true;
+                    if (outer) { stop = lt; break; }                /* (its parent ends: so does it) */
+                }
+                i = stop;
+                continue;
+            }
+            if (is_in(name, optional_end) && fr.size() > 1 && fr.back().name == name) fr.pop_back();
+            if (name == "body" && d.has_bg) wb->bg = d.bg;
+            if (!is_in(name, voids)) {
+                Frame f = fr.back();
+                bool parent_flex = f.flex;
+                f.name = name;
+                f.id = eid;
+                f.cls = ecls;
+                if (name == "a") f.color = 0;              /* (links: ours, unless the page says) */
+                if (name == "table") f.align = 0;          /* (tables don't take a <center> round them, as browsers) */
+                bool in_cell = false;
+                for (auto &x : fr) if (x.name == "td" || x.name == "th") in_cell = true;
+                if (d.has_color) f.color = d.color;
+                if (d.bold >= 0) f.bold = d.bold;
+                if (d.mono >= 0) f.mono = d.mono;
+                if (d.align >= 0) f.align = d.align;
+                f.inl = d.display == 2 || (parent_flex && name == "li" && d.display != 3) || (in_cell && name == "center");
+                f.flex = d.display == 4;
+                fr.push_back(f);
+                inl = f.inl;
+            }
+        }
         /* forms: their fields, buttons (and select's choice, a textarea's text, unseen) */
         if (name == "form") {
             if (close) form = -1;
@@ -3346,13 +3827,14 @@ static void html_parse(Web *wb, const std::string &html, bool plain)
                 if (label.empty()) label = val.empty() ? "Submit" : val;
                 f.fields.push_back({ nm, val, "submit" });
                 WebItem it; it.kind = WebItem::BUTTON; it.text = label; it.form = form; it.field = (int)f.fields.size() - 1;
-                it.indent = indent;
+                it.indent = indent; it.center = fr.back().align == 1;
                 wb->items.push_back(it);
                 continue;
             }
             if (type == "reset" || type == "button" || type == "file") continue;
             f.fields.push_back({ nm, val, type == "password" ? "password" : "text" });
             WebItem it; it.kind = WebItem::FIELD; it.form = form; it.field = (int)f.fields.size() - 1; it.indent = indent;
+            it.center = fr.back().align == 1;
             std::string sz = attr_of(tag, "size");
             it.size = sz.empty() ? 24 : std::clamp(atoi(sz.c_str()), 4, 60);
             wb->items.push_back(it);
@@ -3392,6 +3874,7 @@ static void html_parse(Web *wb, const std::string &html, bool plain)
             it.ih = atoi(attr_of(tag, "height").c_str());
             it.link = link;
             it.indent = indent;
+            it.center = fr.back().align == 1;
             wb->items.push_back(it);
             continue;
         }
@@ -3422,19 +3905,24 @@ static void html_parse(Web *wb, const std::string &html, bool plain)
         }
         if (name == "li") {
             if (close) continue;
+            if (inl) { text(" "); continue; }              /* (a menu's items, side by side) */
             brk(WebItem::LINE);
             if (!olnum.empty() && tag.size() >= 2) {          /* (in an ol: numbered) */
                 olnum.back()++;
                 text(std::to_string(olnum.back()) + ". ");
             } else text("\xE2\x80\xA2 ");                    /* a bullet */
+            bullet_at = wb->items.size();
             continue;
         }
         static const char *blocks[] = { "p", "div", "table", "tr", "section", "article", "header", "footer",
                                         "nav", "main", "form", "dl", "dt", "figure", "figcaption", "address",
                                         "center", "aside", "details", "summary", "body", "html", nullptr };
-        for (int k = 0; blocks[k]; k++)
+        for (int k = 0; blocks[k] && !inl; k++)
             if (name == blocks[k]) { brk(name == "tr" || name == "dt" || name == "div" ? WebItem::LINE : WebItem::PARA); break; }
     }
+    uint32_t page = wb->bg ? wb->bg : C_WHITE;            /* (colours that wouldn't show: ours) */
+    for (WebItem &it : wb->items)
+        if (it.color && css_contrast(it.color, page) < 2.0) it.color = 0;
     std::string t;                                         /* (the title, tidied) */
     for (char c : wb->title) if (c != '\n' && c != '\r' && c != '\t') t += c;
     while (!t.empty() && t[0] == ' ') t.erase(0, 1);
@@ -3452,9 +3940,17 @@ static void web_layout(Web *wb, int width)
     std::vector<WebSeg> line;
     bool gap = true;                                       /* (the last thing was a gap: no more) */
     int cur_indent = 0;
+    bool cur_center = false;
+    bool dark = wb->bg && css_lum(wb->bg) < 0.25;          /* (a dark page: light text of ours) */
+    uint32_t c_text = dark ? 0xFFE8E8E8 : C_TEXT, c_link = dark ? 0xFF8AB4F8 : 0xFF1A3FB8,
+             c_head = dark ? 0xFFB0C4FF : 0xFF1C3C9C, c_dim = dark ? 0xFFA0A0A0 : C_SHADOW;
     auto left = [&](int ind) { return WEB_MARGIN + ind * 22; };
     auto flush = [&]() {
         if (line.empty()) return;
+        if (cur_center) {                                  /* (centred: what's left over, both sides) */
+            int shift = (right - (line.back().x + line.back().w)) / 2;
+            if (shift > 0) for (auto &s : line) s.x += shift;
+        }
         int asc = 0, hh = 0;
         for (auto &s : line) {
             int a = s.box == 3 ? s.h : text_ascent(s.font) + (s.box ? 4 : 0);     /* (a picture sits on the line) */
@@ -3484,15 +3980,15 @@ static void web_layout(Web *wb, int width)
                 if (!it.text.empty()) {
                     WebItem t; t.kind = WebItem::TEXT; t.text = "[" + it.text + "]"; t.link = it.link; t.indent = it.indent;
                     std::string word = t.text;
-                    if (line.empty()) { cur_indent = it.indent; x = left(cur_indent); }
+                    if (line.empty()) { cur_indent = it.indent; cur_center = it.center; x = left(cur_indent); }
                     int ww = text_width(TEXT_BODY, word.c_str());
                     if (!line.empty() && x + ww > right) flush();
-                    line.push_back({ x, 0, ww, 0, 0, TEXT_BODY, it.link, it.link >= 0 ? 0xFF1A3FB8 : C_SHADOW, word });
+                    line.push_back({ x, 0, ww, 0, 0, TEXT_BODY, it.link, it.link >= 0 ? c_link : c_dim, word });
                     x += ww + text_width(TEXT_BODY, " ");
                 }
                 continue;
             }
-            if (line.empty()) { cur_indent = it.indent; x = left(cur_indent); }
+            if (line.empty()) { cur_indent = it.indent; cur_center = it.center; x = left(cur_indent); }
             int room = right - left(cur_indent);
             if (iw > room) { ih = (int)((long)ih * room / iw); iw = room; }
             if (iw < 1 || ih < 1) continue;
@@ -3504,11 +4000,11 @@ static void web_layout(Web *wb, int width)
             continue;
         }
         if (it.kind == WebItem::FIELD || it.kind == WebItem::BUTTON) {      /* a box in the line */
-            if (line.empty()) { cur_indent = it.indent; x = left(cur_indent); }
+            if (line.empty()) { cur_indent = it.indent; cur_center = it.center; x = left(cur_indent); }
             int bw = it.kind == WebItem::FIELD ? std::clamp(it.size * 8, 80, right - left(cur_indent))
                                               : text_width(TEXT_BODY, it.text.c_str()) + 24;
             if (!line.empty() && x + bw > right) flush();
-            WebSeg sg{ x, 0, bw, 0, 0, TEXT_BODY, -1, C_TEXT, it.text };
+            WebSeg sg{ x, 0, bw, 0, 0, TEXT_BODY, -1, c_text, it.text };
             sg.box = it.kind == WebItem::FIELD ? 1 : 2;
             sg.form = it.form; sg.field = it.field;
             line.push_back(sg);
@@ -3523,15 +4019,15 @@ static void web_layout(Web *wb, int width)
             if (it.kind == WebItem::PARA && !gap) { y += 8; gap = true; }
             if (it.kind == WebItem::LINE && !had && !gap) { }
             if (it.kind == WebItem::RULE) {
-                WebSeg s{ left(0), y + 4, width - 2 * WEB_MARGIN, 2, 0, -1, -1, C_SHADOW, "" };
+                WebSeg s{ left(0), y + 4, width - 2 * WEB_MARGIN, 2, 0, -1, -1, c_dim, "" };
                 wb->segs.push_back(s);
                 y += 12;
                 gap = true;
             }
             continue;
         }
-        if (line.empty()) { cur_indent = it.indent; x = left(cur_indent); }
-        uint32_t color = it.link >= 0 ? 0xFF1A3FB8 : (it.font == TEXT_H1 || it.font == TEXT_H2) ? 0xFF1C3C9C : C_TEXT;
+        if (line.empty()) { cur_indent = it.indent; cur_center = it.center; x = left(cur_indent); }
+        uint32_t color = it.color ? it.color : it.link >= 0 ? c_link : (it.font == TEXT_H1 || it.font == TEXT_H2) ? c_head : c_text;
         if (it.pre) {                                      /* preformatted: its own lines */
             size_t p = 0;
             while (p <= it.text.size()) {
@@ -3700,10 +4196,61 @@ static void web_images_start(Window *w)
     web_images_pump(w->web);
 }
 
+/* ── style sheets: fetched after the page (all at once), then the page
+ *    taken apart again with them; kept for the next page of the site ── */
+static std::map<std::string, std::string> css_cache;
+static size_t css_cache_bytes = 0;
+
+static void web_sheets_done(std::shared_ptr<Web> keep, int seq, const std::vector<std::string> &parts)
+{
+    Window *w = web_window(keep.get());
+    if (!w || keep->seq != seq) return;                   /* (gone, or another page by now) */
+    std::string all;
+    for (auto &p : parts) { all += p; all += "\n"; }
+    keep->css = all;
+    std::string title = keep->title;
+    html_parse(keep.get(), keep->html, false);
+    if (keep->title.empty()) keep->title = title;
+    keep->laid_w = -1;
+    web_images_start(w);
+    draw_window(w);
+}
+
+static void web_sheets_start(Window *w)
+{
+    std::shared_ptr<Web> keep = w->web;
+    int seq = ++keep->seq;                                 /* (what's fetched for this page, from now) */
+    auto parts = std::make_shared<std::vector<std::string>>(keep->sheets.size());
+    auto left = std::make_shared<int>((int)keep->sheets.size());
+    for (size_t k = 0; k < keep->sheets.size(); k++) {
+        const std::string url = keep->sheets[k];
+        auto c = css_cache.find(url);
+        if (c != css_cache.end() || url.rfind("file://", 0) == 0) {
+            (*parts)[k] = c != css_cache.end() ? c->second : slurp(url.substr(7));
+            if (--*left == 0) web_sheets_done(keep, seq, *parts);
+            continue;
+        }
+        std::string q;
+        for (char ch : url) { if (ch == '\'') q += "%27"; else if ((unsigned char)ch >= 0x20) q += ch; }
+        run_capture({ sys("busybox"), "sh", "-c", "exec " + sys("busybox") + " wget -q -T 20 -U '" + WEB_UA + "' -O - '" + q + "' 2>/dev/null" },
+                    [keep, seq, k, url, parts, left](const std::string &data) {
+                        if (data.size() < (4u << 20)) {
+                            if (css_cache_bytes + data.size() > (16u << 20)) { css_cache.clear(); css_cache_bytes = 0; }
+                            css_cache[url] = data;
+                            css_cache_bytes += data.size();
+                            (*parts)[k] = data;
+                        }
+                        if (--*left == 0) web_sheets_done(keep, seq, *parts);
+                    });
+    }
+}
+
 static void web_show(Window *w, const std::string &url, const std::string &body, const std::string &type)
 {
     Web *wb = w->web.get();
     wb->url = url;
+    wb->css.clear();
+    wb->html.clear();
     bool html = type.find("html") != std::string::npos || type.empty();
     bool text = type.find("text/plain") != std::string::npos;
     bool picture = type.rfind("image/", 0) == 0 && (type.find("png") != std::string::npos || type.find("jpeg") != std::string::npos ||
@@ -3721,6 +4268,7 @@ static void web_show(Window *w, const std::string &url, const std::string &body,
                           "</b>, which WebExplorer doesn't show. wget can fetch it in a Command Prompt.</p>";
         html_parse(wb, msg, false);
     } else {
+        if (!text) wb->html = body;
         html_parse(wb, body, text);
     }
     if (wb->title.empty()) wb->title = url;
@@ -3729,6 +4277,7 @@ static void web_show(Window *w, const std::string &url, const std::string &body,
     wb->hover = -1;
     wb->status = "Done";
     wb->loading = false;
+    if (!wb->sheets.empty()) web_sheets_start(w);
     web_images_start(w);
     draw_window(w);
     draw_bar();
@@ -3874,7 +4423,7 @@ static void draw_web_content(Window *w, pixman_image_t *im, int ox, int oy)
         wb->jump.clear();
     }
     w->scroll = std::clamp(w->scroll, 0, std::max(0, wb->height - ph));
-    fill(im, px, py, pw - SB, ph, C_WHITE);
+    fill(im, px, py, pw - SB, ph, wb->bg ? wb->bg : C_WHITE);
     pixman_region32_t clip;
     pixman_region32_init_rect(&clip, px, py, pw - SB, ph);
     pixman_image_set_clip_region32(im, &clip);
