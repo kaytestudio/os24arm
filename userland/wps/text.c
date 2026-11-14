@@ -11,6 +11,7 @@ int text_init(void)
     fcft_init(FCFT_LOG_COLORIZE_NEVER, false, FCFT_LOG_CLASS_ERROR);
     static const char *names[TEXT_FONTS][1] = {
         { "DejaVu Sans:size=8" }, { "DejaVu Sans:size=8:weight=bold" }, { "DejaVu Sans:size=7" },
+        { "DejaVu Sans Mono:size=9" },
     };
     for (int i = 0; i < TEXT_FONTS; i++) {
         fonts[i] = fcft_from_name(1, names[i], "antialias=true:hinting=true");

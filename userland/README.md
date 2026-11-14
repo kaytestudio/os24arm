@@ -257,6 +257,13 @@ platform-specific are new code.
    and the pattern on it - and Window - the title bars' colours (Warp 4,
    Warp 3, Teal, Graphite, Plum). Changes show at once and are kept in
    WPS.INI.
+   Text files open in the System Editor (OS/2 System has one to start
+   with an empty file): a window of the Workplace Shell's own, with a
+   File/Edit/Help menu bar, DejaVu Sans Mono, Shift+arrows or a drag to
+   select, Ctrl+X/C/V/A/S, Enter keeping the indentation, the line and
+   column below; File > Save as takes a DOS path (D:\NOTES\TODO.TXT);
+   closing it with unsaved changes asks Save, Discard or Cancel. Binary
+   files (a NUL in them) and files over 4 MB aren't opened.
    The Assistance Center (on the desktop, F1, a folder's Help menu) is
    the help: the topics on the left, the text on the right - plain text
    files in `userland/rootfs/help` (`\OS2\HELP`: a title line, then

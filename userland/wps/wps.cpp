@@ -318,7 +318,7 @@ static void draw_icon(pixman_image_t *im, int i, int x, int y, int s)
 }
 
 /* ── objects: what an icon stands for ───────────────────────────────── */
-enum Action { A_NONE, A_HELP, A_APP, A_FOLDER, A_RUN, A_OS2RUN, A_EDIT, A_SHREDDER, A_SCRIPT, A_PROMPT, A_PROGRAMS, A_WINLIST,
+enum Action { A_NONE, A_HELP, A_EDITOR, A_APP, A_FOLDER, A_RUN, A_OS2RUN, A_EDIT, A_SHREDDER, A_SCRIPT, A_PROMPT, A_PROGRAMS, A_WINLIST,
               A_SHUTDOWN };
 struct Object {
     std::string label;
@@ -344,7 +344,12 @@ struct Window;
 struct Tag { enum K { DESK, BAR, WIN, MENU } k; Window *w; };
 
 struct Window {
-    enum Kind { XDG, FOLDER, WINLIST, INFO, NOTEBOOK, HELP } kind;
+    enum Kind { XDG, FOLDER, WINLIST, INFO, NOTEBOOK, HELP, EDITOR } kind;
+    /* EDITOR: the text (path, name: the file), the cursor and the selection's
+     * other end (row, byte), the first line and column shown */
+    std::vector<std::string> text;
+    int cr = 0, cc = 0, ar = -1, ac = 0, etop = 0, eleft = 0;
+    bool modified = false, final_nl = true;
     std::vector<std::pair<std::string, std::string>> topics;   /* HELP: title, file */
     int tab = 0;                                  /* NOTEBOOK: the page shown */
     Tag tag{ Tag::WIN, this };
@@ -431,7 +436,7 @@ struct Server {
     int cascade = 0;
 
     /* pointer grabs */
-    enum Mode { NONE, MOVE, RESIZE, THUMB } mode = NONE;
+    enum Mode { NONE, MOVE, RESIZE, THUMB, SELECT } mode = NONE;
     Window *grab = nullptr;                      /* (also: a window going away ends a drag) */
     uint32_t grab_edges = 0;
     double gx, gy;
@@ -482,6 +487,7 @@ static void close_menu();
 static std::vector<Object> program_objects();
 static void run_app(const Object &o);
 static void save_state();
+static void open_editor(const std::string &path);
 static void open_help(int topic);
 static void open_desktop_settings();
 static void rebuild_desktop();
@@ -510,8 +516,8 @@ static void run_object(const Object &o)
     case A_SHREDDER: open_info("Shredder", { "Shredder", "Drag an object here to delete it." }); break;     /* (the LX loader: the console's) */
     case A_SCRIPT: { auto v = terminal(true); v.push_back(sys("busybox")); v.push_back("sh");
                      v.push_back(o.path); spawn(v); break; }
-    case A_EDIT:   { auto v = terminal(); v.push_back(sys("busybox")); v.push_back("vi");
-                     v.push_back(o.path); spawn(v); break; }
+    case A_EDIT:     open_editor(o.path); break;
+    case A_EDITOR:   open_editor(""); break;
     case A_NONE: break;
     }
 }
@@ -567,6 +573,7 @@ static std::vector<Object> folder_objects(const std::string &path)
         v.push_back({ "Window List", I_WINLIST, A_WINLIST, "" });
         v.push_back({ "Startup", I_FOLDER, A_FOLDER, "::startup" });
         v.push_back({ "Assistance Center", I_HELP, A_HELP, "" });
+        v.push_back({ "System Editor", I_TEXT, A_EDITOR, "" });
         v.push_back({ "Shut Down", I_SHUTDOWN, A_SHUTDOWN, "" });
         return v;
     }
@@ -604,6 +611,7 @@ std::string Window::titleText() const
     if (kind == FOLDER) return name + (view == TREE ? " - Tree View" : view == DETAILS ? " - Details View" : " - Icon View");
     if (kind == WINLIST) return "Window List";
     if (kind == INFO || kind == NOTEBOOK || kind == HELP) return info_title;
+    if (kind == EDITOR) { extern std::string ed_title_of(const Window *); return ed_title_of(this); }
     if (top && top->title && *top->title) return top->title;
     if (top && top->app_id && *top->app_id) return top->app_id;
     return "(untitled)";
@@ -720,6 +728,7 @@ static int window_icon(const Window *w)
     if (w->kind == Window::WINLIST) return I_WINLIST;
     if (w->kind == Window::NOTEBOOK) return I_SYSTEM;
     if (w->kind == Window::HELP) return I_HELP;
+    if (w->kind == Window::EDITOR) return I_TEXT;
     std::string t = w->titleText();
     return t.find("Command Prompt") != std::string::npos ? I_PROMPT : I_PROGRAM;
 }
@@ -750,6 +759,7 @@ static void draw_winlist_content(Window *w, pixman_image_t *im, int ox, int oy);
 static void draw_info_content(Window *w, pixman_image_t *im, int ox, int oy);
 static void draw_notebook_content(Window *w, pixman_image_t *im, int ox, int oy);
 static void draw_help_content(Window *w, pixman_image_t *im, int ox, int oy);
+static void draw_editor_content(Window *w, pixman_image_t *im, int ox, int oy);
 
 static void draw_window(Window *w)
 {
@@ -778,6 +788,7 @@ static void draw_window(Window *w)
     else if (w->kind == Window::INFO) draw_info_content(w, im, B, B + T);
     else if (w->kind == Window::NOTEBOOK) draw_notebook_content(w, im, B, B + T);
     else if (w->kind == Window::HELP) draw_help_content(w, im, B, B + T);
+    else if (w->kind == Window::EDITOR) draw_editor_content(w, im, B, B + T);
     else fill(im, B, B + T, w->cw, w->ch, C_WHITE);       /* under the client */
     w->frame.show(w->tree, pb, &w->tag);
     wlr_scene_node_lower_to_bottom(&w->frame.node->node);
@@ -813,21 +824,26 @@ static void redraw_winlist() { if (S.winlist) draw_window(S.winlist); }
 /* ── folders: a menu bar, then the view (Icon, Tree or Details) and a
  *    scroll bar; coordinates here are inside the window's content ───── */
 static const int CELL_W = 88, CELL_H = 66, SB = 16, TROW = 20;
-static const char *menubar_labels[] = { "Folder", "Edit", "View", "Selected", "Help" };
-static const int MENUBAR_N = 5;
+/* the menu bar: a folder's, or the System Editor's */
+static const std::vector<const char *> &bar_labels(const Window *w)
+{
+    static const std::vector<const char *> folder = { "Folder", "Edit", "View", "Selected", "Help" };
+    static const std::vector<const char *> editor = { "File", "Edit", "Help" };
+    return w->kind == Window::EDITOR ? editor : folder;
+}
 
-static int menubar_x(int i)
+static int menubar_x(const Window *w, int i)
 {
     int x = 8;
-    for (int k = 0; k < i; k++) x += text_width(TEXT_UI, menubar_labels[k]) + 18;
+    for (int k = 0; k < i; k++) x += text_width(TEXT_UI, bar_labels(w)[k]) + 18;
     return x;
 }
 
-static int menubar_at(int cx)
+static int menubar_at(const Window *w, int cx)
 {
-    for (int i = 0; i < MENUBAR_N; i++) {
-        int x = menubar_x(i);
-        if (cx >= x - 7 && cx < x + text_width(TEXT_UI, menubar_labels[i]) + 9) return i;
+    for (int i = 0; i < (int)bar_labels(w).size(); i++) {
+        int x = menubar_x(w, i);
+        if (cx >= x - 7 && cx < x + text_width(TEXT_UI, bar_labels(w)[i]) + 9) return i;
     }
     return -1;
 }
@@ -897,10 +913,10 @@ static void draw_menubar(Window *w, pixman_image_t *im, int ox, int oy)
 {
     fill(im, ox, oy, w->cw, MENUBAR, C_FACE);
     int open = S.menu && S.menu->owner == w ? S.menu->bar : -1;
-    for (int i = 0; i < MENUBAR_N; i++) {
-        int x = ox + menubar_x(i), tw = text_width(TEXT_UI, menubar_labels[i]);
+    for (int i = 0; i < (int)bar_labels(w).size(); i++) {
+        int x = ox + menubar_x(w, i), tw = text_width(TEXT_UI, bar_labels(w)[i]);
         if (i == open) fill(im, x - 6, oy + 1, tw + 12, MENUBAR - 3, C_SEL);
-        text_draw(im, TEXT_UI, x, oy + MENUBAR / 2 + text_ascent(TEXT_UI) / 2 - 1, menubar_labels[i],
+        text_draw(im, TEXT_UI, x, oy + MENUBAR / 2 + text_ascent(TEXT_UI) / 2 - 1, bar_labels(w)[i],
                   i == open ? C_WHITE : C_TEXT, 0);
     }
     fill(im, ox, oy + MENUBAR - 1, w->cw, 1, C_SHADOW);
@@ -1870,9 +1886,11 @@ static void forget(Window *w)
     draw_bar();
 }
 
+static void ed_close(Window *w);
 static void close_window(Window *w)
 {
     if (w->top) { wlr_xdg_toplevel_send_close(w->top); return; }
+    if (w->kind == Window::EDITOR && w->modified) { ed_close(w); return; }
     bool folder = w->kind == Window::FOLDER;
     forget(w);
     w->frame.destroy();
@@ -2142,9 +2160,11 @@ static std::vector<Menu::Item> folder_menu(Window *w, int which)
     }
 }
 
+static std::vector<Menu::Item> editor_menu(Window *w, int which);
 static void open_folder_menu(Window *w, int which)
 {
-    open_menu(w->x + B + menubar_x(which) - 7, w->y + B + T + MENUBAR - 1, folder_menu(w, which), w, which);
+    open_menu(w->x + B + menubar_x(w, which) - 7, w->y + B + T + MENUBAR - 1,
+              w->kind == Window::EDITOR ? editor_menu(w, which) : folder_menu(w, which), w, which);
 }
 
 static void menu_key(xkb_keysym_t sym)
@@ -2168,7 +2188,8 @@ static void menu_key(xkb_keysym_t sym)
     case XKB_KEY_Left: case XKB_KEY_Right:
         if (m->owner && m->bar >= 0) {
             Window *w = m->owner;
-            int b = (m->bar + (sym == XKB_KEY_Right ? 1 : MENUBAR_N - 1)) % MENUBAR_N;
+            int nb = (int)bar_labels(w).size();
+            int b = (m->bar + (sym == XKB_KEY_Right ? 1 : nb - 1)) % nb;
             open_folder_menu(w, b);
         }
         break;
@@ -2219,7 +2240,7 @@ static int frame_hit(Window *w, int fx, int fy, uint32_t *edges)
             if (fx >= btn_x(w, i) && fx < btn_x(w, i) + BTN_W) return i == 0 ? HIT_CLOSE : i == 1 ? HIT_MAX : HIT_HIDE;
         return HIT_TITLE;
     }
-    if (w->kind == Window::FOLDER && fy < B + T + MENUBAR) return HIT_MENUBAR;
+    if ((w->kind == Window::FOLDER || w->kind == Window::EDITOR) && fy < B + T + MENUBAR) return HIT_MENUBAR;
     return HIT_CONTENT;
 }
 
@@ -2230,6 +2251,431 @@ static bool double_click(uint32_t time, const void *target, int index)
     S.last_target = target;
     S.last_index = index;
     return dbl;
+}
+
+/* ── the System Editor: a text file in a window ──────────────────────────
+ * Lines of bytes (UTF-8); the cursor and the selection's other end are
+ * (row, byte) positions; tabs show as spaces to the next multiple of 8. */
+static const int ED_STATUS = 18;
+static std::string clipboard;                       /* Cut, Copy, Paste */
+
+static int ed_cw() { return std::max(1, text_width(TEXT_MONO, "M")); }
+static int ed_lh() { return text_height(TEXT_MONO) + 1; }
+static int ed_rows(const Window *w) { return std::max(1, (w->ch - MENUBAR - ED_STATUS - 6) / ed_lh()); }
+static int ed_cols(const Window *w) { return std::max(1, (w->cw - 10) / ed_cw()); }
+
+static bool cont_byte(char c) { return ((unsigned char)c & 0xC0) == 0x80; }
+static int ed_next(const std::string &l, int b) { b++; while (b < (int)l.size() && cont_byte(l[b])) b++; return std::min(b, (int)l.size()); }
+static int ed_prev(const std::string &l, int b) { b--; while (b > 0 && cont_byte(l[b])) b--; return std::max(b, 0); }
+
+/* the column byte b shows at, and the byte at a column */
+static int ed_vcol(const std::string &l, int b)
+{
+    int v = 0;
+    for (int i = 0; i < b && i < (int)l.size(); i = ed_next(l, i)) v = l[i] == '\t' ? (v / 8 + 1) * 8 : v + 1;
+    return v;
+}
+static int ed_byte(const std::string &l, int col)
+{
+    int v = 0, i = 0;
+    while (i < (int)l.size()) {
+        int nv = l[i] == '\t' ? (v / 8 + 1) * 8 : v + 1;
+        if (nv > col) return (col - v) * 2 >= nv - v ? ed_next(l, i) : i;   /* (the nearer side) */
+        v = nv;
+        i = ed_next(l, i);
+    }
+    return i;
+}
+
+static std::string ed_title(const Window *w)
+{
+    return (w->modified ? "*" : "") + (w->name.empty() ? std::string("Untitled") : w->name) + " - System Editor";
+}
+
+std::string ed_title_of(const Window *w) { return ed_title(w); }
+static bool ed_has_sel(const Window *w) { return w->ar >= 0 && (w->ar != w->cr || w->ac != w->cc); }
+static void ed_sel(const Window *w, int *r1, int *c1, int *r2, int *c2)
+{
+    if (w->ar < w->cr || (w->ar == w->cr && w->ac < w->cc)) { *r1 = w->ar; *c1 = w->ac; *r2 = w->cr; *c2 = w->cc; }
+    else { *r1 = w->cr; *c1 = w->cc; *r2 = w->ar; *c2 = w->ac; }
+}
+
+static std::string ed_sel_text(const Window *w)
+{
+    if (!ed_has_sel(w)) return "";
+    int r1, c1, r2, c2;
+    ed_sel(w, &r1, &c1, &r2, &c2);
+    if (r1 == r2) return w->text[r1].substr(c1, c2 - c1);
+    std::string s = w->text[r1].substr(c1) + "\n";
+    for (int r = r1 + 1; r < r2; r++) s += w->text[r] + "\n";
+    return s + w->text[r2].substr(0, c2);
+}
+
+static void ed_delete_sel(Window *w)
+{
+    if (!ed_has_sel(w)) { w->ar = -1; return; }
+    int r1, c1, r2, c2;
+    ed_sel(w, &r1, &c1, &r2, &c2);
+    w->text[r1] = w->text[r1].substr(0, c1) + w->text[r2].substr(c2);
+    w->text.erase(w->text.begin() + r1 + 1, w->text.begin() + r2 + 1);
+    w->cr = r1; w->cc = c1; w->ar = -1;
+    w->modified = true;
+}
+
+static void ed_insert(Window *w, const std::string &s)
+{
+    ed_delete_sel(w);
+    std::string &l = w->text[w->cr];
+    std::string tail = l.substr(w->cc);
+    l = l.substr(0, w->cc);
+    size_t i = 0;
+    for (;;) {
+        size_t nl = s.find('\n', i);
+        w->text[w->cr] += s.substr(i, nl == std::string::npos ? std::string::npos : nl - i);
+        if (nl == std::string::npos) break;
+        w->text.insert(w->text.begin() + w->cr + 1, std::string());
+        w->cr++;
+        i = nl + 1;
+    }
+    w->cc = (int)w->text[w->cr].size();
+    w->text[w->cr] += tail;
+    w->modified = true;
+}
+
+/* the cursor visible: scroll to it */
+static void ed_follow(Window *w)
+{
+    int rows = ed_rows(w), cols = ed_cols(w), v = ed_vcol(w->text[w->cr], w->cc);
+    if (w->cr < w->etop) w->etop = w->cr;
+    if (w->cr >= w->etop + rows) w->etop = w->cr - rows + 1;
+    if (v < w->eleft) w->eleft = std::max(0, v - 8);
+    if (v >= w->eleft + cols) w->eleft = v - cols + 8;
+}
+
+static bool ed_load(Window *w, const std::string &path)
+{
+    w->text.clear();
+    w->final_nl = true;
+    if (path.empty()) { w->text.push_back(""); return true; }
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0) { w->text.push_back(""); return true; }    /* a new file */
+    if (st.st_size > 4 * 1024 * 1024) { error_box(leaf_of(path) + " is too big for the System Editor.", ""); return false; }
+    FILE *f = fopen(path.c_str(), "rb");
+    if (!f) { error_box("Can't open " + leaf_of(path) + ":", strerror(errno)); return false; }
+    std::string all((size_t)st.st_size, '\0');
+    size_t n = fread(&all[0], 1, all.size(), f);
+    fclose(f);
+    all.resize(n);
+    if (all.find('\0') != std::string::npos) {
+        error_box(leaf_of(path) + " isn't a text file.", "The System Editor edits text only.");
+        return false;
+    }
+    size_t i = 0;
+    while (i <= all.size()) {
+        size_t nl = all.find('\n', i);
+        if (nl == std::string::npos) {
+            if (i < all.size()) { w->text.push_back(all.substr(i)); w->final_nl = false; }
+            break;
+        }
+        std::string l = all.substr(i, nl - i);
+        if (!l.empty() && l.back() == '\r') l.pop_back();
+        w->text.push_back(l);
+        i = nl + 1;
+    }
+    if (w->text.empty()) w->text.push_back("");
+    return true;
+}
+
+static bool ed_save(Window *w)
+{
+    FILE *f = fopen(w->path.c_str(), "wb");
+    if (!f) { error_box("Can't save " + w->name + ":", strerror(errno)); return false; }
+    for (size_t i = 0; i < w->text.size(); i++) {
+        fputs(w->text[i].c_str(), f);
+        if (i + 1 < w->text.size() || w->final_nl) fputc('\n', f);
+    }
+    if (fclose(f) != 0) { error_box("Can't save " + w->name + ":", strerror(errno)); return false; }
+    w->modified = false;
+    draw_window(w);
+    draw_bar();
+    refresh_dir(parent_of(w->path));
+    return true;
+}
+
+/* C:\X\Y is /X/Y, D:\X is /h/X */
+static std::string unix_path(std::string d)
+{
+    for (char &c : d) if (c == '\\') c = '/';
+    if (d.size() >= 2 && d[1] == ':') {
+        char dr = (char)(d[0] & ~0x20);
+        std::string rest = d.substr(2);
+        if (rest.empty() || rest[0] != '/') rest = "/" + rest;
+        return dr == 'D' ? (rest == "/" ? "/h" : "/h" + rest) : rest;
+    }
+    return d;
+}
+
+static void ed_save_as(Window *w, std::function<void()> then = nullptr)
+{
+    std::string def = w->path.empty() ? "D:\\UNTITLED.TXT" : dos_path(w->path);
+    open_dialog("Save as", { "Save as", "Save the file as (a drive, a folder, a name):" },
+        { { "Save", [w, then](Window *d) {
+              if (std::find(S.windows.begin(), S.windows.end(), w) == S.windows.end()) return;
+              std::string p = unix_path(d->edit);
+              if (p.empty() || p.back() == '/') { error_box("That isn't a file name.", ""); return; }
+              w->path = p;
+              w->name = leaf_of(p);
+              if (ed_save(w) && then) then();
+          } },
+          { "Cancel", nullptr } }, &def);
+}
+
+static void ed_save_or_ask(Window *w, std::function<void()> then = nullptr)
+{
+    if (w->path.empty()) { ed_save_as(w, then); return; }
+    if (ed_save(w) && then) then();
+}
+
+static void open_editor(const std::string &path)
+{
+    for (Window *w : S.windows)
+        if (w->kind == Window::EDITOR && !path.empty() && w->path == path) { focus(w); return; }
+    Window tmp;
+    if (!ed_load(&tmp, path)) return;
+    Window *w = new_internal(Window::EDITOR, 620, 400, nullptr, [&](Window *x) {
+        x->path = path;
+        x->name = path.empty() ? "" : leaf_of(path);
+        x->text = std::move(tmp.text);
+        x->final_nl = tmp.final_nl;
+    });
+    draw_window(w);
+}
+
+static void draw_editor_content(Window *w, pixman_image_t *im, int ox, int oy)
+{
+    draw_menubar(w, im, ox, oy);
+    int tx = ox + 2, ty = oy + MENUBAR + 2, tw = w->cw - 4, th = w->ch - MENUBAR - ED_STATUS - 4;
+    fill(im, ox, oy + MENUBAR, w->cw, w->ch - MENUBAR, C_FACE);
+    fill(im, tx, ty, tw, th, C_WHITE);
+    bevel(im, tx, ty, tw, th, false, 1);
+    int cw = ed_cw(), lh = ed_lh(), rows = ed_rows(w), cols = ed_cols(w);
+    int r1 = 0, c1 = 0, r2 = -1, c2 = 0;
+    if (ed_has_sel(w)) ed_sel(w, &r1, &c1, &r2, &c2);
+    pixman_region32_t clip;
+    pixman_region32_init_rect(&clip, tx + 1, ty + 1, tw - 2, th - 2);
+    pixman_image_set_clip_region32(im, &clip);
+    for (int r = w->etop; r < (int)w->text.size() && r < w->etop + rows; r++) {
+        const std::string &l = w->text[r];
+        int y = ty + 3 + (r - w->etop) * lh;
+        /* the selection on this line */
+        if (r >= r1 && r <= r2) {
+            int sa = r == r1 ? ed_vcol(l, c1) : 0, sb = r == r2 ? ed_vcol(l, c2) : ed_vcol(l, (int)l.size()) + 1;
+            int xa = std::max(sa - w->eleft, 0), xb = std::min(sb - w->eleft, cols + 1);
+            if (xb > xa) fill(im, tx + 4 + xa * cw, y, (xb - xa) * cw, lh, C_SEL);
+        }
+        int v = 0;
+        for (int i = 0; i < (int)l.size(); ) {
+            int n = ed_next(l, i);
+            if (l[i] == '\t') { v = (v / 8 + 1) * 8; i = n; continue; }
+            if (v >= w->eleft && v < w->eleft + cols + 1) {
+                bool sel = (r > r1 || (r == r1 && i >= c1)) && (r < r2 || (r == r2 && i < c2));
+                std::string ch = l.substr(i, n - i);
+                text_draw(im, TEXT_MONO, tx + 4 + (v - w->eleft) * cw, y + text_ascent(TEXT_MONO), ch.c_str(),
+                          sel ? C_WHITE : C_TEXT, 0);
+            }
+            v++;
+            i = n;
+        }
+        if (r == w->cr && S.active == w) {                                 /* the cursor */
+            int cv = ed_vcol(l, w->cc) - w->eleft;
+            if (cv >= 0 && cv <= cols) fill(im, tx + 4 + cv * cw - 1, y, 2, lh, C_DARK);
+        }
+    }
+    pixman_image_set_clip_region32(im, nullptr);
+    pixman_region32_fini(&clip);
+    /* the status line */
+    char st[96];
+    snprintf(st, sizeof st, "Line %d of %d    Column %d", w->cr + 1, (int)w->text.size(),
+             ed_vcol(w->text[w->cr], w->cc) + 1);
+    int sy = oy + w->ch - ED_STATUS;
+    text_draw(im, TEXT_UI, ox + 8, sy + ED_STATUS / 2 + text_ascent(TEXT_UI) / 2 - 1, st, C_TEXT, 0);
+    std::string where = w->path.empty() ? "(not saved yet)" : dos_path(w->path);
+    if (w->modified) where = "Modified    " + where;
+    text_draw(im, TEXT_UI, ox + w->cw - 8 - std::min(text_width(TEXT_UI, where.c_str()), w->cw / 2),
+              sy + ED_STATUS / 2 + text_ascent(TEXT_UI) / 2 - 1, where.c_str(), C_SHADOW, ox + w->cw - 6);
+}
+
+/* (cx, cy) in the content -> the position there */
+static void ed_pos_at(Window *w, int cx, int cy, int *r, int *c)
+{
+    int row = w->etop + std::max(0, (cy - MENUBAR - 5) / ed_lh());
+    *r = std::clamp(row, 0, (int)w->text.size() - 1);
+    int col = w->eleft + std::max(0, (cx - 6 + ed_cw() / 2) / ed_cw());
+    *c = ed_byte(w->text[*r], col);
+}
+
+static void editor_click(Window *w, int cx, int cy, bool shift)
+{
+    if (cy < MENUBAR || cy >= w->ch - ED_STATUS) return;
+    int r, c;
+    ed_pos_at(w, cx, cy, &r, &c);
+    if (shift) { if (w->ar < 0) { w->ar = w->cr; w->ac = w->cc; } }
+    else { w->ar = r; w->ac = c; }                       /* (a drag selects from here) */
+    w->cr = r; w->cc = c;
+    S.grab = w; S.mode = Server::SELECT;
+    draw_window(w);
+}
+
+static void editor_drag(Window *w, double lx, double ly)
+{
+    int r, c;
+    ed_pos_at(w, (int)lx - w->x - B, (int)ly - w->y - B - T, &r, &c);
+    if (r == w->cr && c == w->cc) return;
+    w->cr = r; w->cc = c;
+    ed_follow(w);
+    draw_window(w);
+}
+
+static void ed_close(Window *w)
+{
+    if (!w->modified) { close_window(w); return; }
+    open_dialog("System Editor", { w->name.empty() ? "Untitled" : w->name, "The text has changed. Save it first?" },
+        { { "Save", [w](Window *) {
+              if (std::find(S.windows.begin(), S.windows.end(), w) == S.windows.end()) return;
+              ed_save_or_ask(w, [w] { close_window(w); });
+          } },
+          { "Discard", [w](Window *) {
+              if (std::find(S.windows.begin(), S.windows.end(), w) == S.windows.end()) return;
+              w->modified = false;
+              close_window(w);
+          } },
+          { "Cancel", nullptr } });
+}
+
+static void ed_select_all(Window *w)
+{
+    w->ar = 0; w->ac = 0;
+    w->cr = (int)w->text.size() - 1; w->cc = (int)w->text.back().size();
+    draw_window(w);
+}
+
+static void ed_copy(Window *w) { if (ed_has_sel(w)) clipboard = ed_sel_text(w); }
+static void ed_cut(Window *w) { if (ed_has_sel(w)) { clipboard = ed_sel_text(w); ed_delete_sel(w); ed_follow(w); draw_window(w); draw_bar(); } }
+static void ed_paste(Window *w) { if (!clipboard.empty()) { ed_insert(w, clipboard); ed_follow(w); draw_window(w); draw_bar(); } }
+
+static std::vector<Menu::Item> editor_menu(Window *w, int which)
+{
+    bool sel = ed_has_sel(w);
+    switch (which) {
+    case 0: return {
+        { "New", [] { open_editor(""); } },
+        { "Save          Ctrl+S", [w] { ed_save_or_ask(w); } },
+        { "Save as...", [w] { ed_save_as(w); } },
+        { "", nullptr },
+        { "Close", [w] { ed_close(w); } } };
+    case 1: return {
+        { "Cut           Ctrl+X", [w] { ed_cut(w); }, sel },
+        { "Copy          Ctrl+C", [w] { ed_copy(w); }, sel },
+        { "Paste         Ctrl+V", [w] { ed_paste(w); }, !clipboard.empty() },
+        { "", nullptr },
+        { "Select all    Ctrl+A", [w] { ed_select_all(w); } } };
+    default: return {
+        { "Using the editor", [] { open_help(6); } },
+        { "Product information", [] { about(); } } };
+    }
+}
+
+static bool editor_key(Window *w, xkb_keysym_t sym, const char *utf8)
+{
+    wlr_keyboard *kb = wlr_seat_get_keyboard(S.seat);
+    uint32_t mods = kb ? wlr_keyboard_get_modifiers(kb) : 0;
+    bool shift = mods & WLR_MODIFIER_SHIFT, ctrl = mods & WLR_MODIFIER_CTRL;
+    if (ctrl) {
+        switch (sym) {
+        case XKB_KEY_s: case XKB_KEY_S: ed_save_or_ask(w); return true;
+        case XKB_KEY_c: case XKB_KEY_C: ed_copy(w); return true;
+        case XKB_KEY_x: case XKB_KEY_X: ed_cut(w); return true;
+        case XKB_KEY_v: case XKB_KEY_V: ed_paste(w); return true;
+        case XKB_KEY_a: case XKB_KEY_A: ed_select_all(w); return true;
+        default: break;
+        }
+    }
+    if (sym == XKB_KEY_F10) { open_folder_menu(w, 0); return true; }
+    std::string &l = w->text[w->cr];
+    bool move = true;
+    int r = w->cr, c = w->cc, page = ed_rows(w) - 1;
+    switch (sym) {
+    case XKB_KEY_Left:
+        if (!shift && ed_has_sel(w)) { int r1, c1, r2, c2; ed_sel(w, &r1, &c1, &r2, &c2); r = r1; c = c1; break; }
+        if (c > 0) c = ed_prev(l, c); else if (r > 0) { r--; c = (int)w->text[r].size(); }
+        break;
+    case XKB_KEY_Right:
+        if (!shift && ed_has_sel(w)) { int r1, c1, r2, c2; ed_sel(w, &r1, &c1, &r2, &c2); r = r2; c = c2; break; }
+        if (c < (int)l.size()) c = ed_next(l, c); else if (r + 1 < (int)w->text.size()) { r++; c = 0; }
+        break;
+    case XKB_KEY_Up: case XKB_KEY_Down: case XKB_KEY_Prior: case XKB_KEY_Next: {
+        int v = ed_vcol(l, c);
+        int d = sym == XKB_KEY_Up ? -1 : sym == XKB_KEY_Down ? 1 : sym == XKB_KEY_Prior ? -page : page;
+        r = std::clamp(r + d, 0, (int)w->text.size() - 1);
+        c = ed_byte(w->text[r], v);
+        if (sym == XKB_KEY_Prior || sym == XKB_KEY_Next) w->etop = std::clamp(w->etop + d, 0, std::max(0, (int)w->text.size() - 1));
+        break;
+    }
+    case XKB_KEY_Home: if (ctrl) r = 0; c = 0; break;
+    case XKB_KEY_End:
+        if (ctrl) r = (int)w->text.size() - 1;
+        c = (int)w->text[r].size();
+        break;
+    default: move = false;
+    }
+    if (move) {
+        if (shift) { if (w->ar < 0) { w->ar = w->cr; w->ac = w->cc; } }
+        else w->ar = -1;
+        w->cr = r; w->cc = c;
+        ed_follow(w);
+        draw_window(w);
+        return true;
+    }
+    if (ctrl) return false;
+    switch (sym) {
+    case XKB_KEY_Return: case XKB_KEY_KP_Enter: {
+        std::string indent;                                  /* the line's indentation, again */
+        for (char ch : l) { if (ch != ' ' && ch != '\t') break; indent += ch; }
+        if ((int)indent.size() > w->cc) indent.resize(w->cc);
+        ed_insert(w, "\n" + indent);
+        break;
+    }
+    case XKB_KEY_Tab: ed_insert(w, "\t"); break;
+    case XKB_KEY_BackSpace:
+        if (ed_has_sel(w)) ed_delete_sel(w);
+        else if (w->cc > 0) { int p = ed_prev(l, w->cc); l.erase(p, w->cc - p); w->cc = p; w->modified = true; }
+        else if (w->cr > 0) {
+            w->cc = (int)w->text[w->cr - 1].size();
+            w->text[w->cr - 1] += l;
+            w->text.erase(w->text.begin() + w->cr);
+            w->cr--;
+            w->modified = true;
+        }
+        w->ar = -1;
+        break;
+    case XKB_KEY_Delete:
+        if (ed_has_sel(w)) ed_delete_sel(w);
+        else if (w->cc < (int)l.size()) { l.erase(w->cc, ed_next(l, w->cc) - w->cc); w->modified = true; }
+        else if (w->cr + 1 < (int)w->text.size()) {
+            l += w->text[w->cr + 1];
+            w->text.erase(w->text.begin() + w->cr + 1);
+            w->modified = true;
+        }
+        w->ar = -1;
+        break;
+    default:
+        if (utf8 && (unsigned char)utf8[0] >= 0x20 && utf8[0] != 0x7F) { ed_insert(w, utf8); break; }
+        return false;
+    }
+    ed_follow(w);
+    draw_window(w);
+    draw_bar();
+    return true;
 }
 
 /* ── the desktop as it was left: \OS2\WPS.INI on the stick ───────────── *
@@ -2618,7 +3064,12 @@ static void folder_click(Window *w, int cx, int cy, uint32_t time, bool right)
 
 static void content_click(Window *w, int cx, int cy, uint32_t time, bool right)
 {
-    if (w->kind == Window::HELP) {
+    if (w->kind == Window::EDITOR) {
+        wlr_keyboard *kb = wlr_seat_get_keyboard(S.seat);
+        bool shift = kb && (wlr_keyboard_get_modifiers(kb) & WLR_MODIFIER_SHIFT);
+        if (!right) editor_click(w, cx, cy, shift);
+        else open_menu(w->x + B + cx, w->y + B + T + cy, editor_menu(w, 1), w);
+    } else if (w->kind == Window::HELP) {
         if (!right) help_click(w, cx, cy);
     } else if (w->kind == Window::NOTEBOOK) {
         if (!right) notebook_click(w, cx, cy);
@@ -2649,6 +3100,7 @@ static void pointer_motion(uint32_t time)
         wlr_scene_node_set_position(&w->tree->node, w->x, w->y);
         return;
     }
+    if (S.mode == Server::SELECT && S.grab) { editor_drag(S.grab, lx, ly); return; }
     if (S.mode == Server::THUMB && S.grab) {
         Window *w = S.grab;
         int ty, th, my, mh;
@@ -2682,7 +3134,7 @@ static void pointer_motion(uint32_t time)
         if (h != S.menu->hover) { S.menu->hover = h; draw_menu(); }
         if (Window *w = S.menu->owner; w && S.menu->bar >= 0) {     /* along the menu bar */
             int fx = (int)lx - w->x - B, fy = (int)ly - w->y - B - T;
-            int b = fy >= 0 && fy < MENUBAR ? menubar_at(fx) : -1;
+            int b = fy >= 0 && fy < MENUBAR ? menubar_at(w, fx) : -1;
             if (b >= 0 && b != S.menu->bar) open_folder_menu(w, b);
         }
     }
@@ -2772,7 +3224,7 @@ static void pointer_button(wlr_pointer_button_event *e)
         case HIT_MAX: toggle_maximize(w); break;
         case HIT_HIDE: hide(w); break;
         case HIT_MENUBAR: {
-            int b = menubar_at(fx - B);
+            int b = menubar_at(w, fx - B);
             if (b >= 0 && !(menu_owner == w && menu_bar == b)) open_folder_menu(w, b);
             break;
         }
@@ -2815,6 +3267,12 @@ static void pointer_axis(wlr_pointer_axis_event *e)
     if (h.surface) {
         wlr_seat_pointer_notify_axis(S.seat, e->time_msec, e->orientation, e->delta,
                                      e->delta_discrete, e->source, e->relative_direction);
+        return;
+    }
+    if (h.tag && h.tag->k == Tag::WIN && h.tag->w->kind == Window::EDITOR) {
+        Window *w = h.tag->w;
+        w->etop = std::clamp(w->etop + (e->delta > 0 ? 3 : e->delta < 0 ? -3 : 0), 0, std::max(0, (int)w->text.size() - 1));
+        draw_window(w);
         return;
     }
     if (h.tag && h.tag->k == Tag::WIN && h.tag->w->kind == Window::HELP) {
@@ -2861,6 +3319,7 @@ static bool internal_key(Window *w, xkb_keysym_t sym, const char *utf8)
         return true;
     }
     if (w->kind == Window::HELP) return help_key(w, sym);
+    if (w->kind == Window::EDITOR) return editor_key(w, sym, utf8);
     if (w->kind == Window::NOTEBOOK) {
         if (sym == XKB_KEY_Escape) { close_window(w); return true; }
         if (sym == XKB_KEY_Next || sym == XKB_KEY_Prior) { w->tab = (w->tab + 1) % NB_TABS; draw_window(w); return true; }
