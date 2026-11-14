@@ -9,8 +9,9 @@ extern "C" {
 #endif
 
 /* fonts: 0 the normal UI font, 1 bold (titles), 2 small (icon labels),
- * 3 monospace (the System Editor) */
-enum { TEXT_UI, TEXT_BOLD, TEXT_SMALL, TEXT_MONO, TEXT_FONTS };
+ * 3 monospace (the System Editor), then WebExplorer's: the text, bold,
+ * headings */
+enum { TEXT_UI, TEXT_BOLD, TEXT_SMALL, TEXT_MONO, TEXT_BODY, TEXT_BODY_BOLD, TEXT_H1, TEXT_H2, TEXT_FONTS };
 
 int  text_init(void);                                  /* 0: ready */
 int  text_ascent(int font);

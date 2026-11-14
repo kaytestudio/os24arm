@@ -31,6 +31,8 @@
 #include <ctime>
 #include <functional>
 #include <map>
+#include <memory>
+#include <cctype>
 #include <set>
 #include <string>
 #include <vector>
@@ -214,7 +216,7 @@ static void gradient_h(pixman_image_t *im, int x, int y, int w, int h, uint32_t 
 
 /* ── icons: drawn here, OS/2 Warp in spirit ─────────────────────────── */
 enum Icon { I_FOLDER, I_FILE, I_TEXT, I_PROGRAM, I_PROMPT, I_DRIVE, I_SYSTEM, I_PROGRAMS,
-            I_WINLIST, I_SHUTDOWN, I_DRIVES, I_SHREDDER, I_HELP, I_NETWORK, I_COUNT };
+            I_WINLIST, I_SHUTDOWN, I_DRIVES, I_SHREDDER, I_HELP, I_NETWORK, I_WEB, I_COUNT };
 
 static void disc(pixman_image_t *im, int cx, int cy, int r, uint32_t c)
 {
@@ -289,6 +291,17 @@ static void draw_icon(pixman_image_t *im, int i, int x, int y, int s)
         fill(im, x + S(5), y + S(4), S(22), S(4), C_TITLE);
         for (int l = 0; l < 5; l++) fill(im, x + S(8), y + S(11 + 3 * l), S(16), S(2), C_SHADOW);
         break;
+    case I_WEB: {                                                           /* a globe */
+        disc(im, x + S(16), y + S(16), S(13), 0xFF103070);
+        disc(im, x + S(16), y + S(16), S(12), 0xFF2E78D0);
+        fill(im, x + S(7), y + S(9), S(8), S(6), 0xFF3AA048);                /* land */
+        fill(im, x + S(10), y + S(15), S(5), S(7), 0xFF3AA048);
+        fill(im, x + S(18), y + S(8), S(7), S(5), 0xFF3AA048);
+        fill(im, x + S(19), y + S(17), S(6), S(6), 0xFF3AA048);
+        fill(im, x + S(4), y + S(16), S(25), 1, 0xFFB0D0F0);                 /* the equator */
+        fill(im, x + S(16), y + S(4), 1, S(25), 0xFFB0D0F0);
+        break;
+    }
     case I_NETWORK: {                                                       /* two computers, a cable */
         auto pc = [&](int px, int py) {
             boxed(im, x + S(px), y + S(py), S(13), S(10), 0xFF1C3C9C);
@@ -332,7 +345,7 @@ static void draw_icon(pixman_image_t *im, int i, int x, int y, int s)
 }
 
 /* ── objects: what an icon stands for ───────────────────────────────── */
-enum Action { A_NONE, A_HELP, A_EDITOR, A_NETSTATUS, A_PING, A_TELNET, A_APP, A_FOLDER, A_RUN, A_OS2RUN, A_EDIT, A_SHREDDER, A_SCRIPT, A_PROMPT, A_PROGRAMS, A_WINLIST,
+enum Action { A_NONE, A_HELP, A_EDITOR, A_WEB, A_NETSTATUS, A_PING, A_TELNET, A_APP, A_FOLDER, A_RUN, A_OS2RUN, A_EDIT, A_SHREDDER, A_SCRIPT, A_PROMPT, A_PROGRAMS, A_WINLIST,
               A_SHUTDOWN };
 struct Object {
     std::string label;
@@ -358,7 +371,8 @@ struct Window;
 struct Tag { enum K { DESK, BAR, WIN, MENU } k; Window *w; };
 
 struct Window {
-    enum Kind { XDG, FOLDER, WINLIST, INFO, NOTEBOOK, HELP, EDITOR } kind;
+    enum Kind { XDG, FOLDER, WINLIST, INFO, NOTEBOOK, HELP, EDITOR, WEB } kind;
+    std::shared_ptr<struct Web> web;              /* WEB: WebExplorer's page */
     /* EDITOR: the text (path, name: the file), the cursor and the selection's
      * other end (row, byte), the first line and column shown */
     std::vector<std::string> text;
@@ -506,6 +520,8 @@ static void close_menu();
 static std::vector<Object> program_objects();
 static void run_app(const Object &o);
 static void save_state();
+static void open_web(const std::string &url);
+static void clipboard_offer(const std::string &text);
 static void tcpip_status();
 static void ask_host(const std::string &title, const std::string &what, std::function<std::vector<std::string>(const std::string &)> make);
 static void remove_shadow(const std::string &where, const std::string &path);
@@ -531,6 +547,7 @@ static void run_object(const Object &o)
     case A_APP:      run_app(o); break;
     case A_HELP:     open_help(0); break;
     case A_NETSTATUS: tcpip_status(); break;
+    case A_WEB:      open_web(""); break;
     case A_PING:     ask_host("Ping", "Ping which host (a name or an address)?",
                               [](const std::string &h) { return std::vector<std::string>{ sys("os2cmd"), "PING", h, "4" }; });
                      break;
@@ -608,6 +625,7 @@ static std::vector<Object> folder_objects(const std::string &path)
     }
     if (path == "::programs") return program_objects();
     if (path == "::connections") {
+        v.push_back({ "WebExplorer", I_WEB, A_WEB, "" });
         v.push_back({ "TCP/IP Status", I_NETWORK, A_NETSTATUS, "" });
         v.push_back({ "Ping", I_PROMPT, A_PING, "" });
         v.push_back({ "Telnet", I_PROMPT, A_TELNET, "" });
@@ -646,6 +664,7 @@ std::string Window::titleText() const
     if (kind == FOLDER) return name + (view == TREE ? " - Tree View" : view == DETAILS ? " - Details View" : " - Icon View");
     if (kind == WINLIST) return "Window List";
     if (kind == INFO || kind == NOTEBOOK || kind == HELP) return info_title;
+    if (kind == WEB) { extern std::string web_title_of(const Window *); return web_title_of(this); }
     if (kind == EDITOR) { extern std::string ed_title_of(const Window *); return ed_title_of(this); }
     if (top && top->title && *top->title) return top->title;
     if (top && top->app_id && *top->app_id) return top->app_id;
@@ -706,7 +725,10 @@ static void draw_desktop()
             int k = (int)(i - S.desk_builtin.size());
             x = 90 + 72 * (k / 8); y = BAR + 16 + (k % 8) * 72;
         }
-        else { x = 18; y = BAR + 16 + (int)i * 72; }
+        else {                                           /* down the left, then a column more */
+            int per = std::max(1, (S.H - BAR - 16 - 100) / 72);
+            x = 18 + (int)(i / per) * 80; y = BAR + 16 + (int)(i % per) * 72;
+        }
         S.desk_pos.push_back({ x, y });
         draw_icon(im, S.desk_objs[i].icon, x + 11, y, 32);
         draw_label(im, x + 27, y + 36, S.desk_objs[i].label, (int)i == S.desk_sel, true, S.desk_objs[i].shadow);
@@ -764,6 +786,7 @@ static int window_icon(const Window *w)
     if (w->kind == Window::NOTEBOOK) return I_SYSTEM;
     if (w->kind == Window::HELP) return I_HELP;
     if (w->kind == Window::EDITOR) return I_TEXT;
+    if (w->kind == Window::WEB) return I_WEB;
     std::string t = w->titleText();
     return t.find("Command Prompt") != std::string::npos ? I_PROMPT : I_PROGRAM;
 }
@@ -795,6 +818,7 @@ static void draw_info_content(Window *w, pixman_image_t *im, int ox, int oy);
 static void draw_notebook_content(Window *w, pixman_image_t *im, int ox, int oy);
 static void draw_help_content(Window *w, pixman_image_t *im, int ox, int oy);
 static void draw_editor_content(Window *w, pixman_image_t *im, int ox, int oy);
+static void draw_web_content(Window *w, pixman_image_t *im, int ox, int oy);
 
 static void draw_window(Window *w)
 {
@@ -824,6 +848,7 @@ static void draw_window(Window *w)
     else if (w->kind == Window::NOTEBOOK) draw_notebook_content(w, im, B, B + T);
     else if (w->kind == Window::HELP) draw_help_content(w, im, B, B + T);
     else if (w->kind == Window::EDITOR) draw_editor_content(w, im, B, B + T);
+    else if (w->kind == Window::WEB) draw_web_content(w, im, B, B + T);
     else fill(im, B, B + T, w->cw, w->ch, C_WHITE);       /* under the client */
     w->frame.show(w->tree, pb, &w->tag);
     wlr_scene_node_lower_to_bottom(&w->frame.node->node);
@@ -3002,6 +3027,656 @@ static void ask_host(const std::string &title, const std::string &what,
         { "Cancel", nullptr } }, &def);
 }
 
+/* ── WebExplorer: the World Wide Web in a window ─────────────────────────
+ * Pages come from busybox's wget (HTTP and HTTPS - its own TLS, which
+ * doesn't check certificates), read through a pipe without the shell
+ * waiting; the HTML is taken apart here into runs of text - headings,
+ * paragraphs, lists, preformatted text, links - and laid out to the
+ * window's width. Pictures show as their names; scripts and styles not at
+ * all. */
+struct WebItem {                       /* what the parser makes: text, or a break */
+    enum Kind { TEXT, PARA, LINE, RULE, ANCHOR } kind;   /* (ANCHOR: text is an id) */
+    std::string text;
+    int font = TEXT_BODY, link = -1, indent = 0;
+    bool pre = false;
+};
+struct WebSeg { int x, y, w, h, base, font, link; uint32_t color; std::string text; };
+struct Web {
+    std::string url, title, status;
+    std::vector<WebItem> items;
+    std::vector<std::string> links;
+    std::vector<WebSeg> segs;
+    int height = 0, laid_w = -1, hover = -1, seq = 0;
+    std::map<std::string, int> anchors;     /* id -> where it is (laid out) */
+    std::string jump;                       /* a #fragment to go to once laid out */
+    bool loading = false, editing = false;
+    std::vector<std::string> history;
+    int hpos = -1;
+};
+
+static const char *WEB_HOME = "about:home";
+static const char *WEB_UA = "WebExplorer/1.0 (OS/2 Warp ARM64)";
+static const int WEB_TOOL = 30, WEB_STATUS = 18, WEB_MARGIN = 14;
+static const char *web_buttons[] = { "Back", "Forward", "Reload", "Home" };
+
+static const char *web_home_html =
+    "<title>WebExplorer</title><h1>WebExplorer</h1>"
+    "<p>Welcome to the World Wide Web, from OS/2 Warp for ARM64.</p>"
+    "<p>Type an address above (Ctrl+L), or start here:</p><ul>"
+    "<li><a href=\"https://example.com/\">Example Domain</a></li>"
+    "<li><a href=\"http://info.cern.ch/hypertext/WWW/TheProject.html\">The World Wide Web project</a> - the first web site</li>"
+    "<li><a href=\"https://lite.duckduckgo.com/lite/\">DuckDuckGo Lite</a> - search the web</li>"
+    "<li><a href=\"https://en.wikipedia.org/wiki/OS/2\">OS/2</a> on Wikipedia</li>"
+    "<li><a href=\"https://text.npr.org/\">NPR</a> - the news, as text</li></ul>"
+    "<p>WebExplorer shows a page's text and its links; pictures appear as their names, and "
+    "neither scripts nor forms run. Secure (https) pages come encrypted, but their certificates "
+    "aren't checked.</p><p>Keys: Ctrl+L the address, Backspace back, F5 reload, the arrows and "
+    "Page Up/Down to scroll.</p>";
+
+/* ── the HTML ───────────────────────────────────────────────────────── */
+static void utf8_put(std::string &s, unsigned cp)
+{
+    if (cp < 0x80) s += (char)cp;
+    else if (cp < 0x800) { s += (char)(0xC0 | cp >> 6); s += (char)(0x80 | (cp & 63)); }
+    else if (cp < 0x10000) { s += (char)(0xE0 | cp >> 12); s += (char)(0x80 | (cp >> 6 & 63)); s += (char)(0x80 | (cp & 63)); }
+    else { s += (char)(0xF0 | cp >> 18); s += (char)(0x80 | (cp >> 12 & 63)); s += (char)(0x80 | (cp >> 6 & 63)); s += (char)(0x80 | (cp & 63)); }
+}
+
+static std::string html_text(const std::string &in)
+{
+    static const struct { const char *n; unsigned cp; } ents[] = {
+        { "amp", '&' }, { "lt", '<' }, { "gt", '>' }, { "quot", '"' }, { "apos", '\'' }, { "nbsp", ' ' },
+        { "mdash", 0x2014 }, { "ndash", 0x2013 }, { "hellip", 0x2026 }, { "copy", 0xA9 }, { "reg", 0xAE },
+        { "rsquo", 0x2019 }, { "lsquo", 0x2018 }, { "ldquo", 0x201C }, { "rdquo", 0x201D }, { "laquo", 0xAB },
+        { "raquo", 0xBB }, { "middot", 0xB7 }, { "bull", 0x2022 }, { "euro", 0x20AC }, { "trade", 0x2122 },
+        { "deg", 0xB0 }, { "times", 0xD7 }, { "eacute", 0xE9 }, { "aacute", 0xE1 }, { "ccedil", 0xE7 },
+        { "atilde", 0xE3 }, { "otilde", 0xF5 }, { "uuml", 0xFC }, { "ouml", 0xF6 }, { "auml", 0xE4 },
+    };
+    std::string out;
+    for (size_t i = 0; i < in.size(); i++) {
+        if (in[i] != '&') { out += in[i]; continue; }
+        size_t semi = in.find(';', i);
+        if (semi == std::string::npos || semi - i > 10) { out += '&'; continue; }
+        std::string e = in.substr(i + 1, semi - i - 1);
+        bool done = false;
+        if (!e.empty() && e[0] == '#') {
+            unsigned cp = e.size() > 1 && (e[1] == 'x' || e[1] == 'X') ? (unsigned)strtoul(e.c_str() + 2, nullptr, 16)
+                                                                       : (unsigned)strtoul(e.c_str() + 1, nullptr, 10);
+            if (cp == 0xA0) cp = ' ';
+            if (cp) { utf8_put(out, cp); done = true; }
+        } else {
+            for (auto &x : ents) if (e == x.n) { utf8_put(out, x.cp); done = true; break; }
+        }
+        if (done) i = semi; else out += '&';
+    }
+    return out;
+}
+
+static std::string attr_of(const std::string &tag, const char *name)
+{
+    size_t n = strlen(name);
+    for (size_t i = 0; i + n < tag.size(); i++) {
+        if (strncasecmp(tag.c_str() + i, name, n) || (i && isalnum((unsigned char)tag[i - 1]))) continue;
+        size_t j = i + n;
+        while (j < tag.size() && tag[j] == ' ') j++;
+        if (j >= tag.size() || tag[j] != '=') continue;
+        j++;
+        while (j < tag.size() && tag[j] == ' ') j++;
+        if (j >= tag.size()) return "";
+        char q = tag[j];
+        if (q == '"' || q == '\'') { size_t e = tag.find(q, j + 1); return html_text(tag.substr(j + 1, e == std::string::npos ? std::string::npos : e - j - 1)); }
+        size_t e = j;
+        while (e < tag.size() && tag[e] != ' ' && tag[e] != '>') e++;
+        return html_text(tag.substr(j, e - j));
+    }
+    return "";
+}
+
+static std::string url_resolve(const std::string &base, std::string ref);
+
+static void html_parse(Web *wb, const std::string &html, bool plain)
+{
+    wb->items.clear();
+    wb->links.clear();
+    wb->title.clear();
+    if (plain) {                                          /* text/plain: as it is */
+        WebItem it; it.kind = WebItem::TEXT; it.text = html; it.font = TEXT_MONO; it.pre = true;
+        wb->items.push_back(it);
+        return;
+    }
+    int bold = 0, pre = 0, mono = 0, heading = 0, skip = 0, indent = 0, link = -1, in_title = 0;
+    std::vector<int> olnum;
+    auto brk = [&](WebItem::Kind k) { WebItem it; it.kind = k; it.indent = indent; wb->items.push_back(it); };
+    auto text = [&](const std::string &t) {
+        if (t.empty()) return;
+        WebItem it;
+        it.kind = WebItem::TEXT;
+        it.text = t;
+        it.font = mono || pre ? TEXT_MONO : heading == 1 ? TEXT_H1 : heading == 2 ? TEXT_H2 : (heading || bold) ? TEXT_BODY_BOLD : TEXT_BODY;
+        it.link = link;
+        it.pre = pre > 0;
+        it.indent = indent;
+        wb->items.push_back(it);
+    };
+    size_t i = 0, n = html.size();
+    while (i < n) {
+        if (html[i] != '<') {
+            size_t e = html.find('<', i);
+            if (e == std::string::npos) e = n;
+            std::string raw = html.substr(i, e - i);
+            i = e;
+            if (skip) continue;
+            std::string t = html_text(raw);
+            if (in_title) { wb->title += t; continue; }
+            if (!pre) {                                    /* white space: one space */
+                std::string c;
+                bool sp = false;
+                for (char ch : t) {
+                    if (ch == ' ' || ch == '\n' || ch == '\r' || ch == '\t') { if (!sp) c += ' '; sp = true; }
+                    else { c += ch; sp = false; }
+                }
+                t = c;
+            }
+            text(t);
+            continue;
+        }
+        if (!html.compare(i, 4, "<!--")) {                 /* a comment */
+            size_t e = html.find("-->", i + 4);
+            i = e == std::string::npos ? n : e + 3;
+            continue;
+        }
+        size_t e = i + 1;                                  /* the tag's end: a > outside quotes */
+        char q = 0;
+        for (; e < n; e++) {
+            char c = html[e];
+            if (q) { if (c == q) q = 0; }
+            else if (c == '"' || c == '\'') { if (e > i + 1 && (html[e - 1] == '=' || html[e - 1] == ' ')) q = c; }
+            else if (c == '>') break;
+        }
+        if (e >= n) break;
+        std::string tag = html.substr(i + 1, e - i - 1);
+        i = e + 1;
+        bool close = !tag.empty() && tag[0] == '/';
+        size_t a = close ? 1 : 0, b = a;
+        while (b < tag.size() && (isalnum((unsigned char)tag[b]) || tag[b] == '-')) b++;
+        std::string name = tag.substr(a, b - a);
+        for (char &c : name) c = (char)tolower((unsigned char)c);
+        if (name.empty()) continue;
+        if (name == "script" || name == "style" || name == "noscript" || name == "svg" || name == "template" ||
+            name == "select" || name == "textarea" || name == "button") {
+            if (!close) {                                  /* to its end, unread */
+                std::string end = "</" + name;
+                size_t k = i;
+                for (;;) {
+                    size_t f = html.find("</", k);
+                    if (f == std::string::npos) { i = n; break; }
+                    if (!strncasecmp(html.c_str() + f, end.c_str(), end.size())) { size_t g = html.find('>', f); i = g == std::string::npos ? n : g + 1; break; }
+                    k = f + 2;
+                }
+            }
+            continue;
+        }
+        if (name == "head") { skip += close ? -1 : 1; if (skip < 0) skip = 0; continue; }
+        if (!close && !skip) {                             /* somewhere a link can go to */
+            std::string id = attr_of(tag, "id");
+            if (id.empty() && name == "a") id = attr_of(tag, "name");
+            if (!id.empty()) { WebItem it; it.kind = WebItem::ANCHOR; it.text = id; wb->items.push_back(it); }
+        }
+        if (name == "title") { in_title = !close; if (!close) skip = 0; continue; }
+        if (skip) continue;
+        if (name == "br") { brk(WebItem::LINE); continue; }
+        if (name == "hr") { brk(WebItem::RULE); continue; }
+        if (name == "img") { std::string alt = attr_of(tag, "alt"); if (!alt.empty()) text("[" + alt + "]"); continue; }
+        if (name == "a") {
+            if (close) link = -1;
+            else {
+                std::string href = attr_of(tag, "href");
+                std::string u = href.empty() ? "" : url_resolve(wb->url, href);
+                if (!u.empty()) { link = (int)wb->links.size(); wb->links.push_back(u); } else link = -1;
+            }
+            continue;
+        }
+        if (name == "b" || name == "strong" || name == "th") { bold += close ? -1 : 1; if (bold < 0) bold = 0; if (name != "th") continue; }
+        if (name == "code" || name == "tt" || name == "kbd" || name == "samp") { mono += close ? -1 : 1; if (mono < 0) mono = 0; continue; }
+        if (name == "td" || name == "th") { if (!close) text("   "); continue; }
+        if (name.size() == 2 && name[0] == 'h' && name[1] >= '1' && name[1] <= '6') {
+            brk(WebItem::PARA);
+            heading = close ? 0 : name[1] - '0';
+            if (close) brk(WebItem::PARA);
+            continue;
+        }
+        if (name == "pre") { brk(WebItem::PARA); pre += close ? -1 : 1; if (pre < 0) pre = 0; continue; }
+        if (name == "ul" || name == "ol" || name == "blockquote" || name == "dd") {
+            brk(close ? WebItem::PARA : WebItem::LINE);
+            indent = std::max(0, indent + (close ? -1 : 1));
+            if (name == "ol") { if (close) { if (!olnum.empty()) olnum.pop_back(); } else olnum.push_back(0); }
+            continue;
+        }
+        if (name == "li") {
+            if (close) continue;
+            brk(WebItem::LINE);
+            if (!olnum.empty() && tag.size() >= 2) {          /* (in an ol: numbered) */
+                olnum.back()++;
+                text(std::to_string(olnum.back()) + ". ");
+            } else text("\xE2\x80\xA2 ");                    /* a bullet */
+            continue;
+        }
+        static const char *blocks[] = { "p", "div", "table", "tr", "section", "article", "header", "footer",
+                                        "nav", "main", "form", "dl", "dt", "figure", "figcaption", "address",
+                                        "center", "aside", "details", "summary", "body", "html", nullptr };
+        for (int k = 0; blocks[k]; k++)
+            if (name == blocks[k]) { brk(name == "tr" || name == "dt" || name == "div" ? WebItem::LINE : WebItem::PARA); break; }
+    }
+    std::string t;                                         /* (the title, tidied) */
+    for (char c : wb->title) if (c != '\n' && c != '\r' && c != '\t') t += c;
+    while (!t.empty() && t[0] == ' ') t.erase(0, 1);
+    while (!t.empty() && t.back() == ' ') t.pop_back();
+    wb->title = t;
+}
+
+/* ── the layout: the items, word by word, to a width ──────────────── */
+static void web_layout(Web *wb, int width)
+{
+    wb->segs.clear();
+    wb->anchors.clear();
+    wb->laid_w = width;
+    int y = 8, x = 0, right = width - WEB_MARGIN;
+    std::vector<WebSeg> line;
+    bool gap = true;                                       /* (the last thing was a gap: no more) */
+    int cur_indent = 0;
+    auto left = [&](int ind) { return WEB_MARGIN + ind * 22; };
+    auto flush = [&]() {
+        if (line.empty()) return;
+        int asc = 0, hh = 0;
+        for (auto &s : line) { asc = std::max(asc, text_ascent(s.font)); hh = std::max(hh, text_height(s.font)); }
+        for (auto &s : line) { s.y = y; s.base = y + asc; s.h = hh + 3; wb->segs.push_back(s); }
+        y += hh + 3;
+        line.clear();
+        x = left(cur_indent);
+        gap = false;
+    };
+    x = left(0);
+    for (const WebItem &it : wb->items) {
+        if (it.kind == WebItem::ANCHOR) { wb->anchors[it.text] = std::max(0, y - 4); continue; }
+        if (it.kind != WebItem::TEXT) {
+            bool had = !line.empty();
+            flush();
+            cur_indent = it.indent;
+            x = left(cur_indent);
+            if (it.kind == WebItem::PARA && !gap) { y += 8; gap = true; }
+            if (it.kind == WebItem::LINE && !had && !gap) { }
+            if (it.kind == WebItem::RULE) {
+                WebSeg s{ left(0), y + 4, width - 2 * WEB_MARGIN, 2, 0, -1, -1, C_SHADOW, "" };
+                wb->segs.push_back(s);
+                y += 12;
+                gap = true;
+            }
+            continue;
+        }
+        if (line.empty()) { cur_indent = it.indent; x = left(cur_indent); }
+        uint32_t color = it.link >= 0 ? 0xFF1A3FB8 : (it.font == TEXT_H1 || it.font == TEXT_H2) ? 0xFF1C3C9C : C_TEXT;
+        if (it.pre) {                                      /* preformatted: its own lines */
+            size_t p = 0;
+            while (p <= it.text.size()) {
+                size_t nl = it.text.find('\n', p);
+                std::string l = it.text.substr(p, nl == std::string::npos ? std::string::npos : nl - p);
+                std::string ex;
+                for (char c : l) { if (c == '\t') { do ex += ' '; while (ex.size() % 8); } else if (c != '\r') ex += c; }
+                if (!ex.empty()) {
+                    int w = text_width(it.font, ex.c_str());
+                    line.push_back({ x, 0, w, 0, 0, it.font, it.link, color, ex });
+                    x += w;
+                }
+                if (nl == std::string::npos) break;
+                if (line.empty()) { y += text_height(it.font) + 3; gap = false; }
+                flush();
+                p = nl + 1;
+            }
+            continue;
+        }
+        int sp = text_width(it.font, " ");
+        size_t p = 0;
+        const std::string &t = it.text;
+        if (!t.empty() && t[0] == ' ' && !line.empty()) x += sp;
+        while (p < t.size()) {
+            while (p < t.size() && t[p] == ' ') p++;
+            if (p >= t.size()) break;
+            size_t q = t.find(' ', p);
+            std::string word = t.substr(p, q == std::string::npos ? std::string::npos : q - p);
+            int w = text_width(it.font, word.c_str());
+            if (!line.empty() && x + w > right) flush();
+            line.push_back({ x, 0, w, 0, 0, it.font, it.link, color, word });
+            x += w;
+            p = q == std::string::npos ? t.size() : q;
+            if (p < t.size()) x += sp;
+        }
+    }
+    flush();
+    wb->height = y + 16;
+}
+
+/* ── addresses ──────────────────────────────────────────────────────── */
+static std::string url_resolve(const std::string &base, std::string ref)
+{
+    while (!ref.empty() && (ref[0] == ' ' || ref[0] == '\n')) ref.erase(0, 1);
+    while (!ref.empty() && (ref.back() == ' ' || ref.back() == '\n')) ref.pop_back();
+    std::string frag;
+    size_t hash = ref.find('#');
+    if (hash != std::string::npos) { frag = ref.substr(hash); ref = ref.substr(0, hash); }
+    if (ref.empty()) {                                      /* #x: here */
+        size_t bh = base.find('#');
+        return (bh == std::string::npos ? base : base.substr(0, bh)) + frag;
+    }
+    if (!frag.empty()) return url_resolve(base, ref) + frag;
+    size_t colon = ref.find(':');
+    if (colon != std::string::npos && colon < ref.find('/')) {
+        std::string sch = ref.substr(0, colon);
+        for (char &c : sch) c = (char)tolower((unsigned char)c);
+        return sch == "http" || sch == "https" || sch == "about" ? ref : "";   /* (mailto:, javascript: - no) */
+    }
+    size_t se = base.find("://");
+    if (se == std::string::npos) return "";
+    if (!ref.compare(0, 2, "//")) return base.substr(0, se + 1) + ref;
+    size_t hs = base.find('/', se + 3);
+    std::string origin = hs == std::string::npos ? base : base.substr(0, hs);
+    std::string path = hs == std::string::npos ? "/" : base.substr(hs);
+    size_t qm = path.find('?');
+    if (qm != std::string::npos) path = path.substr(0, qm);
+    if (ref[0] == '?') return origin + path + ref;
+    if (ref[0] != '/') ref = path.substr(0, path.rfind('/') + 1) + ref;
+    /* . and .. */
+    std::vector<std::string> parts;
+    std::string query;
+    size_t rq = ref.find('?');
+    if (rq != std::string::npos) { query = ref.substr(rq); ref = ref.substr(0, rq); }
+    size_t i = 1;
+    while (i <= ref.size()) {
+        size_t j = ref.find('/', i);
+        std::string seg = ref.substr(i, j == std::string::npos ? std::string::npos : j - i);
+        if (seg == "..") { if (!parts.empty()) parts.pop_back(); }
+        else if (seg != ".") parts.push_back(seg);
+        if (j == std::string::npos) break;
+        i = j + 1;
+    }
+    std::string out;
+    for (auto &s : parts) out += "/" + s;
+    if (out.empty()) out = "/";
+    return origin + out + query;
+}
+
+/* ── loading ───────────────────────────────────────────────────────── */
+static Window *web_window(Web *wb)
+{
+    for (Window *w : S.windows) if (w->kind == Window::WEB && w->web.get() == wb) return w;
+    return nullptr;
+}
+
+static void web_show(Window *w, const std::string &url, const std::string &body, const std::string &type)
+{
+    Web *wb = w->web.get();
+    wb->url = url;
+    bool html = type.find("html") != std::string::npos || type.empty();
+    bool text = type.find("text/plain") != std::string::npos;
+    if (!html && !text) {
+        std::string msg = "<title>" + url + "</title><h2>This isn't a page</h2><p>" + url + " is <b>" + type +
+                          "</b>, which WebExplorer doesn't show. wget can fetch it in a Command Prompt.</p>";
+        html_parse(wb, msg, false);
+    } else {
+        html_parse(wb, body, text);
+    }
+    if (wb->title.empty()) wb->title = url;
+    wb->laid_w = -1;
+    w->scroll = 0;
+    wb->hover = -1;
+    wb->status = "Done";
+    wb->loading = false;
+    draw_window(w);
+    draw_bar();
+    redraw_winlist();
+}
+
+static void web_error(Window *w, const std::string &url, const std::string &why)
+{
+    std::string msg = "<title>Can't load the page</title><h2>The page can't be loaded</h2><p>" + url +
+                      "</p><pre>" + why + "</pre><p>Is the address right? (TCP/IP Status, in Connections, "
+                      "shows whether the network is up.)</p>";
+    web_show(w, url, msg, "text/html");
+}
+
+static std::string slurp(const std::string &path)
+{
+    std::string s;
+    FILE *f = fopen(path.c_str(), "r");
+    if (!f) return s;
+    char b[4096];
+    size_t n;
+    while ((n = fread(b, 1, sizeof b, f)) > 0) s.append(b, n);
+    fclose(f);
+    return s;
+}
+
+static void web_go(Window *w, std::string url, bool push = true)
+{
+    Web *wb = w->web.get();
+    if (url.find("://") == std::string::npos && url.rfind("about:", 0) != 0) url = "http://" + url;
+    std::string frag;
+    size_t hash = url.find('#');
+    if (hash != std::string::npos) { frag = url.substr(hash + 1); url = url.substr(0, hash); }
+    if (!frag.empty() && url == wb->url && !wb->loading) {  /* on this page: there */
+        auto a = wb->anchors.find(frag);
+        if (a != wb->anchors.end()) { w->scroll = a->second; draw_window(w); }
+        return;
+    }
+    wb->jump = frag;
+    if (push) {
+        if (wb->hpos + 1 < (int)wb->history.size()) wb->history.resize(wb->hpos + 1);
+        wb->history.push_back(url);
+        wb->hpos = (int)wb->history.size() - 1;
+    }
+    wb->editing = false;
+    if (url == WEB_HOME) { web_show(w, url, web_home_html, "text/html"); return; }
+    wb->url = url;
+    wb->loading = true;
+    wb->status = "Loading " + url + " ...";
+    int seq = ++wb->seq;
+    draw_window(w);
+    std::string hdr = "/tmp/webexplorer." + std::to_string(getpid()) + "." + std::to_string(seq) + ".hdr";
+    std::string qurl;                                       /* (in quotes for sh: no quote of its own) */
+    for (char c : url) { if (c == '\'') qurl += "%27"; else if ((unsigned char)c >= 0x20) qurl += c; }
+    std::string cmd = "exec " + sys("busybox") + " wget -q -S -T 30 -U '" + WEB_UA + "' -O - '" + qurl + "' 2>" + hdr;
+    std::shared_ptr<Web> keep = w->web;                     /* (the window may close meanwhile) */
+    run_capture({ sys("busybox"), "sh", "-c", cmd }, [keep, seq, url, hdr](const std::string &body) {
+        Window *w = web_window(keep.get());
+        std::string h = slurp(hdr);
+        unlink(hdr.c_str());
+        if (!w || keep->seq != seq) return;                 /* (gone, or another page asked for) */
+        std::string final = url, type, err;
+        size_t i = 0;
+        while (i < h.size()) {                              /* the server's headers (-S): where, what */
+            size_t nl = h.find('\n', i);
+            std::string l = h.substr(i, nl == std::string::npos ? std::string::npos : nl - i);
+            while (!l.empty() && (l[0] == ' ')) l.erase(0, 1);
+            while (!l.empty() && (l.back() == '\r' || l.back() == ' ')) l.pop_back();
+            if (!strncasecmp(l.c_str(), "location:", 9)) final = url_resolve(final, l.substr(9));
+            else if (!strncasecmp(l.c_str(), "content-type:", 13)) { type = l.substr(13); for (char &c : type) c = (char)tolower((unsigned char)c); }
+            else if (l.rfind("wget:", 0) == 0) err = l;
+            if (nl == std::string::npos) break;
+            i = nl + 1;
+        }
+        if (body.empty() && !err.empty()) { web_error(w, url, err.substr(6)); return; }
+        if (final != url && keep->hpos >= 0) keep->history[keep->hpos] = final;
+        web_show(w, final, body, type);
+    });
+}
+
+static void open_web(const std::string &url)
+{
+    for (Window *w : S.windows) if (w->kind == Window::WEB) { focus(w); if (!url.empty()) web_go(w, url); return; }
+    Window *w = new_internal(Window::WEB, 720, 500, nullptr, [](Window *x) {
+        x->web = std::make_shared<Web>();
+        x->info_title = "WebExplorer";
+    });
+    web_go(w, url.empty() ? WEB_HOME : url);
+}
+
+/* ── the window ────────────────────────────────────────────────────── */
+static int web_btn_w() { return 60; }
+static int web_addr_x() { return 8 + 4 * (web_btn_w() + 4) + 6; }
+static int web_view_h(const Window *w) { return w->ch - WEB_TOOL - WEB_STATUS; }
+
+static void draw_web_content(Window *w, pixman_image_t *im, int ox, int oy)
+{
+    Web *wb = w->web.get();
+    fill(im, ox, oy, w->cw, w->ch, C_FACE);
+    /* the toolbar: Back Forward Reload Home, the address */
+    for (int i = 0; i < 4; i++) {
+        int bx = ox + 8 + i * (web_btn_w() + 4), by = oy + 4;
+        bool off = (i == 0 && wb->hpos <= 0) || (i == 1 && wb->hpos + 1 >= (int)wb->history.size());
+        fill(im, bx, by, web_btn_w(), WEB_TOOL - 8, C_FACE);
+        bevel(im, bx, by, web_btn_w(), WEB_TOOL - 8, true, 1);
+        int tw = text_width(TEXT_UI, web_buttons[i]);
+        text_draw(im, TEXT_UI, bx + (web_btn_w() - tw) / 2, by + (WEB_TOOL - 8) / 2 + text_ascent(TEXT_UI) / 2 - 1,
+                  web_buttons[i], off ? C_SHADOW : C_TEXT, 0);
+    }
+    int ax = ox + web_addr_x(), aw = w->cw - web_addr_x() - 8, ay = oy + 4, ah = WEB_TOOL - 8;
+    fill(im, ax, ay, aw, ah, C_WHITE);
+    bevel(im, ax, ay, aw, ah, false, 2);
+    std::string a = wb->editing ? w->edit : wb->url;
+    int tb = ay + ah / 2 + text_ascent(TEXT_UI) / 2 - 1;
+    if (wb->editing && w->edit_all && !a.empty())
+        fill(im, ax + 4, ay + 3, std::min(text_width(TEXT_UI, a.c_str()) + 2, aw - 8), ah - 6, C_SEL);
+    int ex = text_draw(im, TEXT_UI, ax + 5, tb, a.c_str(), wb->editing && w->edit_all ? C_WHITE : C_TEXT, ax + aw - 4);
+    if (wb->editing && S.active == w) fill(im, std::min(ex + 1, ax + aw - 4), ay + 4, 1, ah - 8, C_DARK);
+    /* the page */
+    int px = ox, py = oy + WEB_TOOL, pw = w->cw, ph = web_view_h(w);
+    if (wb->laid_w != pw - SB) web_layout(wb, pw - SB);
+    if (!wb->jump.empty() && !wb->loading) {               /* (a #fragment: there, once) */
+        auto a = wb->anchors.find(wb->jump);
+        if (a != wb->anchors.end()) w->scroll = a->second;
+        wb->jump.clear();
+    }
+    w->scroll = std::clamp(w->scroll, 0, std::max(0, wb->height - ph));
+    fill(im, px, py, pw - SB, ph, C_WHITE);
+    pixman_region32_t clip;
+    pixman_region32_init_rect(&clip, px, py, pw - SB, ph);
+    pixman_image_set_clip_region32(im, &clip);
+    for (const WebSeg &s : wb->segs) {
+        int y = py + s.y - w->scroll;
+        if (y + s.h < py) continue;
+        if (y > py + ph) break;
+        if (s.text.empty()) { fill(im, px + s.x, y, s.w, s.h, s.color); continue; }    /* a rule */
+        uint32_t c = s.link >= 0 && s.link == wb->hover ? 0xFFB01818 : s.color;
+        text_draw(im, s.font, px + s.x, py + s.base - w->scroll, s.text.c_str(), c, 0);
+        if (s.link >= 0) fill(im, px + s.x, py + s.base - w->scroll + 2, s.w, 1, c);   /* underlined */
+    }
+    pixman_image_set_clip_region32(im, nullptr);
+    pixman_region32_fini(&clip);
+    /* where in the page */
+    int sx = px + pw - SB;
+    fill(im, sx, py, SB, ph, 0xFFE4E4E4);
+    if (wb->height > ph) {
+        int mh = std::max(16, ph * ph / wb->height), my = py + (ph - mh) * w->scroll / std::max(1, wb->height - ph);
+        fill(im, sx, my, SB, mh, C_FACE);
+        bevel(im, sx, my, SB, mh, true, 1);
+    }
+    /* the status line */
+    std::string st = wb->hover >= 0 && wb->hover < (int)wb->links.size() ? wb->links[wb->hover] : wb->status;
+    text_draw(im, TEXT_UI, ox + 8, oy + w->ch - WEB_STATUS / 2 + text_ascent(TEXT_UI) / 2 - 1, st.c_str(),
+              wb->loading ? 0xFF1C3C9C : C_TEXT, ox + w->cw - 8);
+}
+
+static int web_link_at(Window *w, int cx, int cy)
+{
+    Web *wb = w->web.get();
+    int y = cy - WEB_TOOL + w->scroll;
+    if (cy < WEB_TOOL || cy >= w->ch - WEB_STATUS || cx >= w->cw - SB) return -1;
+    for (const WebSeg &s : wb->segs)
+        if (s.link >= 0 && cx >= s.x && cx < s.x + s.w && y >= s.y && y < s.y + s.h) return s.link;
+    return -1;
+}
+
+static void web_edit_address(Window *w)
+{
+    Web *wb = w->web.get();
+    wb->editing = true;
+    w->edit = wb->url == WEB_HOME ? "" : wb->url;
+    w->edit_all = true;
+    draw_window(w);
+}
+
+static void web_click(Window *w, int cx, int cy)
+{
+    Web *wb = w->web.get();
+    if (cy < WEB_TOOL) {
+        for (int i = 0; i < 4; i++) {
+            int bx = 8 + i * (web_btn_w() + 4);
+            if (cx < bx || cx >= bx + web_btn_w()) continue;
+            if (i == 0 && wb->hpos > 0) { wb->hpos--; web_go(w, wb->history[wb->hpos], false); }
+            if (i == 1 && wb->hpos + 1 < (int)wb->history.size()) { wb->hpos++; web_go(w, wb->history[wb->hpos], false); }
+            if (i == 2) web_go(w, wb->url, false);
+            if (i == 3) web_go(w, WEB_HOME);
+            return;
+        }
+        if (cx >= web_addr_x()) web_edit_address(w);
+        return;
+    }
+    if (wb->editing) { wb->editing = false; draw_window(w); }
+    int l = web_link_at(w, cx, cy);
+    if (l >= 0) web_go(w, wb->links[l]);
+}
+
+static void web_hover(Window *w, int cx, int cy)
+{
+    Web *wb = w->web.get();
+    int l = web_link_at(w, cx, cy);
+    if (l != wb->hover) { wb->hover = l; draw_window(w); }
+}
+
+static bool web_key(Window *w, xkb_keysym_t sym, const char *utf8)
+{
+    Web *wb = w->web.get();
+    wlr_keyboard *kb = wlr_seat_get_keyboard(S.seat);
+    bool ctrl = kb && (wlr_keyboard_get_modifiers(kb) & WLR_MODIFIER_CTRL);
+    if (wb->editing) {
+        if (sym == XKB_KEY_Return || sym == XKB_KEY_KP_Enter) { if (!w->edit.empty()) web_go(w, w->edit); return true; }
+        if (sym == XKB_KEY_Escape) { wb->editing = false; draw_window(w); return true; }
+        if (sym == XKB_KEY_BackSpace) {
+            if (w->edit_all) w->edit.clear();
+            else { while (!w->edit.empty() && (w->edit.back() & 0xC0) == 0x80) w->edit.pop_back(); if (!w->edit.empty()) w->edit.pop_back(); }
+        } else if (utf8 && (unsigned char)utf8[0] >= 0x20 && utf8[0] != 0x7F) {
+            if (w->edit_all) w->edit.clear();
+            w->edit += utf8;
+        } else if (sym == XKB_KEY_Left || sym == XKB_KEY_Right || sym == XKB_KEY_End) {
+        } else return false;
+        w->edit_all = false;
+        draw_window(w);
+        return true;
+    }
+    int ph = web_view_h(w);
+    switch (sym) {
+    case XKB_KEY_l: case XKB_KEY_L: if (!ctrl) return false; web_edit_address(w); return true;
+    case XKB_KEY_F5: web_go(w, wb->url, false); return true;
+    case XKB_KEY_BackSpace: if (wb->hpos > 0) { wb->hpos--; web_go(w, wb->history[wb->hpos], false); } return true;
+    case XKB_KEY_Up: w->scroll -= 40; break;
+    case XKB_KEY_Down: w->scroll += 40; break;
+    case XKB_KEY_Prior: w->scroll -= ph - 40; break;
+    case XKB_KEY_Next: case XKB_KEY_space: w->scroll += ph - 40; break;
+    case XKB_KEY_Home: w->scroll = 0; break;
+    case XKB_KEY_End: w->scroll = 1 << 30; break;
+    case XKB_KEY_Escape: return false;
+    default: return false;
+    }
+    draw_window(w);
+    return true;
+}
+
+std::string web_title_of(const Window *w)
+{
+    const Web *wb = w->web.get();
+    if (!wb || wb->title.empty() || wb->title == "WebExplorer") return "WebExplorer";
+    return wb->title + " - WebExplorer";
+}
+
 /* ── the desktop as it was left: \OS2\WPS.INI on the stick ───────────── *
  *   icon X Y Label                       a desktop object moved by hand
  *   folder VIEW X Y W H Path|Name        an open folder window, back to front */
@@ -3455,7 +4130,22 @@ static void folder_click(Window *w, int cx, int cy, uint32_t time, bool right)
 
 static void content_click(Window *w, int cx, int cy, uint32_t time, bool right)
 {
-    if (w->kind == Window::EDITOR) {
+    if (w->kind == Window::WEB) {
+        if (!right) web_click(w, cx, cy);
+        else {
+            int l = web_link_at(w, cx, cy);
+            std::vector<Menu::Item> items = {
+                { "Back", [w] { Web *wb = w->web.get(); if (wb->hpos > 0) { wb->hpos--; web_go(w, wb->history[wb->hpos], false); } } },
+                { "Reload", [w] { web_go(w, w->web->url, false); } } };
+            if (l >= 0) {
+                std::string u = w->web->links[l];
+                items.insert(items.begin(), { "Open link", [w, u] { web_go(w, u); } });
+                items.push_back({ "", nullptr });
+                items.push_back({ "Copy link address", [u] { clipboard_offer(u); } });
+            }
+            open_menu(w->x + B + cx, w->y + B + T + cy, items, w);
+        }
+    } else if (w->kind == Window::EDITOR) {
         wlr_keyboard *kb = wlr_seat_get_keyboard(S.seat);
         bool shift = kb && (wlr_keyboard_get_modifiers(kb) & WLR_MODIFIER_SHIFT);
         if (!right) editor_click(w, cx, cy, shift);
@@ -3531,6 +4221,8 @@ static void pointer_motion(uint32_t time)
         }
     }
     Hit h = hit_at(lx, ly);
+    if (h.tag && h.tag->k == Tag::WIN && h.tag->w->kind == Window::WEB)
+        web_hover(h.tag->w, (int)lx - h.tag->w->x - B, (int)ly - h.tag->w->y - B - T);
     if (h.surface) {
         S.arrow_shown = false;
         wlr_seat_pointer_notify_enter(S.seat, h.surface, h.sx, h.sy);
@@ -3663,6 +4355,12 @@ static void pointer_axis(wlr_pointer_axis_event *e)
                                      e->delta_discrete, e->source, e->relative_direction);
         return;
     }
+    if (h.tag && h.tag->k == Tag::WIN && h.tag->w->kind == Window::WEB) {
+        Window *w = h.tag->w;
+        w->scroll += e->delta > 0 ? 60 : e->delta < 0 ? -60 : 0;
+        draw_window(w);
+        return;
+    }
     if (h.tag && h.tag->k == Tag::WIN && h.tag->w->kind == Window::EDITOR) {
         Window *w = h.tag->w;
         w->etop = std::clamp(w->etop + (e->delta > 0 ? 3 : e->delta < 0 ? -3 : 0), 0, std::max(0, (int)w->text.size() - 1));
@@ -3714,6 +4412,7 @@ static bool internal_key(Window *w, xkb_keysym_t sym, const char *utf8)
     }
     if (w->kind == Window::HELP) return help_key(w, sym);
     if (w->kind == Window::EDITOR) return editor_key(w, sym, utf8);
+    if (w->kind == Window::WEB) return web_key(w, sym, utf8);
     if (w->kind == Window::NOTEBOOK) {
         if (sym == XKB_KEY_Escape) { close_window(w); return true; }
         if (sym == XKB_KEY_Next || sym == XKB_KEY_Prior) { w->tab = (w->tab + 1) % NB_TABS; draw_window(w); return true; }
@@ -3941,6 +4640,7 @@ int main(int argc, char **argv)
         { "OS/2 System", I_SYSTEM, A_FOLDER, "::system" },
         { "Assistance Center", I_HELP, A_HELP, "" },
         { "Connections", I_NETWORK, A_FOLDER, "::connections" },
+        { "WebExplorer", I_WEB, A_WEB, "" },
         { "Drives", I_DRIVES, A_FOLDER, "::drives" },
         { "Command Prompt", I_PROMPT, A_PROMPT, "" },
         { "Drive D", I_DRIVE, A_FOLDER, "/h" },

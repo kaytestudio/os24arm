@@ -276,6 +276,13 @@ platform-specific are new code.
    kernel's IFCONFIG, its output read through a pipe without the shell
    waiting), Ping and Telnet (they ask for a host, then run in a Command
    Prompt window).
+   WebExplorer (on the desktop, and in Connections) is a web browser of
+   the shell's own: busybox's wget fetches (HTTP, and HTTPS through its own
+   TLS - certificates not checked), a parser here takes the HTML apart
+   (headings, paragraphs, lists, pre, links, anchors, entities; scripts,
+   styles and forms left out, pictures as their names) and lays the text
+   out to the window. Back, Forward, Reload, Home, an address bar
+   (Ctrl+L), the link under the pointer in the status line.
    The Assistance Center (on the desktop, F1, a folder's Help menu) is
    the help: the topics on the left, the text on the right - plain text
    files in `userland/rootfs/help` (`\OS2\HELP`: a title line, then

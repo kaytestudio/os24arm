@@ -12,6 +12,8 @@ int text_init(void)
     static const char *names[TEXT_FONTS][1] = {
         { "DejaVu Sans:size=8" }, { "DejaVu Sans:size=8:weight=bold" }, { "DejaVu Sans:size=7" },
         { "DejaVu Sans Mono:size=9" },
+        { "DejaVu Sans:size=9" }, { "DejaVu Sans:size=9:weight=bold" },
+        { "DejaVu Sans:size=15:weight=bold" }, { "DejaVu Sans:size=11:weight=bold" },
     };
     for (int i = 0; i < TEXT_FONTS; i++) {
         fonts[i] = fcft_from_name(1, names[i], "antialias=true:hinting=true");

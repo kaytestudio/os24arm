@@ -605,7 +605,8 @@ connect, listen and accept, send and receive (to/from, msg), blocking or
 not, poll/epoll, `SO_ERROR`, `TCP_NODELAY`, loopback (127.0.0.1). When
 there's no `/etc/resolv.conf`, a program reading it gets the name servers
 DHCP gave (musl's resolver works unchanged). So busybox's `wget`, `nc`,
-`nslookup` work from a Command Prompt:
+`nslookup` work from a Command Prompt (wget does HTTPS too, with busybox's
+own TLS, which doesn't check certificates):
 
     sh -c "wget -qO- http://example.com/ | head"
     nslookup example.com
@@ -646,7 +647,7 @@ WarpCenter along the top, OS/2 window frames on every window, folder
 windows in Icon, Tree and Details views (sorted by name, type, size or
 date) with drag and drop - moving on a drive, copying across drives -
 shadows, a Startup folder, a Settings notebook, the System Editor, a help
-viewer, and OS/2 programs (CMD.EXE, ...) running as processes of their
+viewer, WebExplorer (a web browser: text and links, HTTP and HTTPS), and OS/2 programs (CMD.EXE, ...) running as processes of their
 own. The desktop is kept as it was left (`\OS2\WPS.INI`). The details are
 in `userland/README.md` (stage 6); the help is on the desktop.
 
