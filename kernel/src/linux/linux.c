@@ -4779,6 +4779,16 @@ static s64 do_truncate(file_t *f, const char *path, s64 len)
     vfs_stat_t vs;
     int r = vfs_stat(p, &vs);
     if (r != VFS_OK) return verr(r);
+    if (f) {
+        /* An open file's size is its handle's: what the path says can be
+         * what's on the disk, from before the writes it hasn't closed yet
+         * (HPFS writes the size at close) - and "growing" from there would
+         * write zeros over them (busybox wget truncates to its position
+         * at the end of every download). */
+        int here = vfs_seek(f->vfd, 0, SEEK_CUR), end = vfs_seek(f->vfd, 0, SEEK_END);
+        if (here >= 0) vfs_seek(f->vfd, here, SEEK_SET);
+        if (end >= 0 && (lx_u64)end > vs.size) vs.size = (uint32_t)end;
+    }
     if ((lx_u64)len == vs.size) return 0;
     if (len > 0x7FFFFFFF) return -EFBIG;
     if (len == 0) {
