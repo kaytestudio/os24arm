@@ -272,6 +272,10 @@ platform-specific are new code.
    clipboard is the seat's selection (a wlr_data_source of the shell's,
    written to the reader through the event loop; another program's read
    the same way), so text goes both ways between it and foot.
+   Connections (on the desktop) is the network: TCP/IP Status (the
+   kernel's IFCONFIG, its output read through a pipe without the shell
+   waiting), Ping and Telnet (they ask for a host, then run in a Command
+   Prompt window).
    The Assistance Center (on the desktop, F1, a folder's Help menu) is
    the help: the topics on the left, the text on the right - plain text
    files in `userland/rootfs/help` (`\OS2\HELP`: a title line, then

@@ -1,0 +1,19 @@
+The network
+The computer is on the network through its network card, lan0, which asks the network for an address (DHCP) when the system starts.
+
+The Connections folder on the desktop:
+  TCP/IP Status    lan0's address, gateway and name servers (Refresh asks again)
+  Ping             is a host there? (four echo requests)
+  Telnet           a session on another computer
+
+In a Command Prompt:
+  IFCONFIG                 the same as TCP/IP Status
+  PING host [count]        echo requests, by name or address
+  HOST name                looks a name up
+  wget -O file URL         fetches a file over HTTP (not HTTPS)
+  nslookup name            looks a name up, the long way
+  nc host port             a TCP connection; nc -l -p port waits for one
+
+Programs on the system - the UNIXROOT ones, and your own - can use the network as on Unix: TCP and UDP sockets over IPv4. The name servers are the ones DHCP gave, unless there's a \ETC\RESOLV.CONF of your own on drive D.
+
+Under QEMU the computer is 10.0.2.15 and the Mac (or PC) it runs on is 10.0.2.2.

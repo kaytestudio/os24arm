@@ -214,7 +214,7 @@ static void gradient_h(pixman_image_t *im, int x, int y, int w, int h, uint32_t 
 
 /* ── icons: drawn here, OS/2 Warp in spirit ─────────────────────────── */
 enum Icon { I_FOLDER, I_FILE, I_TEXT, I_PROGRAM, I_PROMPT, I_DRIVE, I_SYSTEM, I_PROGRAMS,
-            I_WINLIST, I_SHUTDOWN, I_DRIVES, I_SHREDDER, I_HELP, I_COUNT };
+            I_WINLIST, I_SHUTDOWN, I_DRIVES, I_SHREDDER, I_HELP, I_NETWORK, I_COUNT };
 
 static void disc(pixman_image_t *im, int cx, int cy, int r, uint32_t c)
 {
@@ -289,6 +289,19 @@ static void draw_icon(pixman_image_t *im, int i, int x, int y, int s)
         fill(im, x + S(5), y + S(4), S(22), S(4), C_TITLE);
         for (int l = 0; l < 5; l++) fill(im, x + S(8), y + S(11 + 3 * l), S(16), S(2), C_SHADOW);
         break;
+    case I_NETWORK: {                                                       /* two computers, a cable */
+        auto pc = [&](int px, int py) {
+            boxed(im, x + S(px), y + S(py), S(13), S(10), 0xFF1C3C9C);
+            fill(im, x + S(px) + 1, y + S(py) + 1, S(13) - 2, std::max(1, S(2)), 0xFF88A8E8);
+            fill(im, x + S(px + 4), y + S(py + 10), S(5), std::max(1, S(2)), C_SHADOW);
+        };
+        pc(1, 4);
+        pc(18, 16);
+        fill(im, x + S(7), y + S(16), std::max(1, S(2)), S(12), C_DARK);       /* the cable */
+        fill(im, x + S(7), y + S(28), S(18), std::max(1, S(2)), C_DARK);
+        fill(im, x + S(24), y + S(28) - S(2), std::max(1, S(2)), S(3), C_DARK);
+        break;
+    }
     case I_HELP: {                                                          /* a book, a question mark */
         boxed(im, x + S(5), y + S(3), S(22), S(26), 0xFF2050B0);
         fill(im, x + S(5) + 1, y + S(3) + 1, std::max(1, S(3)), S(26) - 2, 0xFF102C70);   /* the spine */
@@ -319,7 +332,7 @@ static void draw_icon(pixman_image_t *im, int i, int x, int y, int s)
 }
 
 /* ── objects: what an icon stands for ───────────────────────────────── */
-enum Action { A_NONE, A_HELP, A_EDITOR, A_APP, A_FOLDER, A_RUN, A_OS2RUN, A_EDIT, A_SHREDDER, A_SCRIPT, A_PROMPT, A_PROGRAMS, A_WINLIST,
+enum Action { A_NONE, A_HELP, A_EDITOR, A_NETSTATUS, A_PING, A_TELNET, A_APP, A_FOLDER, A_RUN, A_OS2RUN, A_EDIT, A_SHREDDER, A_SCRIPT, A_PROMPT, A_PROGRAMS, A_WINLIST,
               A_SHUTDOWN };
 struct Object {
     std::string label;
@@ -493,6 +506,8 @@ static void close_menu();
 static std::vector<Object> program_objects();
 static void run_app(const Object &o);
 static void save_state();
+static void tcpip_status();
+static void ask_host(const std::string &title, const std::string &what, std::function<std::vector<std::string>(const std::string &)> make);
 static void remove_shadow(const std::string &where, const std::string &path);
 static void open_editor(const std::string &path);
 static void open_help(int topic);
@@ -515,6 +530,13 @@ static void run_object(const Object &o)
     case A_PROGRAMS: spawn({ sys("fuzzel"), "--config", sys("fuzzel.ini") }); break;
     case A_APP:      run_app(o); break;
     case A_HELP:     open_help(0); break;
+    case A_NETSTATUS: tcpip_status(); break;
+    case A_PING:     ask_host("Ping", "Ping which host (a name or an address)?",
+                              [](const std::string &h) { return std::vector<std::string>{ sys("os2cmd"), "PING", h, "4" }; });
+                     break;
+    case A_TELNET:   ask_host("Telnet", "Connect to which host?",
+                              [](const std::string &h) { return std::vector<std::string>{ sys("busybox"), "telnet", h }; });
+                     break;
     case A_WINLIST:  toggle_winlist(); break;
     case A_SHUTDOWN: spawn({ sys("os2cmd"), "SHUTDOWN" }); break;
     case A_RUN:    { auto v = terminal(true); v.push_back(o.path); spawn(v); break; }
@@ -585,6 +607,12 @@ static std::vector<Object> folder_objects(const std::string &path)
         return v;
     }
     if (path == "::programs") return program_objects();
+    if (path == "::connections") {
+        v.push_back({ "TCP/IP Status", I_NETWORK, A_NETSTATUS, "" });
+        v.push_back({ "Ping", I_PROMPT, A_PING, "" });
+        v.push_back({ "Telnet", I_PROMPT, A_TELNET, "" });
+        return v;
+    }
     if (path == "::startup") return S.startup;
     if (path == "::drives") {
         v.push_back({ "Drive C", I_DRIVE, A_FOLDER, "/" });
@@ -730,7 +758,7 @@ static void draw_bar()
 static int window_icon(const Window *w)
 {
     if (w->kind == Window::FOLDER) return w->path == "::programs" ? I_PROGRAMS : w->path == "::drives" ? I_DRIVES :
-                                          w->path == "::startup" ? I_FOLDER :
+                                          w->path == "::startup" ? I_FOLDER : w->path == "::connections" ? I_NETWORK :
                                           w->path.rfind("::", 0) == 0 ? I_SYSTEM : (w->path == "/" || w->path == "/h") ? I_DRIVE : I_FOLDER;
     if (w->kind == Window::WINLIST) return I_WINLIST;
     if (w->kind == Window::NOTEBOOK) return I_SYSTEM;
@@ -981,7 +1009,7 @@ static void draw_tree_view(Window *w, pixman_image_t *im, int ox, int oy)
             fill(im, bx + 2, mid, 5, 1, C_DARK);
             if (!n.open) fill(im, bx + 4, mid - 2, 1, 5, C_DARK);
         }
-        int icon = n.path.rfind("::", 0) == 0 ? (n.path == "::drives" ? I_DRIVES : n.path == "::programs" ? I_PROGRAMS : I_SYSTEM)
+        int icon = n.path.rfind("::", 0) == 0 ? (n.path == "::drives" ? I_DRIVES : n.path == "::programs" ? I_PROGRAMS : n.path == "::connections" ? I_NETWORK : I_SYSTEM)
                  : (n.path == "/" || n.path == "/h") ? I_DRIVE : I_FOLDER;
         draw_icon(im, icon, bx + 14, mid - 8, 16);
         int tx = bx + 34, tw = text_width(TEXT_UI, n.name.c_str());
@@ -2890,6 +2918,90 @@ static bool editor_key(Window *w, xkb_keysym_t sym, const char *utf8)
     return true;
 }
 
+/* ── Connections: the network ────────────────────────────────────────────
+ * TCP/IP Status shows what the kernel's IFCONFIG says (os2cmd, its output
+ * read through a pipe as it comes); Ping and Telnet ask for a host and
+ * run in a Command Prompt window. */
+struct Capture { std::string out; int fd; wl_event_source *src = nullptr; std::function<void(const std::string &)> done; };
+
+static int capture_read(int fd, uint32_t mask, void *data)
+{
+    Capture *c = static_cast<Capture *>(data);
+    char buf[4096];
+    for (;;) {
+        ssize_t n = read(fd, buf, sizeof buf);
+        if (n > 0) { c->out.append(buf, (size_t)n); if (c->out.size() > (1u << 20)) break; continue; }
+        if (n < 0 && errno == EAGAIN && !(mask & (WL_EVENT_HANGUP | WL_EVENT_ERROR))) return 0;
+        break;
+    }
+    wl_event_source_remove(c->src);
+    close(fd);
+    c->done(c->out);
+    delete c;
+    return 0;
+}
+
+/* runs argv, its output (stdout and stderr) to done() when it ends */
+static void run_capture(const std::vector<std::string> &args, std::function<void(const std::string &)> done)
+{
+    int p[2];
+    if (pipe(p) != 0) { done(""); return; }
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_adddup2(&fa, p[1], 1);
+    posix_spawn_file_actions_adddup2(&fa, p[1], 2);
+    posix_spawn_file_actions_addclose(&fa, p[0]);
+    std::vector<char *> argv;
+    for (auto &a : args) argv.push_back(const_cast<char *>(a.c_str()));
+    argv.push_back(nullptr);
+    pid_t pid;
+    int r = posix_spawn(&pid, argv[0], &fa, nullptr, argv.data(), environ);
+    posix_spawn_file_actions_destroy(&fa);
+    close(p[1]);
+    if (r != 0) { close(p[0]); done(""); return; }
+    fcntl(p[0], F_SETFL, fcntl(p[0], F_GETFL) | O_NONBLOCK);
+    Capture *c = new Capture();
+    c->fd = p[0];
+    c->done = std::move(done);
+    c->src = wl_event_loop_add_fd(wl_display_get_event_loop(S.display), p[0], WL_EVENT_READABLE, capture_read, c);
+}
+
+static void tcpip_status()
+{
+    run_capture({ sys("os2cmd"), "IFCONFIG" }, [](const std::string &out) {
+        std::vector<std::string> lines = { "TCP/IP Status" };
+        size_t i = 0;
+        while (i < out.size()) {
+            size_t nl = out.find('\n', i);
+            std::string l = out.substr(i, nl == std::string::npos ? std::string::npos : nl - i);
+            while (!l.empty() && (l.back() == '\r' || l.back() == ' ')) l.pop_back();
+            for (char &ch : l) if (ch == '\t') ch = ' ';
+            if (!l.empty()) lines.push_back(l);
+            if (nl == std::string::npos) break;
+            i = nl + 1;
+        }
+        if (lines.size() == 1) lines.push_back("(the network can't be asked)");
+        open_dialog("TCP/IP Status", lines, { { "Refresh", [](Window *) { tcpip_status(); } }, { "Close", nullptr } });
+    });
+}
+
+/* asks for a host, then runs make(host) in a Command Prompt window */
+static void ask_host(const std::string &title, const std::string &what,
+                     std::function<std::vector<std::string>(const std::string &)> make)
+{
+    std::string def = "";
+    open_dialog(title, { title, what }, {
+        { "OK", [make](Window *d) {
+              std::string h;
+              for (char c : d->edit) if (c != ' ' && c != '"' && c != '\'' && c != ';') h += c;   /* (one word) */
+              if (h.empty()) return;
+              auto v = terminal(true);
+              for (auto &a : make(h)) v.push_back(a);
+              spawn(v);
+          } },
+        { "Cancel", nullptr } }, &def);
+}
+
 /* ── the desktop as it was left: \OS2\WPS.INI on the stick ───────────── *
  *   icon X Y Label                       a desktop object moved by hand
  *   folder VIEW X Y W H Path|Name        an open folder window, back to front */
@@ -3828,6 +3940,7 @@ int main(int argc, char **argv)
     S.desk_builtin = {
         { "OS/2 System", I_SYSTEM, A_FOLDER, "::system" },
         { "Assistance Center", I_HELP, A_HELP, "" },
+        { "Connections", I_NETWORK, A_FOLDER, "::connections" },
         { "Drives", I_DRIVES, A_FOLDER, "::drives" },
         { "Command Prompt", I_PROMPT, A_PROMPT, "" },
         { "Drive D", I_DRIVE, A_FOLDER, "/h" },

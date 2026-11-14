@@ -640,7 +640,7 @@ inside the kernel, as it used to.)
 --wayland --hvf`), the system boots into an OS/2 Warp 4 style desktop:
 `userland/wps`, a Wayland compositor in C++ on wlroots, running as a
 Linux-ABI program from the USB stick (drive D:). It has the blue desktop
-with its objects (OS/2 System, the Assistance Center, Drives, Command
+with its objects (OS/2 System, the Assistance Center, Connections, Drives, Command
 Prompt, Drive D, Programs, Window List, Shut Down, the Shredder), the
 WarpCenter along the top, OS/2 window frames on every window, folder
 windows in Icon, Tree and Details views (sorted by name, type, size or
