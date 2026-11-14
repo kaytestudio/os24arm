@@ -170,6 +170,7 @@ struct Picture {
     void show(wlr_scene_tree *parent, PixBuf *pb, void *tag) {
         if (!node) {
             node = wlr_scene_buffer_create(parent, &pb->base);
+            wlr_scene_buffer_set_filter_mode(node, WLR_SCALE_FILTER_NEAREST);   /* (scaled: crisp pixels) */
             node->node.data = tag;
         } else {
             wlr_scene_buffer_set_buffer(node, &pb->base);
@@ -469,6 +470,7 @@ struct Server {
     bool pattern = true;                         /* ... with the pattern, */
     int scheme = 0;                              /* ... and the title bars' colours */
     bool show_version = true;                    /* the version, bottom left (as ReactOS does) */
+    int scale = 1;                               /* the screen's scale: 1, or 2 (dense screens: Retina) */
     int desk_sel = -1;
 
     std::vector<Window *> windows;               /* back to front */
@@ -711,8 +713,9 @@ static const Scheme schemes[] = {
     { "Plum", 0xFF4A1E5E, 0xFF9A6AB0 },
 };
 static const int NSCHEMES = sizeof schemes / sizeof schemes[0];
-static const char *nb_tabs[] = { "Background", "Window" };
-static const int NB_TABS = 2, NB_TAB_W = 96, NB_TAB_H = 26;
+static const char *nb_tabs[] = { "Background", "Window", "Screen" };
+static const int NB_TABS = 3, NB_TAB_W = 96, NB_TAB_H = 26;
+static void set_scale(int scale);
 
 /* a desktop object's name in WPS.INI: a shadow's is its original's path */
 static std::string desk_key(const Object &o) { return o.shadow ? "@" + o.path : o.label; }
@@ -1468,6 +1471,22 @@ static void draw_notebook_content(Window *w, pixman_image_t *im, int ox, int oy)
             for (int y = 0; y < ph; y += 2)
                 for (int x = (y / 2) % 4; x < pwid; x += 4) fill(im, px + x, py + y, 1, 1, darker(S.desk_color, 14));
         bevel(im, px - 1, py - 1, pwid + 2, ph + 2, false, 1);
+    } else if (w->tab == 2) {                           /* the screen: its size, the scale */
+        text_draw(im, TEXT_BOLD, ox + 24, oy + 26 + base / 2, "Scale", C_TEXT, 0);
+        static const char *what[2] = { "1x  -  every pixel: the most room", "2x  -  double size: Retina and other dense screens" };
+        for (int i = 0; i < 2; i++) {
+            int y = oy + NB_SCHEME_Y + i * NB_SCHEME_ROW;
+            disc(im, ox + 30, y + 8, 6, C_SHADOW);
+            disc(im, ox + 30, y + 8, 5, C_WHITE);
+            if (S.scale == i + 1) disc(im, ox + 30, y + 8, 2, C_DARK);
+            text_draw(im, TEXT_UI, ox + 44, y + 12, what[i], C_TEXT, ox + pw);
+        }
+        char info[96];
+        snprintf(info, sizeof info, "The screen: %d x %d pixels, %d x %d on it now", S.output ? S.output->width : 0,
+                 S.output ? S.output->height : 0, S.W, S.H);
+        text_draw(im, TEXT_UI, ox + 24, oy + NB_SCHEME_Y + 2 * NB_SCHEME_ROW + 24, info, C_TEXT, ox + pw);
+        text_draw(im, TEXT_UI, ox + 24, oy + NB_SCHEME_Y + 2 * NB_SCHEME_ROW + 42,
+                  "(Resize QEMU's window and the screen follows.)", C_SHADOW, ox + pw);
     } else {
         text_draw(im, TEXT_BOLD, ox + 24, oy + 26 + base / 2, "Title bars", C_TEXT, 0);
         for (int i = 0; i < NSCHEMES; i++) {
@@ -1504,6 +1523,11 @@ static void notebook_click(Window *w, int cx, int cy)
         }
         if (cx >= 20 && cx < 100 && cy >= NB_CHECK_Y - 2 && cy < NB_CHECK_Y + 16) { S.pattern = !S.pattern; apply_settings(); }
         if (cx >= 120 && cx < 260 && cy >= NB_CHECK_Y - 2 && cy < NB_CHECK_Y + 16) { S.show_version = !S.show_version; apply_settings(); }
+    } else if (w->tab == 2) {
+        for (int i = 0; i < 2; i++) {
+            int y = NB_SCHEME_Y + i * NB_SCHEME_ROW;
+            if (cy >= y - 4 && cy < y + 22 && cx >= 20 && cx < pw) { set_scale(i + 1); return; }
+        }
     } else {
         for (int i = 0; i < NSCHEMES; i++) {
             int y = NB_SCHEME_Y + i * NB_SCHEME_ROW;
@@ -4091,8 +4115,8 @@ static void save_state()
     if (!f) return;
     fprintf(f, "# Workplace Shell: the desktop as it was left (written by wps)\n");
     for (auto &p : S.desk_place) fprintf(f, "icon %d %d %s\n", p.second.first, p.second.second, p.first.c_str());
-    fprintf(f, "background %06X %d\nscheme %d\nversion %d\n", (unsigned)(S.desk_color & 0xFFFFFF), S.pattern ? 1 : 0,
-            S.scheme, S.show_version ? 1 : 0);
+    fprintf(f, "background %06X %d\nscheme %d\nversion %d\nscale %d\n", (unsigned)(S.desk_color & 0xFFFFFF),
+            S.pattern ? 1 : 0, S.scheme, S.show_version ? 1 : 0, S.scale);
     for (const Object &o : S.shadows) fprintf(f, "shadow %s|%s\n", o.path.c_str(), o.label.c_str());
     for (const Object &o : S.startup) fprintf(f, "startup %s|%s\n", o.path.c_str(), o.label.c_str());
     for (Window *w : S.windows)
@@ -4118,6 +4142,7 @@ static void load_state()
         else if (sscanf(line, "background %x %d", &rgb, &a) == 2) { S.desk_color = 0xFF000000u | rgb; S.pattern = a != 0; }
         else if (sscanf(line, "scheme %d", &a) == 1 && a >= 0 && a < NSCHEMES) S.scheme = a;
         else if (sscanf(line, "version %d", &a) == 1) S.show_version = a != 0;
+        else if (sscanf(line, "scale %d", &a) == 1 && (a == 1 || a == 2)) S.scale = a;
         else if (!strncmp(line, "shadow ", 7) || !strncmp(line, "startup ", 8)) {
             bool st = line[1] == 't';
             std::string rest = line + (st ? 8 : 7);
@@ -4968,9 +4993,9 @@ static void screen_resized(int w, int h)
             win->x = 0; win->y = BAR;
             if (win->top) wlr_xdg_toplevel_set_size(win->top, cw, ch);
             else { win->cw = cw; win->ch = ch; }
-        } else {
-            win->x = std::clamp(win->x, 40 - win->fw(), std::max(0, S.W - 60));
-            win->y = std::clamp(win->y, BAR - T, std::max(BAR, S.H - 40));
+        } else {                                          /* on the screen: all of it, if it fits */
+            win->x = std::clamp(win->x, 0, std::max(0, S.W - win->fw()));
+            win->y = std::clamp(win->y, BAR, std::max(BAR, S.H - win->fh()));
         }
         wlr_scene_node_set_position(&win->tree->node, win->x, win->y);
         draw_window(win);
@@ -4984,6 +5009,7 @@ static void new_output(wlr_output *o)
     wlr_output_state_init(&st);
     wlr_output_state_set_enabled(&st, true);
     if (wlr_output_mode *m = wlr_output_preferred_mode(o)) wlr_output_state_set_mode(&st, m);
+    if (!S.output) wlr_output_state_set_scale(&st, (float)S.scale);   /* (WPS.INI's) */
     wlr_output_commit_state(o, &st);
     wlr_output_state_finish(&st);
     Output *out = new Output();
@@ -5000,7 +5026,11 @@ static void new_output(wlr_output *o)
     });
     out->commit.connect(&o->events.commit, [o](void *d) {
         auto *e = static_cast<wlr_output_event_commit *>(d);
-        if (o == S.output && (e->state->committed & WLR_OUTPUT_STATE_MODE)) screen_resized(o->width, o->height);
+        if (o == S.output && (e->state->committed & (WLR_OUTPUT_STATE_MODE | WLR_OUTPUT_STATE_SCALE))) {
+            int w, h;
+            wlr_output_effective_resolution(o, &w, &h);        /* (scaled: the logical size) */
+            screen_resized(w, h);
+        }
     });
     out->destroy.connect(&o->events.destroy, [out](void *) { delete out; });
     wlr_output_layout_output *lo = wlr_output_layout_add_auto(S.layout, o);
@@ -5008,12 +5038,25 @@ static void new_output(wlr_output *o)
     wlr_scene_output_layout_add_output(S.scene_layout, lo, so);
     if (!S.output) {
         S.output = o;
-        S.W = o->width; S.H = o->height;
+        wlr_output_effective_resolution(o, &S.W, &S.H);
         draw_desktop();
         draw_bar();
         restore_folders();
         for (const Object &o : S.startup) run_object(o);     /* the Startup folder */
     }
+}
+
+static void set_scale(int scale)
+{
+    if (!S.output || scale == S.scale) return;
+    S.scale = scale;
+    wlr_output_state st;
+    wlr_output_state_init(&st);
+    wlr_output_state_set_scale(&st, (float)scale);
+    wlr_output_commit_state(S.output, &st);              /* (the commit event lays it all out again) */
+    wlr_output_state_finish(&st);
+    for (Window *w : S.windows) if (w->kind == Window::NOTEBOOK) draw_window(w);
+    save_state();
 }
 
 /* ── the cursor's picture ───────────────────────────────────────────── */
