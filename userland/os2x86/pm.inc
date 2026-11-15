@@ -1504,6 +1504,7 @@ static pmwin_t *ptr_get(uint32_t h);
 #include "pm_drag.inc"
 #include "pm_geo.inc"
 #include "pm_prf.inc"
+#include "pm_fdlg.inc"
 
 /* ── the clipboard (WinOpenClipbrd & co.): CF_TEXT, CF_BITMAP; on the
  * desktop the Wayland one (pm_wl.inc), so text goes between programs ── */

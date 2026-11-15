@@ -475,7 +475,12 @@ platform-specific are new code.
    SYSTEM_INI, else in $OS2X86_HOME (on the desktop \OS2 on the stick),
    else ~/.os2x86. The help manager (HELPMGR): an instance programs can
    create, associate and destroy; asked to show help, it says the help
-   (IPF .HLP files) can't be shown yet. OS/2's DLLs that aren't
+   (IPF .HLP files) can't be shown yet. The standard file dialog
+   (`pm_fdlg.inc`, PMCTLS' WinFileDlg): Open and Save As, the file name,
+   the directory's subdirectories and the drives, the files that match
+   the filter (szFullFile's: "*.TXT", "D:\\DOCS\\*.C"), double-clicks
+   and Enter; Open wants a file that's there. Not yet: the font dialog,
+   custom dialog templates and procedures, several files at once. OS/2's DLLs that aren't
    here (PMSHAPI, HELPMGR, TCP32DLL, ...) load as stubs, so a program
    that only links them in runs; a call into one says so and returns 0. Calls it doesn't have yet print
    one line on stderr and return error 1; `OS2X86_TRACE=1` lists every

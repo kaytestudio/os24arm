@@ -55,6 +55,7 @@ if [ -x "$W/armo64/wcl386" ] || [ -x "$W/binl64/wcl386" ]; then
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmdrag.c" >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmgeo.c" >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmprf.c" >/dev/null
+    wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmfdlg.c" >/dev/null
     wrc -q -r -bt=os2 -i="$S" "$S/pmowner.rc" -fo=pmowner.res >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmowner.c" >/dev/null && wrc -q -bt=os2 pmowner.res pmowner.exe >/dev/null
     owfail=0
@@ -221,6 +222,11 @@ PY
     prfout="$(tr -d '\r' <<< "$prfout")"
     if [ "$(tr '\n' '|' <<< "$prfout")" = "private: opened|help: instance, rc 0, associated 1|written|Name Warp, Count 42, Missing -1|Big read 123456|Name's size 5|Gone: deleted|apps: OS2X86 Test|OS2X86 Test: Name Count Big|private Colour blue|" ]
     then echo "PM profiles, help instance: ok"; else echo "PM profiles, help instance: FAIL"; echo "$prfout"; owfail=1; fi
+    # the file dialog: an Open on a filter (into a directory, back up, a file double-clicked), a Save As with a name typed
+    rm -rf fdtest; mkdir -p fdtest/sub fdtest/docs; touch fdtest/a.txt fdtest/B.TXT fdtest/c.dat fdtest/sub/inner.txt
+    fdout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf OS2X86_PM_SCRIPT="dblclick 40 138; sleep 600; dblclick 40 122; sleep 600; dblclick 260 138; key new.txt; enter" ../os2x86 pmfdlg.exe 2>&1 | tr -d '\r')"
+    if grep -q 'open: shown, OK, "C:.*\\fdtest\\B.TXT", 1$' <<< "$fdout" && grep -q 'save: OK, "C:.*\\fdtest\\sub\\new.txt"$' <<< "$fdout"
+    then echo "PM file dialog: ok"; else echo "PM file dialog: FAIL"; echo "$fdout"; owfail=1; fi
     [ "$owfail" = 0 ] || st=1
 else
     echo "(no OpenWatcom: its programs not tried)"

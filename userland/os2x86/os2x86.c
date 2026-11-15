@@ -517,13 +517,13 @@ static int unpack2(uint8_t *dst, uint32_t dsz, const uint8_t *s, uint32_t n)
 }
 
 /* ── thunks: the imports from the system ────────────────────────────── */
-static const char *libs[64] = { "DOSCALLS", "NLS", "MSG", "QUECALLS", "SESMGR", "KBDCALLS", "VIOCALLS", "MOUCALLS", "PMWIN", "PMGPI", "PMDRAG", "PMSHAPI", "HELPMGR", 0 };
-enum { L_DOS, L_NLS, L_MSG, L_QUE, L_SES, L_KBD, L_VIO, L_MOU, L_PMWIN, L_PMGPI, L_PMDRAG, L_PMSHAPI, L_HELPMGR, NLIBS };
+static const char *libs[64] = { "DOSCALLS", "NLS", "MSG", "QUECALLS", "SESMGR", "KBDCALLS", "VIOCALLS", "MOUCALLS", "PMWIN", "PMGPI", "PMDRAG", "PMSHAPI", "HELPMGR", "PMCTLS", 0 };
+enum { L_DOS, L_NLS, L_MSG, L_QUE, L_SES, L_KBD, L_VIO, L_MOU, L_PMWIN, L_PMGPI, L_PMDRAG, L_PMSHAPI, L_HELPMGR, L_PMCTLS, NLIBS };
 static int nlibs = NLIBS;
 /* OS/2's own DLLs that aren't here (yet): a program that imports from one
  * still starts (C runtimes link Presentation Manager's message box in for
  * their error reports); a call into one says so and returns 0 */
-static const char *const sysdlls[] = { "PMSPL", "PMCTLS", "PMVIOP",
+static const char *const sysdlls[] = { "PMSPL", "PMVIOP",
     "PMWP", "PMMERGE", "PMBIDI", "PMPIC", "PMATM", "PMPRINTF", "PMSEC", "BDCALLS", "MONCALLS",
     "NAMPIPES", "SO32DLL", "TCP32DLL", "SOM", "SOMU", "MMPM", "MDM", "UCONV", "LIBUNI", 0 };
 
@@ -3369,6 +3369,9 @@ static const api_t apis[] = {
     { L_PMGPI, 404, "GpiMove", api_GpiMove, 0 },
     { L_PMGPI, 398, "GpiLine", api_GpiLine, 0 },
     { L_PMGPI, 356, "GpiBox", api_GpiBox, 0 },
+    { L_PMCTLS, 4, "WinFileDlg", api_WinFileDlg, 0 },
+    { L_PMCTLS, 5, "WinDefFileDlgProc", api_WinDefFileDlgProc, 0 },
+    { L_PMCTLS, 6, "WinFreeFileDlgList", api_WinFreeFileDlgList, 0 },
     { L_PMSHAPI, 101, "PrfQueryProfileSize", api_PrfQueryProfileSize, 0 },
     { L_PMSHAPI, 102, "PrfOpenProfile", api_PrfOpenProfile, 0 },
     { L_PMSHAPI, 103, "PrfCloseProfile", api_PrfCloseProfile, 0 },
