@@ -40,5 +40,7 @@ if [ -f "$W/Compose" ]; then cp "$W/Compose" "$SYS/Compose"; fi    # dead keys, 
 if [ -f "$W/tests/applet" ]; then mkdir -p "$STAGE/bin"; cp "$W/tests/applet" "$STAGE/bin/sh"; fi
 # the UNIXROOT packages (userland/build-rpms.sh), for RPM -i NAME
 if ls "$W"/rpms/*.rpm >/dev/null 2>&1; then mkdir -p "$SYS/RPMS"; cp "$W"/rpms/*.rpm "$SYS/RPMS"/; fi
+# STICK_EXTRA=dir: that folder too, at the stick's root (scripts/desktop.sh --os2-demos: \OS2DEMOS)
+if [ -n "${STICK_EXTRA:-}" ] && [ -d "$STICK_EXTRA" ]; then cp -R "$STICK_EXTRA" "$STAGE"/; fi
 python3 "$ROOT/scripts/mkhpfs.py" "$IMG" --size 512M --from "$STAGE" --hidden OS2 --mbr >/dev/null
 echo "made $IMG ($(ls "$SYS" | wc -l | tr -d ' ') entries in \\OS2)"

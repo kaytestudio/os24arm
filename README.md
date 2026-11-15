@@ -78,6 +78,28 @@ sudo apt install clang lld llvm qemu-system-arm cmake
 
 ## 2. Build
 
+### Everything, and boot into the desktop
+
+```bash
+scripts/desktop.sh              # build all of it, then boot QEMU with the desktop
+scripts/desktop.sh --hvf        # ... running natively (much faster on Apple silicon)
+scripts/desktop.sh --os2-demos  # ... with x86 OS/2 programs on the stick, in \OS2DEMOS
+```
+
+`scripts/desktop.sh` builds the kernel and the C: test disk, then the
+userland the desktop is made of: the musl sysroot, the libraries, busybox,
+foot/fuzzel/cage/dwl, the LLVM package that gives the Workplace Shell its
+libc++ (the long step, an hour or more the first time), the Workplace
+Shell, the test programs and os2x86, and the USB stick image. Each step
+is skipped when what it makes is already there (`--rebuild`: all again;
+`--all-packages`: every UNIXROOT package; `--build-only`: don't boot). It
+then boots QEMU with a display window, the stick, a USB keyboard and
+tablet (`scripts/run-vm.sh --wayland`), and the kernel starts the desktop
+by itself. `--os2-demos` adds the OpenWatcom-built x86 OS/2 programs of
+`userland/os2x86/test` (needs OpenWatcom, see `userland/README.md`):
+double-click them in Drive D, or run them from a Command Prompt
+(`\OS2DEMOS\PMCTL`). `--help` lists the options.
+
 ### QEMU (default)
 
 ```bash
