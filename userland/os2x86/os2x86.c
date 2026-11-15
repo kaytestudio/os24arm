@@ -441,6 +441,11 @@ static int x86_lx(const char *path, uint32_t *mflags)
             uint32_t fl = h[0x10] | h[0x11] << 8 | h[0x12] << 16 | (uint32_t)h[0x13] << 24;
             if (cpu >= 1 && cpu <= 4) { r = (fl & 0x8000) ? 2 : 1; if (mflags) *mflags = fl; }
         }
+        uint8_t ne[0x38];                    /* (a 16-bit OS/2 one, NE: ours too - 1 a program, 2 a DLL) */
+        if (o && pread(fd, ne, sizeof ne, o) == (ssize_t)sizeof ne && ne[0] == 'N' && ne[1] == 'E' && (ne[0x36] == 1 || !ne[0x36])) {
+            r = (ne[0x0D] & 0x80) ? 2 : 1;
+            if (mflags) *mflags = (uint32_t)((ne[0x0D] & 7) << 8);   /* (the application type, as LX keeps it) */
+        }
     }
     close(fd);
     return r;
@@ -874,6 +879,34 @@ static void run_inits(void)
     }
 }
 
+/* a DLL's file: by its path, else in the program's directory, the current one, LIBPATH */
+static int dll_path(const char *name, char *h, size_t hn)
+{
+    char file[NAME_MAX + 1];
+    const char *b = name;
+    for (const char *q = name; *q; q++) if (*q == '\\' || *q == '/' || *q == ':') b = q + 1;
+    snprintf(file, sizeof file, "%s%s", b, strchr(b, '.') ? "" : ".DLL");
+    if (b != name && !os2_to_host(name, h, hn, 0) && access(h, R_OK) == 0) return 1;
+    char dirs[8192] = "";
+    snprintf(dirs, sizeof dirs, "%s", exe_dir);
+    size_t l = strlen(dirs);
+    const char *lp[] = { getenv("BEGINLIBPATH"), getenv("LIBPATH"), getenv("OS2X86_LIBPATH"), getenv("ENDLIBPATH") };
+    snprintf(dirs + l, sizeof dirs - l, ";.");
+    for (int i = 0; i < 4; i++)
+        if (lp[i]) { l = strlen(dirs); snprintf(dirs + l, sizeof dirs - l, ";%s", lp[i]); }
+    for (char *t = strtok(dirs, ";"); t; t = strtok(0, ";")) {
+        char p[PATH_MAX * 2];
+        if (t[0] == '/') snprintf(p, sizeof p, "%s/%s", t, file);
+        else {
+            char q[PATH_MAX];
+            snprintf(q, sizeof q, "%s\\%s", t, file);
+            if (os2_to_host(q, p, sizeof p, 0)) continue;
+        }
+        casefix(p);
+        if (access(p, R_OK) == 0) { snprintf(h, hn, "%s", p); return 1; }
+    }
+    return 0;
+}
 static mod_t *load_dll(const char *name, char *err, size_t errn)
 {
     mod_t *m = find_mod(name);
@@ -1003,9 +1036,30 @@ static void checkpoint(void)
 }
 
 static int itrace;                          /* OS2X86_ITRACE=1: every instruction's place and bytes, on stderr */
+static uint32_t watch_at;                   /* OS2X86_WATCH=flat address (hex): who changes the 4 bytes there */
 static void run(int nested)
 {
     for (;;) {
+        if (watch_at) {
+            uint32_t before = g32(watch_at), cs = C.sreg[1], ip = C.eip;
+            int r = cpu_run(&C, 1);
+            if (g32(watch_at) != before)
+                fprintf(stderr, "[os2x86] watch %08x: %08x -> %08x at %04x:%04x\n", watch_at, before, g32(watch_at), cs, ip);
+            if (r == CPU_STEPS) continue;
+            C.eip = C.eip;                   /* (the rest as below: a thunk, an exception) */
+            if (r == CPU_THUNK) {
+                uint32_t o = C.cs_base + C.eip - C.thunk_lo;
+                int idx = (int)(o / T_SLOT);
+                if (o % T_SLOT || idx >= nthunks) { exception(CPU_FAULT); continue; }
+                if (idx == T_CBRET) { if (nested) return; exception(CPU_FAULT); continue; }
+                uint32_t b2 = g32(watch_at);
+                api_call(idx);
+                if (g32(watch_at) != b2) fprintf(stderr, "[os2x86] watch %08x: %08x -> %08x in %s\n", watch_at, b2, g32(watch_at), thunks[idx].name);
+                continue;
+            }
+            exception(r);
+            continue;
+        }
         if (itrace) {
             uint32_t l = C.cs_base + C.eip;
             fprintf(stderr, "%04x:%04x  %02x %02x %02x %02x  ax=%04x bx=%04x cx=%04x dx=%04x sp=%04x bp=%04x si=%04x di=%04x ds=%04x es=%04x ss=%04x\n",
@@ -3378,6 +3432,20 @@ static const api_t apis[] = {
     { L_PMGPI, 404, "GpiMove", api_GpiMove, 0 },
     { L_PMGPI, 398, "GpiLine", api_GpiLine, 0 },
     { L_DOS, 5, "DosExit", d16_DosExit, 4 },
+    { L_DOS, 144, "DosExecPgm", d16_DosExecPgm, 24 },
+    { L_DOS, 2, "DosCWait", d16_DosCWait, 14 },
+    { L_DOS, 140, "DosSemRequest", d16_DosSemRequest, 8 },
+    { L_DOS, 141, "DosSemClear", d16_DosSemClear, 4 },
+    { L_DOS, 142, "DosSemWait", d16_DosSemWait, 8 },
+    { L_DOS, 143, "DosSemSet", d16_DosSemSet, 4 },
+    { L_DOS, 20, "DosSemSetWait", d16_DosSemSetWait, 8 },
+    { L_DOS, 126, "DosSizeSeg", d16_DosSizeSeg, 6 },
+    { L_DOS, 127, "DosMemAvail", d16_DosMemAvail, 4 },
+    { L_DOS, 44, "DosLoadModule", d16_DosLoadModule, 14 },
+    { L_DOS, 45, "DosGetProcAddr", d16_DosGetProcAddr, 10 },
+    { L_DOS, 46, "DosFreeModule", d16_DosFreeModule, 2 },
+    { L_DOS, 47, "DosGetModHandle", d16_DosGetModHandle, 8 },
+    { L_DOS, 48, "DosGetModName", d16_DosGetModName, 8 },
     { L_DOS, 8, "DosGetInfoSeg", d16_DosGetInfoSeg, 8 },
     { L_DOS, 9, "DosGetPrty", d16_DosGetPrty, 8 },
     { L_DOS, 11, "DosSetPrty", d16_DosSetPrty, 8 },
@@ -3584,6 +3652,7 @@ int main(int argc, char **argv)
     }
     trace = getenv("OS2X86_TRACE") && *getenv("OS2X86_TRACE") && strcmp(getenv("OS2X86_TRACE"), "0");
     itrace = getenv("OS2X86_ITRACE") && *getenv("OS2X86_ITRACE") && strcmp(getenv("OS2X86_ITRACE"), "0");
+    if (getenv("OS2X86_WATCH")) watch_at = (uint32_t)strtoul(getenv("OS2X86_WATCH"), 0, 16);
     const char *mb = getenv("OS2X86_MEM");
     uint64_t size = (uint64_t)(mb ? strtoul(mb, 0, 10) : 512) << 20;
     if (size < (16u << 20)) size = 16u << 20;

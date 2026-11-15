@@ -341,10 +341,19 @@ platform-specific are new code.
    ...) - most of them the 32-bit calls underneath, their arguments and
    results converted - and the 16-bit KBD/VIO/MOU calls the 32-bit
    programs use. The kernel and the Workplace Shell hand NE programs to
-   os2x86 as they do LX ones. Not yet: a program's own 16-bit DLLs,
-   DosExecPgm, threads and semaphores, 16-bit Presentation Manager.
+   os2x86 as they do LX ones. A program's own 16-bit DLLs load too (found
+   as 32-bit ones are: its directory, the current one, LIBPATH; imported
+   by ordinal or name, their imports in turn; each one's initialisation
+   called with OS/2's registers - DS its data, DI its handle - before the
+   program starts), and DosLoadModule, DosGetProcAddr, DosGetModHandle,
+   DosGetModName; DosExecPgm and DosCWait (a 16-bit child runs through
+   os2x86 again); RAM semaphores (one thread: a request is granted).
+   Not yet: 16-bit threads, system semaphores, 16-bit Presentation
+   Manager. (A 16-bit DLL built with OpenWatcom wants -zu -zdp: SS isn't
+   its data, and its exports put the caller's DS back.)
    `OS2X86_ITRACE=1` traces every instruction (CS:IP, its bytes, the
-   registers).
+   registers); `OS2X86_WATCH=address` (hex, flat) names each instruction
+   or call that changes the four bytes there.
    32-bit x86 OS/2 programs (real OS/2 2.x-4.x console .EXEs: LX, usually
    after a DOS "MZ" stub, CPU type 386-586) run through an emulator,
    `userland/os2x86` (`\OS2\os2x86` on the stick): the kernel's execve

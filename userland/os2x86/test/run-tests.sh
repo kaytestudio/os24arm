@@ -234,6 +234,14 @@ PY
         INCLUDE="$W/h:$W/h/os21x" wcl -q -bt=os2 -l=os2 -fpi "$T/test/ow16/test16.c" >/dev/null
         out16="$(../os2x86 test16.exe one "two words" 2>&1; echo "exit $?")"
         if grep -q "^passed" <<< "$out16" && grep -q "^exit 42" <<< "$out16"; then echo "16-bit (NE): ok"; else echo "16-bit (NE): FAIL"; echo "$out16"; owfail=1; fi
+        # a 16-bit DLL of its own (its data, the caller's DS put back), DosLoadModule/GetProcAddr, DosExecPgm of test16
+        INCLUDE="$W/h:$W/h/os21x" wcl -q -bt=os2 -bd -ml -zu -zdp -l=os2_dll -fe=dll16.dll "$T/test/ow16/dll16.c" >/dev/null
+        wlib -q -n dll16.lib +dll16.dll >/dev/null
+        INCLUDE="$W/h:$W/h/os21x" wcl -q -bt=os2 -l=os2 "$T/test/ow16/use16.c" dll16.lib >/dev/null
+        dll16out="$(../os2x86 use16.exe 2>&1 | tr -d '\r')"
+        if grep -q "^imported: 42, 1001 1002, inited 1$" <<< "$dll16out" && grep -q "^by name: 1003$" <<< "$dll16out" &&
+           grep -q "^module: DLL16.DLL$" <<< "$dll16out" && grep -q "^NOSUCH: not found (NOSUCH)$" <<< "$dll16out" && grep -q "^child: 0 42$" <<< "$dll16out"
+        then echo "16-bit DLL, DosExecPgm: ok"; else echo "16-bit DLL, DosExecPgm: FAIL"; echo "$dll16out"; owfail=1; fi
     fi
     [ "$owfail" = 0 ] || st=1
 else

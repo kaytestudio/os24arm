@@ -216,6 +216,30 @@ static uint32_t d16_DosScanEnv(void)          /* (name, PSZ far *ppValue) */
         }
     return 203;                                              /* ERROR_ENVVAR_NOT_FOUND */
 }
+/* RAM semaphores (an HSEM: a far pointer to a word of the program's): one thread here, so a request is granted at once;
+ * waiting on one that's set times out (a 0 timeout: at once), as no other thread could clear it */
+static uint32_t ne_sem(uint32_t h) { return h ? fp16((uint16_t)(h >> 16), (uint16_t)h) : 0; }
+static uint32_t d16_DosSemRequest(void) { uint32_t s = ne_sem(L(4)); if (s) p32(s, 1); return 0; }   /* (HSEM, LONG timeout) */
+static uint32_t d16_DosSemClear(void) { uint32_t s = ne_sem(L(0)); if (s) p32(s, 0); return 0; }     /* (HSEM) */
+static uint32_t d16_DosSemSet(void) { uint32_t s = ne_sem(L(0)); if (s) p32(s, 1); return 0; }
+static uint32_t d16_DosSemWait(void) { uint32_t s = ne_sem(L(4)); return s && g32(s) ? 121 : 0; }    /* ERROR_SEM_TIMEOUT */
+static uint32_t d16_DosSemSetWait(void) { return d16_DosSemWait(); }
+static uint32_t d16_DosSizeSeg(void) { p32(FP(0), 0x10000); return 0; }                             /* (SEL, PULONG): a tile */
+static uint32_t d16_DosMemAvail(void) { p32(FP(0), 64u << 20); return 0; }
+/* DosExecPgm (failname, cbFail, flags, args, env, RESULTCODES (16-bit: two USHORTs), program), DosCWait (scope, wait,
+ * RESULTCODES, PPID, PID): the 32-bit ones (an x86 child runs through os2x86 again, 16-bit or 32-bit) */
+static uint32_t d16_DosExecPgm(void)
+{
+    uint32_t t = T(0), a[] = { FP(20), W(18), W(16), FP(12), FP(8), t, FP(0) }, r = call32(api_DosExecPgm, 7, a);
+    if (!r) { p16(FP(4), (uint16_t)g32(t)); p16(FP(4) + 2, (uint16_t)g32(t + 4)); }
+    return r;
+}
+static uint32_t d16_DosCWait(void)
+{
+    uint32_t t = T(0), pp = T(1), a[] = { W(12), W(10), t, pp, W(0) }, r = call32(api_DosWaitChild, 5, a);
+    if (!r) { p16(FP(6), (uint16_t)g32(t)); p16(FP(6) + 2, (uint16_t)g32(t + 4)); p16(FP(2), (uint16_t)g32(pp)); }
+    return r;
+}
 static uint32_t n16_DosGetDBCSEv(void) { if (W(8) >= 2) p16(FP(0), 0); return 0; }
 static uint32_t n16_DosCaseMap(void)          /* (USHORT cb, PCOUNTRYCODE, PCHAR) */
 {
@@ -231,93 +255,202 @@ static uint32_t n16_DosGetCtryInfo(void)      /* (USHORT cb, PCOUNTRYCODE, PCOUN
     return r;
 }
 
-/* ── loading ── */
+/* ── loading: the program and its own 16-bit DLLs ── */
+typedef struct {
+    char name[16], path[PATH_MAX];
+    uint8_t *f; size_t n; uint32_t ne, nseg;
+    uint32_t base[256], len[256];
+    int dll, inited;
+} nemod_t;
+static nemod_t *nemods[32];
+static int nnemods;
+#define MNE16(m, o) (uint32_t)((m)->f[(m)->ne + (o)] | (m)->f[(m)->ne + (o) + 1] << 8)
+static uint16_t ne_hmod(nemod_t *m) { for (int i = 0; i < nnemods; i++) if (nemods[i] == m) return (uint16_t)(0x100 + i); return 0; }
+static nemod_t *ne_mod_of(uint32_t h) { h -= 0x100; return h < (uint32_t)nnemods ? nemods[h] : 0; }
 static int ne_find_lib(const char *name)
 {
     int l = builtin_lib(name);
     return l >= 0 ? l : stub_lib(name);
 }
-static void ne_main(const char *path, uint8_t *f, size_t n, uint32_t ne, int argc, char **argv) __attribute__((noreturn));
-static void ne_main(const char *path, uint8_t *f, size_t n, uint32_t ne, int argc, char **argv)
+/* an exported entry: by ordinal (the entry table), its flat address */
+static int ne_entry(nemod_t *m, uint32_t ord, uint32_t *flat)
 {
-    #define NE16(o) (uint32_t)(f[ne + (o)] | f[ne + (o) + 1] << 8)
-    if (ne + 0x40 > n) die(193, "SYS0193: %s is damaged.", path);
-    if (f[ne + 0x36] != 1 && f[ne + 0x36] != 0) die(193, "SYS0193: %s isn't an OS/2 program (NE, for another system).", path);
-    if (NE16(0x0C) & 0x8000) die(193, "SYS0193: %s is a library (DLL), not a program.", path);
-    uint32_t nseg = NE16(0x1C), st = ne + NE16(0x22), shift = NE16(0x32) ? NE16(0x32) : 9;
-    uint32_t modref = ne + NE16(0x28), impn = ne + NE16(0x2A), nmod = NE16(0x1E), ent = ne + NE16(0x04);
-    uint32_t base[256], len[256];
-    if (nseg > 255 || st + 8 * nseg > n) die(193, "SYS0193: %s has too many segments.", path);
-    /* the segments: a tile each */
-    for (uint32_t i = 0; i < nseg; i++) {
+    const uint8_t *f = m->f;
+    uint32_t p = m->ne + MNE16(m, 0x04), o = 1;
+    while (p + 1 < m->n && f[p]) {
+        uint32_t c = f[p], t = f[p + 1];
+        p += 2;
+        if (!t) { o += c; continue; }
+        for (uint32_t k = 0; k < c; k++, o++) {
+            if (p + (t == 0xFF ? 6 : 3) > m->n) return 0;
+            if (o == ord) {
+                uint32_t sg = t == 0xFF ? f[p + 3] : t, off = t == 0xFF ? (uint32_t)(f[p + 4] | f[p + 5] << 8) : (uint32_t)(f[p + 1] | f[p + 2] << 8);
+                if (!sg || sg > m->nseg) return 0;
+                *flat = m->base[sg - 1] + off;
+                return 1;
+            }
+            p += t == 0xFF ? 6 : 3;
+        }
+    }
+    return 0;
+}
+/* ... by name: the resident names, then the non-resident ones (Pascal strings, each followed by its ordinal) */
+static int ne_entry_name(nemod_t *m, const char *name, uint32_t *flat)
+{
+    uint32_t tabs[2] = { m->ne + MNE16(m, 0x26), (uint32_t)(m->f[m->ne + 0x2C] | m->f[m->ne + 0x2D] << 8 | m->f[m->ne + 0x2E] << 16 | (uint32_t)m->f[m->ne + 0x2F] << 24) };
+    size_t l = strlen(name);
+    for (int t = 0; t < 2; t++)
+        for (uint32_t p = tabs[t], first = 1; p && p < m->n && m->f[p]; first = 0) {
+            uint32_t n = m->f[p];
+            if (p + 1 + n + 2 > m->n) break;
+            uint32_t ord = (uint32_t)(m->f[p + 1 + n] | m->f[p + 2 + n] << 8);
+            if (!first && n == l && !strncasecmp((char *)m->f + p + 1, name, l)) return ne_entry(m, ord, flat);
+            p += 1 + n + 2;
+        }
+    return 0;
+}
+/* a far call into 16-bit code (a DLL's initialisation): AX its result */
+static uint32_t ne_call16(uint32_t target, uint32_t ax, uint32_t cx, uint32_t di, uint16_t ds)
+{
+    uint32_t r[8], eip = C.eip, fl = C.eflags;
+    uint16_t sr[4] = { C.sreg[0], C.sreg[1], C.sreg[2], C.sreg[3] };
+    memcpy(r, C.r, sizeof r);
+    uint32_t back = thunk_addr(T_CBRET);
+    uint32_t sp = (C.r[ESP] - 4) & 0xFFFF;
+    p16(C.ss_base + sp, (uint16_t)(back & 0xFFFF)); p16(C.ss_base + sp + 2, sel16(back));
+    C.r[ESP] = (C.r[ESP] & 0xFFFF0000) | sp;
+    C.r[EAX] = ax; C.r[ECX] = cx; C.r[EDI] = di; C.r[ESI] = 0;
+    cpu_load_seg(&C, 3, ds);
+    cpu_load_seg(&C, 0, 0);
+    cpu_load_seg(&C, 1, sel16(target));
+    C.eip = target & 0xFFFF;
+    run(1);
+    uint32_t ret = C.r[EAX] & 0xFFFF;
+    memcpy(C.r, r, sizeof r);
+    for (int i = 0; i < 4; i++) cpu_load_seg(&C, i, sr[i]);
+    C.eip = eip; C.eflags = fl;
+    return ret;
+}
+static uint32_t ne_header(const uint8_t *f, size_t n);
+static nemod_t *ne_load(const char *path, int dll, char *err, size_t errn);
+static nemod_t *ne_load_dll(const char *name, char *err, size_t errn)
+{
+    for (int i = 0; i < nnemods; i++) if (nemods[i]->dll && !strcasecmp(nemods[i]->name, name)) return nemods[i];
+    char h[PATH_MAX];
+    if (!dll_path(name, h, sizeof h)) { snprintf(err, errn, "SYS1804: The system cannot find the file %s.DLL.", name); return 0; }
+    return ne_load(h, 1, err, errn);
+}
+static nemod_t *ne_load(const char *path, int dll, char *err, size_t errn)
+{
+    FILE *pf = fopen(path, "rb");
+    if (!pf) { snprintf(err, errn, "SYS0002: The system cannot find the file %s.", path); return 0; }
+    fseek(pf, 0, SEEK_END);
+    long fl = ftell(pf);
+    fseek(pf, 0, SEEK_SET);
+    uint8_t *f = fl > 0 && fl < (32 << 20) ? malloc((size_t)fl) : 0;
+    size_t n = f ? fread(f, 1, (size_t)fl, pf) : 0;
+    fclose(pf);
+    uint32_t ne = f ? ne_header(f, n) : 0;
+    if (!ne) { free(f); snprintf(err, errn, "SYS0193: %s isn't a 16-bit OS/2 module (NE).", path); return 0; }
+    if (f[ne + 0x36] != 1 && f[ne + 0x36] != 0) { free(f); snprintf(err, errn, "SYS0193: %s is for another system.", path); return 0; }
+    if (nnemods >= 32) { free(f); snprintf(err, errn, "SYS0008: too many modules"); return 0; }
+    nemod_t *m = calloc(1, sizeof *m);
+    m->f = f; m->n = n; m->ne = ne; m->dll = dll;
+    snprintf(m->path, sizeof m->path, "%s", path);
+    uint32_t rn = ne + MNE16(m, 0x26);                       /* (the module's name: the first resident name) */
+    if (rn < n) snprintf(m->name, sizeof m->name, "%.*s", f[rn] < 15 ? f[rn] : 15, (char *)f + rn + 1);
+    nemods[nnemods++] = m;
+    uint32_t nseg = MNE16(m, 0x1C), st = ne + MNE16(m, 0x22), shift = MNE16(m, 0x32) ? MNE16(m, 0x32) : 9;
+    uint32_t modref = ne + MNE16(m, 0x28), impn = ne + MNE16(m, 0x2A), nmod = MNE16(m, 0x1E);
+    if (nseg > 255 || st + 8 * nseg > n) { snprintf(err, errn, "SYS0193: %s is damaged.", path); return 0; }
+    m->nseg = nseg;
+    for (uint32_t i = 0; i < nseg; i++) {                    /* the segments: a tile each */
         uint32_t e = st + 8 * i, sec = (uint32_t)(f[e] | f[e + 1] << 8), l = (uint32_t)(f[e + 2] | f[e + 3] << 8);
         if (!l && sec) l = 0x10000;
-        if (!(base[i] = mem_alloc(UNIT))) die(8, "SYS0008: no memory for %s", path);
-        len[i] = l;
+        if (!(m->base[i] = mem_alloc(UNIT))) { snprintf(err, errn, "SYS0008: no memory for %s", path); return 0; }
+        m->len[i] = l;
         uint32_t off = sec << shift;
-        if (sec && l && off + l <= n) memcpy(C.mem + base[i], f + off, l);
+        if (sec && l && off + l <= n) memcpy(C.mem + m->base[i], f + off, l);
     }
-    /* the entry table: a movable entry's segment and offset, by ordinal */
-    #define ENTRY(ord, sp, op) do { *(sp) = 0; uint32_t p_ = ent, o_ = 1; \
-        while (p_ < n && f[p_]) { uint32_t c_ = f[p_], t_ = f[p_ + 1]; p_ += 2; \
-            if (!t_) { o_ += c_; continue; } \
-            for (uint32_t k_ = 0; k_ < c_; k_++, o_++) { \
-                if (o_ == (ord)) { if (t_ == 0xFF) { *(sp) = f[p_ + 3]; *(op) = (uint32_t)(f[p_ + 4] | f[p_ + 5] << 8); } \
-                                   else { *(sp) = t_; *(op) = (uint32_t)(f[p_ + 1] | f[p_ + 2] << 8); } } \
-                p_ += t_ == 0xFF ? 6 : 3; } } } while (0)
-    /* the relocations */
-    for (uint32_t i = 0; i < nseg; i++) {
+    for (uint32_t i = 0; i < nseg; i++) {                    /* the relocations */
         uint32_t e = st + 8 * i, sec = (uint32_t)(f[e] | f[e + 1] << 8), flags = (uint32_t)(f[e + 4] | f[e + 5] << 8);
         if (!(flags & 0x100) || !sec) continue;
-        uint32_t r = (sec << shift) + len[i];
+        uint32_t r = (sec << shift) + m->len[i];
         if (r + 2 > n) continue;
         uint32_t cnt = (uint32_t)(f[r] | f[r + 1] << 8);
         r += 2;
         for (uint32_t k = 0; k < cnt && r + 8 <= n; k++, r += 8) {
-            uint32_t src = f[r], fl = f[r + 1], at = (uint32_t)(f[r + 2] | f[r + 3] << 8);
+            uint32_t src = f[r], fl8 = f[r + 1], at = (uint32_t)(f[r + 2] | f[r + 3] << 8);
             uint32_t t1 = (uint32_t)(f[r + 4] | f[r + 5] << 8), t2 = (uint32_t)(f[r + 6] | f[r + 7] << 8);
             uint32_t target = 0;
-            switch (fl & 3) {
-            case 0: {                                    /* internal: a segment and offset, or a movable entry */
-                uint32_t s = t1 & 0xFF, o = t2;
-                if (s == 0xFF) ENTRY(t2, &s, &o);
-                if (!s || s > nseg) continue;
-                target = base[s - 1] + o;
+            switch (fl8 & 3) {
+            case 0: {                                        /* internal: a segment and offset, or a movable entry */
+                uint32_t sg = t1 & 0xFF;
+                if (sg == 0xFF) { if (!ne_entry(m, t2, &target)) continue; }
+                else { if (!sg || sg > nseg) continue; target = m->base[sg - 1] + t2; }
                 break;
             }
-            case 1: case 2: {                            /* imported: by ordinal or by name */
+            case 1: case 2: {                                /* imported: by ordinal or by name - the system's, or a DLL of its own */
                 char mod[64] = "", nm[64] = "";
                 if (t1 >= 1 && t1 <= nmod) {
                     uint32_t mo = impn + (uint32_t)(f[modref + 2 * (t1 - 1)] | f[modref + 2 * (t1 - 1) + 1] << 8);
                     if (mo < n) snprintf(mod, sizeof mod, "%.*s", f[mo], (char *)f + mo + 1);
                 }
-                if ((fl & 3) == 2 && impn + t2 < n) snprintf(nm, sizeof nm, "%.*s", f[impn + t2], (char *)f + impn + t2 + 1);
+                if ((fl8 & 3) == 2 && impn + t2 < n) snprintf(nm, sizeof nm, "%.*s", f[impn + t2], (char *)f + impn + t2 + 1);
                 int lib = ne_find_lib(mod);
-                if (lib < 0) die(193, "SYS0193: %s needs %s.DLL - a 16-bit DLL of its own, which can't be loaded yet.", path, mod);
-                target = thunk_for(lib, (fl & 3) == 1 ? t2 : 0, (fl & 3) == 2 ? nm : 0);
+                if (lib >= 0) target = thunk_for(lib, (fl8 & 3) == 1 ? t2 : 0, (fl8 & 3) == 2 ? nm : 0);
+                else {
+                    nemod_t *d = ne_load_dll(mod, err, errn);
+                    if (!d) return 0;
+                    if (!((fl8 & 3) == 1 ? ne_entry(d, t2, &target) : ne_entry_name(d, nm, &target))) {
+                        if ((fl8 & 3) == 1) snprintf(err, errn, "SYS0182: %s has no entry %u (%s needs it).", mod, t2, m->name);
+                        else snprintf(err, errn, "SYS0182: %s has no entry %s (%s needs it).", mod, nm, m->name);
+                        return 0;
+                    }
+                }
                 break;
             }
-            default: continue;                           /* OS fixups (the floating point emulator's): not needed */
+            default: continue;                               /* OS fixups (the floating point emulator's): not needed */
             }
             uint16_t tsel = sel16(target), toff = (uint16_t)(target & 0xFFFF);
-            uint32_t sb = base[i];
-            for (int guard = 0; guard < 0x10000; guard++) {   /* a chain (each place holds the next), or one (additive) */
-                uint32_t a = sb + at;
-                if (at >= 0x10000) break;
-                uint32_t next = g16(a);
+            uint32_t sb = m->base[i];
+            for (int guard = 0; guard < 0x10000 && at < 0x10000; guard++) {   /* a chain (each place holds the next), or one (additive) */
+                uint32_t a = sb + at, next = g16(a);
                 switch (src) {
-                case 0: C.mem[a] = (fl & 4) ? (uint8_t)(C.mem[a] + toff) : (uint8_t)toff; break;   /* LOBYTE */
+                case 0: C.mem[a] = (fl8 & 4) ? (uint8_t)(C.mem[a] + toff) : (uint8_t)toff; break;   /* LOBYTE */
                 case 2: p16(a, tsel); break;                                                        /* SELECTOR */
-                case 3: p16(a, (fl & 4) ? (uint16_t)(g16(a) + toff) : toff); p16(a + 2, tsel); break;   /* POINTER */
-                case 5: p16(a, (fl & 4) ? (uint16_t)(g16(a) + toff) : toff); break;                 /* OFFSET */
-                case 11: p32(a, (fl & 4) ? g32(a) + toff : toff); p16(a + 4, tsel); break;          /* POINTER48 */
-                case 13: p32(a, (fl & 4) ? g32(a) + toff : toff); break;                            /* OFFSET32 */
+                case 3: p16(a, (fl8 & 4) ? (uint16_t)(g16(a) + toff) : toff); p16(a + 2, tsel); break;   /* POINTER */
+                case 5: p16(a, (fl8 & 4) ? (uint16_t)(g16(a) + toff) : toff); break;                 /* OFFSET */
+                case 11: p32(a, (fl8 & 4) ? g32(a) + toff : toff); p16(a + 4, tsel); break;          /* POINTER48 */
+                case 13: p32(a, (fl8 & 4) ? g32(a) + toff : toff); break;                            /* OFFSET32 */
                 }
-                if ((fl & 4) || next == 0xFFFF || src == 0 || src == 11 || src == 13) break;
+                if ((fl8 & 4) || next == 0xFFFF || src == 0 || src == 11 || src == 13) break;
                 at = next;
             }
         }
     }
+    return m;
+}
+/* a DLL's initialisation (its CS:IP): AX and DI the module's handle, DS its automatic data, CX the heap; 0 back: it failed */
+static int ne_init(nemod_t *m, char *err, size_t errn)
+{
+    if (m->inited || !m->dll) return 1;
+    m->inited = 1;
+    uint32_t cs = MNE16(m, 0x16), ip = MNE16(m, 0x14), ad = MNE16(m, 0x0E);
+    if (!cs || cs > m->nseg) return 1;
+    uint32_t r = ne_call16(m->base[cs - 1] + ip, ne_hmod(m), MNE16(m, 0x10), ne_hmod(m), ad && ad <= m->nseg ? sel16(m->base[ad - 1]) : 0);
+    if (!r) { snprintf(err, errn, "SYS1804: %s's initialisation failed.", m->name); return 0; }
+    return 1;
+}
+
+static void ne_main(const char *path, uint8_t *f0, size_t n0, uint32_t ne0, int argc, char **argv) __attribute__((noreturn));
+static void ne_main(const char *path, uint8_t *f0, size_t n0, uint32_t ne0, int argc, char **argv)
+{
+    (void)f0; (void)n0; (void)ne0;
+    char err[512];
+    nemod_t *m = ne_load(path, 0, err, sizeof err);
+    if (!m) die(err[0] == 'S' && !strncmp(err, "SYS0008", 7) ? 8 : 193, "%s", err);
+    if (MNE16(m, 0x0C) & 0x8000) die(193, "SYS0193: %s is a library (DLL), not a program.", path);
     /* the environment segment: the strings, an empty one, the program, the command line */
     if (!(ne_env = mem_alloc(UNIT)) || !(ne_ginfo = mem_alloc(UNIT)) || !(ne_linfo = mem_alloc(UNIT))) die(8, "SYS0008: no memory");
     uint32_t at = ne_env, end = ne_env + 0xF000;
@@ -341,35 +474,97 @@ static void ne_main(const char *path, uint8_t *f, size_t n, uint32_t ne, int arg
     }
     guest_strcpy(&at, args);
     guest_strcpy(&at, "");
-    /* a TIB for FS (the 32-bit calls that want one) */
-    if (!(tib = mem_alloc(UNIT))) die(8, "SYS0008: no memory");
+    if (!(tib = mem_alloc(UNIT))) die(8, "SYS0008: no memory");   /* (a TIB for FS: the 32-bit calls that want one) */
     p32(tib, 0xFFFFFFFF);
     C.tib = tib;
     process_ready = 1;
-    /* the start: CS:IP, SS:SP (SP 0: the top of the automatic data), DS the automatic data */
-    uint32_t ad = NE16(0x0E), ip = NE16(0x14), cs = NE16(0x16), sp = NE16(0x18), ss = NE16(0x1A);
+    /* the stack: SS:SP (SP 0: the top of the automatic data); DS the automatic data */
+    uint32_t nseg = m->nseg, st = m->ne + MNE16(m, 0x22);
+    uint32_t ad = MNE16(m, 0x0E), ip = MNE16(m, 0x14), cs = MNE16(m, 0x16), sp = MNE16(m, 0x18), ss = MNE16(m, 0x1A);
     if (!cs || cs > nseg) die(193, "SYS0193: %s has no starting point.", path);
     if (!ss || ss > nseg) ss = ad;
+    if (!ss) die(193, "SYS0193: %s has no stack.", path);
     if (!sp) {
-        uint32_t e = st + 8 * (ss - 1), min = (uint32_t)(f[e + 6] | f[e + 7] << 8);
-        sp = (min ? min : 0x10000) + (ss == ad ? NE16(0x10) + NE16(0x12) : 0);
+        uint32_t e = st + 8 * (ss - 1), min = (uint32_t)(m->f[e + 6] | m->f[e + 7] << 8);
+        sp = (min ? min : 0x10000) + (ss == ad ? MNE16(m, 0x10) + MNE16(m, 0x12) : 0);
         if (sp >= 0x10000) sp = 0xFFFE;
     }
-    cpu_load_seg(&C, 1, sel16(base[cs - 1]));
-    cpu_load_seg(&C, 2, sel16(base[ss - 1]));
-    cpu_load_seg(&C, 3, ad ? sel16(base[ad - 1]) : 0);
+    cpu_load_seg(&C, 2, sel16(m->base[ss - 1]));
+    C.r[ESP] = sp;
+    /* its DLLs' initialisations, the first loaded first (on its stack) */
+    for (int i = 0; i < nnemods; i++) if (!ne_init(nemods[i], err, sizeof err)) die(193, "%s", err);
+    /* the start: CS:IP, DS the automatic data, AX the environment, BX the command line, CX the automatic data's size */
+    cpu_load_seg(&C, 1, sel16(m->base[cs - 1]));
+    cpu_load_seg(&C, 3, ad ? sel16(m->base[ad - 1]) : 0);
     cpu_load_seg(&C, 0, 0);
     C.eip = ip;
-    C.r[ESP] = sp;
     C.r[EAX] = sel16(ne_env); C.r[EBX] = ne_cmd;
-    uint32_t ade = ad ? st + 8 * (ad - 1) : 0, adsz = ad ? (uint32_t)(f[ade + 6] | f[ade + 7] << 8) : 0;
+    uint32_t ade = ad ? st + 8 * (ad - 1) : 0, adsz = ad ? (uint32_t)(m->f[ade + 6] | m->f[ade + 7] << 8) : 0;
     C.r[ECX] = ad ? (adsz ? adsz : 0x10000) : 0;
     C.r[EDX] = C.r[ESI] = C.r[EDI] = C.r[EBP] = 0;
     run(0);
     do_exit(0);
-    #undef NE16
-    #undef ENTRY
 }
+/* DosLoadModule (failname, cb, modname, phmod), DosGetProcAddr (hmod, procname or 0:ordinal, ppfn), DosFreeModule,
+ * DosGetModHandle (modname, phmod), DosGetModName (hmod, cb, buf): the 16-bit DLLs (and the system's: their thunks) */
+static uint32_t d16_DosLoadModule(void)
+{
+    char *nm = gs(FP(4)), err[512];
+    if (!nm) return 87;
+    char b[64];
+    const char *base = nm;
+    for (const char *q = nm; *q; q++) if (*q == '\\' || *q == '/' || *q == ':') base = q + 1;
+    snprintf(b, sizeof b, "%s", base);
+    char *dot = strrchr(b, '.');
+    if (dot && !strcasecmp(dot, ".DLL")) *dot = 0;
+    int lib = ne_find_lib(b);
+    if (lib >= 0) { p16(FP(0), (uint16_t)(0x8000 + lib)); return 0; }   /* (a system DLL: its imports are ours) */
+    nemod_t *d = ne_load_dll(nm, err, sizeof err);
+    if (d && !ne_init(d, err, sizeof err)) d = 0;
+    if (!d) {
+        if (W(8) && FP(10)) snprintf((char *)C.mem + FP(10), W(8), "%s", b);
+        return 2;                                            /* ERROR_FILE_NOT_FOUND */
+    }
+    p16(FP(0), ne_hmod(d));
+    return 0;
+}
+static uint32_t d16_DosGetProcAddr(void)
+{
+    uint32_t h = W(8), pn = g32(a16 + 4), target = 0;
+    int byord = (pn >> 16) == 0;                             /* (0:ordinal) */
+    char *nm = byord ? 0 : gs(FP(4));
+    if (h >= 0x8000) {
+        if (byord) target = thunk_for((int)(h - 0x8000), pn & 0xFFFF, 0);
+        else if (nm) target = thunk_for((int)(h - 0x8000), 0, nm);
+    } else {
+        nemod_t *m = ne_mod_of(h);
+        if (!m || !(byord ? ne_entry(m, pn & 0xFFFF, &target) : nm && ne_entry_name(m, nm, &target))) return 182;   /* ERROR_INVALID_ORDINAL */
+    }
+    if (!target) return 182;
+    p32(FP(0), (uint32_t)(target & 0xFFFF) | (uint32_t)sel16(target) << 16);
+    return 0;
+}
+static uint32_t d16_DosFreeModule(void) { return 0; }      /* (they stay) */
+static uint32_t d16_DosGetModHandle(void)
+{
+    char *nm = gs(FP(4));
+    if (!nm) return 87;
+    for (int i = 0; i < nnemods; i++) if (!strcasecmp(nemods[i]->name, nm)) { p16(FP(0), ne_hmod(nemods[i])); return 0; }
+    int lib = ne_find_lib(nm);
+    if (lib >= 0) { p16(FP(0), (uint16_t)(0x8000 + lib)); return 0; }
+    return 123;                                              /* ERROR_INVALID_NAME */
+}
+static uint32_t d16_DosGetModName(void)                    /* (hmod, cb, buf): its file, OS/2's name */
+{
+    nemod_t *m = ne_mod_of(W(6));
+    if (!m) return 6;                                        /* ERROR_INVALID_HANDLE */
+    char o[PATH_MAX];
+    host_to_os2(m->path, o, sizeof o);
+    if ((uint32_t)strlen(o) + 1 > W(4)) return 24;          /* ERROR_BAD_LENGTH */
+    snprintf((char *)C.mem + FP(0), W(4), "%s", o);
+    return 0;
+}
+
 /* is it one? (MZ, then NE at its offset): the NE header's place */
 static uint32_t ne_header(const uint8_t *f, size_t n)
 {
