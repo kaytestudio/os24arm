@@ -142,10 +142,11 @@ static int text_w(const char *s, int n)
 /* ── windows ─────────────────────────────────────────────────────────── */
 typedef struct pmwin pmwin_t;
 typedef uint32_t (*pmproc_t)(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2);
-typedef struct { char name[64]; uint32_t proc, style, cb; } pmclass_t;
+typedef struct { char name[64]; uint32_t proc, style, cb; int p16; } pmclass_t;   /* (p16: a 16-bit program's: proc a far 16:16 one) */
 struct pmwin {
     int used;
     uint32_t hwnd, id, style, tid, proc;
+    int p16;                            /* (proc: a 16-bit program's, far Pascal - pm16.inc) */
     pmproc_t iproc;                     /* the frame's, a message box's: here */
     pmwin_t *parent, *owner, *client;
     int x, y, cx, cy;                   /* in its parent, PM's way up */
@@ -223,6 +224,7 @@ static void post(pmwin_t *w, uint32_t hwnd, uint32_t msg, uint32_t mp1, uint32_t
 }
 
 static pmfont_t *win_font(pmwin_t *w) { for (; w; w = w->parent) if (w->font) return w->font; return pm_deffont; }   /* (a parent's goes to its children) */
+static uint32_t guest_call16(uint32_t fp, uint32_t hwnd, uint32_t msg, uint32_t mp1, uint32_t mp2);
 static uint32_t pm_send(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
 {
     if (!w) return 0;
@@ -236,6 +238,7 @@ static uint32_t pm_send(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
         return r;
     }
     if (!w->proc) return 0;
+    if (w->p16) return guest_call16(w->proc, w->hwnd, msg, mp1, mp2);
     uint32_t args[4] = { w->hwnd, msg, mp1, mp2 };
     return guest_call(w->proc, 4, args);
 }
@@ -383,7 +386,7 @@ static pmwin_t *win_new(pmwin_t *parent, const char *cls, uint32_t style, uint32
             pmclass_t *c = class_find(cls);
             w->nwords = (c ? c->cb : 0) + 16;
             w->words = calloc(w->nwords, 1);
-            if (c) w->proc = c->proc;
+            if (c) { w->proc = c->proc; w->p16 = c->p16; }
             else w->iproc = builtin_proc(cls);     /* WC_BUTTON, WC_STATIC, ... */
             return w;
         }

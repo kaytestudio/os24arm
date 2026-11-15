@@ -23,19 +23,35 @@ static uint32_t ne_ginfo, ne_linfo;           /* (the information segments) */
 static uint16_t sel16(uint32_t flat) { return (uint16_t)(((flat >> 16) << 3) | 7); }
 static uint32_t fp16(uint16_t sel, uint16_t off) { return ((uint32_t)(sel >> 3) << 16) + off; }
 
-/* a 32-bit call, its arguments on a stack of their own */
+/* a 32-bit call, its arguments on a stack of their own. They nest (a window procedure called back makes calls of
+ * its own): each level its frame below the last, and its own room for results; the 16-bit caller's SP is kept,
+ * for the callbacks (they run on the program's stack, below it) */
+static _Thread_local int c32_depth;
+static _Thread_local uint32_t c32_sp, c32_prog_esp;
 static uint32_t call32(api_fn fn, int n, const uint32_t *a)
 {
     if (!ne_scr && !(ne_scr = mem_alloc(UNIT))) return 8;
-    uint32_t save = C.r[ESP], sp = ne_scr + 0x8000;
+    if (!c32_depth) c32_sp = ne_scr + 0xF000;
+    uint32_t save = C.r[ESP], save_sp = c32_sp, save_prog = c32_prog_esp, sp = (c32_sp - 4 - 4 * (uint32_t)n - 0x40) & ~3u;
+    c32_prog_esp = C.r[ESP];                                 /* (the 16-bit caller's: a callback's stack) */
+    if (sp < ne_scr + 0x9000) return 8;                      /* (too deep) */
     p32(sp, 0);
     for (int i = 0; i < n; i++) p32(sp + 4 + 4 * (uint32_t)i, a[i]);
+    c32_sp = sp;
+    c32_depth++;
     C.r[ESP] = sp;
     uint32_t r = fn();
     C.r[ESP] = save;
+    c32_depth--;
+    c32_sp = save_sp;
+    c32_prog_esp = save_prog;
     return r;
 }
-static uint32_t T(int i) { if (!ne_scr) ne_scr = mem_alloc(UNIT); return ne_scr + 0x100 + 0x200 * (uint32_t)i; }   /* (results' room) */
+static uint32_t T(int i)                                     /* (results' room: this level's) */
+{
+    if (!ne_scr) ne_scr = mem_alloc(UNIT);
+    return ne_scr + 0x100 + 0x1000 * (uint32_t)(c32_depth & 7) + 0x200 * (uint32_t)i;
+}
 #define L(o) g32(a16 + (o))
 
 static uint32_t d16_DosExit(void) { if (W(2) == 0) thread_end(W(0)); do_exit(W(0)); }   /* (EXIT_THREAD 0, EXIT_PROCESS 1) */

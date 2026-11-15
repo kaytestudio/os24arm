@@ -353,7 +353,16 @@ platform-specific are new code.
    to the program's doubleword) and system ones (DosCreateSem,
    DosOpenSem) - that really wait: DosSemRequest (an owner may request
    again), DosSemClear, DosSemSet, DosSemWait, DosSemSetWait,
-   DosMuxSemWait, with timeouts. Not yet: 16-bit Presentation Manager. (A 16-bit DLL built with OpenWatcom wants -zu -zdp: SS isn't
+   DosMuxSemWait, with timeouts. And 16-bit Presentation Manager
+   (`pm16.inc`): ~80 PMWIN and PMGPI calls go to the 32-bit ones - one
+   wrapper reading their arguments by a format (long, word, signed word,
+   far pointer made flat, WC_ atoms kept), results in DX:AX - and QMSG
+   converted (WinGetMsg, WinPeekMsg, WinDispatchMsg); a class a 16-bit
+   program registers keeps its 16-bit window procedure, which PM calls
+   far, Pascal, on the program's stack (nesting: a procedure's own calls,
+   their callbacks). The Workplace Shell starts 16-bit PM programs
+   without a terminal. Not yet: resources from an NE (menus, dialogs,
+   strings, icons), the controls' pointer messages in 16:16. (A 16-bit DLL built with OpenWatcom wants -zu -zdp: SS isn't
    its data, and its exports put the caller's DS back.)
    `OS2X86_ITRACE=1` traces every instruction (CS:IP, its bytes, the
    registers); `OS2X86_WATCH=address` (hex, flat) names each instruction

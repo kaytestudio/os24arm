@@ -1136,6 +1136,7 @@ static void thread_end(uint32_t code)
 /* a 16-bit call (far, Pascal): SS:SP the return address, then the
  * arguments, the last one first; it pops them; the result in AX */
 static _Thread_local uint32_t a16;
+static _Thread_local const api_t *cur16;    /* (the 16-bit call being made: pm16.inc's generic wrapper reads it) */
 static void api16(thunk_t *t)
 {
     uint32_t sp = C.stack16 ? C.r[ESP] & 0xFFFF : C.r[ESP];
@@ -1144,10 +1145,11 @@ static void api16(thunk_t *t)
         die(255, "%s: %s.%u%s%s (a 16-bit call) isn't there yet", prog_name, libs[t->lib], t->ord,
             t->name[0] ? " " : "", t->name);
     a16 = at + 4;
+    cur16 = t->api;
     uint32_t rv = t->api->fn();
     if (trace) fprintf(stderr, "[os2x86] %s.%s (16-bit) = %u\n", libs[t->lib], t->api->name, rv);
     C.r[EAX] = (C.r[EAX] & 0xFFFF0000) | (rv & 0xFFFF);
-    C.r[EDX] &= 0xFFFF0000;                     /* (DX: 0, for a caller that reads DX:AX) */
+    C.r[EDX] = (C.r[EDX] & 0xFFFF0000) | (rv >> 16);   /* (DX:AX: a 32-bit result - a handle, an MRESULT; else DX 0) */
     sp += 4 + (t->api->a16 == 0xFF ? 0 : t->api->a16);   /* (0xFF: a 16-bit call without arguments) */
     C.r[ESP] = C.stack16 ? (C.r[ESP] & 0xFFFF0000) | (sp & 0xFFFF) : sp;
     cpu_load_seg(&C, 1, (uint16_t)cs);
@@ -3149,6 +3151,7 @@ static uint32_t api_ok16(void) { return 0; }
 
 #include "pm.inc"
 #include "ne16.inc"
+#include "pm16.inc"
 
 static const api_t apis[] = {
     { L_DOS, 110, "DosForceDelete", api_DosDelete, 0 },
@@ -3432,6 +3435,82 @@ static const api_t apis[] = {
     { L_PMGPI, 404, "GpiMove", api_GpiMove, 0 },
     { L_PMGPI, 398, "GpiLine", api_GpiLine, 0 },
     { L_DOS, 5, "DosExit", d16_DosExit, 4 },
+    { L_PMWIN, 246, "WinInitialize", d16_gen, 2 },
+    { L_PMWIN, 247, "WinTerminate", d16_gen, 4 },
+    { L_PMWIN, 58, "WinCreateMsgQueue", d16_gen, 6 },
+    { L_PMWIN, 59, "WinDestroyMsgQueue", d16_gen, 4 },
+    { L_PMWIN, 140, "WinCreateStdWindow", d16_gen, 32 },
+    { L_PMWIN, 6, "WinCreateWindow", d16_gen, 42 },
+    { L_PMWIN, 7, "WinDestroyWindow", d16_gen, 4 },
+    { L_PMWIN, 8, "WinSetWindowPos", d16_gen, 18 },
+    { L_PMWIN, 26, "WinQueryWindowRect", d16_gen, 8 },
+    { L_PMWIN, 45, "WinBeginPaint", d16_gen, 12 },
+    { L_PMWIN, 46, "WinEndPaint", d16_gen, 4 },
+    { L_PMWIN, 47, "WinInvalidateRect", d16_gen, 10 },
+    { L_PMWIN, 69, "WinPostMsg", d16_gen, 14 },
+    { L_PMWIN, 61, "WinSendMsg", d16_gen, 14 },
+    { L_PMWIN, 173, "WinFillRect", d16_gen, 12 },
+    { L_PMWIN, 139, "WinMessageBox", d16_gen, 20 },
+    { L_PMWIN, 84, "WinStartTimer", d16_gen, 12 },
+    { L_PMWIN, 85, "WinStopTimer", d16_gen, 10 },
+    { L_PMWIN, 178, "WinDefWindowProc", d16_gen, 14 },
+    { L_PMWIN, 13, "WinShowWindow", d16_gen, 6 },
+    { L_PMWIN, 17, "WinQueryWindowText", d16_gen, 10 },
+    { L_PMWIN, 16, "WinSetWindowText", d16_gen, 8 },
+    { L_PMWIN, 19, "WinWindowFromID", d16_gen, 6 },
+    { L_PMWIN, 149, "WinQuerySysValue", d16_gen, 6 },
+    { L_PMWIN, 267, "WinDrawText", d16_gen, 24 },
+    { L_PMWIN, 43, "WinGetPS", d16_gen, 4 },
+    { L_PMWIN, 44, "WinReleasePS", d16_gen, 4 },
+    { L_PMWIN, 77, "WinSetFocus", d16_gen, 8 },
+    { L_PMWIN, 78, "WinQueryFocus", d16_gen, 6 },
+    { L_PMWIN, 11, "WinEnableWindow", d16_gen, 6 },
+    { L_PMWIN, 15, "WinIsWindowVisible", d16_gen, 4 },
+    { L_PMWIN, 25, "WinQueryWindow", d16_gen, 8 },
+    { L_PMWIN, 138, "WinAlarm", d16_gen, 6 },
+    { L_PMWIN, 53, "WinUpdateWindow", d16_gen, 4 },
+    { L_PMWIN, 31, "WinQueryWindowULong", d16_gen, 6 },
+    { L_PMWIN, 30, "WinSetWindowULong", d16_gen, 10 },
+    { L_PMWIN, 29, "WinQueryWindowUShort", d16_gen, 6 },
+    { L_PMWIN, 28, "WinSetWindowUShort", d16_gen, 8 },
+    { L_PMWIN, 269, "WinQueryWindowPtr", d16_gen, 6 },
+    { L_PMWIN, 270, "WinSetWindowPtr", d16_gen, 10 },
+    { L_PMWIN, 79, "WinSetActiveWindow", d16_gen, 8 },
+    { L_PMWIN, 91, "WinQuerySysPointer", d16_gen, 8 },
+    { L_PMWIN, 92, "WinSetPointer", d16_gen, 8 },
+    { L_PMWIN, 93, "WinQueryPointer", d16_gen, 4 },
+    { L_PMWIN, 177, "WinDrawPointer", d16_gen, 14 },
+    { L_PMWIN, 89, "WinDestroyPointer", d16_gen, 4 },
+    { L_PMWIN, 135, "WinQueryDlgItemText", d16_gen, 12 },
+    { L_PMWIN, 134, "WinSetDlgItemText", d16_gen, 10 },
+    { L_PMWIN, 126, "WinDismissDlg", d16_gen, 6 },
+    { L_PMWIN, 179, "WinDefDlgProc", d16_gen, 14 },
+    { L_PMWIN, 127, "WinSendDlgItemMsg", d16_gen, 16 },
+    { L_PMGPI, 108, "GpiSetColor", d16_gen, 8 },
+    { L_PMGPI, 128, "GpiMove", d16_gen, 8 },
+    { L_PMGPI, 131, "GpiBox", d16_gen, 20 },
+    { L_PMGPI, 181, "GpiCharStringAt", d16_gen, 16 },
+    { L_PMGPI, 129, "GpiLine", d16_gen, 8 },
+    { L_PMGPI, 110, "GpiSetBackColor", d16_gen, 8 },
+    { L_PMGPI, 112, "GpiSetMix", d16_gen, 8 },
+    { L_PMGPI, 114, "GpiSetBackMix", d16_gen, 8 },
+    { L_PMGPI, 16, "GpiErase", d16_gen, 4 },
+    { L_PMGPI, 137, "GpiFullArc", d16_gen, 12 },
+    { L_PMGPI, 127, "GpiQueryCurrentPosition", d16_gen, 8 },
+    { L_PMGPI, 180, "GpiCharString", d16_gen, 12 },
+    { L_PMGPI, 159, "GpiQueryFontMetrics", d16_gen, 12 },
+    { L_PMGPI, 206, "GpiSetPel", d16_gen, 8 },
+    { L_PMGPI, 130, "GpiPolyLine", d16_gen, 12 },
+    { L_PMGPI, 116, "GpiSetLineType", d16_gen, 8 },
+    { L_PMGPI, 146, "GpiSetPattern", d16_gen, 8 },
+    { L_PMGPI, 109, "GpiQueryColor", d16_gen, 4 },
+    { L_PMGPI, 134, "GpiSetArcParams", d16_gen, 8 },
+    { L_PMGPI, 99, "GpiCreateLogColorTable", d16_gen, 24 },
+    { L_PMGPI, 164, "GpiQueryTextBox", d16_gen, 20 },
+    { L_PMWIN, 3, "WinRegisterClass", d16_WinRegisterClass, 18 },
+    { L_PMWIN, 65, "WinGetMsg", d16_WinGetMsg, 16 },
+    { L_PMWIN, 66, "WinPeekMsg", d16_WinPeekMsg, 18 },
+    { L_PMWIN, 68, "WinDispatchMsg", d16_WinDispatchMsg, 8 },
     { L_DOS, 145, "DosCreateThread", d16_DosCreateThread, 12 },
     { L_DOS, 24, "DosCreateSem", d16_DosCreateSem, 10 },
     { L_DOS, 25, "DosOpenSem", d16_DosOpenSem, 8 },

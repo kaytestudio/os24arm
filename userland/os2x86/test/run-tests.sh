@@ -247,6 +247,18 @@ PY
         thr16out="$(../os2x86 thread16.exe 2>&1 | tr -d '\r')"
         if [ "$(tr '\n' '|' <<< "$thr16out")" = "threads 2 3 4|counter 2000, finished 2, mux 0|lock free|" ]
         then echo "16-bit threads, semaphores: ok"; else echo "16-bit threads, semaphores: FAIL"; echo "$thr16out"; owfail=1; fi
+        # 16-bit Presentation Manager: its window procedure called back, painting, a timer, a key, a click, a message box
+        INCLUDE="$W/h:$W/h/os21x" wcl -q -s -bt=os2 -l=os2_pm "$T/test/ow16/pm16.c" >/dev/null
+        pm16out="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf OS2X86_PM_SCRIPT="sleep 60; sleep 60; sleep 60; sleep 60; sleep 60; sleep 60; shot pm16.ppm; key a; click 50 40; close; enter" ../os2x86 pm16.exe 2>&1 | tr -d '\r')"
+        if grep -q "^WM_CREATE$" <<< "$pm16out" && grep -q "^WM_PAINT$" <<< "$pm16out" && grep -q "^WM_TIMER x3$" <<< "$pm16out" &&
+           grep -q "^WM_CHAR a$" <<< "$pm16out" && grep -q "^WM_BUTTON1DOWN 50 119$" <<< "$pm16out" && grep -q "^WM_CLOSE, message box 6$" <<< "$pm16out" &&
+           grep -q "^done$" <<< "$pm16out" && python3 - pm16.ppm <<'PY'
+import sys
+d = open(sys.argv[1], 'rb').read().split(b'\n', 3); w, h = map(int, d[1].split()); px = d[3]
+at = lambda x, y: tuple(px[((h - 1 - y) * w + x) * 3:((h - 1 - y) * w + x) * 3 + 3])
+sys.exit(0 if at(60, 40) == (255, 0, 0) and at(200, 40) == (255, 255, 255) else 1)
+PY
+        then echo "16-bit Presentation Manager: ok"; else echo "16-bit Presentation Manager: FAIL"; echo "$pm16out"; owfail=1; fi
     fi
     [ "$owfail" = 0 ] || st=1
 else
