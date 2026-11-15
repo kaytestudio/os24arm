@@ -511,6 +511,13 @@ platform-specific are new code.
    areas (GpiBeginArea/EndArea) and paths (GpiBeginPath ... GpiFillPath,
    GpiStrokePath) filled with the patterns (dense, hatched, halftone,
    ...); markers; a clip rectangle (GpiIntersectClipRectangle).
+   Page units and transforms: a presentation space in PU_LOMETRIC,
+   HIMETRIC, LOENGLISH, HIENGLISH, TWIPS or ARBITRARY (GpiCreatePS, on a
+   window's DC - WinOpenWindowDC - or a memory one; GpiSetPageViewport),
+   the model, viewing and default view matrices (GpiSet/Query...Matrix,
+   REPLACE, ADD, PREEMPT), GpiTranslate, GpiScale, GpiRotate, GpiConvert
+   between world, model, page and device: positions stay the program's,
+   lines, areas, text, markers, pels and the clip made the device's.
    Profiles (`pm_prf.inc`, PMSHAPI): PrfQueryProfileString/Int/Data/Size,
    PrfWriteProfileString/Data (deleting keys and applications too),
    enumerating them, PrfOpenProfile for a program's own .INI files - in

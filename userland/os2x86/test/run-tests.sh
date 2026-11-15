@@ -57,6 +57,7 @@ if [ -x "$W/armo64/wcl386" ] || [ -x "$W/binl64/wcl386" ]; then
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmprf.c" >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmfdlg.c" >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmquery.c" >/dev/null
+    wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmxform.c" >/dev/null
     wrc -q -r -bt=os2 -i="$S" "$S/pmowner.rc" -fo=pmowner.res >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmowner.c" >/dev/null && wrc -q -bt=os2 pmowner.res pmowner.exe >/dev/null
     owfail=0
@@ -233,6 +234,19 @@ PY
     qout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf OS2X86_PM_SCRIPT="shift click 30 40; close" ../os2x86 pmquery.exe 2>&1 | tr -d '\r')"
     if [ "$(tr '\n' '|' <<< "$qout")" = "down 1, shift 1; at 30 79, mapped back 30 79|from point: the button, the client; class #3; child 1|capture ours|thread 1|" ]
     then echo "PM pointer, points, key state: ok"; else echo "PM pointer, points, key state: FAIL"; echo "$qout"; owfail=1; fi
+    # page units (LOENGLISH) and transforms (translate, scale, rotate; GpiConvert)
+    xfout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf OS2X86_PM_SCRIPT="shot xform.ppm; close" ../os2x86 pmxform.exe 2>&1 | tr -d '\r')"
+    if grep -q "^units LOENGLISH$" <<< "$xfout" && grep -q "^device: 96 48, 240 0$" <<< "$xfout" && python3 - xform.ppm <<'PY'
+import sys
+d = open(sys.argv[1], 'rb').read().split(b'\n', 3); w, h = map(int, d[1].split()); px = d[3]
+at = lambda x, y: tuple(px[((h - 1 - y) * w + x) * 3:((h - 1 - y) * w + x) * 3 + 3])
+R, B, G, W = (255, 0, 0), (0, 0, 255), (0, 255, 0), (255, 255, 255)
+want = { (80, 80): R, (95, 95): R, (99, 50): W, (30, 20): G, (5, 20): R, (400, 20): B, (431, 47): B, (380, 20): W, (436, 20): W }
+bad = [(p, at(*p), c) for p, c in want.items() if at(*p) != c]
+if bad: print(*bad, sep='\n')
+sys.exit(1 if bad else 0)
+PY
+    then echo "PM page units, transforms: ok"; else echo "PM page units, transforms: FAIL"; echo "$xfout"; owfail=1; fi
     # a 16-bit OS/2 1.x program (NE), OpenWatcom's 16-bit C runtime (its libraries unpacked from the snapshot, when needed)
     if [ ! -d "$W/lib286/os2" ] && [ -f "$OUT/dl/ow.tar.xz" ]; then (cd "$W" && tar xJf "$OUT/dl/ow.tar.xz" ./lib286) 2>/dev/null; fi
     if [ -x "$B/wcl" ] && [ -d "$W/lib286/os2" ]; then

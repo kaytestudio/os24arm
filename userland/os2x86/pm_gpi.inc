@@ -189,6 +189,7 @@ static uint32_t dc_new(int memory, uint32_t hwnd)
 static uint32_t api_DevOpenDC(void) { return dc_new(A(1) == 8, 0); }   /* (hab, lType: OD_MEMORY, ...) */
 static uint32_t api_DevCloseDC(void) { pmdc_t *d = dc_get(A(0)); if (!d) return 0; d->used = 0; return 1; }
 static uint32_t api_WinQueryWindowDC(void) { pmwin_t *w = win(A(0)); return w ? dc_new(0, w->hwnd) : 0; }
+static uint32_t api_WinOpenWindowDC(void) { pmwin_t *w = win(A(0)); return w ? dc_new(0, w->hwnd) : 0; }   /* (hwnd): a DC for GpiCreatePS */
 static uint32_t api_DevQueryCaps(void)            /* (hdc, lStart, lCount, alArray) */
 {
     uint32_t s = A(1), n = A(2), p = A(3);
@@ -209,6 +210,7 @@ static uint32_t api_DevQueryCaps(void)            /* (hdc, lStart, lCount, alArr
     }
     return 1;
 }
+static void geo_set_units(pmps_t *ps, uint32_t opts, uint32_t psizl);
 static uint32_t api_GpiCreatePS(void)             /* (hab, hdc, psizlSize, flOptions) */
 {
     pmdc_t *d = dc_get(A(1));
@@ -216,6 +218,7 @@ static uint32_t api_GpiCreatePS(void)             /* (hab, hdc, psizlSize, flOpt
         if (!pmpss[i].used) {
             geo_free(&pmpss[i]);
             pmpss[i] = (pmps_t){ 1, d && !d->memory ? d->hwnd : 0, -3, -3, 0, 0, 0, 3, 0, 0, 0, 0, 0 };
+            geo_set_units(&pmpss[i], A(3), A(2));            /* (its page units, its page's size) */
             return 0xA000 + (uint32_t)i;
         }
     return 0;
@@ -237,7 +240,8 @@ static uint32_t api_GpiSetBitmap(void)            /* (hps, hbm): the one before 
     ps->hwnd = bmp_get(A(1)) ? A(1) : 0;
     return old;
 }
-static uint32_t api_GpiQueryPS(void) { if (A(1)) { p32(A(1), 0); p32(A(1) + 4, 0); } return 8; }   /* PU_PELS */
+static uint32_t gpi_query_ps(pmps_t *ps, uint32_t psizl);
+static uint32_t api_GpiQueryPS(void) { pmps_t *ps = ps_get(A(0)); if (!ps) return 0; return gpi_query_ps(ps, A(1)); }   /* (hps, psizl): its units */
 static uint32_t api_GpiResetPS(void) { pmps_t *ps = ps_get(A(0)); if (ps) { ps->color = ps->back = -3; ps->x = ps->y = 0; geo_free(ps); } return 1; }
 static uint32_t api_WinGetScreenPS(void)
 {

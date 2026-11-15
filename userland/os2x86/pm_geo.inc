@@ -19,15 +19,66 @@ typedef struct {
     geofig_t *fig; int nfig;
     int clip, cx0, cy0, cx1, cy1;            /* GpiIntersectClipRectangle: [cx0, cx1) x [cy0, cy1) */
     int lpos;                                /* (the line type's place along what's being drawn) */
+    /* world to device: model (and viewing) transform, then the default view, then page units / the page viewport */
+    double model[6], view[6], seg[6], page[6];                   /* (a, b, c, d, e, f: x' = a x + c y + e, y' = b x + d y + f) */
+    double m[6], inv[6];                                         /* (all of them, combined; its inverse) */
+    int ident, units, pagecx, pagecy;
 } geo_t;
+static const double IDM[6] = { 1, 0, 0, 1, 0, 0 };
+static void mat_mul(double *r, const double *p, const double *q)   /* r = p then q */
+{
+    double t[6] = { p[0] * q[0] + p[1] * q[2], p[0] * q[1] + p[1] * q[3], p[2] * q[0] + p[3] * q[2], p[2] * q[1] + p[3] * q[3],
+                    p[4] * q[0] + p[5] * q[2] + q[4], p[4] * q[1] + p[5] * q[3] + q[5] };
+    memcpy(r, t, sizeof t);
+}
+static void geo_combine(geo_t *g)
+{
+    double t[6];
+    mat_mul(t, g->model, g->seg);
+    mat_mul(t, t, g->view);
+    mat_mul(g->m, t, g->page);
+    double det = g->m[0] * g->m[3] - g->m[1] * g->m[2];
+    if (fabs(det) < 1e-12) det = 1e-12;
+    g->inv[0] = g->m[3] / det; g->inv[1] = -g->m[1] / det; g->inv[2] = -g->m[2] / det; g->inv[3] = g->m[0] / det;
+    g->inv[4] = -(g->m[4] * g->inv[0] + g->m[5] * g->inv[2]); g->inv[5] = -(g->m[4] * g->inv[1] + g->m[5] * g->inv[3]);
+    g->ident = !memcmp(g->m, IDM, sizeof IDM);
+}
+/* page units: device pels per unit (3780 pels a metre, as DevQueryCaps says) */
+static double unit_pels(int u)
+{
+    switch (u) {
+    case 0x0C: return 3780.0 / 10000;         /* PU_LOMETRIC: 0.1 mm */
+    case 0x10: return 3780.0 / 100000;        /* PU_HIMETRIC: 0.01 mm */
+    case 0x14: return 3780.0 * 0.000254;      /* PU_LOENGLISH: 0.01 inch */
+    case 0x18: return 3780.0 * 0.0000254;     /* PU_HIENGLISH: 0.001 inch */
+    case 0x1C: return 3780.0 * 0.0254 / 1440; /* PU_TWIPS */
+    default: return 1;                        /* PU_PELS, PU_ARBITRARY (until a page viewport says) */
+    }
+}
 static geo_t *geo(pmps_t *ps)
 {
     if (!ps->geo) {
         geo_t *g = calloc(1, sizeof *g);
         g->ap = g->aq = 1; g->lwidth = 1; g->gwidth = 1; g->mix = 2; g->bmix = 5; g->marker = 1;
+        memcpy(g->model, IDM, sizeof IDM); memcpy(g->view, IDM, sizeof IDM); memcpy(g->seg, IDM, sizeof IDM); memcpy(g->page, IDM, sizeof IDM);
+        g->units = 8;
+        geo_combine(g);
         ps->geo = g;
     }
     return ps->geo;
+}
+/* a world point to the device's, and back */
+static void ps_to_dev(pmps_t *ps, double x, double y, int *dx, int *dy)
+{
+    geo_t *g = ps->geo;
+    if (!g || g->ident) { *dx = (int)lround(x); *dy = (int)lround(y); return; }
+    *dx = (int)lround(g->m[0] * x + g->m[2] * y + g->m[4]); *dy = (int)lround(g->m[1] * x + g->m[3] * y + g->m[5]);
+}
+static void ps_from_dev(pmps_t *ps, double x, double y, int *wx, int *wy)
+{
+    geo_t *g = ps->geo;
+    if (!g || g->ident) { *wx = (int)lround(x); *wy = (int)lround(y); return; }
+    *wx = (int)lround(g->inv[0] * x + g->inv[2] * y + g->inv[4]); *wy = (int)lround(g->inv[1] * x + g->inv[3] * y + g->inv[5]);
 }
 static void geo_free(pmps_t *ps)
 {
@@ -78,9 +129,11 @@ static int geo_dash(geo_t *g)
     g->lpos++;
     return on;
 }
-static void geo_line(pmps_t *ps, pmwin_t *w, int x0, int y0, int x1, int y1, int width)
+static void geo_line(pmps_t *ps, pmwin_t *w, int x0, int y0, int x1, int y1, int width)   /* (world points) */
 {
     geo_t *g = geo(ps);
+    ps_to_dev(ps, x0, y0, &x0, &y0);
+    ps_to_dev(ps, x1, y1, &x1, &y1);
     uint32_t c = geo_color(ps);
     int dx = abs(x1 - x0), dy = -abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1, e = dx + dy, h = width / 2;
     for (;;) {
@@ -113,7 +166,22 @@ static int geo_pat(geo_t *g, int x, int y)
     }
 }
 /* the figures, filled: scan lines, alternate (even-odd) or winding */
-static void geo_fill(pmps_t *ps, pmwin_t *w, geo_t *g, int winding)
+static void geo_fill_dev(pmps_t *ps, pmwin_t *w, geo_t *g, int winding);
+static void geo_fill(pmps_t *ps, pmwin_t *w, geo_t *g, int winding)   /* (world figures: to the device's, then filled) */
+{
+    if (!ps->geo || ((geo_t *)ps->geo)->ident) { geo_fill_dev(ps, w, g, winding); return; }
+    geo_t d = *g;
+    d.fig = calloc((size_t)(g->nfig ? g->nfig : 1), sizeof *d.fig);
+    for (int i = 0; i < g->nfig; i++) {
+        d.fig[i].n = d.fig[i].cap = g->fig[i].n;
+        d.fig[i].p = malloc((size_t)(g->fig[i].n ? g->fig[i].n : 1) * 2 * sizeof(int32_t));
+        for (int k = 0; k < g->fig[i].n; k++) { int x, y; ps_to_dev(ps, g->fig[i].p[2 * k], g->fig[i].p[2 * k + 1], &x, &y); d.fig[i].p[2 * k] = x; d.fig[i].p[2 * k + 1] = y; }
+    }
+    geo_fill_dev(ps, w, &d, winding);
+    for (int i = 0; i < d.nfig; i++) free(d.fig[i].p);
+    free(d.fig);
+}
+static void geo_fill_dev(pmps_t *ps, pmwin_t *w, geo_t *g, int winding)
 {
     int ymin = 1 << 30, ymax = -(1 << 30);
     for (int i = 0; i < g->nfig; i++) for (int k = 0; k < g->fig[i].n; k++) {
@@ -328,7 +396,7 @@ static uint32_t api_GpiBox(void)                    /* (hps, lControl, pptlPoint
     if (hr > (x1 - x0) / 2) hr = (x1 - x0) / 2;
     if (vr > (y1 - y0) / 2) vr = (y1 - y0) / 2;
     if (!hr || !vr) {
-        if (!g->area && !g->path && (A(1) & 1) && !g->clip && g->pattern % 16 == 0 && geo_mix(g) == 2 && ps_win(ps)) {   /* (the usual: quick) */
+        if (!g->area && !g->path && (A(1) & 1) && !g->clip && g->pattern % 16 == 0 && geo_mix(g) == 2 && ps_win(ps) && g->ident) {   /* (the usual: quick) */
             fill(ps_win(ps), x0, y0, x1 + 1, y1 + 1, geo_color(ps));
             if (A(1) & 2) { int32_t p[8] = { x0, y0, x1, y0, x1, y1, x0, y1 }; geo_shape(ps, p, 4, 2); }
             return 1;
@@ -456,7 +524,8 @@ static void geo_marker(pmps_t *ps, int x, int y)
     pmwin_t *w = ps_win(ps);
     if (!w) return;
     uint32_t c = geo_color(ps);
-    int m = geo_mix(g);
+    int m = geo_mix(g), dx, dy;
+    ps_to_dev(ps, x, y, &dx, &dy);
     for (int j = -4; j <= 4; j++)
         for (int i = -4; i <= 4; i++) {
             int on;
@@ -472,7 +541,7 @@ static void geo_marker(pmps_t *ps, int x, int y)
             case 64: on = 0; break;                                            /* BLANK */
             default: on = i == j || i == -j;                                   /* DEFAULT, CROSS */
             }
-            if (on) geo_pel(ps, w, x + i, y + j, c, m);
+            if (on) geo_pel(ps, w, dx + i, dy + j, c, m);
         }
     ps->x = x; ps->y = y;
 }
@@ -491,6 +560,9 @@ static uint32_t api_GpiIntersectClipRectangle(void) /* (hps, prcl): RGN_RECT */
     GEO_PS;
     if (!ok(A(1), 16)) return 0;
     int x0 = (int32_t)g32(A(1)), y0 = (int32_t)g32(A(1) + 4), x1 = (int32_t)g32(A(1) + 8), y1 = (int32_t)g32(A(1) + 12);
+    ps_to_dev(ps, x0, y0, &x0, &y0); ps_to_dev(ps, x1, y1, &x1, &y1);   /* (world to device: an upright rectangle) */
+    if (x0 > x1) { int t = x0; x0 = x1; x1 = t; }
+    if (y0 > y1) { int t = y0; y0 = y1; y1 = t; }
     if (!g->clip) { g->clip = 1; g->cx0 = x0; g->cy0 = y0; g->cx1 = x1; g->cy1 = y1; }
     else { if (x0 > g->cx0) g->cx0 = x0; if (y0 > g->cy0) g->cy0 = y0; if (x1 < g->cx1) g->cx1 = x1; if (y1 < g->cy1) g->cy1 = y1; }
     return 2;                                                /* RGN_RECT */
@@ -503,4 +575,157 @@ static uint32_t api_GpiPtVisible(void)              /* (hps, pptl): PVIS_VISIBLE
     pmwin_t *w = ps_win(ps);
     int in = w && x >= 0 && y >= 0 && x < w->cx && y < w->cy && (!g->clip || (x >= g->cx0 && x < g->cx1 && y >= g->cy0 && y < g->cy1));
     return in ? 2 : 1;
+}
+
+/* ── transforms: MATRIXLF (fxM11, fxM12, lM13, fxM21, fxM22, lM23, lM31, lM32, lM33) ── */
+static void mat_get(uint32_t p, uint32_t n, double *m)     /* (the first n elements given; the rest the identity's) */
+{
+    memcpy(m, IDM, sizeof IDM);
+    if (!p) return;
+    if (n > 0) m[0] = (int32_t)g32(p) / 65536.0;
+    if (n > 1) m[1] = (int32_t)g32(p + 4) / 65536.0;
+    if (n > 3) m[2] = (int32_t)g32(p + 12) / 65536.0;
+    if (n > 4) m[3] = (int32_t)g32(p + 16) / 65536.0;
+    if (n > 6) m[4] = (int32_t)g32(p + 24);
+    if (n > 7) m[5] = (int32_t)g32(p + 28);
+}
+static void mat_put(uint32_t p, uint32_t n, const double *m)
+{
+    int32_t v[9] = { (int32_t)lround(m[0] * 65536), (int32_t)lround(m[1] * 65536), 0, (int32_t)lround(m[2] * 65536),
+                     (int32_t)lround(m[3] * 65536), 0, (int32_t)lround(m[4]), (int32_t)lround(m[5]), 1 };
+    for (uint32_t i = 0; i < n && i < 9; i++) p32(p + 4 * i, (uint32_t)v[i]);
+}
+/* REPLACE: it; ADD: after the one there; PREEMPT: before it */
+static void mat_apply(double *cur, const double *m, uint32_t opt)
+{
+    if (opt == 1) mat_mul(cur, cur, m);
+    else if (opt == 2) mat_mul(cur, m, cur);
+    else memcpy(cur, m, 6 * sizeof *cur);
+}
+static uint32_t gpi_setmat(double *which, int stage)       /* (hps, lCount, pmatlf, lOptions) */
+{
+    GEO_PS;
+    double m[6];
+    mat_get(A(2), A(1), m);
+    double *t = stage == 0 ? g->model : stage == 1 ? g->view : g->seg;
+    (void)which;
+    mat_apply(t, m, A(3));
+    geo_combine(g);
+    return 1;
+}
+static uint32_t gpi_querymat(int stage)                   /* (hps, lCount, pmatlf) */
+{
+    GEO_PS;
+    if (!ok(A(2), 4 * A(1))) return 0;
+    mat_put(A(2), A(1), stage == 0 ? g->model : stage == 1 ? g->view : g->seg);
+    return 1;
+}
+static uint32_t api_GpiSetModelTransformMatrix(void) { return gpi_setmat(0, 0); }
+static uint32_t api_GpiQueryModelTransformMatrix(void) { return gpi_querymat(0); }
+static uint32_t api_GpiSetDefaultViewMatrix(void) { return gpi_setmat(0, 1); }
+static uint32_t api_GpiQueryDefaultViewMatrix(void) { return gpi_querymat(1); }
+static uint32_t api_GpiSetViewingTransformMatrix(void) { return gpi_setmat(0, 2); }
+static uint32_t api_GpiQueryViewingTransformMatrix(void) { return gpi_querymat(2); }
+/* GpiTranslate (hps, pmatlf, lOptions, pptl), GpiScale (hps, pmatlf, lOptions, afxScale[2], pptlCenter), GpiRotate (hps,
+ * pmatlf, lOptions, fxAngle, pptlCenter): build a matrix into pmatlf - REPLACE, or ADD after the one there */
+static uint32_t gpi_build(const double *m)
+{
+    if (!ok(A(1), 36)) return 0;
+    double cur[6];
+    mat_get(A(1), 9, cur);
+    mat_apply(cur, m, A(2) == 2 ? 2 : A(2));
+    mat_put(A(1), 9, cur);
+    return 1;
+}
+static uint32_t api_GpiTranslate(void)
+{
+    if (!ok(A(3), 8)) return 0;
+    double m[6] = { 1, 0, 0, 1, (int32_t)g32(A(3)), (int32_t)g32(A(3) + 4) };
+    return gpi_build(m);
+}
+static uint32_t api_GpiScale(void)
+{
+    if (!ok(A(3), 8)) return 0;
+    double sx = (int32_t)g32(A(3)) / 65536.0, sy = (int32_t)g32(A(3) + 4) / 65536.0, cx = 0, cy = 0;
+    if (A(4) && ok(A(4), 8)) { cx = (int32_t)g32(A(4)); cy = (int32_t)g32(A(4) + 4); }
+    double m[6] = { sx, 0, 0, sy, cx - sx * cx, cy - sy * cy };
+    return gpi_build(m);
+}
+static uint32_t api_GpiRotate(void)
+{
+    double a = (int32_t)A(3) / 65536.0 * M_PI / 180, c = cos(a), s = sin(a), cx = 0, cy = 0;
+    if (A(4) && ok(A(4), 8)) { cx = (int32_t)g32(A(4)); cy = (int32_t)g32(A(4) + 4); }
+    double m[6] = { c, s, -s, c, cx - c * cx + s * cy, cy - s * cx - c * cy };
+    return gpi_build(m);
+}
+/* GpiConvert (hps, lSrc, lTarg, lCount, aptl): CVTC_WORLD 1, MODEL 2, DEFAULTPAGE 3, PAGE 4, DEVICE 5 */
+static void geo_to_space(geo_t *g, int space, double *m)  /* (world to that space) */
+{
+    memcpy(m, IDM, sizeof IDM);
+    if (space >= 2) mat_mul(m, m, g->model);
+    if (space >= 3) mat_mul(m, m, g->seg);
+    if (space >= 4) mat_mul(m, m, g->view);
+    if (space >= 5) mat_mul(m, m, g->page);
+}
+static uint32_t api_GpiConvert(void)
+{
+    GEO_PS;
+    int32_t n = (int32_t)A(3);
+    if (n < 0 || !ok(A(4), 8u * (uint32_t)n) || A(1) < 1 || A(1) > 5 || A(2) < 1 || A(2) > 5) return 0;
+    double from[6], to[6], inv[6];
+    geo_to_space(g, (int)A(1), from);
+    geo_to_space(g, (int)A(2), to);
+    double det = from[0] * from[3] - from[1] * from[2];
+    if (fabs(det) < 1e-12) det = 1e-12;
+    inv[0] = from[3] / det; inv[1] = -from[1] / det; inv[2] = -from[2] / det; inv[3] = from[0] / det;
+    inv[4] = -(from[4] * inv[0] + from[5] * inv[2]); inv[5] = -(from[4] * inv[1] + from[5] * inv[3]);
+    double t[6];
+    mat_mul(t, inv, to);                                         /* (back to world, then to the target) */
+    for (int32_t i = 0; i < n; i++) {
+        uint32_t p = A(4) + 8u * (uint32_t)i;
+        double x = (int32_t)g32(p), y = (int32_t)g32(p + 4);
+        p32(p, (uint32_t)(int32_t)lround(t[0] * x + t[2] * y + t[4])); p32(p + 4, (uint32_t)(int32_t)lround(t[1] * x + t[3] * y + t[5]));
+    }
+    return 1;
+}
+/* the page: its units (GpiCreatePS), its viewport (GpiSetPageViewport: the page's size in units onto that device rectangle) */
+static void geo_set_units(pmps_t *ps, uint32_t opts, uint32_t psizl)
+{
+    geo_t *g = geo(ps);
+    g->units = (int)(opts & 0x1C);
+    if (!g->units) g->units = 8;
+    g->pagecx = psizl && ok(psizl, 8) ? (int32_t)g32(psizl) : 0;
+    g->pagecy = psizl && ok(psizl, 8) ? (int32_t)g32(psizl + 4) : 0;
+    double u = unit_pels(g->units);
+    double m[6] = { u, 0, 0, u, 0, 0 };
+    memcpy(g->page, m, sizeof m);
+    geo_combine(g);
+}
+static uint32_t api_GpiSetPageViewport(void)              /* (hps, prclViewport) */
+{
+    GEO_PS;
+    if (!ok(A(1), 16)) return 0;
+    double x0 = (int32_t)g32(A(1)), y0 = (int32_t)g32(A(1) + 4), x1 = (int32_t)g32(A(1) + 8), y1 = (int32_t)g32(A(1) + 12);
+    pmwin_t *w = ps_win(ps);
+    double pcx = g->pagecx > 0 ? g->pagecx : w ? w->cx / unit_pels(g->units) : 1, pcy = g->pagecy > 0 ? g->pagecy : w ? w->cy / unit_pels(g->units) : 1;
+    double m[6] = { (x1 - x0) / pcx, 0, 0, (y1 - y0) / pcy, x0, y0 };
+    memcpy(g->page, m, sizeof m);
+    geo_combine(g);
+    return 1;
+}
+static uint32_t api_GpiQueryPageViewport(void)
+{
+    GEO_PS;
+    if (!ok(A(1), 16)) return 0;
+    pmwin_t *w = ps_win(ps);
+    double pcx = g->pagecx > 0 ? g->pagecx : w ? w->cx / unit_pels(g->units) : 0, pcy = g->pagecy > 0 ? g->pagecy : w ? w->cy / unit_pels(g->units) : 0;
+    p32(A(1), (uint32_t)(int32_t)lround(g->page[4])); p32(A(1) + 4, (uint32_t)(int32_t)lround(g->page[5]));
+    p32(A(1) + 8, (uint32_t)(int32_t)lround(g->page[4] + g->page[0] * pcx)); p32(A(1) + 12, (uint32_t)(int32_t)lround(g->page[5] + g->page[3] * pcy));
+    return 1;
+}
+static uint32_t gpi_query_ps(pmps_t *ps, uint32_t psizl)  /* GpiQueryPS: the units (and the page's size) */
+{
+    geo_t *g = geo(ps);
+    if (psizl && ok(psizl, 8)) { p32(psizl, (uint32_t)g->pagecx); p32(psizl + 4, (uint32_t)g->pagecy); }
+    return (uint32_t)g->units;
 }

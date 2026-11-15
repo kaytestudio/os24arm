@@ -1260,6 +1260,8 @@ static uint32_t pm_msgbox(const char *text, const char *cap, uint32_t style)
 }
 
 /* ── PMGPI ───────────────────────────────────────────────────────────── */
+static void ps_to_dev(pmps_t *ps, double x, double y, int *dx, int *dy);
+static void ps_from_dev(pmps_t *ps, double x, double y, int *wx, int *wy);
 static uint32_t api_GpiSetColor(void) { pmps_t *ps = ps_get(A(0)); if (!ps) return 0; ps->color = (int32_t)A(1); return 1; }
 static uint32_t api_GpiQueryColor(void) { pmps_t *ps = ps_get(A(0)); return ps ? (uint32_t)ps->color : 0xFFFFFF01u; }
 static uint32_t api_GpiSetBackColor(void) { pmps_t *ps = ps_get(A(0)); if (!ps) return 0; ps->back = (int32_t)A(1); return 1; }
@@ -1275,7 +1277,9 @@ static uint32_t api_GpiSetPel(void)
     pmps_t *ps = ps_get(A(0));
     pmwin_t *w = ps_win(ps);
     if (!w || !ok(A(1), 8)) return 0;
-    pel(w, (int32_t)g32(A(1)), (int32_t)g32(A(1) + 4), pm_rgb(ps->color, ps->rgb, 0));
+    int dx, dy;
+    ps_to_dev(ps, (int32_t)g32(A(1)), (int32_t)g32(A(1) + 4), &dx, &dy);
+    pel(w, dx, dy, pm_rgb(ps->color, ps->rgb, 0));
     return 1;
 }
 static uint32_t char_string(pmps_t *ps, int n, uint32_t ps_str)
@@ -1285,7 +1289,11 @@ static uint32_t char_string(pmps_t *ps, int n, uint32_t ps_str)
     if (!w || !s) return 0;
     pmfont_t *save = pmf;
     pmf = ps_font(ps);
-    ps->x = text_at(w, ps->x, ps->y, s, n, pm_rgb(ps->color, ps->rgb, 0));
+    int dx, dy, wx, wy;
+    ps_to_dev(ps, ps->x, ps->y, &dx, &dy);                   /* (the world's position on the device; the end back in the world's) */
+    dx = text_at(w, dx, dy, s, n, pm_rgb(ps->color, ps->rgb, 0));
+    ps_from_dev(ps, dx, dy, &wx, &wy);
+    ps->x = wx; ps->y = wy;
     pmf = save;
     return 1;
 }
