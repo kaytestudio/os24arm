@@ -419,9 +419,16 @@ platform-specific are new code.
    arrows; pages from dialog resources - WinLoadDlg into a window makes a
    dialog that's a child of it - BKM_INSERTPAGE & co., BKN_PAGESELECTED)
    and sliders (ticks, scale text, buttons, the arm clicked, dragged or
-   moved by the keys; SLM_SET/QUERYSLIDERINFO, SLN_CHANGE). Not there
-   yet: containers, value sets, circular sliders, the pointer's shape on
-   the desktop. OS/2's DLLs that aren't
+   moved by the keys; SLM_SET/QUERYSLIDERINFO, SLN_CHANGE). Containers
+   (`pm_cnr.inc`): records and field descriptions in the program's own
+   memory (CM_ALLOCRECORD, CM_ALLOCDETAILFIELDINFO), the icon, name,
+   text and details views (string, number, date, time and icon columns,
+   titles, separators), selection (CN_EMPHASIS), opening (CN_ENTER: a
+   double-click or Enter), CM_SORTRECORD with the program's compare
+   function, CM_SEARCHSTRING, a scroll bar. Double-clicks
+   (WM_BUTTONnDBLCLK) for every window. Not there yet: the tree view,
+   editing in a container, drag and drop, value sets, circular sliders,
+   the pointer's shape on the desktop. OS/2's DLLs that aren't
    here (PMSHAPI, HELPMGR, TCP32DLL, ...) load as stubs, so a program
    that only links them in runs; a call into one says so and returns 0. Calls it doesn't have yet print
    one line on stderr and return error 1; `OS2X86_TRACE=1` lists every

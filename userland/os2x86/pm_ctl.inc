@@ -327,6 +327,7 @@ static uint32_t list_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
         present(w);
         return 0;
     }
+    case WM_BUTTON1DBLCLK: if (l->sel >= 0) notify(w, 5, 0); return 1;   /* LN_ENTER */
     case WM_BUTTON1DOWN: {
         int y = (int16_t)(mp1 >> 16), k = l->top + (w->cy - 2 - y) / pm_lineh;
         if (k >= 0 && k < l->n && k != l->sel) { l->sel = k; repaint(w); notify(w, 1, 0); }   /* LN_SELECT */
@@ -713,6 +714,7 @@ static uint32_t mle_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2);
 static uint32_t spin_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2);
 static uint32_t slider_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2);
 static uint32_t notebook_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2);
+static uint32_t container_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2);
 static pmproc_t builtin_proc(const char *cls)
 {
     if (!strcmp(cls, "#3")) return button_proc;
@@ -725,6 +727,7 @@ static pmproc_t builtin_proc(const char *cls)
     if (!strcmp(cls, "#32")) return spin_proc;
     if (!strcmp(cls, "#38")) return slider_proc;
     if (!strcmp(cls, "#40")) return notebook_proc;
+    if (!strcmp(cls, "#37")) return container_proc;
     return 0;
 }
 

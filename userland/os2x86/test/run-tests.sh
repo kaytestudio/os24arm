@@ -48,6 +48,7 @@ if [ -x "$W/armo64/wcl386" ] || [ -x "$W/binl64/wcl386" ]; then
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm -i="$S" "$S/pmfont.c" >/dev/null && wrc -q -bt=os2 pmfont.res pmfont.exe >/dev/null
     wrc -q -r -bt=os2 -i="$S" "$S/pmbook.rc" -fo=pmbook.res >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm -i="$S" "$S/pmbook.c" >/dev/null && wrc -q -bt=os2 pmbook.res pmbook.exe >/dev/null
+    wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmcnr.c" >/dev/null
     owfail=0
     echo "== OpenWatcom programs"
     ../os2x86 owtest.exe </dev/null | grep -E "^FAIL|passed|failed" || owfail=1
@@ -151,6 +152,12 @@ PY
     if [ "$(grep '^SLN_CHANGE' <<< "$bookout" | tr -d '\r' | tr '\n' ' ')" = "SLN_CHANGE 3 SLN_CHANGE 7 SLN_CHANGE 8 SLN_CHANGE 9 SLN_CHANGE 2 " ] &&
        grep -q "BKN_PAGESELECTED -> page 2" <<< "$bookout" && grep -q 'done: slider 2, name "Warp", on page 1, 2 selections' <<< "$bookout"
     then echo "PM notebook, slider: ok"; else echo "PM notebook, slider: FAIL"; echo "$bookout"; owfail=1; fi
+    # a container: details view (columns, titles), select, double-click, sort (the program's compare), remove, icon view
+    cnrout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf OS2X86_PM_SCRIPT="click 60 90; dblclick 60 68; key s; key d; key i; close" ../os2x86 pmcnr.exe 2>&1 | tr -d '\r')"
+    if grep -q "fields 4, records 5" <<< "$cnrout" && grep -q "CN_EMPHASIS autoexec.bat selected" <<< "$cnrout" &&
+       grep -q "CN_ENTER config.sys" <<< "$cnrout" && grep -q "sorted: autoexec.bat config.sys os2.ini readme.txt startup.cmd" <<< "$cnrout" &&
+       grep -q "now: autoexec.bat os2.ini readme.txt startup.cmd" <<< "$cnrout" && grep -q "done: 4 records, view icon" <<< "$cnrout"
+    then echo "PM container: ok"; else echo "PM container: FAIL"; echo "$cnrout"; owfail=1; fi
     [ "$owfail" = 0 ] || st=1
 else
     echo "(no OpenWatcom: its programs not tried)"

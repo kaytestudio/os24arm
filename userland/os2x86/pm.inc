@@ -227,6 +227,8 @@ static uint32_t pm_send(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
         pmfont_t *save = pmf;
         pmf = win_font(w);
         uint32_t r = w->iproc(w, msg, mp1, mp2);
+        if (!r && (msg == WM_BUTTON1DBLCLK || msg == 0x0076 || msg == 0x0079))   /* (a double-click a control doesn't take: one more press) */
+            r = w->iproc(w, msg == WM_BUTTON1DBLCLK ? WM_BUTTON1DOWN : msg == 0x0076 ? WM_BUTTON2DOWN : WM_BUTTON3DOWN, mp1, mp2);
         pmf = save;
         return r;
     }
@@ -464,9 +466,20 @@ static void pm_mouse(pmwin_t *f, int px, int py, int button, int down)
     static const uint32_t dn[3] = { WM_BUTTON1DOWN, WM_BUTTON2DOWN, WM_BUTTON3DOWN }, up[3] = { WM_BUTTON1UP, WM_BUTTON2UP, WM_BUTTON3UP };
     if (button < 1 || button > 3) return;
     if (down && f->drop && w != f->drop && w->id != 0x8005) { menu_close(f); return; }   /* (FID_MENU: it decides) */
+    static uint64_t last_t;
+    static int last_b, last_x, last_y;
+    static uint32_t last_w;
+    uint32_t msgdown = dn[button - 1];
+    if (down) {                                              /* (a second press, soon and near: a double-click) */
+        uint64_t now = ms_now();
+        if (last_b == button && last_w == w->hwnd && now - last_t < 500 && abs(x - last_x) < 5 && abs(y - last_y) < 5) {
+            msgdown = button == 1 ? WM_BUTTON1DBLCLK : button == 2 ? 0x0076 : 0x0079;
+            last_t = 0;
+        } else { last_t = now; last_b = button; last_x = x; last_y = y; last_w = w->hwnd; }
+    }
     if (down && !(w->style & 0x40000000u)) set_focus((f->client && w == f) ? f->client->hwnd : w->hwnd);
     if (w->style & 0x40000000u) return;                 /* WS_DISABLED */
-    post(w, w->hwnd, down ? dn[button - 1] : up[button - 1], mp1, 0);
+    post(w, w->hwnd, down ? msgdown : up[button - 1], mp1, 0);
 }
 static int key_hook(pmwin_t *f, int ch, int vk, int scan, int kc);
 static void pm_key(pmwin_t *f, int ch, int vk, int scan, int kc)
@@ -532,6 +545,7 @@ static int hl_idle(struct timespec *dl)
             return 1;
         }
         if (!strcmp(s, "enter")) { pm_key(f, '\r', 0x1e, 0x1c, 0); return 1; }
+        if (sscanf(s, "dblclick %d %d", &x, &y) == 2) { pm_mouse(f, x, y, 1, 1); pm_mouse(f, x, y, 1, 0); pm_mouse(f, x, y, 1, 1); pm_mouse(f, x, y, 1, 0); return 1; }
         if (sscanf(s, "ctrl %255s", a) == 1) { pm_key(f, a[0], 0, 0, KC_CTRL); return 1; }
         if (sscanf(s, "alt %255s", a) == 1) { pm_key(f, a[0], 0, 0, KC_ALT); return 1; }
         if (sscanf(s, "vkey %255s", a) == 1) {
@@ -1483,3 +1497,5 @@ static uint32_t api_WinRemovePresParam(void)
     invalidate(w);
     return 1;
 }
+static pmwin_t *ptr_get(uint32_t h);
+#include "pm_cnr.inc"

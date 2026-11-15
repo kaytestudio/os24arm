@@ -428,10 +428,10 @@ static void disc(pmwin_t *p, int cx, int cy, int r, uint32_t c, ptr_t *m)   /* (
         }
 }
 /* the system's: drawn here (SPTR_ICONINFORMATION ... ICONWARNING, the arrow) */
-static uint32_t sys_ptrs[16];
+static uint32_t sys_ptrs[32];
 static uint32_t sys_pointer(uint32_t id)
 {
-    if (id >= 16) return 0;
+    if (id >= 32) return 0;
     if (win(sys_ptrs[id])) return sys_ptrs[id];
     pmwin_t *p = ptr_new(32, 32, 0);
     if (!p) return 0;
@@ -443,6 +443,22 @@ static uint32_t sys_pointer(uint32_t id)
     case 11: bg = 0x2050C0; mark = "i"; break;                 /* SPTR_ICONINFORMATION */
     case 12: bg = 0x2050C0; mark = "?"; break;                 /* SPTR_ICONQUESTION */
     case 13: bg = 0xC02020; mark = "X"; break;                 /* SPTR_ICONERROR */
+    case 19: case 21:                                          /* SPTR_FILE, SPTR_MULTFILE: a page, its corner folded */
+        for (int y = 2; y < 30; y++) for (int x = 7; x < 25; x++) {
+            int edge = x == 7 || x == 24 || y == 2 || y == 29, corner = x > 18 && y < 8 && x - 18 > y - 2;
+            if (corner) continue;
+            p->px[y * 32 + x] = edge || (x > 18 && y == 8) || (x == 19 && y < 8) ? 0xFF000000u : (y > 10 && y % 4 == 0 && x > 9 && x < 22 ? 0xFF7080A0u : 0xFFFFFFFFu);
+            m->andm[y * 32 + x] = 0;
+        }
+        break;
+    case 20:                                                   /* SPTR_FOLDER */
+        for (int y = 6; y < 28; y++) for (int x = 3; x < 29; x++) {
+            if (y < 10 && x > 14) continue;
+            int edge = x == 3 || x == 28 || y == 6 || y == 27 || (y == 10 && x > 14) || (x == 14 && y < 10);
+            p->px[y * 32 + x] = edge ? 0xFF806000u : 0xFFF0D060u;
+            m->andm[y * 32 + x] = 0;
+        }
+        break;
     case 14:                                                   /* SPTR_ICONWARNING: a triangle */
         for (int y = 2; y < 30; y++) for (int x = 16 - (y - 2) / 2 - 1; x <= 16 + (y - 2) / 2; x++)
             if (x >= 0 && x < 32) { p->px[y * 32 + x] = 0xFFF0C800u; m->andm[y * 32 + x] = 0; }
@@ -470,7 +486,7 @@ static uint32_t api_WinDestroyPointer(void)
 {
     pmwin_t *p = ptr_get(A(0));
     if (!p) return 0;
-    for (int i = 0; i < 16; i++) if (sys_ptrs[i] == p->hwnd) return 1;  /* (the system's stay) */
+    for (int i = 0; i < 32; i++) if (sys_ptrs[i] == p->hwnd) return 1;  /* (the system's stay) */
     ptr_free(p);
     return 1;
 }
