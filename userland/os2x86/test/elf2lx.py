@@ -26,6 +26,12 @@ IMPORTS = {   # name: (module, ordinal)
     'DosQueryHType': ('DOSCALLS', 224), 'DosSleep': ('DOSCALLS', 229), 'DosCreateDir': ('DOSCALLS', 270),
     'DosDeleteDir': ('DOSCALLS', 226), 'DosMove': ('DOSCALLS', 271), 'DosQueryCtryInfo': ('NLS', 5),
     'DosPutMessage': ('MSG', 5),
+    'DosCreateThread': ('DOSCALLS', 311), 'DosWaitThread': ('DOSCALLS', 349), 'DosKillThread': ('DOSCALLS', 111),
+    'DosCreateMutexSem': ('DOSCALLS', 331), 'DosRequestMutexSem': ('DOSCALLS', 334),
+    'DosReleaseMutexSem': ('DOSCALLS', 335), 'DosCreateEventSem': ('DOSCALLS', 324),
+    'DosPostEventSem': ('DOSCALLS', 328), 'DosWaitEventSem': ('DOSCALLS', 329), 'DosCloseEventSem': ('DOSCALLS', 326),
+    'DosCloseMutexSem': ('DOSCALLS', 333), 'DosCreateMuxWaitSem': ('DOSCALLS', 337),
+    'DosWaitMuxWaitSem': ('DOSCALLS', 340),
 }
 
 def main():

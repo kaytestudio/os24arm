@@ -348,10 +348,13 @@ platform-specific are new code.
    os2x86 again), exception handlers (DosSetExceptionHandler: an access
    violation, a division by zero, an illegal instruction go to the
    program's handlers, as on OS/2; unhandled, a SYS3175 report with the
-   registers), semaphores, exit lists, x86 DLLs it brings along (the
-   program's directory, the current one, LIBPATH; their initialisation
-   runs). Not there yet: a second thread (DosCreateThread fails), the
-   16-bit KBD/VIO/MOU calls, Presentation Manager (PMWIN & co.: such a
+   registers), threads (DosCreateThread, DosWaitThread, Suspend/Resume/
+   Kill, DosEnterCritSec: each a thread here with its CPU of its own; one
+   lock lets one run at a time, given up while a call waits and every
+   32768 instructions), event, mutex and muxwait semaphores that really
+   wait, exit lists, x86 DLLs it brings along (the program's directory,
+   the current one, LIBPATH; their initialisation runs). Not there yet:
+   the 16-bit KBD/VIO/MOU calls, Presentation Manager (PMWIN & co.: such a
    program stops at once, saying so). Calls it doesn't have yet print
    one line on stderr and return error 1; `OS2X86_TRACE=1` lists every
    call. `userland/os2x86/test/run-tests.sh` runs its test program

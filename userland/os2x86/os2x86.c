@@ -11,7 +11,10 @@
  * current one or LIBPATH.
  *
  * Drives: C: is /, D: is /h (the stick) when it's there, or as
- * OS2X86_DRIVES says ("C=/;D=/h;E=/mnt"). OS2X86_MEM: the guest's memory
+ * OS2X86_DRIVES says ("C=/;D=/h;E=/mnt"). Each OS/2 thread is a thread
+ * here, with a CPU of its own; one lock (gil) lets one at a time run the
+ * program or the calls, given up around those that wait and every so many
+ * instructions. OS2X86_MEM: the guest's memory
  * in MB (512). OS2X86_TRACE=1: every system call on stderr.
  * The kernel runs x86 LX files through this (as it does #! scripts). */
 #define _GNU_SOURCE
@@ -21,6 +24,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <pthread.h>
 #include <sched.h>
 #include <signal.h>
 #include <stdio.h>
@@ -80,7 +84,24 @@ extern char **environ;
 #define SEL_CODE 0x5B
 #define SEL_DATA 0x53
 
-static cpu_t C;
+/* the threads: thread 1 is the program's first */
+typedef struct thr {
+    cpu_t cpu;
+    uint32_t tid, stack, exitcode;
+    int state;                          /* 1 running, 2 ended, 3 collected (DosWaitThread) */
+    int suspended, kill;
+    int api_noret, xcpt_depth;
+} thr_t;
+#define MAXTHR 128
+static thr_t thr0 = { .tid = 1, .state = 1 };
+static _Thread_local thr_t *me = &thr0;
+#define C (me->cpu)
+static thr_t *thrs[MAXTHR] = { &thr0 };
+static int nlive = 1;
+static uint32_t crit_tid, crit_n;       /* DosEnterCritSec: only this one runs */
+static pthread_mutex_t gil = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t gcv = PTHREAD_COND_INITIALIZER;   /* a semaphore, a thread changed */
+#define UNLOCKED(stmt) do { pthread_mutex_unlock(&gil); stmt; pthread_mutex_lock(&gil); } while (0)
 static int trace;
 static char self_path[PATH_MAX] = "/h/OS2/os2x86";
 static const char *prog_name = "os2x86";
@@ -488,7 +509,7 @@ typedef uint32_t (*api_fn)(void);
 typedef struct { int lib; uint16_t ord; const char *name; api_fn fn; } api_t;
 static const api_t apis[];
 
-enum { T_EXIT, T_CBRET, T_FIRST };
+enum { T_EXIT, T_CBRET, T_THREXIT, T_FIRST };
 typedef struct { int lib; uint32_t ord; const api_t *api; int warned; char name[40]; } thunk_t;
 #define NTHUNKS (UNIT / T_SLOT)
 static thunk_t thunks[NTHUNKS];
@@ -918,16 +939,26 @@ static void setup_process(int argc, char **argv)
 }
 
 /* ── running: interpreter, then system call, then interpreter ... ────── */
-static int api_noret;
+#define api_noret (me->api_noret)
 static int running_exitlist;
 static void exception(int why);
 static void api_call(int idx);
+static void thread_end(uint32_t code) __attribute__((noreturn));
+
+/* another thread's turn; then as DosSuspendThread, DosEnterCritSec,
+ * DosKillThread say */
+static void checkpoint(void)
+{
+    UNLOCKED(sched_yield());
+    while (me->suspended || (crit_tid && crit_tid != me->tid)) pthread_cond_wait(&gcv, &gil);
+    if (me->kill) thread_end(0);
+}
 
 static void run(int nested)
 {
     for (;;) {
-        int r = cpu_run(&C, 1L << 22);
-        if (r == CPU_STEPS) continue;
+        int r = cpu_run(&C, nlive > 1 ? 1L << 15 : 1L << 22);
+        if (r == CPU_STEPS) { if (nlive > 1) checkpoint(); continue; }
         if (r == CPU_THUNK) {
             uint32_t o = C.eip - C.thunk_lo;
             int idx = (int)(o / T_SLOT);
@@ -979,10 +1010,23 @@ static void do_exit(uint32_t code)
     _exit((int)(code & 0xFF));
 }
 
+static void thread_end(uint32_t code)
+{
+    if (me->tid == 1) do_exit(code);        /* (thread 1's end is the process's) */
+    me->state = 2;
+    me->exitcode = code;
+    nlive--;
+    if (crit_tid == me->tid) { crit_tid = 0; crit_n = 0; }
+    pthread_cond_broadcast(&gcv);
+    pthread_mutex_unlock(&gil);
+    pthread_exit(0);
+}
+
 static void api_call(int idx)
 {
     thunk_t *t = &thunks[idx];
     if (idx == T_EXIT) do_exit(C.r[EAX]);
+    if (idx == T_THREXIT) thread_end(C.r[EAX]);
     uint32_t ret = g32(C.r[ESP]), rv;
     uint32_t a0 = A(0), a1 = A(1), a2 = A(2), a3 = A(3);
     api_noret = 0;
@@ -1012,7 +1056,7 @@ static void api_call(int idx)
 #define XCPT_INTEGER_OVERFLOW       0xC000009C
 #define XCPT_PRIVILEGED_INSTRUCTION 0xC000009D
 #define XCPT_BREAKPOINT             0xC000009F
-static int xcpt_depth;
+#define xcpt_depth (me->xcpt_depth)
 
 static void where(uint32_t a, char *out, size_t n)
 {
@@ -1057,7 +1101,7 @@ static void dispatch(uint32_t num, uint32_t np, uint32_t p0, uint32_t p1, uint32
     p32(ctx + 144, C.r[EDX]); p32(ctx + 148, C.r[ECX]); p32(ctx + 152, C.r[EBP]); p32(ctx + 156, C.eip);
     p32(ctx + 160, SEL_CODE); p32(ctx + 164, C.eflags); p32(ctx + 168, C.r[ESP]); p32(ctx + 172, SEL_DATA);
     xcpt_depth++;
-    for (uint32_t rec = g32(tib); rec && rec != 0xFFFFFFFF && ok(rec, 8); rec = g32(rec)) {
+    for (uint32_t rec = g32(C.fs_base); rec && rec != 0xFFFFFFFF && ok(rec, 8); rec = g32(rec)) {
         uint32_t args[4] = { rep, rec, ctx, 0 }, sp = C.r[ESP];
         C.r[ESP] = rep - 16;
         uint32_t r = guest_call(g32(rec + 4), 4, args);
@@ -1193,7 +1237,8 @@ static uint32_t api_DosRead(void)
     void *p = gp(A(1), cb);
     if (!p && cb) return ERROR_INVALID_PARAMETER;
     ssize_t n;
-    do n = read((int)A(0), p, cb); while (n < 0 && errno == EINTR);
+    int fd = (int)A(0);
+    UNLOCKED(do n = read(fd, p, cb); while (n < 0 && errno == EINTR));
     if (n < 0) return errno == EBADF ? ERROR_INVALID_HANDLE : oserr(errno);
     p32(A(3), (uint32_t)n);
     return 0;
@@ -1204,8 +1249,10 @@ static uint32_t api_DosWrite(void)
     uint32_t cb = A(2), done = 0;
     char *p = gp(A(1), cb);
     if (!p && cb) return ERROR_INVALID_PARAMETER;
+    int fd = (int)A(0);
     while (done < cb) {
-        ssize_t n = write((int)A(0), p + done, cb - done);
+        ssize_t n;
+        UNLOCKED(n = write(fd, p + done, cb - done));
         if (n < 0 && errno == EINTR) continue;
         if (n < 0) { p32(A(3), done); return errno == EBADF ? ERROR_INVALID_HANDLE : oserr(errno); }
         done += (uint32_t)n;
@@ -1653,12 +1700,12 @@ static uint32_t api_DosQueryMem(void)
 
 static uint32_t api_DosGetInfoBlocks(void)
 {
-    if (A(0)) p32(A(0), tib);
+    if (A(0)) p32(A(0), C.fs_base);
     if (A(1)) p32(A(1), pib);
     return 0;
 }
 
-static uint32_t api_DosExit(void) { do_exit(A(1)); }
+static uint32_t api_DosExit(void) { if (A(0) == 0) thread_end(A(1)); do_exit(A(1)); }
 static uint32_t api_DosExitList(void)
 {
     uint32_t code = A(0), fn = A(1);
@@ -1697,9 +1744,9 @@ static uint32_t api_DosGetDateTime(void)
 static uint32_t api_DosSleep(void)
 {
     uint32_t ms = A(0);
-    if (!ms) { sched_yield(); return 0; }
+    if (!ms) { UNLOCKED(sched_yield()); return 0; }
     struct timespec ts = { ms / 1000, (long)(ms % 1000) * 1000000L };
-    while (nanosleep(&ts, &ts) && errno == EINTR) { }
+    UNLOCKED(while (nanosleep(&ts, &ts) && errno == EINTR) { });
     return 0;
 }
 static uint64_t ms_now(void)
@@ -1791,13 +1838,13 @@ static uint32_t api_DosSetExceptionHandler(void)
 {
     uint32_t rec = A(0);
     if (!ok(rec, 8)) return ERROR_INVALID_PARAMETER;
-    p32(rec, g32(tib));
-    p32(tib, rec);
+    p32(rec, g32(C.fs_base));
+    p32(C.fs_base, rec);
     return 0;
 }
 static uint32_t api_DosUnsetExceptionHandler(void)
 {
-    uint32_t rec = A(0), at = tib;
+    uint32_t rec = A(0), at = C.fs_base;
     for (int i = 0; i < 1000; i++) {
         uint32_t cur = g32(at);
         if (!cur || cur == 0xFFFFFFFF) return 0x6A3;    /* ERROR_INVALID_EXCEPTION_HANDLER... */
@@ -1809,7 +1856,7 @@ static uint32_t api_DosUnsetExceptionHandler(void)
 static uint32_t api_DosUnwindException(void)
 {
     uint32_t target = A(1);
-    p32(tib, A(0));
+    p32(C.fs_base, A(0));
     if (target) {
         C.r[ESP] += 4;
         C.eip = target;
@@ -1994,7 +2041,7 @@ static uint32_t api_DosExecPgm(void)
     free(abuf);
     if ((flags & 7) == 0) {                  /* EXEC_SYNC */
         int st;
-        while (waitpid(pid, &st, 0) < 0 && errno == EINTR) { }
+        UNLOCKED(while (waitpid(pid, &st, 0) < 0 && errno == EINTR) { });
         if (pres) put_result(pres, st);
     } else if (pres) {
         p32(pres, (uint32_t)pid);
@@ -2007,7 +2054,7 @@ static uint32_t api_DosWaitChild(void)
     uint32_t option = A(1), pres = A(2), ppid = A(3), pid = A(4);
     int st;
     pid_t r;
-    do r = waitpid(pid ? (pid_t)pid : -1, &st, option == 1 ? WNOHANG : 0); while (r < 0 && errno == EINTR);
+    UNLOCKED(do r = waitpid(pid ? (pid_t)pid : -1, &st, option == 1 ? WNOHANG : 0); while (r < 0 && errno == EINTR));
     if (r == 0) return ERROR_CHILD_NOT_COMPLETE;
     if (r < 0) return ERROR_WAIT_NO_CHILDREN;
     if (pres) put_result(pres, st);
@@ -2026,49 +2073,193 @@ static uint32_t api_DosQueryAppType(void)
     else if (k == 1) t = (fl >> 8) & 7;
     return p32(A(1), t) ? 0 : ERROR_INVALID_PARAMETER;
 }
+/* threads */
+static thr_t *thr_get(uint32_t tid)
+{
+    return tid >= 1 && tid <= MAXTHR && thrs[tid - 1] && thrs[tid - 1]->state == 1 ? thrs[tid - 1] : 0;
+}
+static void *thr_main(void *arg)
+{
+    me = arg;
+    pthread_mutex_lock(&gil);
+    while (me->suspended) pthread_cond_wait(&gcv, &gil);
+    run(0);
+    return 0;
+}
 static uint32_t api_DosCreateThread(void)
 {
-    static int warned;
-    if (!warned) { fprintf(stderr, "%s: the program wants a second thread; threads aren't there yet\n", prog_name); warned = 1; }
-    return 164;                              /* ERROR_MAX_THRDS_REACHED */
+    uint32_t ptid = A(0), fn = A(1), param = A(2), flags = A(3), cb = A(4);
+    int i;
+    for (i = 1; i < MAXTHR && thrs[i] && thrs[i]->state != 3; i++) { }
+    if (i == MAXTHR) return 164;             /* ERROR_MAX_THRDS_REACHED */
+    if (!ok(ptid, 4)) return ERROR_INVALID_PARAMETER;
+    if (cb < 0x10000) cb = 0x10000;
+    if (cb > 0x4000000) cb = 0x4000000;
+    uint32_t stack = mem_alloc(cb + 0x100);
+    if (!stack) return ERROR_NOT_ENOUGH_MEMORY;
+    thr_t *t = thrs[i] ? thrs[i] : calloc(1, sizeof *t);
+    if (!t) { mem_free(stack); return ERROR_NOT_ENOUGH_MEMORY; }
+    memset(t, 0, sizeof *t);
+    cpu_reset(&t->cpu);
+    t->cpu.mem = C.mem; t->cpu.size = C.size; t->cpu.lo = C.lo;
+    t->cpu.thunk_lo = C.thunk_lo; t->cpu.thunk_hi = C.thunk_hi;
+    t->tid = (uint32_t)i + 1;
+    t->stack = stack;
+    t->state = 1;
+    t->suspended = flags & 1;                /* CREATE_SUSPENDED */
+    /* its information blocks just past its stack */
+    uint32_t top = stack + cb, ttib = top, ttib2 = top + 0x40;
+    p32(ttib, 0xFFFFFFFF); p32(ttib + 4, stack); p32(ttib + 8, top); p32(ttib + 12, ttib2);
+    p32(ttib + 16, 20); p32(ttib + 20, t->tid);
+    p32(ttib2, t->tid); p32(ttib2 + 4, 0x200); p32(ttib2 + 8, 20);
+    t->cpu.fs_base = ttib;
+    /* fn(param), returning to the end of the thread */
+    p32(top - 4, param);
+    p32(top - 8, thunk_addr(T_THREXIT));
+    t->cpu.r[ESP] = top - 8;
+    t->cpu.eip = fn;
+    thrs[i] = t;
+    nlive++;
+    pthread_attr_t at;
+    pthread_attr_init(&at);
+    pthread_attr_setstacksize(&at, 1 << 20);
+    pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+    pthread_t pt;
+    int r = pthread_create(&pt, &at, thr_main, t);
+    pthread_attr_destroy(&at);
+    if (r) { nlive--; t->state = 3; mem_free(stack); return ERROR_NOT_ENOUGH_MEMORY; }
+    p32(ptid, t->tid);
+    return 0;
+}
+static uint32_t api_DosWaitThread(void)
+{
+    uint32_t ptid = A(0), option = A(1);
+    if (!ok(ptid, 4)) return ERROR_INVALID_PARAMETER;
+    uint32_t want = g32(ptid);
+    for (;;) {
+        int others = want == 1 && me->tid != 1;      /* (thread 1: till the end) */
+        for (int i = 1; i < MAXTHR; i++) {
+            thr_t *t = thrs[i];
+            if (!t || t->state == 3 || t == me || (want && t->tid != want)) continue;
+            if (t->state == 2) {
+                t->state = 3;
+                mem_free(t->stack);
+                p32(ptid, t->tid);
+                return 0;
+            }
+            others++;
+        }
+        if (!others) return 309;                 /* ERROR_INVALID_THREADID */
+        if (option == 1) return 294;             /* ERROR_THREAD_NOT_TERMINATED */
+        pthread_cond_wait(&gcv, &gil);
+    }
+}
+static uint32_t api_DosKillThread(void)
+{
+    thr_t *t = thr_get(A(0));
+    if (!t || t == me) return 309;
+    t->kill = 1;
+    t->suspended = 0;
+    pthread_cond_broadcast(&gcv);
+    return 0;
+}
+static uint32_t api_DosSuspendThread(void)
+{
+    thr_t *t = thr_get(A(0));
+    if (!t) return 309;
+    t->suspended = 1;
+    if (t == me) checkpoint();
+    return 0;
+}
+static uint32_t api_DosResumeThread(void)
+{
+    thr_t *t = thr_get(A(0));
+    if (!t) return 309;
+    t->suspended = 0;
+    pthread_cond_broadcast(&gcv);
+    return 0;
+}
+static uint32_t api_DosEnterCritSec(void) { crit_tid = me->tid; crit_n++; return 0; }
+static uint32_t api_DosExitCritSec(void)
+{
+    if (crit_tid == me->tid && crit_n && !--crit_n) { crit_tid = 0; pthread_cond_broadcast(&gcv); }
+    return 0;
 }
 
-/* semaphores: one thread, so waiting can't be answered by anyone */
-typedef struct { int used; char name[64]; uint32_t count; } sem_t2;
+/* semaphores: event, mutex, muxwait; waiting gives up the lock (gcv) */
+enum { SEM_EVENT = 1, SEM_MUTEX, SEM_MUX };
+typedef struct { int used, kind; char name[64]; uint32_t count, owner, nrec, any; uint32_t rec[64][2]; } sem_t2;
 static sem_t2 sems[256];
-static uint32_t sem_new(uint32_t pname, uint32_t ph, uint32_t count)
+static sem_t2 *sem_new(uint32_t pname, uint32_t ph, int kind, uint32_t *err)
 {
     char *n = pname ? gs(pname) : 0;
+    if (n && *n)
+        for (int i = 0; i < 256; i++)
+            if (sems[i].used && !strcasecmp(sems[i].name, n)) { *err = 285; return 0; }   /* ERROR_DUPLICATE_NAME */
     for (int i = 0; i < 256; i++)
         if (!sems[i].used) {
-            sems[i].used = 1; sems[i].count = count;
+            memset(&sems[i], 0, sizeof sems[i]);
+            sems[i].used = 1;
+            sems[i].kind = kind;
             snprintf(sems[i].name, sizeof sems[i].name, "%s", n ? n : "");
-            return p32(ph, 0x10000 + (uint32_t)i) ? 0 : ERROR_INVALID_PARAMETER;
+            if (!p32(ph, 0x10000 + (uint32_t)i)) { sems[i].used = 0; *err = ERROR_INVALID_PARAMETER; return 0; }
+            return &sems[i];
         }
-    return 8;
+    *err = 290;                                  /* ERROR_TOO_MANY_HANDLES */
+    return 0;
 }
-static sem_t2 *sem_get(uint32_t h) { h -= 0x10000; return h < 256 && sems[h].used ? &sems[h] : 0; }
-static uint32_t sem_open(uint32_t pname, uint32_t ph)
+static sem_t2 *sem_get(uint32_t h, int kind)
 {
+    h -= 0x10000;
+    return h < 256 && sems[h].used && (!kind || sems[h].kind == kind) ? &sems[h] : 0;
+}
+static uint32_t api_DosOpenSem(void)
+{
+    uint32_t pname = A(0), ph = A(1);
     char *n = pname ? gs(pname) : 0;
-    if (!n || !*n) return sem_get(g32(ph)) ? 0 : ERROR_INVALID_HANDLE;
+    if (!n || !*n) return sem_get(g32(ph), 0) ? 0 : ERROR_INVALID_HANDLE;
     for (int i = 0; i < 256; i++)
         if (sems[i].used && !strcasecmp(sems[i].name, n)) return p32(ph, 0x10000 + (uint32_t)i) ? 0 : ERROR_INVALID_PARAMETER;
-    return 187;                              /* ERROR_SEM_NOT_FOUND */
+    return 187;                                  /* ERROR_SEM_NOT_FOUND */
 }
-static uint32_t api_DosCreateEventSem(void) { return sem_new(A(0), A(1), A(3) ? 1 : 0); }
-static uint32_t api_DosCreateMutexSem(void) { return sem_new(A(0), A(1), A(3) ? 1 : 0); }
-static uint32_t api_DosOpenSem(void) { return sem_open(A(0), A(1)); }
-static uint32_t api_DosCloseSem(void) { sem_t2 *s = sem_get(A(0)); if (!s) return ERROR_INVALID_HANDLE; s->used = 0; return 0; }
+static uint32_t api_DosCloseSem(void)
+{
+    sem_t2 *s = sem_get(A(0), 0);
+    if (!s) return ERROR_INVALID_HANDLE;
+    if (s->kind == SEM_MUTEX && s->owner && s->owner != me->tid && thr_get(s->owner)) return 301;   /* ERROR_SEM_BUSY */
+    s->used = 0;
+    pthread_cond_broadcast(&gcv);
+    return 0;
+}
+static struct timespec *deadline(uint32_t ms, struct timespec *ts)
+{
+    if (ms == 0xFFFFFFFF) return 0;              /* SEM_INDEFINITE_WAIT */
+    clock_gettime(CLOCK_REALTIME, ts);
+    ts->tv_sec += ms / 1000;
+    ts->tv_nsec += (long)(ms % 1000) * 1000000L;
+    if (ts->tv_nsec >= 1000000000L) { ts->tv_sec++; ts->tv_nsec -= 1000000000L; }
+    return ts;
+}
+static int wait_until(struct timespec *dl) { return dl ? pthread_cond_timedwait(&gcv, &gil, dl) : pthread_cond_wait(&gcv, &gil); }
+
+static uint32_t api_DosCreateEventSem(void)
+{
+    uint32_t err;
+    sem_t2 *s = sem_new(A(0), A(1), SEM_EVENT, &err);
+    if (!s) return err;
+    s->count = A(3) ? 1 : 0;
+    return 0;
+}
 static uint32_t api_DosPostEventSem(void)
 {
-    sem_t2 *s = sem_get(A(0));
+    sem_t2 *s = sem_get(A(0), SEM_EVENT);
     if (!s) return ERROR_INVALID_HANDLE;
+    pthread_cond_broadcast(&gcv);
     return s->count++ ? ERROR_ALREADY_POSTED : 0;
 }
 static uint32_t api_DosResetEventSem(void)
 {
-    sem_t2 *s = sem_get(A(0));
+    sem_t2 *s = sem_get(A(0), SEM_EVENT);
     if (!s) return ERROR_INVALID_HANDLE;
     if (A(1)) p32(A(1), s->count);
     if (!s->count) return ERROR_ALREADY_RESET;
@@ -2077,31 +2268,107 @@ static uint32_t api_DosResetEventSem(void)
 }
 static uint32_t api_DosWaitEventSem(void)
 {
-    sem_t2 *s = sem_get(A(0));
-    if (!s) return ERROR_INVALID_HANDLE;
-    if (s->count) return 0;
-    uint32_t t = A(1);
-    if (t && t != 0xFFFFFFFF) { struct timespec ts = { t / 1000, (long)(t % 1000) * 1000000L }; nanosleep(&ts, 0); }
-    return ERROR_TIMEOUT;
+    uint32_t h = A(0), t = A(1);
+    struct timespec ts, *dl = deadline(t, &ts);
+    for (;;) {
+        sem_t2 *s = sem_get(h, SEM_EVENT);
+        if (!s) return ERROR_INVALID_HANDLE;
+        if (s->count) return 0;
+        if (!t || wait_until(dl) == ETIMEDOUT) {
+            s = sem_get(h, SEM_EVENT);
+            return s && s->count ? 0 : ERROR_TIMEOUT;
+        }
+    }
 }
-static uint32_t api_DosQueryEventSem(void) { sem_t2 *s = sem_get(A(0)); if (!s) return ERROR_INVALID_HANDLE; p32(A(1), s->count); return 0; }
-static uint32_t api_DosRequestMutexSem(void) { sem_t2 *s = sem_get(A(0)); if (!s) return ERROR_INVALID_HANDLE; s->count++; return 0; }
+static uint32_t api_DosQueryEventSem(void)
+{
+    sem_t2 *s = sem_get(A(0), SEM_EVENT);
+    if (!s) return ERROR_INVALID_HANDLE;
+    return p32(A(1), s->count) ? 0 : ERROR_INVALID_PARAMETER;
+}
+
+static uint32_t api_DosCreateMutexSem(void)
+{
+    uint32_t err;
+    sem_t2 *s = sem_new(A(0), A(1), SEM_MUTEX, &err);
+    if (!s) return err;
+    if (A(3)) { s->owner = me->tid; s->count = 1; }
+    return 0;
+}
+static uint32_t api_DosRequestMutexSem(void)
+{
+    uint32_t h = A(0), t = A(1);
+    struct timespec ts, *dl = deadline(t, &ts);
+    for (;;) {
+        sem_t2 *s = sem_get(h, SEM_MUTEX);
+        if (!s) return ERROR_INVALID_HANDLE;
+        if (!s->owner || s->owner == me->tid) { s->owner = me->tid; s->count++; return 0; }
+        if (!thr_get(s->owner)) { s->owner = me->tid; s->count = 1; return 105; }   /* ERROR_SEM_OWNER_DIED */
+        if (!t || wait_until(dl) == ETIMEDOUT) return ERROR_TIMEOUT;
+    }
+}
 static uint32_t api_DosReleaseMutexSem(void)
 {
-    sem_t2 *s = sem_get(A(0));
+    sem_t2 *s = sem_get(A(0), SEM_MUTEX);
     if (!s) return ERROR_INVALID_HANDLE;
-    if (!s->count) return ERROR_NOT_OWNER;
-    s->count--;
+    if (s->owner != me->tid || !s->count) return ERROR_NOT_OWNER;
+    if (!--s->count) { s->owner = 0; pthread_cond_broadcast(&gcv); }
     return 0;
 }
 static uint32_t api_DosQueryMutexSem(void)
 {
-    sem_t2 *s = sem_get(A(0));
+    sem_t2 *s = sem_get(A(0), SEM_MUTEX);
     if (!s) return ERROR_INVALID_HANDLE;
-    if (A(1)) p32(A(1), s->count ? (uint32_t)getpid() : 0);
-    if (A(2)) p32(A(2), s->count ? 1 : 0);
+    if (A(1)) p32(A(1), s->owner ? (uint32_t)getpid() : 0);
+    if (A(2)) p32(A(2), s->owner);
     if (A(3)) p32(A(3), s->count);
     return 0;
+}
+
+static uint32_t api_DosCreateMuxWaitSem(void)
+{
+    uint32_t pname = A(0), ph = A(1), n = A(2), recs = A(3), fl = A(4), err;
+    if (n > 64 || (n && !ok(recs, n * 8))) return ERROR_INVALID_PARAMETER;
+    for (uint32_t k = 0; k < n; k++) if (!sem_get(g32(recs + 8 * k), 0)) return ERROR_INVALID_HANDLE;
+    sem_t2 *s = sem_new(pname, ph, SEM_MUX, &err);
+    if (!s) return err;
+    s->nrec = n;
+    s->any = !(fl & 4);                          /* DCMW_WAIT_ALL: else any */
+    for (uint32_t k = 0; k < n; k++) { s->rec[k][0] = g32(recs + 8 * k); s->rec[k][1] = g32(recs + 8 * k + 4); }
+    return 0;
+}
+static int sem_ready(sem_t2 *s)
+{
+    return s->kind == SEM_EVENT ? s->count != 0 : (!s->owner || s->owner == me->tid || !thr_get(s->owner));
+}
+static void sem_take(sem_t2 *s)
+{
+    if (s->kind != SEM_MUTEX) return;
+    if (s->owner != me->tid) { s->owner = me->tid; s->count = 0; }
+    s->count++;
+}
+static uint32_t api_DosWaitMuxWaitSem(void)
+{
+    uint32_t h = A(0), t = A(1), pu = A(2);
+    struct timespec ts, *dl = deadline(t, &ts);
+    for (;;) {
+        sem_t2 *m = sem_get(h, SEM_MUX);
+        if (!m) return ERROR_INVALID_HANDLE;
+        uint32_t ready = 0;
+        int first = -1;
+        for (uint32_t k = 0; k < m->nrec; k++) {
+            sem_t2 *s = sem_get(m->rec[k][0], 0);
+            if (!s) return ERROR_INVALID_HANDLE;
+            if (sem_ready(s)) { ready++; if (first < 0) first = (int)k; }
+        }
+        if (m->any ? ready > 0 : ready == m->nrec) {
+            if (m->any) sem_take(sem_get(m->rec[first][0], 0));
+            else for (uint32_t k = 0; k < m->nrec; k++) sem_take(sem_get(m->rec[k][0], 0));
+            if (pu) p32(pu, m->any ? m->rec[first][1] : 0);
+            return 0;
+        }
+        if (!t || wait_until(dl) == ETIMEDOUT) return ERROR_TIMEOUT;
+    }
 }
 
 /* NLS, MSG */
@@ -2145,6 +2412,7 @@ static uint32_t api_DosPutMessage(void)
 
 static const api_t apis[] = {
     { L_DOS, 110, "DosForceDelete", api_DosDelete },
+    { L_DOS, 111, "DosKillThread", api_DosKillThread },
     { L_DOS, 209, "DosSetMaxFH", api_ok },
     { L_DOS, 210, "DosSetVerify", api_ok },
     { L_DOS, 212, "DosError", api_ok },
@@ -2160,11 +2428,13 @@ static const api_t apis[] = {
     { L_DOS, 229, "DosSleep", api_DosSleep },
     { L_DOS, 230, "DosGetDateTime", api_DosGetDateTime },
     { L_DOS, 231, "DosDevConfig", api_DosDevConfig },
-    { L_DOS, 232, "DosEnterCritSec", api_ok },
-    { L_DOS, 233, "DosExitCritSec", api_ok },
+    { L_DOS, 232, "DosEnterCritSec", api_DosEnterCritSec },
+    { L_DOS, 233, "DosExitCritSec", api_DosExitCritSec },
     { L_DOS, 234, "DosExit", api_DosExit },
     { L_DOS, 235, "DosKillProcess", api_DosKillProcess },
     { L_DOS, 236, "DosSetPriority", api_ok },
+    { L_DOS, 237, "DosResumeThread", api_DosResumeThread },
+    { L_DOS, 238, "DosSuspendThread", api_DosSuspendThread },
     { L_DOS, 239, "DosCreatePipe", api_DosCreatePipe },
     { L_DOS, 254, "DosResetBuffer", api_DosResetBuffer },
     { L_DOS, 255, "DosSetCurrentDir", api_DosSetCurrentDir },
@@ -2220,7 +2490,12 @@ static const api_t apis[] = {
     { L_DOS, 334, "DosRequestMutexSem", api_DosRequestMutexSem },
     { L_DOS, 335, "DosReleaseMutexSem", api_DosReleaseMutexSem },
     { L_DOS, 336, "DosQueryMutexSem", api_DosQueryMutexSem },
+    { L_DOS, 337, "DosCreateMuxWaitSem", api_DosCreateMuxWaitSem },
+    { L_DOS, 338, "DosOpenMuxWaitSem", api_DosOpenSem },
+    { L_DOS, 339, "DosCloseMuxWaitSem", api_DosCloseSem },
+    { L_DOS, 340, "DosWaitMuxWaitSem", api_DosWaitMuxWaitSem },
     { L_DOS, 348, "DosQuerySysInfo", api_DosQuerySysInfo },
+    { L_DOS, 349, "DosWaitThread", api_DosWaitThread },
     { L_DOS, 354, "DosSetExceptionHandler", api_DosSetExceptionHandler },
     { L_DOS, 355, "DosUnsetExceptionHandler", api_DosUnsetExceptionHandler },
     { L_DOS, 356, "DosRaiseException", api_DosRaiseException },
@@ -2281,6 +2556,7 @@ int main(int argc, char **argv)
     if (size > 0xF0000000ull) size = 0xF0000000ull;
     C.mem = mmap(0, (size_t)size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (C.mem == MAP_FAILED) die(8, "os2x86: no memory for the program (%u MB)", (unsigned)(size >> 20));
+    pthread_mutex_lock(&gil);
     cpu_reset(&C);
     C.size = (uint32_t)size;
     C.lo = UNIT;

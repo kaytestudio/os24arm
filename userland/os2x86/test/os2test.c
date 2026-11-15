@@ -26,6 +26,17 @@ APIRET DosQueryPathInfo(const char *name, ULONG level, void *buf, ULONG cb);
 APIRET DosQuerySysInfo(ULONG first, ULONG last, void *buf, ULONG cb);
 APIRET DosCreateDir(const char *name, void *eas);
 APIRET DosDeleteDir(const char *name);
+APIRET DosCreateThread(ULONG *tid, void (*fn)(ULONG), ULONG param, ULONG flags, ULONG stack);
+APIRET DosWaitThread(ULONG *tid, ULONG option);
+APIRET DosCreateMutexSem(const char *name, ULONG *h, ULONG flags, ULONG state);
+APIRET DosRequestMutexSem(ULONG h, ULONG timeout);
+APIRET DosReleaseMutexSem(ULONG h);
+APIRET DosCreateEventSem(const char *name, ULONG *h, ULONG flags, ULONG state);
+APIRET DosPostEventSem(ULONG h);
+APIRET DosWaitEventSem(ULONG h, ULONG timeout);
+APIRET DosCreateMuxWaitSem(const char *name, ULONG *h, ULONG n, ULONG *recs, ULONG flags);
+APIRET DosWaitMuxWaitSem(ULONG h, ULONG timeout, ULONG *user);
+APIRET DosSleep(ULONG ms);
 
 static int fails;
 
@@ -56,6 +67,26 @@ static ULONG handler(ULONG *rep, void *reg, ULONG *ctx, void *dc)
 }
 
 static volatile double dv = 3.14159;
+
+/* threads: a counter under a mutex, with a yield between its read and
+ * its write (without the mutex, increments would get lost) */
+static ULONG mtx, ev, ev2, woke;
+static volatile ULONG counter;
+static void adder(ULONG n)
+{
+    for (ULONG i = 0; i < n; i++) {
+        DosRequestMutexSem(mtx, 0xFFFFFFFF);
+        ULONG v = counter;
+        if ((i & 15) == 0) DosSleep(0);
+        counter = v + 1;
+        DosReleaseMutexSem(mtx);
+    }
+}
+static void waiter(ULONG x)
+{
+    if (DosWaitEventSem(ev, 0xFFFFFFFF) == 0) woke = x;
+    DosPostEventSem(ev2);
+}
 
 ULONG start(void)
 {
@@ -134,6 +165,28 @@ ULONG start(void)
     check((ULONG)(x * 1000) == 6283, "x87 arithmetic");
     long long big = 1234567890123LL;
     check((ULONG)(big >> 20) == 1177375, "64-bit shift");
+
+    ULONG t1, t2, t3, tw;
+    check(DosCreateMutexSem(0, &mtx, 0, 0) == 0, "DosCreateMutexSem");
+    check(DosCreateThread(&t1, adder, 3000, 0, 65536) == 0 && DosCreateThread(&t2, adder, 3000, 0, 65536) == 0
+          && DosCreateThread(&t3, adder, 3000, 2, 65536) == 0 && t1 != t2 && t1 > 1, "DosCreateThread (3)");
+    ULONG w = t1, w2 = t2, w3 = t3;
+    check(DosWaitThread(&w, 0) == 0 && DosWaitThread(&w2, 0) == 0 && DosWaitThread(&w3, 0) == 0, "DosWaitThread");
+    out("  counter "); num(counter); out("\n");
+    check(counter == 9000, "mutex: no increments lost");
+    ULONG none = t1;
+    check(DosWaitThread(&none, 1) == 309, "DosWaitThread: already collected");
+    check(DosCreateEventSem(0, &ev, 0, 0) == 0 && DosCreateEventSem(0, &ev2, 0, 0) == 0, "DosCreateEventSem");
+    check(DosWaitEventSem(ev, 30) == 640, "DosWaitEventSem: times out");
+    check(DosCreateThread(&tw, waiter, 77, 0, 65536) == 0, "a waiting thread");
+    DosSleep(50);
+    check(woke == 0, "  still waiting");
+    ULONG recs[2] = { ev2, 5 }, mux, user = 0;
+    check(DosCreateMuxWaitSem(0, &mux, 1, recs, 2) == 0, "DosCreateMuxWaitSem");
+    DosPostEventSem(ev);
+    check(DosWaitMuxWaitSem(mux, 2000, &user) == 0 && user == 5, "DosWaitMuxWaitSem");
+    ULONG any = 0;
+    check(DosWaitThread(&any, 0) == 0 && any == tw && woke == 77, "event wakes the other thread");
 
     out(fails ? "some tests failed\n" : "all passed\n");
     DosExit(1, (ULONG)fails);

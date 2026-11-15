@@ -10,7 +10,7 @@
 #include <setjmp.h>
 #include <string.h>
 
-static jmp_buf *trap_jb;
+static _Thread_local jmp_buf *trap_jb;    /* (each OS/2 thread: a host thread) */
 static uint8_t parity[256];
 
 static void trap(cpu_t *c, int why) { (void)c; longjmp(*trap_jb, why); }
@@ -38,11 +38,13 @@ static uint16_t pop16(cpu_t *c) { uint16_t v = rd16(c, c->r[ESP]); c->r[ESP] += 
 
 void cpu_reset(cpu_t *c)
 {
-    for (int i = 0; i < 256; i++) {
+    static int parity_done;
+    for (int i = 0; i < 256 && !parity_done; i++) {
         int b = 0;
         for (int k = 0; k < 8; k++) b ^= (i >> k) & 1;
         parity[i] = b ? 0 : F_PF;
     }
+    parity_done = 1;
     memset(c->r, 0, sizeof c->r);
     c->eflags = 0x202;
     c->fcw = 0x37F; c->fsw = 0; c->top = 0;
