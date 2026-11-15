@@ -11,5 +11,6 @@ export LANG=C.UTF-8
 export XDG_RUNTIME_DIR=/tmp HOME=/tmp SHELL=/h/OS2/busybox
 export XDG_DATA_DIRS=/h/OS2 XDG_DATA_HOME=/tmp XDG_CONFIG_HOME=/tmp   # /h/OS2/applications
 export PATH=/usr/bin:/bin:/h/OS2     # UNIXROOT (D:) first: what RPM installs
+export OS2X86_HOME=/h/OS2             # x86 OS/2 programs' OS2.INI and OS2SYS.INI: on the stick (HOME is RAM)
 mkdir -p /tmp/.cache                    # fuzzel remembers what was launched
 cd /tmp

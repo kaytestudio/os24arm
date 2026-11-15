@@ -54,6 +54,7 @@ if [ -x "$W/armo64/wcl386" ] || [ -x "$W/binl64/wcl386" ]; then
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmtree.c" >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmdrag.c" >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmgeo.c" >/dev/null
+    wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmprf.c" >/dev/null
     wrc -q -r -bt=os2 -i="$S" "$S/pmowner.rc" -fo=pmowner.res >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmowner.c" >/dev/null && wrc -q -bt=os2 pmowner.res pmowner.exe >/dev/null
     owfail=0
@@ -214,6 +215,12 @@ if bad: print(*bad, sep='\n')
 sys.exit(1 if bad else 0)
 PY
     then echo "PM geometry: ok"; else echo "PM geometry: FAIL"; echo "$geoout"; owfail=1; fi
+    # profiles: written by one run (the user's OS2.INI, a private .INI), read back by another; the help manager's instance
+    rm -rf prfhome PRIVATE.INI; mkdir prfhome
+    prfout="$(OS2X86_HOME="$PWD/prfhome" OS2X86_PM=headless ../os2x86 pmprf.exe write 2>&1; OS2X86_HOME="$PWD/prfhome" OS2X86_PM=headless ../os2x86 pmprf.exe read 2>&1)"
+    prfout="$(tr -d '\r' <<< "$prfout")"
+    if [ "$(tr '\n' '|' <<< "$prfout")" = "private: opened|help: instance, rc 0, associated 1|written|Name Warp, Count 42, Missing -1|Big read 123456|Name's size 5|Gone: deleted|apps: OS2X86 Test|OS2X86 Test: Name Count Big|private Colour blue|" ]
+    then echo "PM profiles, help instance: ok"; else echo "PM profiles, help instance: FAIL"; echo "$prfout"; owfail=1; fi
     [ "$owfail" = 0 ] || st=1
 else
     echo "(no OpenWatcom: its programs not tried)"

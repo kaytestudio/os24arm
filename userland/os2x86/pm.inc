@@ -1177,10 +1177,13 @@ static uint32_t mb_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
     }
     return 0;
 }
+static uint32_t pm_msgbox(const char *text, const char *cap, uint32_t style);
 static uint32_t api_WinMessageBox(void)       /* (hwndParent, hwndOwner, pszText, pszCaption, idWindow, flStyle) */
 {
-    char *text = gs(A(2)), *cap = A(3) ? gs(A(3)) : 0;
-    uint32_t style = A(5);
+    return pm_msgbox(gs(A(2)), A(3) ? gs(A(3)) : 0, A(5));
+}
+static uint32_t pm_msgbox(const char *text, const char *cap, uint32_t style)
+{
     int k = (int)(style & 15) < 9 ? (int)(style & 15) : 0;
     int def = (int)((style >> 8) & 3);
     if (def >= mb_count(k)) def = 0;
@@ -1500,6 +1503,7 @@ static pmwin_t *ptr_get(uint32_t h);
 #include "pm_vs.inc"
 #include "pm_drag.inc"
 #include "pm_geo.inc"
+#include "pm_prf.inc"
 
 /* ── the clipboard (WinOpenClipbrd & co.): CF_TEXT, CF_BITMAP; on the
  * desktop the Wayland one (pm_wl.inc), so text goes between programs ── */

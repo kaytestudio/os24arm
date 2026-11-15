@@ -334,7 +334,9 @@ were a `#!/h/OS2/os2x86` script. It contains:
     and paths with line types, patterns and mixes; markers; bitmaps,
     BitBlt, memory presentation spaces, icons and pointers;
   - the clipboard, shared with the desktop's, and drag and drop between
-    a program's windows.
+    a program's windows;
+  - profiles (OS2.INI and programs' own .INI files, in OS/2's format) and
+    a help manager instance (the help itself isn't shown yet).
 
 OS/2 system DLLs it doesn't have load as stubs. A call it doesn't
 implement prints one line and fails, and `OS2X86_TRACE=1` traces every
@@ -583,7 +585,8 @@ Not there yet:
 - **The kernel**: SMP (one CPU runs everything), dynamic linking for
   Linux programs, datagram Unix sockets.
 - **Graphics**: GPU acceleration (the desktop renders with pixman).
-- **os2x86**: PM drag and drop between programs (within one works), and
+- **os2x86**: PM drag and drop between programs (within one works), IPF
+  help files, and
   the rest of OS/2's API (the help manager, multimedia, ...).
 - **Other**: REXX as a command; DEBUG's assembler, disassembler and
   breakpoints.

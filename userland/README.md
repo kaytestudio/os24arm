@@ -466,7 +466,16 @@ platform-specific are new code.
    corners, polylines, fillets, splines, polygons (alternate or winding);
    areas (GpiBeginArea/EndArea) and paths (GpiBeginPath ... GpiFillPath,
    GpiStrokePath) filled with the patterns (dense, hatched, halftone,
-   ...); markers; a clip rectangle (GpiIntersectClipRectangle). OS/2's DLLs that aren't
+   ...); markers; a clip rectangle (GpiIntersectClipRectangle).
+   Profiles (`pm_prf.inc`, PMSHAPI): PrfQueryProfileString/Int/Data/Size,
+   PrfWriteProfileString/Data (deleting keys and applications too),
+   enumerating them, PrfOpenProfile for a program's own .INI files - in
+   OS/2's own binary .INI format, written back at each change; the
+   user's OS2.INI and the system's OS2SYS.INI are USER_INI and
+   SYSTEM_INI, else in $OS2X86_HOME (on the desktop \OS2 on the stick),
+   else ~/.os2x86. The help manager (HELPMGR): an instance programs can
+   create, associate and destroy; asked to show help, it says the help
+   (IPF .HLP files) can't be shown yet. OS/2's DLLs that aren't
    here (PMSHAPI, HELPMGR, TCP32DLL, ...) load as stubs, so a program
    that only links them in runs; a call into one says so and returns 0. Calls it doesn't have yet print
    one line on stderr and return error 1; `OS2X86_TRACE=1` lists every

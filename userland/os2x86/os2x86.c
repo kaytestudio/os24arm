@@ -517,14 +517,14 @@ static int unpack2(uint8_t *dst, uint32_t dsz, const uint8_t *s, uint32_t n)
 }
 
 /* ── thunks: the imports from the system ────────────────────────────── */
-static const char *libs[64] = { "DOSCALLS", "NLS", "MSG", "QUECALLS", "SESMGR", "KBDCALLS", "VIOCALLS", "MOUCALLS", "PMWIN", "PMGPI", "PMDRAG", 0 };
-enum { L_DOS, L_NLS, L_MSG, L_QUE, L_SES, L_KBD, L_VIO, L_MOU, L_PMWIN, L_PMGPI, L_PMDRAG, NLIBS };
+static const char *libs[64] = { "DOSCALLS", "NLS", "MSG", "QUECALLS", "SESMGR", "KBDCALLS", "VIOCALLS", "MOUCALLS", "PMWIN", "PMGPI", "PMDRAG", "PMSHAPI", "HELPMGR", 0 };
+enum { L_DOS, L_NLS, L_MSG, L_QUE, L_SES, L_KBD, L_VIO, L_MOU, L_PMWIN, L_PMGPI, L_PMDRAG, L_PMSHAPI, L_HELPMGR, NLIBS };
 static int nlibs = NLIBS;
 /* OS/2's own DLLs that aren't here (yet): a program that imports from one
  * still starts (C runtimes link Presentation Manager's message box in for
  * their error reports); a call into one says so and returns 0 */
-static const char *const sysdlls[] = { "PMSHAPI", "PMSPL", "PMCTLS", "PMVIOP",
-    "PMWP", "PMMERGE", "PMBIDI", "PMPIC", "PMATM", "PMPRINTF", "PMSEC", "HELPMGR", "BDCALLS", "MONCALLS",
+static const char *const sysdlls[] = { "PMSPL", "PMCTLS", "PMVIOP",
+    "PMWP", "PMMERGE", "PMBIDI", "PMPIC", "PMATM", "PMPRINTF", "PMSEC", "BDCALLS", "MONCALLS",
     "NAMPIPES", "SO32DLL", "TCP32DLL", "SOM", "SOMU", "MMPM", "MDM", "UCONV", "LIBUNI", 0 };
 
 typedef uint32_t (*api_fn)(void);
@@ -3369,6 +3369,22 @@ static const api_t apis[] = {
     { L_PMGPI, 404, "GpiMove", api_GpiMove, 0 },
     { L_PMGPI, 398, "GpiLine", api_GpiLine, 0 },
     { L_PMGPI, 356, "GpiBox", api_GpiBox, 0 },
+    { L_PMSHAPI, 101, "PrfQueryProfileSize", api_PrfQueryProfileSize, 0 },
+    { L_PMSHAPI, 102, "PrfOpenProfile", api_PrfOpenProfile, 0 },
+    { L_PMSHAPI, 103, "PrfCloseProfile", api_PrfCloseProfile, 0 },
+    { L_PMSHAPI, 107, "PrfQueryProfile", api_PrfQueryProfile, 0 },
+    { L_PMSHAPI, 108, "PrfReset", api_PrfReset, 0 },
+    { L_PMSHAPI, 114, "PrfQueryProfileInt", api_PrfQueryProfileInt, 0 },
+    { L_PMSHAPI, 115, "PrfQueryProfileString", api_PrfQueryProfileString, 0 },
+    { L_PMSHAPI, 116, "PrfWriteProfileString", api_PrfWriteProfileString, 0 },
+    { L_PMSHAPI, 117, "PrfQueryProfileData", api_PrfQueryProfileData, 0 },
+    { L_PMSHAPI, 118, "PrfWriteProfileData", api_PrfWriteProfileData, 0 },
+    { L_HELPMGR, 51, "WinCreateHelpInstance", api_WinCreateHelpInstance, 0 },
+    { L_HELPMGR, 52, "WinDestroyHelpInstance", api_WinDestroyHelpInstance, 0 },
+    { L_HELPMGR, 53, "WinQueryHelpInstance", api_WinQueryHelpInstance, 0 },
+    { L_HELPMGR, 54, "WinAssociateHelpInstance", api_WinAssociateHelpInstance, 0 },
+    { L_HELPMGR, 55, "WinLoadHelpTable", api_WinLoadHelpTable, 0 },
+    { L_HELPMGR, 56, "WinCreateHelpTable", api_WinCreateHelpTable, 0 },
     { L_PMGPI, 519, "GpiSetCurrentPosition", api_GpiSetCurrentPosition, 0 },
     { L_PMGPI, 415, "GpiPolyLine", api_GpiPolyLine, 0 },
     { L_PMGPI, 502, "GpiSetArcParams", api_GpiSetArcParams, 0 },
