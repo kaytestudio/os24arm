@@ -1,911 +1,594 @@
-# OS/2 Warp 4.52 for ARM64 (QEMU / Raspberry Pi 3+ / BeagleBone Black / BeagleV-Ahead / QEMU RISC-V)
+# OS/2 Warp 4.52 for ARM64
 
-A **bare-metal**, freestanding OS/2-style operating system written in C11 +
-AArch64 assembly, targeting the **QEMU virt** machine (Cortex-A72) and
-**Raspberry Pi 3/3+** hardware. No libc, no MMU-backed process isolation —
-everything (kernel, `CMD.EXE`, filesystem drivers) runs in one flat address
-space.
+An OS/2-style operating system for 64-bit ARM, written from scratch in C11
+and AArch64 assembly. It boots in QEMU's `virt` machine (and on a
+Raspberry Pi 3) to an OS/2 command prompt, and from there into a desktop
+in the style of OS/2 Warp 4: the Workplace Shell, with folders, the
+WarpCenter, Command Prompt windows, a text editor, a web browser, and
+programs of three kinds:
 
-It also boots to a serial-console command prompt on two BeagleBoard.org
-boards that aren't AArch64: the **BeagleBone Black** (TI AM335x, 32-bit
-ARMv7 Cortex-A8) and the **BeagleV-Ahead** (T-Head TH1520, RV64 XuanTie
-C910). Those ports are early and serial-console only. The MMU, GUI and LX
-loader are still AArch64-only (see §4b). The RISC-V kernel also runs in
-QEMU's riscv64 `virt` machine (`TARGET_PLATFORM=QEMU_RISCV`, see §3b).
+- **OS/2 programs built for ARM64** (LX executables: `CMD.EXE`, ...), on
+  an OS/2 API of its own (`DOSCALLS.DLL`);
+- **Linux programs**: static AArch64 Linux ELF binaries run unmodified on
+  a Linux system-call layer, so musl, busybox, wlroots, foot, GNU
+  binutils and clang/LLVM all run here;
+- **real 32-bit x86 OS/2 programs**, text mode and Presentation Manager,
+  through a built-in emulator (`os2x86`).
 
-It has a PL011 UART driver, a DOS-style command shell with DOSKEY-style
-history/macros, a QuickBASIC-compatible interpreter, an ext4 + btrfs
-filesystem stack (both read/write) behind a small VFS/IFS layer — plus a
-standalone f2fs driver not yet wired into boot — an OS/2 LX `.EXE` loader
-that can run a standalone `CMD.EXE`, a Wayland-style GUI compositor with
-four switchable "workplaces", a DEBUG.COM-style memory monitor, and a small
-on-box heuristic assistant (`AI`) — no network stack, so it's not a real
-LLM, just something that watches what you type.
+Smaller ports boot to a serial prompt on the BeagleBone Black (ARMv7),
+the BeagleV-Ahead (RISC-V) and QEMU's RISC-V `virt` machine.
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                       OS/2 Warp 4.52 ARM64                           │
-│                                                                        │
-│  bootloader/                     kernel/src/                         │
-│  ├── boot.S      (QEMU entry)    ├── main.c        (kernel_main,     │
-│  ├── rpi_boot.S  (RPi3 entry)    │                   shell loop)     │
-│  └── linker scripts              ├── uart.c         (PL011)          │
-│                                   ├── kprintf.c      (kernel printf)  │
-│  os2api/                         ├── vfs.c          (VFS layer)      │
-│  └── os2_api.c   Dos* calls      ├── ifs_loader.c   (IFS registry)   │
-│      (DosOpen/DosRead/...)       ├── blkdev.c/gpt.c (block devices)  │
-│                                   ├── lx_loader.c    (OS/2 LX loader) │
-│  dos/                            ├── ai.c           (AI assistant)   │
-│  ├── dos_commands.c  DIR/TYPE/   ├── basic.c        (QuickBASIC)     │
-│  │   COPY/COMP/FC/DEL/REN/MD/    ├── unixroot.c     (EMX dir tree,   │
-│  │   RD/CD/VOL/ATTRIB/ECHO/          SET UNIXROOT= in CONFIG.SYS)    │
-│  │   CLS/DOSKEY/DEBUG/EXIT       └── gui/            Wayland-style   │
-│  └── cmd_main.c  standalone          compositor, 4 workplaces,       │
-│      CMD.EXE entry point             virtio-gpu/ramfb/virtio-input   │
-│                                                                        │
-│                                   fs/                                 │
-│                                   ├── ext4/    read/write driver     │
-│                                   ├── btrfs/   read/write CoW driver │
-│                                   └── f2fs/    read/write driver     │
-│                                       (standalone, not boot-wired)   │
-└──────────────────────────────────────────────────────────────────────┘
+                 ┌──────────────────────── the desktop ──────────────────────────┐
+                 │ Workplace Shell (wlroots compositor, C++)   foot   fuzzel  ...  │
+                 │ OS/2 Command Prompts (os2cmd)    x86 OS/2 PM and text programs │
+                 │                                   (os2x86: i386 + OS/2 API + PM)│
+EL0  ────────────┼── Linux ABI (svc #0) ──────────────── LX programs (lx_services) ─┤
+                 │ musl, busybox, wayland, wlroots, binutils, clang      CMD.EXE   │
+                 └────────────────────────────────────────────────────────────────┘
+EL1  kernel: processes, threads, demand paging, signals, epoll, Unix sockets, ptys,
+     /proc, fbdev, evdev  ·  OS/2 shell and API (DosOpen ...), LX loader
+     VFS: HPFS, FAT16/32, ext4, btrfs, ramfs  ·  lwIP (IPv4 + IPv6)
+     drivers: PL011, GICv3 timer, virtio-gpu/ramfb, virtio-net, virtio-input,
+              xHCI (USB keyboard, mouse/tablet, mass storage)
+EL2  a small hypervisor (VM command) when QEMU gives the kernel EL2
 ```
 
 ---
 
-## 1. Prerequisites
+## Contents
 
-### macOS (for building)
+1. [Quick start](#1-quick-start)
+2. [Prerequisites](#2-prerequisites)
+3. [Building](#3-building)
+4. [Running in QEMU](#4-running-in-qemu)
+5. [The console shell](#5-the-console-shell)
+6. [The desktop](#6-the-desktop)
+7. [Programs](#7-programs)
+8. [File systems and storage](#8-file-systems-and-storage)
+9. [Networking](#9-networking)
+10. [The hypervisor](#10-the-hypervisor)
+11. [Other boards](#11-other-boards)
+12. [BASIC, DEBUG and AI](#12-basic-debug-and-ai)
+13. [Tests](#13-tests)
+14. [Repository layout](#14-repository-layout)
+15. [Status and what's missing](#15-status-and-whats-missing)
+16. [License](#16-license)
+
+---
+
+## 1. Quick start
 
 ```bash
-brew install llvm qemu cmake
-export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
-
-# Verify
-clang --version            # must be LLVM clang, not Apple clang
-llvm-objcopy --version
-qemu-system-aarch64 --version
+brew install llvm lld qemu cmake rpm meson ninja pkg-config bison gperf make
+scripts/desktop.sh --hvf
 ```
 
-### Ubuntu / Debian
+`scripts/desktop.sh` builds everything and boots QEMU into the desktop:
+
+| step | script | |
+|---|---|---|
+| kernel, C: test disk | CMake | `build/os2warp.img` |
+| musl sysroot | `userland/build-musl.sh` | |
+| libraries (wayland, wlroots, pixman, xkbcommon, fcft, ...) | `userland/build-libs.sh` | |
+| busybox | `userland/build-busybox.sh` | |
+| foot, fuzzel, cage, dwl | `userland/build-compositor.sh` | |
+| packages: musl-devel, LLVM (libc++ for the shell) | `userland/build-rpms.sh` | an hour or more, the first time |
+| the Workplace Shell | `userland/build-wps.sh` | |
+| test programs, os2cmd, os2x86 | `userland/build-tests.sh` | always |
+| the USB stick (HPFS) | `userland/make-stick.sh` | always |
+
+Finished steps are skipped on the next run. The options:
+
+| option | |
+|---|---|
+| `--hvf` | run natively with Apple's Hypervisor.framework: much faster (without it QEMU emulates the CPU) |
+| `--rebuild` | every step again |
+| `--all-packages` | build every package in `userland/rpm`, for `\OS2\RPMS` on the stick |
+| `--os2-demos` | put the x86 OS/2 test programs (built with OpenWatcom) on the stick, in `\OS2DEMOS` |
+| `--build-only` | build, don't boot |
+| `--res WxH` | the display's starting size (1920x1080; the window can be resized, up to 2560x1600) |
+
+The kernel starts the desktop by itself (`CONFIG.SYS`: `SET
+RUNWORKPLACE=C:\OS2\PMSHELL.EXE`); pressing a key on the serial console
+in the first seconds keeps the console instead. On the desktop: **Alt+O** a
+Command Prompt, **Alt+P** the programs, **Ctrl+Esc** the Window List,
+**Alt+Shift+Q** back to the console. **Ctrl+A X** in the terminal quits
+QEMU; Shut Down on the desktop unmounts everything cleanly first.
+
+---
+
+## 2. Prerequisites
+
+The build machine is a Mac (Apple silicon or Intel) with Homebrew; Linux
+works for the kernel alone.
 
 ```bash
-sudo apt update
+# macOS
+brew install llvm lld qemu cmake rpm meson ninja pkg-config bison gperf make
+export PATH="$(brew --prefix llvm)/bin:$PATH"
+clang --version        # must be LLVM's clang, not Apple's
+
+# Ubuntu / Debian (the kernel)
 sudo apt install clang lld llvm qemu-system-arm cmake
 ```
 
----
-
-## 2. Build
-
-### Everything, and boot into the desktop
+A fresh `cmake -B build` on macOS picks Apple's clang, which can't build
+the kernel: pass LLVM's explicitly (`desktop.sh` does this for you):
 
 ```bash
-scripts/desktop.sh              # build all of it, then boot QEMU with the desktop
-scripts/desktop.sh --hvf        # ... running natively (much faster on Apple silicon)
-scripts/desktop.sh --os2-demos  # ... with x86 OS/2 programs on the stick, in \OS2DEMOS
-```
-
-`scripts/desktop.sh` builds the kernel and the C: test disk, then the
-userland the desktop is made of: the musl sysroot, the libraries, busybox,
-foot/fuzzel/cage/dwl, the LLVM package that gives the Workplace Shell its
-libc++ (the long step, an hour or more the first time), the Workplace
-Shell, the test programs and os2x86, and the USB stick image. Each step
-is skipped when what it makes is already there (`--rebuild`: all again;
-`--all-packages`: every UNIXROOT package; `--build-only`: don't boot). It
-then boots QEMU with a display window, the stick, a USB keyboard and
-tablet (`scripts/run-vm.sh --wayland`), and the kernel starts the desktop
-by itself. `--os2-demos` adds the OpenWatcom-built x86 OS/2 programs of
-`userland/os2x86/test` (needs OpenWatcom, see `userland/README.md`):
-double-click them in Drive D, or run them from a Command Prompt
-(`\OS2DEMOS\PMCTL`). `--help` lists the options.
-
-### QEMU (default)
-
-```bash
-git clone <this repo>
-cd os24arm
-
-cmake -B build
-cmake --build build --target os2warp.img
-
-# Outputs:
-#   build/os2warp_kernel  — ELF with debug symbols
-#   build/os2warp.img     — raw binary QEMU boots directly
-#   build/CMD.EXE         — standalone OS/2 LX executable (see §6)
-```
-
-`cmake --build build` alone (no `--target`) builds everything, including the
-host-side LX toolchain (`lxbuild`/`makeexe`/`makedll`, built with your host
-compiler since they run on the build machine, not the target) and `kcc`, the
-Kayte C Compiler host tool used by the LX build pipeline. If you only want
-the kernel image, target `os2warp.img` specifically as above — it's faster.
-
-### Raspberry Pi 3+
-
-```bash
-cmake -B build-rpi -DTARGET_PLATFORM=RPI3
-cmake --build build-rpi
-
-# Outputs:
-#   build-rpi/os2warp_kernel  — ELF with debug symbols
-#   build-rpi/kernel8.img     — raw binary for the Pi's firmware to load
-```
-
-The RPi3 path shares the same kernel sources as QEMU where possible (see
-`kernel/CMakeLists.txt`); `bootloader/rpi_boot.S` and `bootloader/rpi_main.c`
-handle the Pi-specific entry sequence (dropping from EL2/EL3 to EL1, parking
-secondary cores, etc.) before handing off. It hasn't been exercised as
-heavily this session as the QEMU path — treat it as less battle-tested.
-
-### BeagleBone Black / BeagleV-Ahead
-
-```bash
-cmake -B build-bbb -DTARGET_PLATFORM=BBB \
-      -DCMAKE_C_COMPILER=$(brew --prefix llvm)/bin/clang \
-      -DCMAKE_ASM_COMPILER=$(brew --prefix llvm)/bin/clang
-cmake --build build-bbb
-
-cmake -B build-beaglev-ahead -DTARGET_PLATFORM=BEAGLEV_AHEAD \
-      -DCMAKE_C_COMPILER=$(brew --prefix llvm)/bin/clang \
-      -DCMAKE_ASM_COMPILER=$(brew --prefix llvm)/bin/clang
-cmake --build build-beaglev-ahead
-
-# Outputs:
-#   build-bbb/os2warp-bbb.img                      — zImage-format image for U-Boot bootz
-#   build-beaglev-ahead/os2warp-beaglev-ahead.img  — RISC-V Image for U-Boot booti
-#   build-*/uEnv.txt                               — U-Boot script that loads and boots it
-```
-
-(or `ci/scripts/build-beagle.sh BBB` / `ci/scripts/build-beagle.sh BEAGLEV_AHEAD`.)
-The same clang builds all five platforms; `TARGET_PLATFORM` selects the
-target triple (`aarch64-none-elf`, `armv7a-none-eabi` or
-`riscv64-unknown-elf`). These two platforms build a smaller kernel:
-`kernel/src/bbb_boot.S` or `kernel/src/beaglev_boot.S`, a 16550 UART
-driver (`kernel/src/ns16550.c`), and `kernel/src/beagle_main.c` (heap,
-scheduler stub and a VER/HELP/MEM/ECHO/CLS/EXIT prompt). Both also link
-the OS/2 API (`os2api/`, on top of `kernel/src/vfs.c`) and add CD, DIR and
-TYPE commands that go through it. Both also include a microSD driver
-(`kernel/src/sdhci.c`), MBR/GPT partition probing (`kernel/src/mbr.c`,
-`kernel/src/gpt.c`) and the FAT16/FAT32 and ext4 drivers
-(`kernel/src/fat32.c`, `fs/ext4/`). On the BeagleBone Black, `kernel/src/arm_aeabi.c` supplies
-the `__aeabi_*` memory and division helpers clang emits on ARMv7 (the
-Cortex-A8 has no divide instruction). The DOS
-commands, REXX, the filesystems and the CMD.EXE/DOSCALLS.DLL/LX pipeline
-are not built for either board.
-
-The toolchain is configured directly in `CMakeLists.txt` (no separate
-toolchain file needed):
-
-```cmake
--target aarch64-none-elf
--mcpu=cortex-a72
--ffreestanding -nostdlib
--fno-builtin -fno-stack-protector -fno-pie -fno-pic
+cmake -B build -DCMAKE_C_COMPILER="$(brew --prefix llvm)/bin/clang" \
+               -DCMAKE_ASM_COMPILER="$(brew --prefix llvm)/bin/clang"
 ```
 
 ---
 
-## 3. Run in QEMU
+## 3. Building
 
-There's no real VirtIO block driver yet (`blkdev.c`'s `virtio_blk_read/write`
-are unused stubs) — disk I/O only works via a fixed-physical-address
-"preloaded disk" window (`PRELOADED_DISK_ADDR = 0x44000000`, 24 MB) that
-QEMU's `-device loader` injects a raw disk image into *before* boot. That's
-what `run-testdisk` (below) sets up for you.
+### The kernel
 
 ```bash
-# Boot with just the kernel — no disk, serial console only
-cmake --build build --target run
-
-# Boot with a real display: type GUI at the prompt for the Wayland-style
-# compositor; Cmd+Escape cycles the 4 workplaces; mouse is live
-cmake --build build --target run-gui
-
-# Build a small ext4 test disk (CMD.EXE, HELLO.EXE, README.TXT) and boot
-# with it preloaded — makes DIR/TYPE/COPY/RUN actually have something to
-# work with
-cmake --build build --target run-testdisk
-
-# GDB/LLDB debugging (QEMU pauses, waits for a debugger on :1234)
-cmake --build build --target debug
+cmake --build build --target os2warp.img   # build/os2warp.img: what QEMU boots
+cmake --build build                        # everything: also CMD.EXE, DOSCALLS.DLL,
+                                           # the host LX tools (lxbuild, makeexe, makedll), kcc
 ```
 
-Press **Ctrl-A X** to quit QEMU (nographic mode).
+Outputs: `build/os2warp_kernel` (ELF with symbols), `build/os2warp.img`
+(the raw image), `build/CMD.EXE` and the other LX programs and DLLs.
 
-For a btrfs test disk (see §7 for all three filesystem drivers), build one with
-`scripts/mkbtrfs_image.py` and inject it the same way `run-testdisk` does,
-via `-device loader,file=...,addr=0x44000000,force-raw=on`; GPT-partition it
-with a partition literally named `C` (`sgdisk --change-name=1:C`) so
-`btrfs_init()` finds it (see `fs/btrfs/btrfs.c`).
+The cross-compiler flags live in the root `CMakeLists.txt` (no toolchain
+file): `-target aarch64-none-elf -mcpu=cortex-a72 -ffreestanding
+-nostdlib -fno-builtin -fno-pie`. `TARGET_PLATFORM` picks the board:
 
----
-
-## 3b. Run the RISC-V kernel in QEMU
-
-`TARGET_PLATFORM=QEMU_RISCV` builds the BeagleV-Ahead kernel for QEMU's
-riscv64 `virt` machine. It has the same boot code, shell, OS/2 API, SD
-driver and filesystems. Only the device addresses and the link address
-(`0x80200000`, DRAM base + 2 MB) differ. OpenSBI (`-bios default`) starts
-it in S-mode, just as it does on the board.
-
-```bash
-# needs qemu-system-riscv64 (brew install qemu / apt install qemu-system-misc)
-# and, for the ext4 partition on the test card, e2fsprogs (brew install e2fsprogs)
-cmake -B build-qemu-riscv -DTARGET_PLATFORM=QEMU_RISCV \
-      -DCMAKE_C_COMPILER=$(brew --prefix llvm)/bin/clang \
-      -DCMAKE_ASM_COMPILER=$(brew --prefix llvm)/bin/clang
-cmake --build build-qemu-riscv --target run      # Ctrl-A X quits QEMU
-```
-
-| Target | What it does |
-|---|---|
-| `run` | Boots with the test SD card (4 harts, 512 MB) |
-| `run-nocard` | Boots with an empty SD slot |
-| `debug` | Same as `run`, paused at reset and waiting for GDB/LLDB on `:1234` |
-| `mksdcard` | Builds `build-qemu-riscv/sdcard.img` if it's missing |
-
-The test card (`scripts/mksdcard.py`) is a 128 MB MBR image:
-
-- An active FAT32 partition, which becomes C:. It holds the repo's
-  `CONFIG.SYS`, a `README.TXT` and `DOCS\NOTE.TXT`.
-- An ext4 partition at `\mmc0p2`, added only when `mke2fs` is found.
-
-The image is built only when missing, so anything the kernel writes to it
-survives between runs. Delete it to reset.
-
-QEMU's `virt` machine only has PCI SD controllers, so `run` adds a
-`-device sdhci-pci`. Nothing else sets up PCI, so `kernel/src/qemu_pci.c`
-finds the controller on bus 0 through the ECAM window, maps its BAR0 at
-`0x40000000` and enables it. `sdhci.c` then drives it like the boards'
-memory-mapped controllers.
-
----
-
-## 4. Boot on Raspberry Pi 3+
-
-### Hardware needed
-
-- Raspberry Pi 3, 3+, or 3B+ (ARM64, Cortex-A53)
-- MicroSD card (8 GB+, FAT32)
-- USB-to-TTL serial cable for console output
-- 5V power supply (2.5A minimum)
-
-### SD card
-
-```bash
-# Format as FAT32, then copy the kernel image
-diskutil eraseDisk FAT32 BOOT /dev/diskX   # macOS
-cp build-rpi/kernel8.img /Volumes/BOOT/
-diskutil eject /dev/diskX
-```
-
-You'll also need the Pi's own firmware files (`bootcode.bin`, `start.elf`,
-`fixup.dat`) and a `config.txt` on the card — see `bootloader/config.txt` for
-a starting point.
-
-### Serial console
-
-| Cable wire  | RPi pin | Function |
-|-------------|---------|----------|
-| Black (GND) | Pin 6   | Ground   |
-| Green (RX)  | Pin 8   | UART TX  |
-| White (TX)  | Pin 10  | UART RX  |
-| Red (VCC)   | **do not connect** | the Pi powers itself |
-
-```bash
-screen /dev/tty.usbserial-* 115200   # macOS
-screen /dev/ttyUSB0 115200           # Linux
-```
-
----
-
-## 4b. Boot on BeagleBone Black / BeagleV-Ahead
-
-Both boards boot through U-Boot from a microSD card whose first partition
-is FAT. Each image carries a Linux-style header (zImage for the BBB,
-RISC-V `Image` for the BeagleV-Ahead). U-Boot's `bootz`/`booti` therefore
-hands over with the caches cleaned and the MMU off, just as it would for
-Linux. The images aren't position-independent, so they must be loaded at
-the address the generated `uEnv.txt` uses.
-
-| | BeagleBone Black | BeagleV-Ahead |
+| `TARGET_PLATFORM` | builds | image |
 |---|---|---|
-| Load address | `0x82000000` | `0x00200000` (DRAM base + `text_offset`) |
-| U-Boot command | `bootz` | `booti` |
-| Card device | `mmc 0:1` | `mmc 1:1` (eMMC is `mmc 0`) |
-| Console | UART0, J1 header: pin 1 GND, pin 4 RX, pin 5 TX | UART0 debug header (GND/TX/RX) |
-| microSD controller | MMCHS0 @ `0x48060000` (96 MHz) | SDIO0, DWC MSHC @ `0xFFE7090000` (198 MHz) |
+| `QEMU` (default) | the full system | `os2warp.img` |
+| `RPI3` | the full kernel, Pi entry code | `kernel8.img` |
+| `BBB` | a small serial-console kernel (ARMv7) | `os2warp-bbb.img` + `uEnv.txt` |
+| `BEAGLEV_AHEAD` | a small serial-console kernel (RV64) | `os2warp-beaglev-ahead.img` + `uEnv.txt` |
+| `QEMU_RISCV` | the BeagleV kernel for QEMU's riscv64 `virt` | `os2warp-qemu-riscv.img` |
 
-Both consoles are 3.3 V TTL at 115200 8N1. The kernel reuses U-Boot's baud
-rate setting and doesn't reprogram the UART clock.
+### The userland
 
-### BeagleBone Black
+Everything above the kernel is cross-compiled with the same clang against
+a musl sysroot that `userland/build-musl.sh` builds in
+`build/userland/sysroot`. `userland/build-libs.sh` adds the libraries and
+writes the cross toolchain the rest uses
+(`build/userland/toolchain/aarch64-linux-musl-cc`, `cross.meson`):
+static `ET_EXEC` binaries linked at 0x60000000, where the kernel loads
+them. Each `userland/build-*.sh` script lists what it needs at its top;
+`userland/README.md` describes them all.
+
+---
+
+## 4. Running in QEMU
+
+`scripts/run-vm.sh` boots what's in `build/`:
+
+| option | |
+|---|---|
+| `--wayland` | a display window (virtio-gpu), USB keyboard and tablet, and the USB stick with the desktop |
+| `--hvf` | native speed with Hypervisor.framework (no EL2 for the kernel's own hypervisor) |
+| `--usb` | an xHCI controller and a USB keyboard, without the display |
+| `--no-disk` | without the C: test disk |
+| `--no-build` | don't rebuild first |
+| `--gdb` | wait for a debugger on `:1234` |
+| `--test` | run `VM TEST` non-interactively and check its output |
+
+Every run has a network card (QEMU's user networking: the guest is
+10.0.2.15, the host 10.0.2.2); `NET_FWD=",hostfwd=tcp::8080-:80"`
+forwards host ports in. `RES=1600x900` sets the display size.
+
+CMake has targets too: `run` (serial console only), `run-gui` (a
+display, for the in-kernel `GUI`), `run-testdisk` (with the C: test disk),
+`mktestdisk`, `debug` (paused for GDB).
 
 ```bash
-# FAT partition 1 of the microSD card needs BeagleBoard.org's MLO and
-# u-boot.img, plus:
-cp build-bbb/os2warp-bbb.img build-bbb/uEnv.txt /Volumes/BOOT/
+# debugging: QEMU waits on :1234
+scripts/run-vm.sh --gdb
+lldb build/os2warp_kernel -o "gdb-remote 1234"
 ```
 
-Hold **S2 (BOOT)** while powering on so the board boots from microSD
-instead of the U-Boot on its eMMC. U-Boot imports `uEnv.txt` and runs its
-`uenvcmd`. To boot by hand from the U-Boot prompt:
+---
+
+## 5. The console shell
+
+The kernel's shell (`kernel/src/main.c`, `dos/dos_commands.c`) runs on the
+serial console and, through `/dev/os2cmd`, in every OS/2 Command Prompt
+window on the desktop:
 
 ```
-load mmc 0:1 0x82000000 os2warp-bbb.img
-bootz 0x82000000 - ${fdtcontroladdr}
-```
-
-### BeagleV-Ahead
-
-```bash
-cp build-beaglev-ahead/os2warp-beaglev-ahead.img build-beaglev-ahead/uEnv.txt /Volumes/BOOT/
-```
-
-The BeagleV-Ahead's U-Boot lives in eMMC and may not import `uEnv.txt` from
-the microSD card. If it doesn't, stop autoboot on the serial console and
-boot by hand:
-
-```
-load mmc 1:1 0x200000 os2warp-beaglev-ahead.img
-booti 0x200000 - ${fdtcontroladdr}
-```
-
-If U-Boot starts every hart at the entry point, the first one through the
-boot lottery in `beaglev_boot.S` runs the kernel and the rest park.
-
-### What works so far
-
-Boot banner, heap and the serial command prompt (VER, HELP, MEM, ECHO, CLS,
-EXIT). On both boards, the OS/2 API (`DosOpen`, `DosFindFirst`,
-`DosSetCurrentDir`, `KernVMAlloc`, ...) is linked into the kernel, and
-CD, DIR and TYPE go through it.
-
-At boot the microSD card is identified and registered as block device
-`mmc0`, and its partition table is read: MBR first, then GPT. Each
-partition holding FAT (FAT16 or FAT32) or ext4 is mounted. The boot
-partition becomes `/` (drive C:): that's the MBR "active" FAT partition,
-or else the first FAT partition, wherever it sits on the card. Every other
-volume goes at `/<partition>`:
-
-```
-[SD]     mmc0: SDHC/SDXC card, RCA 0x..., 15193 MB
-[MBR]    Found 2 partition(s) on mmc0
-[SD]     mmc0p1 mounted at / (C:)
-[SD]     mmc0p2 mounted at /mmc0p2
-
 [C:\]> dir
-[C:\]> type uenv.txt
-[C:\]> dir \mmc0p2
+[C:\]> mount usb0p1 \h
+usb0p1 is drive D: (HPFS)
+[C:\]> d:
+[D:\]> ping example.com
 ```
 
-On a typical card, the FAT boot partition (with the kernel image and
-`uEnv.txt`) is C: and an ext4 root filesystem is `\mmc0p2`. Notes:
+| command | |
+|---|---|
+| `DIR`, `TREE`, `TYPE`, `MORE`, `FIND` | list and show files (`/A` shows hidden and system ones) |
+| `COPY`, `MOVE`, `DEL`/`ERASE`, `REN`, `MD`, `RD`, `CD`, `ATTRIB` | files and directories (wildcards) |
+| `COMP`, `FC` | compare files, by byte or by line |
+| `VOL`, `CHKDSK` | the volume, its size and free space; for HPFS, a full check |
+| `D:` | change drive: C: is the system volume, D:, E:, ... the volumes mounted after it |
+| `MOUNT`, `UMOUNT` | `MOUNT` lists the block devices; `MOUNT usb0p1 \h` mounts an HPFS or FAT volume as the next drive |
+| `USB` | the USB devices |
+| `DESKTOP [layout [variant]]` | start the desktop (`DESKTOP de nodeadkeys`) |
+| `SHUTDOWN` | end the programs, unmount every drive cleanly, power off |
+| `RUN prog.EXE` | an OS/2 LX program (`RUN CMD.EXE`) |
+| `RUNELF \path\prog args` | a Linux program (`RUNELF \h\busybox sh`) |
+| `PING`, `IFCONFIG`, `HOST` | the network |
+| `VM STATUS`, `VM TEST` | the hypervisor |
+| `MEM`, `IFS`, `VER`, `DATE`, `TIME`, `ECHO`, `CLS` | |
+| `DOSKEY` | history and macros (arrows, F7/F8/F9, `name=text`, `$1`-`$9`, `$*`, `$T`) |
+| `BASIC`, `DEBUG`, `AI` | see §12 |
+| `GUI` | the older in-kernel compositor (four switchable workplaces), a fallback |
+| `HELP` | the list |
 
-- The boot partition can be **FAT16 or FAT32**. `kernel/src/fat32.c` picks
-  the variant from the cluster count, as the FAT spec requires, and doesn't
-  trust the `FAT16   `/`FAT32   ` label. FAT12 (volumes under about 2 MB
-  with 512-byte clusters) is rejected. On FAT16, the high word of a
-  directory entry's cluster field holds OS/2's extended-attribute handle,
-  so the driver ignores it on read and preserves it on write.
-- ext4 is case-sensitive: `TYPE \mmc0p2\HELLO.TXT` works, `hello.txt`
-  doesn't.
-- At most one FAT and one ext4 volume are mounted, because each driver
-  keeps a single volume's state.
-- The ext4 driver mounts read-only. The FAT driver can write on FAT16 and
-  FAT32: create, write, mkdir, delete and rename. No shell command writes
-  yet. The FAT16 root directory is a fixed size (usually 512 entries) and
-  can't grow.
-
-The SD driver (`kernel/src/sdhci.c`) targets the SD Host Controller
-register layout both SoCs share. It uses PIO with no interrupts or DMA,
-identifies the card at 400 kHz, then runs a 4-bit bus at about 25 MHz. It
-supports SDSC, SDHC and SDXC cards. U-Boot has already set up pinmux,
-clocks and card power by the time the kernel starts. The AM335x MMCHS gets
-a full module reset and its TRM-required init stream. On the TH1520, only
-the command and data state machines are reset, so U-Boot's vendor PHY and
-I/O-voltage settings are kept.
-
-Not yet ported: MMU, interrupts/timer, the eMMC, the GUI, and the LX
-loader. LX images contain AArch64 code, so CMD.EXE and DOSCALLS.DLL can't
-run on these CPUs anyway.
-
-Neither SoC is emulated by QEMU, and these images have not yet been run on
-real boards. The RISC-V kernel can be run in QEMU with `QEMU_RISCV` (§3b).
-The same boot code and drivers have also been smoke-tested in QEMU with only
-the device addresses swapped. For the ARMv7 path that was
-`ast2600-evb` (Cortex-A7) with its standard SDHCI. For the RV64 path it was
-`riscv64 virt` via OpenSBI with an `sdhci-pci` controller. The tests used
-a 128 MB SDSC card and a 4 GB SDHC card (block read/write and read-back),
-each with an MBR, FAT32 and ext4. They also used a FAT16 card with ext4 as
-partition 1 and FAT16 as partition 2 (active), which still became C:. Files
-and directories written to the FAT16 and FAT32 volumes were checked on the
-host with `fsck_msdos` and a separate FAT reader. The TI-specific MMCHS code (module
-reset, init stream, clock divider, uncropped R2 responses) and the TH1520
-controller have not been exercised. Exceptions/traps print their cause, PC and fault address and halt.
-Not yet ported: MMU, interrupts/timer, SD/eMMC block driver (so no
-filesystems), GUI, and the LX loader. LX images contain AArch64 code, so
-CMD.EXE and DOSCALLS.DLL can't run on these CPUs anyway.
-
-Neither SoC is emulated by QEMU, and these images have not yet been run on
-real boards. The same boot code and 16550 driver have been smoke-tested in
-QEMU with only the UART base address swapped: `riscv64 virt` via OpenSBI
-for the RV64 path, and `ast2600-evb` (Cortex-A7) for the ARMv7 path.
+In a Command Prompt window, a name the shell doesn't know runs as a
+program in the current directory (`ls -l`, `vi notes.txt`, busybox
+applets, anything on `$PATH`); `START prog` opens it in a new window and
+`START /PM prog` starts a graphical one. Commands that take over the
+console (`RUN`, `RUNELF`, `DEBUG`, `BASIC`, `UMOUNT`, ...) stay on the
+serial console.
 
 ---
 
-## 5. Debug with GDB
+## 6. The desktop
+
+The Workplace Shell (`userland/wps`) is a Wayland compositor in C++17 on
+wlroots, built with the system's own libc++. It looks and works like OS/2
+Warp 4:
+
+- **The desktop**: OS/2 System, the Assistance Center, Connections,
+  Drives, Command Prompt, Drive D, Programs, Window List, Shut Down and
+  the Shredder; objects can be moved and the layout is kept
+  (`\OS2\WPS.INI` on the stick).
+- **The WarpCenter** along the top: the system menu, the Window List,
+  Command Prompt, Drives, Programs, the active window and the clock.
+- **OS/2 frames** on every window: the title bar, the system menu, hide,
+  maximize and close buttons, a 3D border to resize by.
+- **Folders** of the real directories, in Icon, Tree and Details views,
+  sorted by name, type, size or date. Drag and drop moves on the same drive
+  and copies across drives, as OS/2 does (Shift forces a move, Ctrl a copy).
+  There are also shadows, a Startup folder, rename, delete through the
+  Shredder, multiple selection and keyboard navigation.
+- **Settings notebooks**: the background colour and pattern, title bar
+  colours, and the screen's scale (2x for Retina displays).
+- **The System Editor**: a text editor that shares the clipboard with the
+  other programs.
+- **WebExplorer**: a web browser built into the shell. It shows text,
+  links, forms and pictures over HTTP and HTTPS, with some CSS and cookies.
+- **Connections**: TCP/IP status, Ping and Telnet.
+- **The Assistance Center**: the help, from `userland/rootfs/help`.
+
+Terminals are [foot](https://codeberg.org/dnkl/foot) running `os2cmd`, so
+every terminal is an OS/2 Command Prompt; fuzzel is the program launcher.
+Keyboard layouts come from xkeyboard-config, with dead keys and Compose.
+
+`userland/README.md` (stage 6) has the details.
+
+---
+
+## 7. Programs
+
+### Linux programs
+
+The kernel runs static AArch64 Linux ELF binaries at EL0 and implements
+the Linux system calls itself (`kernel/src/linux/linux.c`). It provides:
+
+- **Processes**, each with its own address space, preemptively scheduled
+  (10 ms, GICv3 timer), with demand paging. `fork`, `vfork`/`posix_spawn`,
+  `execve`, `wait4` and `#!` scripts all work.
+- **Threads**: `clone` with `CLONE_THREAD`, futexes and TLS.
+- **Signals**: Linux-layout signal frames, `SA_RESTART`, process groups and
+  sessions.
+- **Events and IPC**: `poll`/`ppoll`/`pselect6`, `epoll`, `eventfd`,
+  `timerfd`, `signalfd`, pipes, `AF_UNIX` sockets with `SCM_RIGHTS`.
+- **Shared memory**: `memfd_create` and `MAP_SHARED`, `/dev/shm`.
+- **Terminals**: the console and pseudo-terminals, with termios.
+- **`/proc`**: enough for busybox's `ps`, `top`, `free` and `df`.
+- **Devices**: `/dev/fb0` (fbdev) and `/dev/input/event*` (evdev), which
+  the desktop's wlroots backend (`userland/wlr-os2`) uses.
+- **Networking**: AF_INET and AF_INET6 sockets.
+
+What runs on it: busybox 1.37 (ash and its applets), libwayland, wlroots
+0.19, tinywl, cage, dwl, foot, fuzzel, and as RPM packages
+(`userland/rpm/*.spec`, installed with `rpm -i` from `\OS2\RPMS` or a
+repository on the host) GNU binutils, GNU make, tcc and **clang/lld 23**.
+So `clang hello.c -o hello` and `clang++ -O2 x.cpp -o x` work on the
+system itself.
+
+### OS/2 programs for ARM64
+
+OS/2 LX executables containing AArch64 code are built on the host by the
+`lx/` tools (`lxbuild`, `makeexe`, `makedll`). They run as processes, at
+EL0 in their own address space, and call the system through the
+`lx_services` table and `DOSCALLS.DLL`. `CMD.EXE` (`dos/cmd_main.c`) is
+the same command set as the console shell, built as a standalone OS/2
+program. `KAYTEVM.EXE` is another such program. Type `CMD` in a prompt,
+`RUN CMD.EXE` on the console, or double-click one in a folder.
+
+### x86 OS/2 programs
+
+`userland/os2x86` runs real 32-bit OS/2 2.x-4.x executables, built for
+x86, on this ARM system. The kernel hands any x86 LX image to it as if it
+were a `#!/h/OS2/os2x86` script. It contains:
+
+- **an i386 interpreter** with the x87, 16-bit code and OS/2's tiled LDT
+  (for the 16-bit KBD/VIO/MOU calls the C runtimes use);
+- **an LX loader**, with fixups, EXEPACK, and the program's own DLLs;
+- **about 100 DOSCALLS/NLS/MSG/QUECALLS/SESMGR calls**, done with this
+  system's own: files, memory, threads, semaphores, exceptions,
+  `DosExecPgm`, sessions and queues;
+- **Presentation Manager**, drawn into Wayland windows that the Workplace
+  Shell frames:
+  - windows, message queues, painting, timers and message boxes;
+  - resources: menus, dialogs, accelerators and string tables;
+  - the controls: buttons, entry fields, list boxes, combo boxes, scroll
+    bars, the MLE, spin buttons, sliders, circular sliders, value sets,
+    notebooks and containers (icon, name, text, details and tree views);
+  - GPI text in any size (DejaVu fonts), lines, boxes, bitmaps, BitBlt,
+    memory presentation spaces, icons and pointers;
+  - the clipboard, shared with the desktop's.
+
+OS/2 system DLLs it doesn't have load as stubs. A call it doesn't
+implement prints one line and fails, and `OS2X86_TRACE=1` traces every
+call. `scripts/desktop.sh --os2-demos` puts its test programs on the
+stick: real C, C++ and PM programs compiled with OpenWatcom. The details
+are in `userland/README.md`.
+
+---
+
+## 8. File systems and storage
+
+```
+shell commands, os2api (DosOpen, DosFindFirst, DosResolvePath, ...), Linux calls
+        │
+kernel/src/vfs.c  (mounts, open files, path dispatch, drive letters)
+        │
+   HPFS · FAT16/32 · ext4 · btrfs · ramfs (/tmp)
+        │
+blkdev (GPT, MBR)  ←  USB mass storage (xHCI)  ·  preloaded-RAM disk  ·  SD (boards)
+```
+
+| driver | where | reads | writes |
+|---|---|---|---|
+| **HPFS** (`fs/hpfs`) | the USB stick, D: | yes | yes: files (extents in the fnode or anodes) and directories; clean/dirty marking, and a full check (`AUTOCHECK`, `CHKDSK`) before a dirty volume is mounted read-write |
+| **FAT16/FAT32** (`kernel/src/fat32.c`) | `MOUNT`ed volumes, the BOOT partition, SD cards | yes | create, write, mkdir, delete, rename |
+| **ext4** (`fs/ext4`) | C: on the test disk | yes | create, write, truncate, delete, mkdir, rename (not with `metadata_csum`/`uninit_bg`: read-only then); checked against `e2fsck` by `scripts/test_ext4_driver.sh` |
+| **btrfs** (`fs/btrfs`) | C: on the test disk (`C_FS=btrfs`) | yes | copy-on-write with checksummed nodes, but no extent or checksum tree: written volumes are for this system only |
+| **f2fs** (`fs/f2fs`) | not mounted at boot | yes | yes, self-checked only (`scripts/test_f2fs_driver.sh`) |
+| **ramfs** (`kernel/src/ramfs.c`) | `/tmp` | | |
+
+The stick (`userland/make-stick.sh`, built by `scripts/mkhpfs.py`) holds
+the desktop and its programs in a hidden `\OS2` folder, and is UNIXROOT
+(`SET UNIXROOT=D:` in `CONFIG.SYS`). Linux programs see its `/usr`,
+`/etc`, `/bin` and `/var`, so installed packages stay there.
+
+C: in QEMU is a GPT disk image (`scripts/mktestdisk.sh`: a FAT16 BOOT
+partition and an ext4 or btrfs C: partition). QEMU loads it into RAM at
+0x44000000 before boot, because there is no virtio-blk driver yet.
+
+---
+
+## 9. Networking
+
+A virtio-net driver (`kernel/src/net/virtio_net.c`) and lwIP 2.2.0
+(`external/lwip`) give the kernel the network. IPv4 has DHCP, DNS, ICMP,
+UDP and TCP. IPv6 has link-local and SLAAC addresses. The interface is
+`lan0`.
+
+- **The shell**: `PING`, `IFCONFIG` and `HOST`.
+- **Linux programs**: TCP, UDP and raw ICMP sockets, dual-stack IPv6,
+  loopback, poll/epoll. The name servers come from DHCP when there's no
+  `/etc/resolv.conf`.
+
+So busybox's `wget` (also HTTPS, without certificate checks), `nc`,
+`nslookup` and `ping6` work, and so does WebExplorer.
+
+```
+sh -c "wget -qO- http://example.com/ | head"
+rpm -i make                   # from the host's repository: userland/serve-rpms.sh
+```
+
+---
+
+## 10. The hypervisor
+
+When QEMU gives the kernel EL2 (`scripts/run-vm.sh` without `--hvf`:
+`virtualization=on`, emulated), `kernel/src/hyp.c` is a small type-2
+hypervisor:
+
+- stage-2 page tables;
+- a vCPU run loop that turns traps into MMIO exits;
+- a virtual GIC (`vgic.c`) and an emulated PL011 (`vm_pl011.c`).
+
+`VM TEST` boots a built-in hello guest (`vm_guest_hello.S`) and connects
+the console to it. Ctrl+] gets back to the host. `scripts/run-vm.sh
+--test` runs `VM TEST` non-interactively and checks its output.
+
+---
+
+## 11. Other boards
+
+### Raspberry Pi 3 / 3+
 
 ```bash
-# Terminal 1 — start QEMU paused, waiting on :1234
-cmake --build build --target debug
-
-# Terminal 2 — attach
-gdb build/os2warp_kernel \
-    -ex "target remote :1234" \
-    -ex "break kernel_main" \
-    -ex "continue"
+cmake -B build-rpi -DTARGET_PLATFORM=RPI3 \
+      -DCMAKE_C_COMPILER=$(brew --prefix llvm)/bin/clang -DCMAKE_ASM_COMPILER=$(brew --prefix llvm)/bin/clang
+cmake --build build-rpi        # build-rpi/kernel8.img
 ```
 
-(`aarch64-elf-gdb` if you have a cross-gdb installed; a host `gdb` built with
-AArch64 support works too.)
+Copy `kernel8.img` to a FAT32 card with the Pi firmware files
+(`bootcode.bin`, `start.elf`, `fixup.dat`) and a `config.txt` (see
+`bootloader/config.txt`). The console is the PL011 UART at 115200 baud:
+GND on pin 6, the cable's RX on pin 8 (TX), its TX on pin 10 (RX). The
+Pi's entry code (`bootloader/rpi_boot.S`) drops from EL2/EL3 to EL1 and
+parks the other cores. This port is less exercised than QEMU.
 
----
+### BeagleBone Black, BeagleV-Ahead, QEMU RISC-V
 
-## 6. The shell
+```bash
+cmake -B build-bbb -DTARGET_PLATFORM=BBB -DCMAKE_C_COMPILER=... -DCMAKE_ASM_COMPILER=...
+cmake --build build-bbb                     # or: ci/scripts/build-beagle.sh BBB
 
-Boots straight into a command prompt:
-
-```
-[C:\]>
-```
-
-Type `HELP` for the command list. Type `DOSKEY` once to turn on command
-history and macros — until you do, the prompt is plain byte-at-a-time input,
-matching how real DOSKEY only changes anything once loaded.
-
-### DOSKEY
-
-Based on real MS-DOS DOSKEY: Up/Down arrows recall history, `F7` lists it,
-`F8` prefix-searches it, `F9` selects by number; Left/Right/Home/End/Delete/
-Insert edit the line, `Esc` clears it. `$`-macros: `name=text`, with `$1`-`$9`
-positional args, `$*` for all args, `$T` to chain multiple commands in one
-macro, `$$` for a literal `$`. `DOSKEY /HISTORY`, `/MACROS`, `/LISTSIZE=n`,
-`/REINSTALL`, `/MACROFILE=file` all work as in real DOSKEY.
-
-### DEBUG
-
-A partial DEBUG.COM-style memory monitor — its own `-` sub-prompt (`Q` to
-exit back to the DOS prompt). `D`(ump)/`E`(nter)/`F`(ill)/`C`(ompare)/
-`M`(ove)/`S`(earch) operate on real flat 64-bit addresses, parsed the DEBUG.COM
-way (bare hex, `start end` or `start Llength` ranges). `H` does hex
-arithmetic; `R` shows real AArch64 state (SP, exception level, DAIF) rather
-than faking x86 registers. `?` lists every command DEBUG.COM had — the ones
-that don't map to this platform (port I/O, EMS, an x86 assembler/
-disassembler, breakpoint/trace) are recognized but say so rather than
-pretending.
-
-### AI
-
-An on-box heuristic assistant — **not** a real LLM (there's no network
-stack to reach one). `AI STATUS` gives a session summary and a suggestion,
-`AI STATS` shows command-usage counts, `AI TIP` suggests a built-in command
-you haven't tried yet. State is RAM-only and resets on reboot.
-
-### Commands
-
-| Command | Description |
-|---|---|
-| `VER` | Show OS/kernel version |
-| `HELP` / `?` | List commands |
-| `DIR [path]` | List directory contents |
-| `TYPE <file>` | Print file contents |
-| `COPY <src> <dst>` | Copy a file |
-| `COMP <file1> <file2>` | Byte-for-byte compare, reports first differing offset |
-| `FC <file1> <file2>` | Line-by-line compare, reports differing lines |
-| `DEL <file>` / `ERASE` | Delete a file |
-| `REN <old> <new>` / `RENAME` | Rename a file |
-| `MD <dir>` / `MKDIR` | Create a directory |
-| `RD <dir>` / `RMDIR` | Remove a directory |
-| `CD [path]` / `CHDIR` | Show/change current directory |
-| `VOL` | Show volume label |
-| `ATTRIB <file>` | Show file attributes |
-| `CHKDSK`, `FORMAT` | Stubbed — not supported |
-| `ECHO <text>` | Print text |
-| `CLS` | Clear screen |
-| `DOSKEY` | Enable history/macros (see above) |
-| `DEBUG` | Memory monitor sub-shell (see above) |
-| `MEM` | Show heap usage |
-| `IFS` | List loaded filesystem drivers |
-| `RUN <file.EXE>` | Load and run an OS/2 LX executable (e.g. `RUN CMD.EXE`) |
-| `BASIC` | Start the QuickBASIC interpreter |
-| `AI [STATUS\|STATS\|TIP\|HELP]` | On-box assistant (see above) |
-| `GUI` | Start the Wayland-style Workplace Shell desktop |
-| `EXIT` | Halt the CPU (`wfi` loop) — see §8 for why there's nowhere to "return" to |
-
----
-
-## 7. Filesystems
-
-```
-dos/dos_commands.c   (DIR, TYPE, COPY, DEL, REN, MD, RD, CD, ...)
-        │
-os2api/os2_api.c     (DosOpen/DosRead/DosWrite/DosFindFirst/... - the only
-        │              way commands talk to storage, matching real DOSCALLS.DLL)
-kernel/src/vfs.c      (mount table, fd table, path dispatch)
-        │
-kernel/src/ifs_loader.c  (installable-filesystem registry)
-        │
-   ┌────┴──────────┐
-fs/ext4/   fs/btrfs/   fs/f2fs/  (standalone - not IFS-registered/boot-mounted)
-        │
-kernel/src/blkdev.c + gpt.c   (block device registry, GPT partitions)
+cmake -B build-qemu-riscv -DTARGET_PLATFORM=QEMU_RISCV -DCMAKE_C_COMPILER=... -DCMAKE_ASM_COMPILER=...
+cmake --build build-qemu-riscv --target run # Ctrl-A X quits
 ```
 
-All three drivers follow the same shape: a read-only `<fs>.c` (mount,
-path resolution, read, directory listing) plus a separate `<fs>_write.c`
-write engine, gated by a `writable` flag decided once at mount time — an
-image whose on-disk layout falls outside what the write engine knows how
-to maintain safely just stays mounted read-only rather than risking
-corruption. None of the three maintain their real filesystem's full
-feature set (see each driver's own header comment for the exact cut list)
-— the goal throughout has been "genuinely correct within a documented,
-reduced scope," not a byte-for-byte reimplementation of any of them.
+These ports build a smaller kernel:
 
-- **ext4** — real per-group bitmap writes: create/write/truncate/delete/
-  mkdir/rename, using inline (depth-0) extent trees and directory-entry
-  slot splitting. Refuses to write to images with the `uninit_bg`/
-  `metadata_csum` features (would need CRC16/CRC32C checksums over every
-  group descriptor, bitmap, and inode on every mutation — out of scope,
-  falls back read-only instead). `scripts/mktestdisk.sh`'s BOOT partition
-  is built with those features disabled so this driver can write to it;
-  `scripts/test_ext4_driver.sh` cross-checks every write against a real
-  `mke2fs`-built image using real `e2fsck`/`debugfs` (this caught two real
-  extent-tree bugs during development) — see `fs/ext4/ext4_write.c`'s
-  header comment for the full scope.
-- **btrfs** — real copy-on-write writes: create/write/truncate/delete/mkdir/
-  rename, with node/leaf splitting, CRC32C-checksummed nodes, and generation
-  bumping, landing in a superblock rewrite as the atomic commit point. It
-  does **not** maintain the extent tree or checksum tree (a much larger
-  undertaking with no way to validate here — see `fs/btrfs/btrfs_write.c`'s
-  header comment), and its leaf layout is a simplified, project-local
-  dialect (items packed forward, not upstream btrfs's backward-growing
-  layout). Images this driver writes to are safe for this OS to read/write
-  across reboots, but shouldn't be handed to a real Linux `btrfs` or
-  `btrfs-progs` afterward. `scripts/mkbtrfs_image.py` builds test images;
-  `scripts/check_btrfs_image.py` is an independent structural verifier
-  (checksums, key ordering, generation monotonicity) since there's no
-  `btrfsck` available on macOS to check against.
-- **f2fs** — a log-structured (LFS-only, no GC/SSR) driver: checkpoint
-  versioning with dual packs, Segment Information Table + Node Address
-  Table, node/dnode traversal, create/write/truncate/delete/mkdir/rename,
-  one full checkpoint commit per operation as the atomic finish line. On-
-  disk structs were transcribed byte-for-byte from the real Linux kernel
-  header rather than from memory, and its dentry hash and checkpoint-pack-
-  selection algorithm were ported from the real driver's own source before
-  it was removed from this tree. **Not wired into kernel boot** (`main.c`
-  only mounts ext4/btrfs) and, unlike the other two, **not checked against
-  any real tooling** — `mkfs.f2fs`/`fsck.f2fs` aren't available on macOS
-  and don't install straightforwardly here, so `scripts/test_f2fs_driver.sh`
-  can only self-check (format → mount → exercise every op → unmount →
-  remount → re-verify everything survived). See `fs/f2fs/f2fs_write.c`'s
-  header comment for the full scope and this caveat in more detail before
-  relying on it for anything beyond experimentation.
+- boot code: `bbb_boot.S` or `beaglev_boot.S`;
+- a 16550 UART driver;
+- a serial prompt: VER, HELP, MEM, ECHO, CLS, EXIT, plus CD, DIR and TYPE
+  through the OS/2 API;
+- a microSD driver (`sdhci.c`: the AM335x MMCHS, the TH1520's DWC MSHC,
+  QEMU's `sdhci-pci`), MBR/GPT probing, FAT16/32 and ext4.
 
-### UNIXROOT (EMX-style directory tree)
+The boot FAT partition becomes C:, other volumes `\<partition>`.
 
-At boot, once root is mounted, `kernel/src/unixroot.c` reads `CONFIG.SYS`
-for a `SET UNIXROOT=` line (defaulting to `C:`) and lays down the classic
-EMX/Unix directory skeleton — `/bin`, `/emx`, `/etc`, `/home/<user>`,
-`/usr/{bin,doc,etc,include,info,lib}`, `/usr/share/{locale,man/man1-9,
-man/cat1-9,mann,catn}`, `/tmp`, `/var` — via `vfs_mkdir()`. Whether this
-actually succeeds depends on which filesystem ended up mounted at `/`
-(ext4 and btrfs are both writable now; see above).
+| | BeagleBone Black | BeagleV-Ahead | QEMU RISC-V |
+|---|---|---|---|
+| CPU | Cortex-A8 (ARMv7, 32-bit) | 4x XuanTie C910 (RV64GC) | RV64GC, 4 harts |
+| Boot | U-Boot `bootz` at 0x82000000 | U-Boot `booti` at 0x200000 | OpenSBI, `-kernel` at 0x80200000 |
+| Console | UART0, J1 header (3.3 V, 115200) | UART0 debug header | ns16550a |
+| Card | `mmc 0:1` (hold S2 at power-on) | `mmc 1:1` | `scripts/mksdcard.py`: FAT32 + ext4 |
+
+For a board, copy the image and the generated `uEnv.txt` to the card's
+FAT partition. To boot by hand from U-Boot:
+
+```
+load mmc 0:1 0x82000000 os2warp-bbb.img; bootz 0x82000000 - ${fdtcontroladdr}
+load mmc 1:1 0x200000 os2warp-beaglev-ahead.img; booti 0x200000 - ${fdtcontroladdr}
+```
+
+Neither board is emulated by QEMU, and neither image has been run on real
+hardware yet. The same boot code and drivers were smoke-tested in QEMU
+with only the device addresses changed (`ast2600-evb` for ARMv7,
+`riscv64 virt` for RV64). These ports have no MMU, interrupts, GUI or LX
+loader. LX programs contain AArch64 code, so they couldn't run on these
+CPUs anyway.
 
 ---
 
-## 7b. Networking
+## 12. BASIC, DEBUG and AI
 
-A virtio-net card (`kernel/src/net/virtio_net.c`, polled, on virtio-mmio)
-and lwIP 2.2.0 (`external/lwip`, configured by `kernel/src/net/lwipopts.h`)
-give the kernel IPv4 and IPv6: Ethernet and ARP, DHCP, DNS, ICMP, UDP and
-TCP; for IPv6 a link-local address and SLAAC addresses from router
-advertisements (neighbour discovery, MLD, ICMPv6). The interface is `lan0`;
-it asks DHCP for an address at boot. `scripts/run-vm.sh` always adds the
-card with QEMU's user networking (the guest is 10.0.2.15 and an address in
-fec0::/64, the host 10.0.2.2 and fec0::2, DNS 10.0.2.3;
-`NET_FWD=",hostfwd=tcp::8080-:80"` forwards a host port in). The shell's commands, also in the desktop's Command Prompts:
+**BASIC** is a QuickBASIC-style interpreter (`kernel/src/basic.c`).
+Type `BASIC` to start it and `BYE` to leave. It supports:
 
-| Command | |
-|---|---|
-| `IFCONFIG` | the interface: MAC, addresses (IPv4, IPv6), netmask, gateway, name servers |
-| `PING host [count]` | ICMP echo, by address (IPv4 or IPv6) or name (also `-c N`, `-n N`) |
-| `HOST name` | a DNS lookup |
-
-Programs have it too: AF_INET and AF_INET6 sockets (`kernel/src/net/sock.c`,
-TCP and UDP over lwIP's callback API, and raw ICMP and ICMPv6 sockets -
-busybox's `ping` and `ping6`; the `F_INET` files of `kernel/src/linux`) -
-connect, listen and accept, send and receive (to/from, msg), blocking or
-not, poll/epoll, `SO_ERROR`, `TCP_NODELAY`, loopback (127.0.0.1). IPv6
-sockets are dual stack, as Linux's: they reach IPv4 too, its addresses as
-`::ffff:a.b.c.d` (`IPV6_V6ONLY` is off). When
-there's no `/etc/resolv.conf`, a program reading it gets the name servers
-DHCP gave (musl's resolver works unchanged). So busybox's `wget`, `nc`,
-`nslookup` work from a Command Prompt (wget does HTTPS too, with busybox's
-own TLS, which doesn't check certificates):
-
-    sh -c "wget -qO- http://example.com/ | head"
-    nslookup example.com
-    ping6 -c 2 fec0::2
-    wget -O- http://[fec0::2]:8000/      (a server on the host's ::1)
-
-lwIP runs in the kernel, polled from the shell's idle loop and the
-scheduler (the kernel isn't preempted, so it has one caller at a time).
-
----
-
-## 8. CMD.EXE and the LX loader
-
-`RUN <file.EXE>` (`kernel/src/lx_loader.c`) loads and executes a real OS/2 LX
-(Linear eXecutable) binary in the kernel's own flat address space — there's
-no process isolation or syscall boundary in this project, so this is the
-actual command-interpreter logic, not a demo.
-
-`dos/cmd_main.c` builds a standalone `CMD.EXE` from the exact same
-`dos_commands.c`/`dos_shell_dispatch()` command set the in-kernel shell uses,
-wrapped as a genuine LX executable by the host-side tools in `lx/`
-(`lxbuild`, `makeexe`). OS/2 programs run as processes of their own (EL0,
-their own address space - see `userland/README.md`, stage 6): `RUN CMD.EXE`
-at the system console, `CMD` in an OS/2 Command Prompt on the desktop, or a
-double-click on the program in a folder. One that fails ends alone; `EXIT`
-ends CMD.EXE. (Only if it can't be started that way does `RUN` load it
-inside the kernel, as it used to.)
-
----
-
-## 9. The GUI
-
-**The desktop: the Workplace Shell.** With a display (`scripts/run-vm.sh
---wayland --hvf`; 1920x1080 to start with, `RES=1600x900` for another size,
-and the window can be resized - the desktop follows it, up to 2560x1600:
-the kernel's virtio-gpu driver takes the host's display size and its
-"display changed" event, `drivers/video/virtiofb.c`; on a Retina screen,
-desktop Properties > Screen > 2x doubles everything, sharp), the system boots into an OS/2 Warp 4 style desktop:
-`userland/wps`, a Wayland compositor in C++ on wlroots, running as a
-Linux-ABI program from the USB stick (drive D:). It has the blue desktop
-with its objects (OS/2 System, the Assistance Center, Connections, Drives, Command
-Prompt, Drive D, Programs, Window List, Shut Down, the Shredder), the
-WarpCenter along the top, OS/2 window frames on every window, folder
-windows in Icon, Tree and Details views (sorted by name, type, size or
-date) with drag and drop - moving on a drive, copying across drives -
-shadows, a Startup folder, a Settings notebook, the System Editor, a help
-viewer, WebExplorer (a web browser: text, links, forms and pictures, HTTP and HTTPS, with a little CSS - colours, hidden and centred things, from `<style>`, `style=""` and the pages' style sheets; cookies, the lasting ones kept in `\OS2\cookies.txt`, `about:cookies` lists them), and OS/2 programs (CMD.EXE, ...) running as processes of their
-own. The desktop is kept as it was left (`\OS2\WPS.INI`). The details are
-in `userland/README.md` (stage 6); the help is on the desktop.
-
-**The in-kernel GUI.** `GUI` starts a small Wayland-style compositor (`kernel/src/gui/wayland.c`)
-with four switchable "workplaces" (virtual desktops) — **Cmd+Escape** in the
-display window cycles between them. Backed by `virtio-gpu`/`ramfb` for the
-framebuffer and `virtio-input` for keyboard/pointer events (see `run-gui` in
-§3 for the QEMU flags that wire this up). This is separate from the serial
-console the DOS shell runs on.
-
----
-
-## 10. QuickBASIC interpreter
-
-Type `BASIC` at the shell. Type `BYE`, `QUIT`, or `SYSTEM` to return.
+- line numbers, `LIST`, `RUN`, `NEW`, `RENUM`;
+- `PRINT`, `INPUT`, `LET`;
+- block `IF`, `SELECT CASE`, `FOR`, `WHILE`, `DO ... LOOP`;
+- `GOTO`, `GOSUB`, `ON ... GOTO`;
+- `READ`/`DATA`, one-dimensional arrays, `CONST`, `SWAP`;
+- `CLS`, `LOCATE`, `COLOR`;
+- string and numeric functions (`MID$`, `INSTR`, `HEX$`, `SQR`, `RND`,
+  `INKEY$`, ...).
 
 ```basic
-10 PRINT "Hello from OS/2 BASIC!"
-20 FOR I = 1 TO 10
-30   PRINT I * I
-40 NEXT I
-50 END
+10 FOR I = 1 TO 10 : PRINT I * I : NEXT I
 RUN
 ```
 
-### Statements
+**DEBUG** is a memory monitor in the style of DEBUG.COM. It has dump,
+enter, fill, compare, move, search and hex arithmetic over the flat 64-bit
+address space, and shows the AArch64 registers. `?` lists its commands;
+the x86-only ones say so.
 
-| Statement | Notes |
+**AI** is a small on-box assistant. It is not a language model; it
+watches the commands you use. `AI STATUS` summarises the session, `AI
+STATS` counts commands, and `AI TIP` suggests a command you haven't used.
+
+---
+
+## 13. Tests
+
+| | |
 |---|---|
-| `PRINT expr / "str" [; ,]` | `TAB()`, `SPC()` supported |
-| `LET var = expr` | `LET` is optional |
-| `INPUT ["prompt";] var` | String or integer |
-| `IF expr THEN … [ELSE …]` | Single-line form |
-| `IF … / ELSEIF … / ELSE / END IF` | Block form |
-| `SELECT CASE … / CASE … / END SELECT` | `CASE IS`, `CASE a TO b` |
-| `FOR var = n TO m [STEP s] … NEXT [var]` | |
-| `WHILE expr … WEND` | |
-| `DO [WHILE\|UNTIL] … LOOP [WHILE\|UNTIL]` | |
-| `GOTO line` | |
-| `GOSUB line … RETURN` | |
-| `ON expr GOTO line[,…]` | |
-| `ON expr GOSUB line[,…]` | |
-| `READ var / DATA val[,…] / RESTORE` | |
-| `DIM var(n)` | 1-D integer arrays, 0-based |
-| `CONST name = expr` | |
-| `SWAP var, var` | |
-| `CLS / LOCATE r,c / COLOR fg[,bg] / BEEP` | ANSI terminal |
-| `SLEEP n` | Busy-wait seconds |
-| `REM` or `'` | Comment |
-| `END / STOP` | |
-| `LIST [first[-last]] / RUN / NEW / RENUM` | Direct-mode commands |
-
-### Functions
-
-`ABS` `SGN` `INT` `FIX` `SQR` `RND` `VAL` `LEN` `ASC` `INSTR` `CHR$` `STR$`
-`HEX$` `OCT$` `LEFT$` `RIGHT$` `MID$` `LTRIM$` `RTRIM$` `UCASE$` `LCASE$`
-`SPACE$` `STRING$` `INKEY$`
-
-### Variables
-
-| Type | Example |
-|---|---|
-| Integer (`A`–`Z`) | `A = 42` |
-| String (`A$`–`Z$`) | `A$ = "hi"` |
-| Array (`A(n)`) | `DIM A(10)` |
-| Hex literal | `&HFF` |
-| Octal literal | `&O17` |
-
-Multi-statement lines separated by `:`. `?` is shorthand for `PRINT`.
+| `userland/build-tests.sh` | builds the Linux-ABI test programs (`userland/tests`: processes, threads, signals, IPC, ptys, `/proc`, demand paging, Wayland, wlroots); run them with `RUNELF \h\name` |
+| `userland/os2x86/test/run-tests.sh` | the x86 emulator on the build machine: a freestanding test program, and with OpenWatcom (`WATCOM`, or unpacked in `build/os2x86-test/ow`) real C, C++, conio, DLL, mouse and 12 headless Presentation Manager programs, scripted and their output checked |
+| `scripts/test_ext4_driver.sh` | the ext4 write path against `mke2fs`/`e2fsck`/`debugfs` |
+| `scripts/test_f2fs_driver.sh` | the f2fs driver against itself |
+| `scripts/check_btrfs_image.py`, `scripts/hpfsck.py` | independent checkers for btrfs and HPFS images |
+| `scripts/run-vm.sh --test` | boots QEMU and checks the hypervisor's guest |
 
 ---
 
-## 11. Other subprojects in this tree
-
-Not all part of the default build (`add_subdirectory(...)` in the root
-`CMakeLists.txt`) — noted here so their status is clear:
-
-- **`rexx/`** — an ooRexx-flavored interpreter. Built and linked into the
-  kernel, but not yet wired up to a shell command.
-- **`lx/`** — the host-side OS/2 LX executable builder (`lxbuild`, `makeexe`,
-  `makedll`) used to produce `CMD.EXE` and other `.EXE`/`.DLL` files; built
-  automatically as part of the LX pipeline (§8).
-- **`tools/kcc`** — the Kayte C Compiler, an alternative to clang for the
-  cross-build (`cmake -DUSE_KCC=ON`), and a host tool in the LX pipeline.
-- **`kayte/`** — a separate Free Pascal/Lazarus project (the Kayte language
-  toolchain) living in this repo; not part of the CMake build.
-- **`workplace/`** — a Qt6-based C++ Workplace Shell desktop/QPA platform
-  plugin; not currently wired into `add_subdirectory(...)`, distinct from
-  the actual GUI in §9 (`kernel/src/gui/`).
-- **`installer/`** — a C++ installer wizard, separate from the kernel build.
-
----
-
-## 12. Architecture reference
-
-### Platform comparison
-
-| Feature | QEMU virt | Raspberry Pi 3+ | BeagleBone Black | BeagleV-Ahead | QEMU RISC-V virt |
-|---|---|---|---|---|---|
-| `TARGET_PLATFORM` | `QEMU` | `RPI3` | `BBB` | `BEAGLEV_AHEAD` | `QEMU_RISCV` |
-| CPU | Cortex-A72 | Cortex-A53 | Cortex-A8 (ARMv7-A, 32-bit) | 4x XuanTie C910 (RV64GC) | RV64GC (emulated, 4 harts) |
-| RAM | Configurable (2 GB in the `run`/`run-gui` targets) | 1 GB | 512 MB | 4 GB | 512 MB in `run` |
-| UART | PL011 @ 0x09000000 | PL011 @ 0x3F201000 | 16550 @ 0x44E09000 | DW 16550 @ 0xFFE7014000 | ns16550a @ 0x10000000 |
-| Load address | 0x40000000 | 0x80000 | 0x82000000 | 0x200000 | 0x80200000 |
-| Heap size | 32 MB (`kernel/src/main.c`; the GUI's window buffers need it — note this is more than the `cmake configure` status message says, which is stale) | 32 MB | 32 MB | 32 MB | 32 MB |
-| Output file | `os2warp.img` | `kernel8.img` | `os2warp-bbb.img` | `os2warp-beaglev-ahead.img` | `os2warp-qemu-riscv.img` |
-| Boot method | Direct kernel load (`-kernel`) | Pi firmware chain | U-Boot `bootz` | OpenSBI → U-Boot `booti` (S-mode) | OpenSBI `-bios default` → `-kernel` (S-mode) |
-| Disk | Preloaded RAM window (§3) — no real VirtIO block driver yet | none yet | microSD (FAT16/32 + ext4) | microSD (FAT16/32 + ext4) | `sdhci-pci` SD card (FAT16/32 + ext4) |
-
-### Boot sequence (QEMU)
-
-```
-QEMU loads os2warp.img → 0x40000000
-  │
-  ▼
-boot.S  (_start)
-  ├── Zero BSS
-  ├── Set stack pointer (_stack_top, linker.ld)
-  └── bl kernel_main
-        │
-        ▼
-kernel/src/main.c  (kernel_main)
-  ├── mem_init / scheduler_init
-  ├── vfs_init → blk_init → GPT scan
-  ├── ifs_loader_init → register ext4 + btrfs drivers → mount
-  ├── load CONFIG.SYS → unixroot_configure/unixroot_create_tree (§7)
-  ├── kbd_init
-  └── kernel_shell()  ──►  dos_read_line() (§6)
-                              ├── DOSKEY history/macro expansion
-                              ├── dos_shell_dispatch() → dos/dos_commands.c
-                              └── kernel-local commands (VER, MEM, IFS,
-                                  RUN, BASIC, AI, GUI, HELP)
-```
-
----
-
-## 13. Project structure
+## 14. Repository layout
 
 ```
 os24arm/
-├── CMakeLists.txt          Root build: platform detection, all targets
-├── bootloader/
-│   ├── boot.S               QEMU entry point
-│   ├── rpi_boot.S           Raspberry Pi entry point
-│   ├── linker.ld / rpi_linker.ld
-│   └── bbb_uEnv.txt.in / beaglev_ahead_uEnv.txt.in   U-Boot scripts (→ build/uEnv.txt)
+├── CMakeLists.txt         the build: platforms, kernel, LX programs, run targets
+├── CONFIG.SYS             the system's configuration (UNIXROOT, RUNWORKPLACE, ...)
+├── bootloader/            QEMU and Raspberry Pi entry code, linker scripts, U-Boot scripts
 ├── kernel/
-│   ├── CMakeLists.txt        Actual kernel source list (see below)
-│   ├── linker.ld / bbb_linker.ld / beaglev_linker.ld (RV64: BeagleV-Ahead + QEMU_RISCV)
-│   ├── include/               types.h, uart.h, vfs.h, ifs_loader.h, ai.h, ...
+│   ├── include/
 │   └── src/
-│       ├── main.c              kernel_main, shell loop, HELP/VER/MEM/IFS/...
-│       ├── uart.c / kprintf.c   PL011 driver, kernel printf
-│       ├── vfs.c / ifs_loader.c VFS layer, installable-FS registry
-│       ├── blkdev.c / gpt.c     Block device registry, GPT partitions
-│       ├── lx_loader.c          OS/2 LX .EXE loader (RUN)
-│       ├── ai.c                 On-box AI assistant
-│       ├── basic.c              QuickBASIC interpreter
-│       ├── unixroot.c           EMX dir tree from SET UNIXROOT= (§7)
-│       ├── bbb_boot.S           BeagleBone Black entry (zImage header, ARMv7)
-│       ├── beaglev_boot.S       BeagleV-Ahead entry (RISC-V Image header, RV64)
-│       ├── ns16550.c            16550 UART driver (both Beagle boards)
-│       ├── sdhci.c              microSD driver: AM335x MMCHS / TH1520 DWC MSHC
-│       ├── mbr.c                MBR partition probe (SD cards)
-│       ├── qemu_pci.c           QEMU_RISCV: finds sdhci-pci, assigns its BAR
-│       ├── fat32.c              FAT16/FAT32 driver (Beagle boot partition)
-│       ├── beagle_main.c        Beagle kernel_main + serial prompt (+ CD/DIR via os2api)
-│       ├── arm_aeabi.c          __aeabi_mem*/div runtime helpers (BBB, ARMv7)
-│       └── gui/                 Wayland-style compositor (framebuffer,
-│                                 wayland, virtio_gpu, virtio_input, ramfb)
-├── dos/
-│   ├── dos_commands.c        DIR/TYPE/COPY/COMP/FC/DEL/REN/MD/RD/CD/VOL/
-│   │                         ATTRIB/ECHO/CLS/DOSKEY/DEBUG/EXIT + dos_read_line()
-│   ├── cmd_main.c            Standalone CMD.EXE entry point
-│   └── dos.h
-├── os2api/
-│   └── os2_api.c              DosOpen/DosRead/DosWrite/DosFindFirst/... bridge
-├── fs/
-│   ├── ext4/                  Read/write ext4 driver
-│   ├── btrfs/                 Read/write copy-on-write btrfs driver
-│   └── f2fs/                  Read/write log-structured f2fs driver
-│                               (standalone - not wired into kernel boot)
-├── lx/                        Host-side OS/2 LX builder tools
-├── rexx/                      REXX interpreter (linked, not yet exposed)
-├── tools/kcc/                 Kayte C Compiler (alternative cross-compiler)
-├── kayte/                     Separate Free Pascal Kayte-language project
-├── workplace/                 Qt6 Workplace Shell desktop (not in default build)
-├── installer/                 C++ installer wizard
-└── scripts/
-    ├── mktestdisk.sh           ext4+btrfs GPT test disk builder
-    ├── mksdcard.py             QEMU_RISCV test SD card (FAT32 + ext4, MBR)
-    ├── mkbtrfs_image.py        Minimal btrfs image builder (no mkfs.btrfs on macOS)
-    ├── check_btrfs_image.py    Independent btrfs structural verifier
-    ├── test_ext4_driver.sh     Host-native ext4 write-path test (real mke2fs/e2fsck)
-    ├── test_f2fs_driver.sh     Host-native f2fs write-path test (self-check only)
-    └── build_iso.sh            Bootable ISO builder
+│       ├── main.c             kernel_main, the shell's commands, MOUNT, DESKTOP, SHUTDOWN
+│       ├── mmu.c, mem.c, scheduler.c, gicv3.c
+│       ├── linux/             the Linux ABI: system calls, EL0 entry, ELF and LX processes
+│       ├── net/               virtio-net, lwIP glue, sockets
+│       ├── gui/               virtio-gpu, ramfb, virtio-input, the in-kernel compositor
+│       ├── lx_loader.c, lx_dll_loader.c, doscalls.c   OS/2 LX programs
+│       ├── hyp.c, hyp_entry.S, vgic.c, vm_*.c          the hypervisor
+│       ├── fat32.c, ramfs.c, vfs.c, blkdev.c, gpt.c, mbr.c
+│       ├── basic.c, ai.c, unixroot.c
+│       └── beagle_main.c, bbb_boot.S, beaglev_boot.S, ns16550.c, sdhci.c, qemu_pci.c
+├── drivers/usb/           xHCI, USB core, keyboard, mouse/tablet, mass storage
+├── fs/                    hpfs, ext4, btrfs, f2fs
+├── os2api/                the OS/2 API (DosOpen, DosFindFirst, drive letters, ...)
+├── dos/                   the shell's commands, DOSKEY, DEBUG; CMD.EXE
+├── lx/                    host tools that build LX executables and DLLs
+├── external/lwip/         lwIP 2.2.0
+├── userland/
+│   ├── README.md          the user mode in detail: the Linux ABI stage by stage, the desktop, os2x86
+│   ├── build-*.sh         musl, libraries, busybox, compositors, RPMs, the shell, tests
+│   ├── make-stick.sh      the HPFS USB stick
+│   ├── wps/               the Workplace Shell
+│   ├── wlr-os2/           wlroots backend for /dev/fb0 and evdev
+│   ├── os2x86/            the x86 OS/2 emulator and Presentation Manager
+│   ├── apps/              os2cmd (Command Prompt), the applet launcher
+│   ├── rootfs/            the stick's files: scripts, help, fonts and terminal settings
+│   ├── rpm/               package specs, patches, macros, source checksums
+│   └── tests/             Linux-ABI test programs
+├── scripts/               desktop.sh, run-vm.sh, disk and stick image builders, checkers
+├── rexx/                  a REXX interpreter (linked, not yet a command)
+├── tools/kcc/             the Kayte C Compiler (an alternative cross-compiler, -DUSE_KCC=ON)
+├── kayte/                 the Kayte language toolchain (Free Pascal, separate)
+├── workplace/, installer/ an earlier Qt Workplace Shell and an installer (not built)
+└── docs/                  Doxygen output (from Doxyfile)
 ```
 
 ---
 
-## 14. Contributing
+## 15. Status and what's missing
 
-Areas of interest:
+Works: boot in QEMU to the console or the desktop, Linux and OS/2
+programs as processes, the desktop with its folders, editor, browser and
+terminals, USB keyboards, mice and sticks, networking, packages and a
+compiler on the system, x86 OS/2 text and PM programs. The kernel
+develops in QEMU; the Raspberry Pi port is less tested, and the
+BeagleBoard and RISC-V ports are early, serial-only and smoke-tested in
+QEMU only.
 
-- **Storage:** a real VirtIO block driver (`blkdev.c`'s `virtio_blk_*` are
-  still stubs); btrfs extent-tree/checksum-tree maintenance for real
-  Linux/`btrfs-progs` interop; wiring `fs/f2fs/` into `ifs_loader_init()`/
-  boot mounting the way ext4/btrfs already are; getting `f2fs-tools`
-  building on macOS (or access to a Linux box) to finally cross-check the
-  f2fs driver against something other than itself.
-- **DEBUG:** `A`/`U` (an AArch64 assembler/disassembler), `G`/`P`/`T`
-  (breakpoint/single-step support in the exception vectors).
-- **Shell:** wiring `rexx/` up to a command.
-- **Networking:** there is none — no driver, no TCP/IP stack.
-- **Documentation:** the Doxygen output in `docs/html/` (from the root
-  `Doxyfile`) is the closest thing to an API reference right now.
+Not there yet:
+
+- **Storage**: a virtio-blk driver (C: comes through a RAM window), the
+  btrfs extent and checksum trees, f2fs mounted at boot.
+- **The kernel**: SMP (one CPU runs everything), dynamic linking for
+  Linux programs, datagram Unix sockets.
+- **Graphics**: GPU acceleration (the desktop renders with pixman).
+- **os2x86**: drag and drop and in-place editing in PM containers, and
+  the rest of OS/2's API (the help manager, multimedia, ...).
+- **Other**: REXX as a command; DEBUG's assembler, disassembler and
+  breakpoints.
 
 ---
 
-## 15. License
+## 16. License
 
-GPLv3 — see `LICENSE`.
-
----
-
-**Status:** Boots on QEMU virt (serial console + GUI) | Boots on Raspberry Pi
-3+ (less exercised) | BeagleBone Black and BeagleV-Ahead serial-console
-ports (smoke-tested in QEMU only) | Active development.
+GPLv3, see `LICENSE`. Third-party code keeps its own license: lwIP
+(`external/lwip`), stb_truetype and stb_image (`third_party/` folders),
+and the packages built from source by the `userland` scripts.
