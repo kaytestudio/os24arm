@@ -517,13 +517,13 @@ static int unpack2(uint8_t *dst, uint32_t dsz, const uint8_t *s, uint32_t n)
 }
 
 /* ── thunks: the imports from the system ────────────────────────────── */
-static const char *libs[64] = { "DOSCALLS", "NLS", "MSG", "QUECALLS", "SESMGR", "KBDCALLS", "VIOCALLS", "MOUCALLS", "PMWIN", "PMGPI", 0 };
-enum { L_DOS, L_NLS, L_MSG, L_QUE, L_SES, L_KBD, L_VIO, L_MOU, L_PMWIN, L_PMGPI, NLIBS };
+static const char *libs[64] = { "DOSCALLS", "NLS", "MSG", "QUECALLS", "SESMGR", "KBDCALLS", "VIOCALLS", "MOUCALLS", "PMWIN", "PMGPI", "PMDRAG", 0 };
+enum { L_DOS, L_NLS, L_MSG, L_QUE, L_SES, L_KBD, L_VIO, L_MOU, L_PMWIN, L_PMGPI, L_PMDRAG, NLIBS };
 static int nlibs = NLIBS;
 /* OS/2's own DLLs that aren't here (yet): a program that imports from one
  * still starts (C runtimes link Presentation Manager's message box in for
  * their error reports); a call into one says so and returns 0 */
-static const char *const sysdlls[] = { "PMSHAPI", "PMSPL", "PMDRAG", "PMCTLS", "PMVIOP",
+static const char *const sysdlls[] = { "PMSHAPI", "PMSPL", "PMCTLS", "PMVIOP",
     "PMWP", "PMMERGE", "PMBIDI", "PMPIC", "PMATM", "PMPRINTF", "PMSEC", "HELPMGR", "BDCALLS", "MONCALLS",
     "NAMPIPES", "SO32DLL", "TCP32DLL", "SOM", "SOMU", "MMPM", "MDM", "UCONV", "LIBUNI", 0 };
 
@@ -3212,6 +3212,37 @@ static const api_t apis[] = {
     { L_PMWIN, 808, "WinQueryClipbrdOwner", api_WinQueryClipbrdOwner, 0 },
     { L_PMWIN, 856, "WinSetClipbrdViewer", api_WinSetClipbrdOwner, 0 },
     { L_PMGPI, 368, "GpiCreateLogFont", api_GpiCreateLogFont, 0 },
+    { L_PMDRAG, 32, "DrgAccessDraginfo", api_DrgAccessDraginfo, 0 },
+    { L_PMDRAG, 33, "DrgAddStrHandle", api_DrgAddStrHandle, 0 },
+    { L_PMDRAG, 34, "DrgAllocDraginfo", api_DrgAllocDraginfo, 0 },
+    { L_PMDRAG, 35, "DrgAllocDragtransfer", api_DrgAllocDragtransfer, 0 },
+    { L_PMDRAG, 36, "DrgDeleteDraginfoStrHandles", api_DrgDeleteDraginfoStrHandles, 0 },
+    { L_PMDRAG, 37, "DrgDeleteStrHandle", api_DrgDeleteStrHandle, 0 },
+    { L_PMDRAG, 38, "DrgDrag", api_DrgDrag, 0 },
+    { L_PMDRAG, 39, "DrgFreeDraginfo", api_DrgFreeDraginfo, 0 },
+    { L_PMDRAG, 40, "DrgFreeDragtransfer", api_DrgFreeDragtransfer, 0 },
+    { L_PMDRAG, 41, "DrgGetPS", api_DrgGetPS, 0 },
+    { L_PMDRAG, 42, "DrgPostTransferMsg", api_DrgPostTransferMsg, 0 },
+    { L_PMDRAG, 43, "DrgPushDraginfo", api_DrgPushDraginfo, 0 },
+    { L_PMDRAG, 44, "DrgQueryDragitem", api_DrgQueryDragitem, 0 },
+    { L_PMDRAG, 45, "DrgQueryDragitemCount", api_DrgQueryDragitemCount, 0 },
+    { L_PMDRAG, 46, "DrgQueryDragitemPtr", api_DrgQueryDragitemPtr, 0 },
+    { L_PMDRAG, 47, "DrgQueryNativeRMF", api_DrgQueryNativeRMF, 0 },
+    { L_PMDRAG, 48, "DrgQueryNativeRMFLen", api_DrgQueryNativeRMFLen, 0 },
+    { L_PMDRAG, 49, "DrgQueryStrName", api_DrgQueryStrName, 0 },
+    { L_PMDRAG, 50, "DrgQueryStrNameLen", api_DrgQueryStrNameLen, 0 },
+    { L_PMDRAG, 51, "DrgQueryTrueType", api_DrgQueryTrueType, 0 },
+    { L_PMDRAG, 52, "DrgQueryTrueTypeLen", api_DrgQueryTrueTypeLen, 0 },
+    { L_PMDRAG, 53, "DrgReleasePS", api_DrgReleasePS, 0 },
+    { L_PMDRAG, 54, "DrgSendTransferMsg", api_DrgSendTransferMsg, 0 },
+    { L_PMDRAG, 55, "DrgSetDragPointer", api_DrgSetDragPointer, 0 },
+    { L_PMDRAG, 56, "DrgSetDragImage", api_DrgSetDragImage, 0 },
+    { L_PMDRAG, 57, "DrgSetDragitem", api_DrgSetDragitem, 0 },
+    { L_PMDRAG, 58, "DrgVerifyNativeRMF", api_DrgVerifyNativeRMF, 0 },
+    { L_PMDRAG, 59, "DrgVerifyRMF", api_DrgVerifyRMF, 0 },
+    { L_PMDRAG, 60, "DrgVerifyTrueType", api_DrgVerifyTrueType, 0 },
+    { L_PMDRAG, 61, "DrgVerifyType", api_DrgVerifyType, 0 },
+    { L_PMDRAG, 73, "DrgQueryDragStatus", api_DrgQueryDragStatus, 0 },
     { L_PMGPI, 513, "GpiSetCharSet", api_GpiSetCharSet, 0 },
     { L_PMGPI, 510, "GpiSetCharBox", api_GpiSetCharBox, 0 },
     { L_PMGPI, 430, "GpiQueryCharBox", api_GpiQueryCharBox, 0 },

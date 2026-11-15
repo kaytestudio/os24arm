@@ -451,7 +451,15 @@ platform-specific are new code.
    OWNERITEM and a presentation space of the list box - a selection the
    owner leaves to it is inverted), menu items with MIS_OWNERDRAW
    (measured, drawn, MIA_HILITED for the lit one) and value set items
-   with VIA_OWNERDRAW. Not there yet: drag and drop. OS/2's DLLs that aren't
+   with VIA_OWNERDRAW. Drag and drop (`pm_drag.inc`, PMDRAG): button 2
+   pressed and moved gives WM_BEGINDRAG (containers: CN_INITDRAG);
+   DrgAllocDraginfo, DrgSetDragitem, string handles, DrgVerifyType/RMF
+   and the other queries; DrgDrag follows the pointer - DM_DRAGOVER to
+   the window under it (containers: CN_DRAGOVER with the record there),
+   the pointer showing whether it may drop (OS/2's no-entry sign when
+   not), Ctrl to copy, Shift to move, Esc to give up - and ends with
+   DM_DROP (CN_DROP) or DM_DRAGLEAVE. Between one program's windows; not
+   yet to and from other programs or the Workplace Shell. OS/2's DLLs that aren't
    here (PMSHAPI, HELPMGR, TCP32DLL, ...) load as stubs, so a program
    that only links them in runs; a call into one says so and returns 0. Calls it doesn't have yet print
    one line on stderr and return error 1; `OS2X86_TRACE=1` lists every

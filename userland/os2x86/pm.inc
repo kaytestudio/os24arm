@@ -457,6 +457,8 @@ static pmwin_t *win_at(pmwin_t *f, int x, int y)
 
 static void menu_close(pmwin_t *f);
 static int pm_kc;                                            /* the Shift, Ctrl and Alt keys held now (KC_*) */
+static uint32_t pm_b2_hwnd;                                  /* button 2 down in it, at (pm_b2_x, pm_b2_y) of its frame: a drag, when it moves */
+static int pm_b2_x, pm_b2_y, pm_b2_began;
 /* the backends' input, frame pixels top left: as PM messages */
 static void pm_mouse(pmwin_t *f, int px, int py, int button, int down)
 {
@@ -467,7 +469,16 @@ static void pm_mouse(pmwin_t *f, int px, int py, int button, int down)
     win_abs(w, &ax, &ay);
     uint32_t mp1 = (uint32_t)((x - ax) & 0xFFFF) | (uint32_t)((y - ay) & 0xFFFF) << 16;
     uint32_t mp2 = (uint32_t)pm_kc << 16;                    /* (hit test, the keys held) */
-    if (!button) { post(w, w->hwnd, WM_MOUSEMOVE, mp1, mp2); return; }
+    if (!button) {
+        if (pm_b2_hwnd && !pm_b2_began && (abs(x - pm_b2_x) > 3 || abs(y - pm_b2_y) > 3)) {   /* button 2 held, moved: a drag starts */
+            pmwin_t *s = win(pm_b2_hwnd);
+            pm_b2_began = 1;
+            if (s) { int sx, sy; win_abs(s, &sx, &sy); post(s, s->hwnd, 0x0420, 1, (uint32_t)((pm_b2_x - sx) & 0xFFFF) | (uint32_t)((pm_b2_y - sy) & 0xFFFF) << 16); }   /* WM_BEGINDRAG */
+        }
+        post(w, w->hwnd, WM_MOUSEMOVE, mp1, mp2);
+        return;
+    }
+    if (button == 2) { if (down) { pm_b2_hwnd = w->hwnd; pm_b2_x = x; pm_b2_y = y; pm_b2_began = 0; } else pm_b2_hwnd = 0; }
     static const uint32_t dn[3] = { WM_BUTTON1DOWN, WM_BUTTON2DOWN, WM_BUTTON3DOWN }, up[3] = { WM_BUTTON1UP, WM_BUTTON2UP, WM_BUTTON3UP };
     if (button < 1 || button > 3) return;
     if (down && f->drop && w != f->drop && w->id != 0x8005) { menu_close(f); return; }   /* (FID_MENU: it decides) */
@@ -546,6 +557,9 @@ static int hl_idle(struct timespec *dl)
         if (!f) { fprintf(stderr, "[pm] %s: no window\n", s); continue; }
         if (sscanf(s, "click %d %d", &x, &y) == 2) { pm_mouse(f, x, y, 1, 1); pm_mouse(f, x, y, 1, 0); return 1; }
         if (sscanf(s, "altclick %d %d", &x, &y) == 2) { pm_kc = KC_ALT; pm_mouse(f, x, y, 1, 1); pm_mouse(f, x, y, 1, 0); return 1; }
+        if (sscanf(s, "rdown %d %d", &x, &y) == 2) { pm_mouse(f, x, y, 2, 1); return 1; }
+        if (sscanf(s, "rup %d %d", &x, &y) == 2) { pm_mouse(f, x, y, 2, 0); return 1; }
+        if (!strncmp(s, "ctrl+", 5)) { pm_kc = KC_CTRL; s += 5; }   /* (ctrl+rdrag ...: with Ctrl held) */
         if (sscanf(s, "rclick %d %d", &x, &y) == 2) { pm_mouse(f, x, y, 2, 1); pm_mouse(f, x, y, 2, 0); return 1; }
         if (sscanf(s, "move %d %d", &x, &y) == 2) { pm_mouse(f, x, y, 0, 0); return 1; }
         if (sscanf(s, "size %d %d", &x, &y) == 2) { pm_resize(f, x, y); return 1; }
@@ -567,6 +581,10 @@ static int hl_idle(struct timespec *dl)
             if (vk) { pm_key(f, ch, vk, 0, 0); return 1; }
         }
         int x2, y2;
+        if (sscanf(s, "rdrag %d %d %d %d", &x, &y, &x2, &y2) == 4) {   /* button 2: PM's dragging */
+            pm_mouse(f, x, y, 2, 1); pm_mouse(f, (x + x2) / 2, (y + y2) / 2, 0, 0); pm_mouse(f, x2, y2, 0, 0); pm_mouse(f, x2, y2, 2, 0);
+            return 1;
+        }
         if (sscanf(s, "drag %d %d %d %d", &x, &y, &x2, &y2) == 4) { pm_mouse(f, x, y, 1, 1); pm_mouse(f, x2, y2, 0, 0); pm_mouse(f, x2, y2, 1, 0); return 1; }
         if (!strcmp(s, "esc")) { pm_key(f, 27, 0x0f, 1, 0); return 1; }
         if (!strcmp(s, "close")) { pm_close(f); return 1; }
@@ -1512,6 +1530,7 @@ static uint32_t api_WinRemovePresParam(void)
 static pmwin_t *ptr_get(uint32_t h);
 #include "pm_cnr.inc"
 #include "pm_vs.inc"
+#include "pm_drag.inc"
 
 /* ── the clipboard (WinOpenClipbrd & co.): CF_TEXT, CF_BITMAP; on the
  * desktop the Wayland one (pm_wl.inc), so text goes between programs ── */

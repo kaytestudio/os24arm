@@ -456,6 +456,14 @@ static uint32_t sys_pointer(uint32_t id)
     case 11: bg = 0x2050C0; mark = "i"; break;                 /* SPTR_ICONINFORMATION */
     case 12: bg = 0x2050C0; mark = "?"; break;                 /* SPTR_ICONQUESTION */
     case 13: bg = 0xC02020; mark = "X"; break;                 /* SPTR_ICONERROR */
+    case 18:                                                   /* SPTR_ILLEGAL: a red ring, struck through */
+        for (int y = 0; y < 32; y++) for (int x = 0; x < 32; x++) {
+            int dx = 2 * x + 1 - 32, dy = 2 * y + 1 - 32, d2 = dx * dx + dy * dy, slash = abs(dx + dy) <= 5;
+            if (d2 <= 26 * 26 && (d2 >= 18 * 18 || slash)) { p->px[y * 32 + x] = 0xFFD02020u; m->andm[y * 32 + x] = 0; }
+            else if (d2 <= 28 * 28 && (d2 >= 16 * 16 || abs(dx + dy) <= 8)) { p->px[y * 32 + x] = 0xFFFFFFFFu; m->andm[y * 32 + x] = 0; }
+        }
+        m->hotx = m->hoty = 16;
+        break;
     case 19: case 21:                                          /* SPTR_FILE, SPTR_MULTFILE: a page, its corner folded */
         for (int y = 2; y < 30; y++) for (int x = 7; x < 25; x++) {
             int edge = x == 7 || x == 24 || y == 2 || y == 29, corner = x > 18 && y < 8 && x - 18 > y - 2;

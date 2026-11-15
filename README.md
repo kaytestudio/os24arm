@@ -328,10 +328,12 @@ were a `#!/h/OS2/os2x86` script. It contains:
   - resources: menus, dialogs, accelerators and string tables;
   - the controls: buttons, entry fields, list boxes, combo boxes, scroll
     bars, the MLE, spin buttons, sliders, circular sliders, value sets,
-    notebooks and containers (icon, name, text, details and tree views);
+    notebooks and containers (icon, name, text, details and tree views,
+    editing in place), owner-drawn items;
   - GPI text in any size (DejaVu fonts), lines, boxes, bitmaps, BitBlt,
     memory presentation spaces, icons and pointers;
-  - the clipboard, shared with the desktop's.
+  - the clipboard, shared with the desktop's, and drag and drop between
+    a program's windows.
 
 OS/2 system DLLs it doesn't have load as stubs. A call it doesn't
 implement prints one line and fails, and `OS2X86_TRACE=1` traces every
@@ -580,7 +582,7 @@ Not there yet:
 - **The kernel**: SMP (one CPU runs everything), dynamic linking for
   Linux programs, datagram Unix sockets.
 - **Graphics**: GPU acceleration (the desktop renders with pixman).
-- **os2x86**: drag and drop in PM, and
+- **os2x86**: PM drag and drop between programs (within one works), and
   the rest of OS/2's API (the help manager, multimedia, ...).
 - **Other**: REXX as a command; DEBUG's assembler, disassembler and
   breakpoints.

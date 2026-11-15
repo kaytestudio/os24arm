@@ -52,6 +52,7 @@ if [ -x "$W/armo64/wcl386" ] || [ -x "$W/binl64/wcl386" ]; then
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmclip.c" >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmvs.c" >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmtree.c" >/dev/null
+    wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmdrag.c" >/dev/null
     wrc -q -r -bt=os2 -i="$S" "$S/pmowner.rc" -fo=pmowner.res >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmowner.c" >/dev/null && wrc -q -bt=os2 pmowner.res pmowner.exe >/dev/null
     owfail=0
@@ -192,6 +193,10 @@ at = lambda x, y: tuple(px[(y * w + x) * 3:(y * w + x) * 3 + 3])
 sys.exit(0 if at(60, 34) == (0, 128, 0) and at(20, 122) == (0, 0, 255) else 1)   # the lit menu item, the Blue swatch
 PY
     then echo "PM owner drawing: ok"; else echo "PM owner drawing: FAIL"; echo "$ownout"; owfail=1; fi
+    # drag and drop (button 2): a record from one container to another (CN_INITDRAG, DrgDrag, CN_DRAGOVER, CN_DROP), then one refused
+    dragout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf OS2X86_PM_SCRIPT="rdrag 40 30 220 60; rdrag 40 10 60 60; close" ../os2x86 pmdrag.exe 2>&1 | tr -d '\r')"
+    if [ "$(tr '\n' '|' <<< "$dragout")" = "CN_INITDRAG beta.txt from 1|CN_DROP beta.txt on 2, move, 1 items|DrgDrag: the right one|CN_INITDRAG alpha.txt from 1|DrgDrag: nowhere|drag-overs yes|left: alpha.txt gamma.txt|right: beta.txt|" ]
+    then echo "PM drag and drop: ok"; else echo "PM drag and drop: FAIL"; echo "$dragout"; owfail=1; fi
     [ "$owfail" = 0 ] || st=1
 else
     echo "(no OpenWatcom: its programs not tried)"

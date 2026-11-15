@@ -474,8 +474,29 @@ static uint32_t container_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t 
             if (x >= bx - 2 && x <= bx + 10) { cnr_expand(w, c, i, !(g32(c->rec[i] + RC_ATTR) & 0x80)); return 1; }
         }
         if (i >= 0) cnr_select(w, c, i);
-        if (msg == WM_BUTTON2DOWN) notify(w, 119, i >= 0 ? c->rec[i] : 0);   /* CN_CONTEXTMENU */
         return 1;
+    }
+    case WM_BUTTON2UP:                                       /* button 2 let go - not after a drag: the menu (CN_CONTEXTMENU) */
+        if (!pm_b2_began) { int i = cnr_hit(w, c, (int16_t)(mp1 & 0xFFFF), (int16_t)(mp1 >> 16)); notify(w, 119, i >= 0 ? c->rec[i] : 0); }
+        return 1;
+    case 0x0420: {                                           /* WM_BEGINDRAG: CN_INITDRAG (CNRDRAGINIT: hwndCnr, pRecord, x, y, cx, cy) */
+        int x = (int16_t)(mp2 & 0xFFFF), y = (int16_t)(mp2 >> 16), i = cnr_hit(w, c, x, y);
+        uint32_t n = gscratch(24);
+        if (!n) return 0;
+        p32(n, w->hwnd); p32(n + 4, i >= 0 ? c->rec[i] : 0); p32(n + 8, (uint32_t)x); p32(n + 12, (uint32_t)y);
+        notify(w, 107, n);
+        return 1;
+    }
+    case 0x032e: case 0x032d: case 0x032f: {                 /* DM_DRAGOVER, DM_DRAGLEAVE, DM_DROP: CN_DRAGOVER, CN_DRAGLEAVE, CN_DROP (CNRDRAGINFO) */
+        uint32_t d = mp1, n = gscratch(8);
+        if (!n) return 0;
+        int dx = msg == 0x032e ? (int16_t)(mp2 & 0xFFFF) : (int16_t)g16(d + 12), dy = msg == 0x032e ? (int16_t)(mp2 >> 16) : (int16_t)g16(d + 14), ax, ay;
+        win_abs(w, &ax, &ay);
+        pmwin_t *f = frame_of(w);
+        int i = msg == 0x032d ? -1 : cnr_hit(w, c, dx - ax - (f ? f->x : 0), dy - ay - (f ? f->y : 0));
+        p32(n, d); p32(n + 4, i >= 0 ? c->rec[i] : 0);
+        pmwin_t *o = w->owner ? w->owner : w->parent;
+        return o ? pm_send(o, WM_CONTROL, (w->id & 0xFFFF) | (msg == 0x032e ? 103u : msg == 0x032d ? 102u : 104u) << 16, n) : 0;
     }
     case WM_BUTTON1DBLCLK: {
         int i = cnr_hit(w, c, (int16_t)(mp1 & 0xFFFF), (int16_t)(mp1 >> 16));
