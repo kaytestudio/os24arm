@@ -46,6 +46,8 @@ if [ -x "$W/armo64/wcl386" ] || [ -x "$W/binl64/wcl386" ]; then
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm -i="$S" "$S/pmicon.c" >/dev/null && wrc -q -bt=os2 pmicon.res pmicon.exe >/dev/null
     wrc -q -r -bt=os2 -i="$S" "$S/pmfont.rc" -fo=pmfont.res >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm -i="$S" "$S/pmfont.c" >/dev/null && wrc -q -bt=os2 pmfont.res pmfont.exe >/dev/null
+    wrc -q -r -bt=os2 -i="$S" "$S/pmbook.rc" -fo=pmbook.res >/dev/null
+    wcl386 -q -za99 -bt=os2 -l=os2v2_pm -i="$S" "$S/pmbook.c" >/dev/null && wrc -q -bt=os2 pmbook.res pmbook.exe >/dev/null
     owfail=0
     echo "== OpenWatcom programs"
     ../os2x86 owtest.exe </dev/null | grep -E "^FAIL|passed|failed" || owfail=1
@@ -142,6 +144,13 @@ PY
        echo "$fontout" | grep -q 'static font "14.Helv"' && echo "$fontout" | grep -q 'dialog item font "18.Helv Bold"' &&
        echo "$fontout" | awk '/^default:/ { exit !($3 > $6) }'
     then echo "PM fonts: ok"; else echo "PM fonts: FAIL"; echo "$fontout"; owfail=1; fi
+    # a notebook (pages from dialog resources, tabs, the page arrows) and a slider (shaft, buttons, keys, the arm dragged)
+    bookout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf \
+        OS2X86_PM_SCRIPT="click 213 183; click 325 183; vkey right; drag 265 183 82 183; click 100 12; click 150 153; key Warp; click 449 305; close" \
+        ../os2x86 pmbook.exe 2>&1)"
+    if [ "$(echo "$bookout" | grep '^SLN_CHANGE' | tr '\n' ' ')" = "SLN_CHANGE 3 SLN_CHANGE 7 SLN_CHANGE 8 SLN_CHANGE 9 SLN_CHANGE 2 " ] &&
+       echo "$bookout" | grep -q "BKN_PAGESELECTED -> page 2" && echo "$bookout" | grep -q 'done: slider 2, name "Warp", on page 1, 2 selections'
+    then echo "PM notebook, slider: ok"; else echo "PM notebook, slider: FAIL"; echo "$bookout"; owfail=1; fi
     [ "$owfail" = 0 ] || st=1
 else
     echo "(no OpenWatcom: its programs not tried)"

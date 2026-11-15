@@ -188,6 +188,7 @@ static pmwin_t *win(uint32_t h)
     return i < MAXWIN && pmwins[i].used ? &pmwins[i] : 0;
 }
 static pmwin_t *frame_of(pmwin_t *w) { while (w && !w->top) w = w->parent; return w; }
+static int shown(pmwin_t *w) { for (; w && !w->top; w = w->parent) if (!w->visible) return 0; return w != 0; }   /* (it and every parent up to its frame) */
 static void win_abs(pmwin_t *w, int *x, int *y)         /* its bottom left, in its frame */
 {
     *x = *y = 0;
@@ -597,6 +598,7 @@ static int pm_take(pmq_t *q, uint32_t filt, uint32_t first, uint32_t last, int r
         pmwin_t *w = &pmwins[i];
         if (!w->used || !w->invalid || w->tid != me->tid || !w->visible || (filt && w->hwnd != filt)) continue;
         if (w->overlay != pass) continue;
+        if (!w->top && !shown(w)) continue;                /* (a hidden parent's: not painted) */
         if (!frame_of(w) || !frame_of(w)->visible) continue;
         if (w->iproc == frame_proc) { w->invalid = 0; continue; }       /* (a frame: its client paints) */
         if (remove) w->invalid = 0;

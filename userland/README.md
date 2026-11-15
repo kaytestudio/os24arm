@@ -415,8 +415,13 @@ platform-specific are new code.
    sized by GpiSetCharBox), GpiSetCharSet, the metrics; presentation
    parameters (PP_FONTNAMESIZE, PP_FOREGROUNDCOLOR, PP_BACKGROUNDCOLOR:
    WinSetPresParam, a dialog template's PRESPARAMS; a parent's go to its
-   children). Not there yet: notebooks, containers, sliders and the like,
-   the pointer's shape on the desktop. OS/2's DLLs that aren't
+   children). Notebooks (tabs along the top, a status line, the page
+   arrows; pages from dialog resources - WinLoadDlg into a window makes a
+   dialog that's a child of it - BKM_INSERTPAGE & co., BKN_PAGESELECTED)
+   and sliders (ticks, scale text, buttons, the arm clicked, dragged or
+   moved by the keys; SLM_SET/QUERYSLIDERINFO, SLN_CHANGE). Not there
+   yet: containers, value sets, circular sliders, the pointer's shape on
+   the desktop. OS/2's DLLs that aren't
    here (PMSHAPI, HELPMGR, TCP32DLL, ...) load as stubs, so a program
    that only links them in runs; a call into one says so and returns 0. Calls it doesn't have yet print
    one line on stderr and return error 1; `OS2X86_TRACE=1` lists every

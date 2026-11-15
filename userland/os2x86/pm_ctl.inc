@@ -711,6 +711,8 @@ static uint32_t scroll_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2
 static uint32_t combo_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2);
 static uint32_t mle_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2);
 static uint32_t spin_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2);
+static uint32_t slider_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2);
+static uint32_t notebook_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2);
 static pmproc_t builtin_proc(const char *cls)
 {
     if (!strcmp(cls, "#3")) return button_proc;
@@ -721,6 +723,8 @@ static pmproc_t builtin_proc(const char *cls)
     if (!strcmp(cls, "#2")) return combo_proc;
     if (!strcmp(cls, "#10")) return mle_proc;
     if (!strcmp(cls, "#32")) return spin_proc;
+    if (!strcmp(cls, "#38")) return slider_proc;
+    if (!strcmp(cls, "#40")) return notebook_proc;
     return 0;
 }
 
@@ -777,6 +781,7 @@ static int ctl_set_text(pmwin_t *w, const char *s);
 static uint32_t api_WinDefDlgProc(void) { pmwin_t *w = win(A(0)); return w ? def_dlg_proc(w, A(1), A(2), A(3)) : 0; }
 
 /* the template's items, from item i (and its children) under parent */
+static pmwin_t *dlg_host;                                   /* (dlg_create's: the window a dialog goes in, or none) */
 static int dlg_items(uint32_t t, int i, pmwin_t *parent, pmwin_t *dlg, uint32_t proc, uint32_t createp, pmwin_t **out)
 {
     uint32_t it = t + g16(t + 6) + 30u * (uint32_t)i;      /* (a DLGTITEM: 30 bytes) */
@@ -788,7 +793,18 @@ static int dlg_items(uint32_t t, int i, pmwin_t *parent, pmwin_t *dlg, uint32_t 
     else snprintf(cls, sizeof cls, "#%u", offc);
     if (ccht && offt != 0xFFFF) { char *s = gp(t + offt, ccht); snprintf(text, sizeof text, "%.*s", (int)ccht, s ? s : ""); }
     pmwin_t *w;
-    if (!parent) {                                          /* the dialog itself: a window of the desktop */
+    if (!parent && dlg_host) {                              /* the dialog itself, in a window (a notebook's page) */
+        w = win_new(dlg_host, "#dialog", style & ~WS_VISIBLE_, id);
+        if (!w) return -1;
+        w->x = x; w->y = y; w->cx = cx; w->cy = cy;
+        w->proc = proc;
+        if (!proc) w->iproc = def_dlg_proc;
+        w->visible = (style & WS_VISIBLE_) != 0;
+        snprintf(w->text, sizeof w->text, "%s", text);
+        if (offpp != 0xFFFF && offpp) pp_apply(w, t + offpp);
+        *out = w;
+        dlg = w;
+    } else if (!parent) {                                   /* the dialog itself: a window of the desktop */
         w = win_new(0, "#dialog", style & ~WS_VISIBLE_, id);
         if (!w) return -1;
         w->top = 1;
@@ -814,13 +830,18 @@ static int dlg_items(uint32_t t, int i, pmwin_t *parent, pmwin_t *dlg, uint32_t 
     for (uint32_t k = 0; k < nkids && next > 0; k++) next = dlg_items(t, next, w, dlg, proc, createp, out);
     return next;
 }
-static uint32_t dlg_create(uint32_t owner, uint32_t proc, uint32_t t, uint32_t createp)
+/* parent: HWND_DESKTOP (a window of the desktop) or a window it goes in */
+static uint32_t dlg_create(uint32_t parent, uint32_t owner, uint32_t proc, uint32_t t, uint32_t createp)
 {
     if (!pm_start() || !ok(t, 14 + 30)) return 0;
     pmwin_t *dlg = 0;
-    if (dlg_items(t, 0, 0, 0, proc, createp, &dlg) < 0 || !dlg) { if (dlg) win_destroy(dlg); return 0; }
+    dlg_host = parent > 4 ? win(parent) : 0;              /* (HWND_DESKTOP, _OBJECT, ...: on its own) */
+    int r = dlg_items(t, 0, 0, 0, proc, createp, &dlg);
+    pmwin_t *host = dlg_host;
+    dlg_host = 0;
+    if (r < 0 || !dlg) { if (dlg) win_destroy(dlg); return 0; }
     dlg->owner = win(owner);
-    if (pmb->title) pmb->title(dlg);
+    if (!host && pmb->title) pmb->title(dlg);
     pmwin_t *focus = dlg_tab(dlg, 0, 1);
     uint16_t ifocus = g16(t + 10);
     if (ifocus != 0xFFFF) {                                 /* (iItemFocus: the template's item number) */
@@ -828,17 +849,18 @@ static uint32_t dlg_create(uint32_t owner, uint32_t proc, uint32_t t, uint32_t c
         for (int i = 0; i < MAXWIN; i++) if (pmwins[i].used && pmwins[i].parent == dlg && ++k == ifocus) focus = &pmwins[i];
     }
     uint32_t hwnd = dlg->hwnd;
-    if (!pm_send(dlg, 0x003b, focus ? focus->hwnd : 0, createp) && focus && win(hwnd)) set_focus(focus->hwnd);   /* WM_INITDLG */
+    if (!pm_send(dlg, 0x003b, focus ? focus->hwnd : 0, createp) && focus && win(hwnd) && !host) set_focus(focus->hwnd);   /* WM_INITDLG */
     if (!win(hwnd)) return 0;
-    if (dlg->style & WS_VISIBLE_ || g32(t + g16(t + 6) + 12) & WS_VISIBLE_) win_show(dlg, 1);
+    if (host) invalidate(dlg);
+    else if (dlg->style & WS_VISIBLE_ || g32(t + g16(t + 6) + 12) & WS_VISIBLE_) win_show(dlg, 1);
     return hwnd;
 }
-static uint32_t api_WinCreateDlg(void) { return dlg_create(A(1), A(2), A(3), A(4)); }    /* (parent, owner, proc, ptemplate, createp) */
+static uint32_t api_WinCreateDlg(void) { return dlg_create(A(0), A(1), A(2), A(3), A(4)); }    /* (parent, owner, proc, ptemplate, createp) */
 static uint32_t api_WinLoadDlg(void)          /* (hwndParent, hwndOwner, pfnDlgProc, hmod, idDlg, pCreateParams) */
 {
     uint32_t a, n;
     if (!find_resource(A(3), 4, A(4), &a, &n)) return 0;   /* RT_DIALOG */
-    return dlg_create(A(1), A(2), a, A(5));
+    return dlg_create(A(0), A(1), A(2), a, A(5));
 }
 static uint32_t dlg_process(uint32_t hwnd)
 {
@@ -877,7 +899,7 @@ static uint32_t api_WinDlgBox(void)           /* (hwndParent, hwndOwner, pfnDlgP
 {
     uint32_t a, n;
     if (!find_resource(A(3), 4, A(4), &a, &n)) return 0xFFFF;   /* DID_ERROR */
-    uint32_t h = dlg_create(A(1), A(2), a, A(5));
+    uint32_t h = dlg_create(A(0), A(1), A(2), a, A(5));
     if (!h) return 0xFFFF;
     uint32_t r = dlg_process(h);
     pmwin_t *w = win(h);
@@ -1747,4 +1769,339 @@ static int ctl_set_text(pmwin_t *w, const char *s)
     m->changed = 0;
     repaint(w);
     return 1;
+}
+
+/* ── WC_SLIDER: an arm along a shaft, in increments (SLDCDATA's) ──────── */
+typedef struct { int n, pos, drag; uint8_t tick[256]; char *text[256]; } sld_t;
+static sld_t *sld(pmwin_t *w) { if (!w->ctl) { w->ctl = calloc(1, sizeof(sld_t)); ((sld_t *)w->ctl)->n = 11; } return w->ctl; }
+static int sld_vert(pmwin_t *w) { return w->style & 1; }
+/* along the shaft (from the left, or the bottom): where it starts and ends, the buttons' room */
+static void sld_geom(pmwin_t *w, int *a0, int *a1, int *mid)
+{
+    int len = sld_vert(w) ? w->cy : w->cx, across = sld_vert(w) ? w->cx : w->cy, btn = (w->style & 0x30) ? 34 : 0;
+    *a0 = 10 + ((w->style & 0x10) && !sld_vert(w) ? btn : 0);
+    *a1 = len - 10 - ((w->style & 0x20) || sld_vert(w) ? btn : 0);
+    if (sld_vert(w) && (w->style & 0x10)) { *a0 = 10 + btn; *a1 = len - 10; }
+    *mid = sld_vert(w) ? across / 2 : across - 12;          /* (horizontal: near the top, the scale below) */
+    if (*a1 <= *a0) *a1 = *a0 + 1;
+}
+static int sld_at(pmwin_t *w, sld_t *s, int i) { int a0, a1, m; sld_geom(w, &a0, &a1, &m); return s->n > 1 ? a0 + i * (a1 - a0) / (s->n - 1) : a0; }
+static void sld_set(pmwin_t *w, int pos, int code)
+{
+    sld_t *s = sld(w);
+    if (pos < 0) pos = 0;
+    if (pos > s->n - 1) pos = s->n - 1;
+    if (pos == s->pos && code == 1) return;
+    s->pos = pos;
+    repaint(w);
+    notify(w, (uint32_t)code, (uint32_t)sld_at(w, s, pos));  /* SLN_CHANGE, SLN_SLIDERTRACK: the arm's pixel */
+}
+static uint32_t slider_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
+{
+    sld_t *s = sld(w);
+    int a0, a1, mid, vert = sld_vert(w);
+    sld_geom(w, &a0, &a1, &mid);
+    switch (msg) {
+    case WM_CREATE:
+        if (mp1 && ok(mp1, 8) && g16(mp1 + 4) >= 2) s->n = g16(mp1 + 4) > 256 ? 256 : g16(mp1 + 4);   /* usScale1Increments */
+        if (w->style & 0x200) s->pos = 0;                   /* (SLS_HOMERIGHT/TOP: still 0 at home) */
+        return 0;
+    case WM_DESTROY: for (int i = 0; i < 256; i++) free(s->text[i]); return 0;
+    case WM_PAINT: {
+        w->invalid = 0;
+        fill(w, 0, 0, w->cx, w->cy, pp_bgc(w, C_FACE));
+        uint32_t tc = pp_fgc(w, C_TEXT);
+        /* the shaft, the ribbon to the arm, the ticks and their text */
+        #define P(al, ac) (vert ? (ac) : (al)), (vert ? (al) : (ac))
+        for (int k = a0; k <= a1; k++) { pel(w, P(k, mid + 2), C_DARK); pel(w, P(k, mid - 2), C_LIGHT); }
+        for (int k = a0; k <= a1; k++) for (int j = -1; j <= 1; j++) pel(w, P(k, mid + j), (w->style & 0x100) && k <= sld_at(w, s, s->pos) ? C_HILITE : 0xE0E0E0);
+        for (int i = 0; i < s->n; i++) {
+            int at = sld_at(w, s, i);
+            for (int j = 0; j < s->tick[i]; j++) pel(w, P(at, mid - 8 - j), tc);
+            if (s->text[i]) {
+                int tw = text_w(s->text[i], (int)strlen(s->text[i]));
+                if (vert) text_at(w, mid + 12, at - pm_ascent / 2, s->text[i], (int)strlen(s->text[i]), tc);
+                else text_at(w, at - tw / 2, mid - 10 - s->tick[i] - pm_ascent, s->text[i], (int)strlen(s->text[i]), tc);
+            }
+        }
+        /* the arm */
+        int at = sld_at(w, s, s->pos);
+        int x0 = vert ? mid - 9 : at - 5, x1 = vert ? mid + 10 : at + 6, y0 = vert ? at - 5 : mid - 9, y1 = vert ? at + 6 : mid + 10;
+        fill(w, x0, y0, x1, y1, C_FACE);
+        bevel(w, x0, y0, x1, y1, 1);
+        if (vert) line(w, x0 + 2, at, x1 - 3, at, C_DARK); else line(w, at, y0 + 2, at, y1 - 3, C_DARK);
+        /* the buttons */
+        if (w->style & 0x30) {
+            int b0 = (w->style & 0x10) ? 2 : (vert ? w->cy : w->cx) - 34;
+            for (int k = 0; k < 2; k++) {
+                int s0 = b0 + 16 * k;
+                if (vert) { fill(w, mid - 8, s0, mid + 8, s0 + 16, C_FACE); bevel(w, mid - 8, s0, mid + 8, s0 + 16, 1); tri(w, mid, s0 + 8, k ? 0 : 1); }
+                else { fill(w, s0, mid - 8, s0 + 16, mid + 8, C_FACE); bevel(w, s0, mid - 8, s0 + 16, mid + 8, 1); tri(w, s0 + 8, mid, k ? 3 : 2); }
+            }
+        }
+        #undef P
+        if (pm_focus == w->hwnd) for (int k = 1; k < (vert ? w->cy : w->cx) - 1; k += 2) pel(w, vert ? 1 : k, vert ? k : 1, C_DARK);
+        present(w);
+        return 0;
+    }
+    case WM_BUTTON1DOWN: {
+        if (w->style & 0x80) return 1;                      /* SLS_READONLY */
+        int x = (int16_t)(mp1 & 0xFFFF), y = (int16_t)(mp1 >> 16), al = vert ? y : x;
+        if (w->style & 0x30) {                              /* the buttons: one increment */
+            int b0 = (w->style & 0x10) ? 2 : (vert ? w->cy : w->cx) - 34;
+            if (al >= b0 && al < b0 + 32) { sld_set(w, s->pos + (al < b0 + 16 ? -1 : 1), 1); return 1; }
+        }
+        int at = sld_at(w, s, s->pos);
+        if (abs(al - at) <= 6) { s->drag = 1; pm_capture = w->hwnd; return 1; }
+        int best = 0;
+        for (int i = 1; i < s->n; i++) if (abs(sld_at(w, s, i) - al) < abs(sld_at(w, s, best) - al)) best = i;
+        sld_set(w, best, 1);
+        return 1;
+    }
+    case WM_MOUSEMOVE: case WM_BUTTON1UP: {
+        if (!s->drag) return 1;
+        int x = (int16_t)(mp1 & 0xFFFF), y = (int16_t)(mp1 >> 16), al = vert ? y : x, best = 0;
+        for (int i = 1; i < s->n; i++) if (abs(sld_at(w, s, i) - al) < abs(sld_at(w, s, best) - al)) best = i;
+        if (msg == WM_BUTTON1UP) { s->drag = 0; pm_capture = 0; s->pos = -1; sld_set(w, best, 1); }   /* (the drag's end: SLN_CHANGE whatever) */
+        else if (best != s->pos) sld_set(w, best, 2);       /* SLN_SLIDERTRACK */
+        return 1;
+    }
+    case WM_CHAR: {
+        if (mp1 & KC_KEYUP) return 1;
+        int vk = (mp1 & KC_VIRTUALKEY) ? (int)(mp2 >> 16) : 0;
+        if (!(w->style & 0x80)) {
+            if (vk == 0x15 || vk == 0x18) { sld_set(w, s->pos - 1, 1); return 1; }
+            if (vk == 0x17 || vk == 0x16) { sld_set(w, s->pos + 1, 1); return 1; }
+            if (vk == 0x14) { sld_set(w, 0, 1); return 1; }
+            if (vk == 0x13) { sld_set(w, s->n - 1, 1); return 1; }
+        }
+        return pm_send(w->owner ? w->owner : w->parent, msg, mp1, mp2);
+    }
+    case 0x0371: {                                          /* SLM_SETSLIDERINFO: (attribute, usage), value */
+        uint32_t attr = mp1 & 0xFFFF, use = mp1 >> 16;
+        if (attr == 3) {                                    /* SMA_SLIDERARMPOSITION */
+            int pos = (int)mp2;
+            if (use == 0) { int best = 0; for (int i = 1; i < s->n; i++) if (abs(sld_at(w, s, i) - a0 - (int)mp2) < abs(sld_at(w, s, best) - a0 - (int)mp2)) best = i; pos = best; }
+            sld_set(w, pos, 1);
+        }
+        return 1;
+    }
+    case 0x036c: {                                          /* SLM_QUERYSLIDERINFO */
+        uint32_t attr = mp1 & 0xFFFF, use = mp1 >> 16;
+        if (attr == 3) return use == 1 ? (uint32_t)s->pos : (uint32_t)((sld_at(w, s, s->pos) - a0) & 0xFFFF) | (uint32_t)(a1 - a0) << 16;
+        if (attr == 0) return (uint32_t)(a1 - a0) | 6u << 16;                    /* SMA_SHAFTDIMENSIONS */
+        if (attr == 1) return vert ? (uint32_t)mid | (uint32_t)a0 << 16 : (uint32_t)a0 | (uint32_t)mid << 16;   /* SMA_SHAFTPOSITION */
+        if (attr == 2) return vert ? 19u | 11u << 16 : 11u | 19u << 16;           /* SMA_SLIDERARMDIMENSIONS */
+        return 0;
+    }
+    case 0x0372: {                                          /* SLM_SETTICKSIZE: (tick or SMA_SETALLTICKS, size) */
+        uint32_t t = mp1 & 0xFFFF, sz = (mp1 >> 16) > 30 ? 30 : mp1 >> 16;
+        if (t == 0xFFFF) for (int i = 0; i < s->n; i++) s->tick[i] = (uint8_t)sz;
+        else if ((int)t < s->n) s->tick[t] = (uint8_t)sz;
+        repaint(w);
+        return 1;
+    }
+    case 0x036e: return (mp1 & 0xFFFF) < (uint32_t)s->n ? s->tick[mp1 & 0xFFFF] : 0;   /* SLM_QUERYTICKSIZE */
+    case 0x0370: {                                          /* SLM_SETSCALETEXT: tick, text */
+        uint32_t t = mp1 & 0xFFFF;
+        char *str = gs(mp2);
+        if ((int)t >= s->n) return 0;
+        free(s->text[t]);
+        s->text[t] = str ? strdup(str) : 0;
+        repaint(w);
+        return 1;
+    }
+    case 0x036b: {                                          /* SLM_QUERYSCALETEXT: (tick, cch), buffer */
+        uint32_t t = mp1 & 0xFFFF, cch = mp1 >> 16;
+        if ((int)t >= s->n || !cch || !ok(mp2, cch)) return 0;
+        snprintf((char *)C.mem + mp2, cch, "%s", s->text[t] ? s->text[t] : "");
+        return (uint32_t)strlen((char *)C.mem + mp2);
+    }
+    case 0x036d: {                                          /* SLM_QUERYTICKPOS: tick, pptl */
+        int t = (int)(mp1 & 0xFFFF);
+        if (t >= s->n || !ok(mp2, 8)) return 0;
+        p32(mp2, (uint32_t)(vert ? mid : sld_at(w, s, t))); p32(mp2 + 4, (uint32_t)(vert ? sld_at(w, s, t) : mid));
+        return 1;
+    }
+    case 0x0369: case 0x036a: case 0x036f: return 0;       /* (detents: not yet) */
+    }
+    return 0;
+}
+
+/* ── WC_NOTEBOOK: pages, their tabs along the top, a status line ─────── */
+typedef struct { uint32_t id, hwnd, data; uint16_t style; char tab[64], status[128]; } nbpage_t;
+typedef struct { nbpage_t p[64]; int n, top; uint32_t next; } nb_t;
+static nb_t *nb(pmwin_t *w) { if (!w->ctl) { w->ctl = calloc(1, sizeof(nb_t)); ((nb_t *)w->ctl)->top = -1; ((nb_t *)w->ctl)->next = 0x100; } return w->ctl; }
+static int nb_find(nb_t *b, uint32_t id) { for (int i = 0; i < b->n; i++) if (b->p[i].id == id) return i; return -1; }
+static int nb_tab_h(void) { return pm_lineh + 8; }
+static int nb_stat_h(void) { return pm_lineh + 6; }
+static void nb_page_rect(pmwin_t *w, int *x, int *y, int *cx, int *cy)
+{
+    *x = 6; *y = nb_stat_h() + 4; *cx = w->cx - 12; *cy = w->cy - nb_tab_h() - nb_stat_h() - 8;
+    if (*cx < 1) *cx = 1;
+    if (*cy < 1) *cy = 1;
+}
+static void nb_layout(pmwin_t *w)
+{
+    nb_t *b = nb(w);
+    int x, y, cx, cy;
+    nb_page_rect(w, &x, &y, &cx, &cy);
+    for (int i = 0; i < b->n; i++) {
+        pmwin_t *p = win(b->p[i].hwnd);
+        if (!p) continue;
+        p->parent = w;
+        p->x = x; p->y = y;
+        if (b->p[i].style & 0x0100) { p->cx = cx; p->cy = cy; }   /* BKA_AUTOPAGESIZE */
+        p->visible = i == b->top;
+    }
+    invalidate(w);
+}
+static void nb_turn(pmwin_t *w, int to)
+{
+    nb_t *b = nb(w);
+    if (to < 0 || to >= b->n || to == b->top) return;
+    uint32_t cur = b->top >= 0 ? b->p[b->top].id : 0;
+    static uint32_t scratch;                              /* (PAGESELECTNOTIFY: the program reads it) */
+    if (!scratch) scratch = mem_alloc(0x1000);
+    if (scratch) { p32(scratch, w->hwnd); p32(scratch + 4, cur); p32(scratch + 8, b->p[to].id); }
+    notify(w, 134, scratch);                              /* BKN_PAGESELECTEDPENDING */
+    b->top = to;
+    nb_layout(w);
+    pmwin_t *p = win(b->p[to].hwnd);
+    if (p) { pmwin_t *f = dlg_tab(p, 0, 1); if (f) set_focus(f->hwnd); }
+    if (scratch) { p32(scratch, w->hwnd); p32(scratch + 4, cur); p32(scratch + 8, b->p[to].id); }
+    notify(w, 130, scratch);                              /* BKN_PAGESELECTED */
+}
+/* the major tabs: their x range, along the top */
+static int nb_tab_x(pmwin_t *w, nb_t *b, int i, int *x1)
+{
+    int x = 8;
+    for (int k = 0; k < b->n; k++) {
+        if (!b->p[k].tab[0]) continue;
+        int tw = plain_w(b->p[k].tab) + 20;
+        if (k == i) { *x1 = x + tw; return x; }
+        x += tw + 2;
+    }
+    (void)w;
+    *x1 = x;
+    return -1;
+}
+static uint32_t notebook_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
+{
+    nb_t *b = nb(w);
+    switch (msg) {
+    case WM_SIZE: nb_layout(w); return 0;
+    case WM_PAINT: {
+        w->invalid = 0;
+        fill(w, 0, 0, w->cx, w->cy, pp_bgc(w, C_FACE));
+        int th = nb_tab_h(), ty = w->cy - th, px, py, pcx, pcy;
+        nb_page_rect(w, &px, &py, &pcx, &pcy);
+        bevel(w, px - 3, py - 3, px + pcx + 3, ty + 1, 1);
+        for (int i = 0; i < b->n; i++) {
+            int x1, x0 = nb_tab_x(w, b, i, &x1);
+            if (x0 < 0) continue;
+            int on = i == b->top, y0 = on ? ty : ty + 2;
+            fill(w, x0, y0, x1, w->cy - (on ? 1 : 3), C_FACE);
+            line(w, x0, y0, x0, w->cy - (on ? 1 : 3), C_LIGHT); line(w, x0, w->cy - (on ? 1 : 3), x1 - 1, w->cy - (on ? 1 : 3), C_LIGHT);
+            line(w, x1 - 1, y0, x1 - 1, w->cy - (on ? 1 : 3), C_DARK);
+            if (on) line(w, x0 + 1, ty, x1 - 2, ty, C_FACE);
+            text_mid(w, x0 + 10, y0, w->cy - (on ? 1 : 3), b->p[i].tab, pp_fgc(w, C_TEXT));
+        }
+        if (b->top >= 0 && b->p[b->top].status[0]) text_mid(w, 8, 0, nb_stat_h(), b->p[b->top].status, pp_fgc(w, C_TEXT));
+        for (int k = 0; k < 2; k++) {                       /* the page arrows, bottom right */
+            int x0 = w->cx - 40 + 20 * k;
+            fill(w, x0, 3, x0 + 18, nb_stat_h() - 1, C_FACE); bevel(w, x0, 3, x0 + 18, nb_stat_h() - 1, 1);
+            tri(w, x0 + 9, (nb_stat_h() + 2) / 2, k ? 3 : 2);
+        }
+        present(w);
+        return 0;
+    }
+    case WM_BUTTON1DOWN: {
+        int x = (int16_t)(mp1 & 0xFFFF), y = (int16_t)(mp1 >> 16);
+        if (y >= w->cy - nb_tab_h()) {
+            for (int i = 0; i < b->n; i++) { int x1, x0 = nb_tab_x(w, b, i, &x1); if (x0 >= 0 && x >= x0 && x < x1) { nb_turn(w, i); break; } }
+        } else if (y < nb_stat_h() && x >= w->cx - 40) nb_turn(w, b->top + (x >= w->cx - 20 ? 1 : -1));
+        return 1;
+    }
+    case WM_CHAR: {
+        int vk = (mp1 & KC_VIRTUALKEY) ? (int)(mp2 >> 16) : 0;
+        if (!(mp1 & KC_KEYUP) && (mp1 & KC_CTRL) && (vk == 0x12 || vk == 0x11)) { nb_turn(w, b->top + (vk == 0x12 ? 1 : -1)); return 1; }
+        return pm_send(w->owner ? w->owner : w->parent, msg, mp1, mp2);
+    }
+    case 0x0355: {                                          /* BKM_INSERTPAGE: rel id, (style, order) */
+        if (b->n == 64) return 0;
+        int rel = nb_find(b, mp1), order = (int)(mp2 >> 16), at = b->n;
+        if (order & 4) at = 0;                              /* BKA_FIRST */
+        else if ((order & 8) && rel >= 0) at = rel + 1;     /* BKA_NEXT */
+        else if ((order & 0x10) && rel >= 0) at = rel;      /* BKA_PREV */
+        memmove(b->p + at + 1, b->p + at, (size_t)(b->n - at) * sizeof *b->p);
+        memset(&b->p[at], 0, sizeof b->p[at]);
+        b->p[at].id = b->next++;
+        b->p[at].style = (uint16_t)(mp2 & 0xFFFF);
+        b->n++;
+        if (b->top >= at && b->top >= 0 && b->n > 1) b->top++;
+        if (b->top < 0) b->top = 0;
+        nb_layout(w);
+        return b->p[at].id;
+    }
+    case 0x0354: {                                          /* BKM_DELETEPAGE: id, BKA_SINGLE / BKA_ALL */
+        if ((mp2 & 0xFFFF) == 1) { for (int i = 0; i < b->n; i++) { pmwin_t *p = win(b->p[i].hwnd); if (p) p->visible = 0; } b->n = 0; b->top = -1; invalidate(w); return 1; }
+        int i = nb_find(b, mp1);
+        if (i < 0) return 0;
+        pmwin_t *p = win(b->p[i].hwnd);
+        if (p) p->visible = 0;
+        memmove(b->p + i, b->p + i + 1, (size_t)(b->n - i - 1) * sizeof *b->p);
+        b->n--;
+        if (b->top >= b->n) b->top = b->n - 1;
+        nb_layout(w);
+        return 1;
+    }
+    case 0x0359: {                                          /* BKM_QUERYPAGEID: rel id, (BKA_FIRST/LAST/NEXT/PREV/TOP, style) */
+        int how = (int)(mp2 & 0xFFFF), i = nb_find(b, mp1), r = -1;
+        if (how & 4) r = 0; else if (how & 2) r = b->n - 1; else if (how & 0x20) r = b->top;
+        else if ((how & 8) && i >= 0) r = i + 1; else if ((how & 0x10) && i >= 0) r = i - 1;
+        return r >= 0 && r < b->n ? b->p[r].id : 0;
+    }
+    case 0x0358: return (uint32_t)b->n;                    /* BKM_QUERYPAGECOUNT */
+    case 0x0360: {                                          /* BKM_SETPAGEWINDOWHWND: id, hwnd */
+        int i = nb_find(b, mp1);
+        if (i < 0) return 0;
+        b->p[i].hwnd = mp2;
+        nb_layout(w);
+        return 1;
+    }
+    case 0x035b: { int i = nb_find(b, mp1); return i >= 0 ? b->p[i].hwnd : 0; }   /* BKM_QUERYPAGEWINDOWHWND */
+    case 0x035f: { int i = nb_find(b, mp1); if (i < 0) return 0; b->p[i].data = mp2; return 1; }   /* BKM_SETPAGEDATA */
+    case 0x035a: { int i = nb_find(b, mp1); return i >= 0 ? b->p[i].data : 0; }  /* BKM_QUERYPAGEDATA */
+    case 0x0365: { int i = nb_find(b, mp1); return i >= 0 ? b->p[i].style : 0; } /* BKM_QUERYPAGESTYLE */
+    case 0x0363: case 0x0361: {                              /* BKM_SETTABTEXT, BKM_SETSTATUSLINETEXT: id, text */
+        int i = nb_find(b, mp1);
+        char *s = mp2 ? gs(mp2) : 0;
+        if (i < 0) return 0;
+        if (msg == 0x0363) snprintf(b->p[i].tab, sizeof b->p[i].tab, "%s", s ? s : "");
+        else snprintf(b->p[i].status, sizeof b->p[i].status, "%s", s ? s : "");
+        repaint(w);
+        return 1;
+    }
+    case 0x035d: case 0x0366: {                              /* BKM_QUERYTABTEXT, BKM_QUERYSTATUSLINETEXT: id, BOOKTEXT */
+        int i = nb_find(b, mp1);
+        if (i < 0 || !ok(mp2, 8)) return 0;
+        const char *s = msg == 0x035d ? b->p[i].tab : b->p[i].status;
+        uint32_t buf = g32(mp2), n = g32(mp2 + 4);
+        if (buf && n && ok(buf, n)) snprintf((char *)C.mem + buf, n, "%s", s);
+        return (uint32_t)strlen(s);
+    }
+    case 0x0357: { int i = nb_find(b, mp1); if (i < 0) return 0; nb_turn(w, i); return 1; }   /* BKM_TURNTOPAGE */
+    case 0x0353: {                                          /* BKM_CALCPAGERECT: prcl, fPage (TRUE: the notebook's into its page's) */
+        int x, y, cx, cy;
+        nb_page_rect(w, &x, &y, &cx, &cy);
+        if (!ok(mp1, 16)) return 0;
+        if (mp2) put_rect(mp1, (int32_t)g32(mp1) + x, (int32_t)g32(mp1 + 4) + y, (int32_t)g32(mp1) + x + cx, (int32_t)g32(mp1 + 4) + y + cy);
+        else put_rect(mp1, (int32_t)g32(mp1) - x, (int32_t)g32(mp1 + 4) - y, (int32_t)g32(mp1 + 8) + 12, (int32_t)g32(mp1 + 12) + nb_tab_h() + nb_stat_h() + 8);
+        return 1;
+    }
+    case 0x0356: repaint(w); return 1;                       /* BKM_INVALIDATETABS */
+    case 0x035e: case 0x0364: case 0x0374: case 0x0362: case 0x0375: case 0x0367: return 1;   /* dimensions, colours, bitmaps, buttons, page info */
+    }
+    return 0;
 }

@@ -1,0 +1,23 @@
+/* userland/os2x86/test/ow/pmbook.rc - pmbook's notebook pages: a slider, an entry field */
+#include <os2.h>
+#include "pmbook.h"
+
+DLGTEMPLATE ID_PAGE1
+BEGIN
+    DIALOG "", ID_PAGE1, 0, 0, 200, 90, NOT FS_DLGBORDER | WS_VISIBLE
+    BEGIN
+        LTEXT "Volume:", -1, 8, 64, 40, 8
+        CONTROL "", IDC_SLIDER, 8, 30, 180, 30, WC_SLIDER, SLS_HORIZONTAL | SLS_BUTTONSRIGHT | SLS_SNAPTOINCREMENT | WS_TABSTOP | WS_VISIBLE
+            CTLDATA 12, 0, 11, 0, 0, 0
+        LTEXT "0", IDC_VALUE, 8, 10, 60, 8
+    END
+END
+
+DLGTEMPLATE ID_PAGE2
+BEGIN
+    DIALOG "", ID_PAGE2, 0, 0, 200, 90, NOT FS_DLGBORDER | WS_VISIBLE
+    BEGIN
+        LTEXT "Name:", -1, 8, 64, 40, 8
+        ENTRYFIELD "", IDC_NAME, 50, 64, 130, 8, ES_MARGIN | WS_TABSTOP
+    END
+END
