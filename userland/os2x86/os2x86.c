@@ -3369,6 +3369,8 @@ static const api_t apis[] = {
     { L_PMGPI, 404, "GpiMove", api_GpiMove, 0 },
     { L_PMGPI, 398, "GpiLine", api_GpiLine, 0 },
     { L_PMGPI, 356, "GpiBox", api_GpiBox, 0 },
+    { L_PMCTLS, 2, "WinFontDlg", api_WinFontDlg, 0 },
+    { L_PMCTLS, 3, "WinDefFontDlgProc", api_WinDefFontDlgProc, 0 },
     { L_PMCTLS, 4, "WinFileDlg", api_WinFileDlg, 0 },
     { L_PMCTLS, 5, "WinDefFileDlgProc", api_WinDefFileDlgProc, 0 },
     { L_PMCTLS, 6, "WinFreeFileDlgList", api_WinFreeFileDlgList, 0 },

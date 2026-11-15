@@ -479,8 +479,13 @@ platform-specific are new code.
    (`pm_fdlg.inc`, PMCTLS' WinFileDlg): Open and Save As, the file name,
    the directory's subdirectories and the drives, the files that match
    the filter (szFullFile's: "*.TXT", "D:\\DOCS\\*.C"), double-clicks
-   and Enter; Open wants a file that's there. Not yet: the font dialog,
-   custom dialog templates and procedures, several files at once. OS/2's DLLs that aren't
+   and Enter; Open wants a file that's there. The font dialog
+   (WinFontDlg): the families (as GpiQueryFonts has them, filtered by
+   FNTS_FIXEDWIDTHONLY & co.), the sizes (the program's list or ours),
+   bold, italic, underline, strikeout, a preview of the program's text;
+   the family, point size, weight and an FATTRS for GpiCreateLogFont back.
+   Not yet: custom dialog templates and procedures, several files at
+   once, modeless dialogs. OS/2's DLLs that aren't
    here (PMSHAPI, HELPMGR, TCP32DLL, ...) load as stubs, so a program
    that only links them in runs; a call into one says so and returns 0. Calls it doesn't have yet print
    one line on stderr and return error 1; `OS2X86_TRACE=1` lists every

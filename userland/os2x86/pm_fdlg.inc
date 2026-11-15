@@ -224,3 +224,153 @@ static uint32_t api_WinFileDlg(void)                /* (hwndParent, hwndOwner, p
 }
 static uint32_t api_WinDefFileDlgProc(void) { pmwin_t *w = win(A(0)); return w ? fdlg_proc(w, A(1), A(2), A(3)) : 0; }
 static uint32_t api_WinFreeFileDlgList(void) { return 1; }
+
+/* ── the standard font dialog (PMCTLS: WinFontDlg): the families (those
+ * GpiQueryFonts tells of), the sizes (the program's list, or ours), bold
+ * and italic, underline and strikeout, a preview of the program's text;
+ * the choice back in FONTDLG - the family, fxPointSize, flType, usWeight
+ * and an FATTRS ready for GpiCreateLogFont (an outline font, sized by
+ * GpiSetCharBox). (No italic face here: italic is chosen, not shown.) ── */
+enum { FN_W = 460, FN_H = 330, FN_NAMES = 301, FN_SIZES = 305, FN_BOLD = 310, FN_ITALIC = 311, FN_UNDER = 312, FN_STRIKE = 313, FN_PREV = 320 };
+static struct { uint32_t fd; char fam[64], prev[128]; int pt, bold, italic, under, strike; } fndlg;
+static int fn_mono(const char *fam) { return strcasestr(fam, "courier") || strcasestr(fam, "mono") || strcasestr(fam, "vio"); }
+static uint32_t fnprev_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
+{
+    (void)mp1; (void)mp2;
+    if (msg != WM_PAINT) return 0;
+    w->invalid = 0;
+    fill(w, 0, 0, w->cx, w->cy, C_LIGHT);
+    bevel(w, 0, 0, w->cx, w->cy, 0);
+    pmfont_t *save = pmf;
+    pmf = font_get((fn_mono(fndlg.fam) ? 2 : 0) | (fndlg.bold ? 1 : 0), fndlg.pt * 3 / 2 > 4 ? fndlg.pt * 3 / 2 : 4);
+    const char *t = fndlg.prev[0] ? fndlg.prev : "abcdABCD";
+    int tw = text_w(t, (int)strlen(t)), x = (w->cx - tw) / 2, y = (w->cy - pm_ascent + pm_descent) / 2;
+    if (x < 4) x = 4;
+    text_at(w, x, y, t, (int)strlen(t), C_TEXT);
+    if (fndlg.under) line(w, x, y - 2, x + tw, y - 2, C_TEXT);
+    if (fndlg.strike) line(w, x, y + pm_ascent / 3, x + tw, y + pm_ascent / 3, C_TEXT);
+    pmf = save;
+    present(w);
+    return 0;
+}
+static void fn_sync(pmwin_t *dlg)                    /* (the choices from the controls; the preview again) */
+{
+    pmwin_t *n = fd_item(dlg, FN_NAMES), *s = fd_item(dlg, FN_SIZES), *c;
+    lb_t *l;
+    if (n && (l = n->ctl) && l->sel >= 0) snprintf(fndlg.fam, sizeof fndlg.fam, "%s", l->it[l->sel].text);
+    if (s && (l = s->ctl) && l->sel >= 0) fndlg.pt = atoi(l->it[l->sel].text);
+    if ((c = fd_item(dlg, FN_BOLD))) fndlg.bold = (int)button_proc(c, 0x0124, 0, 0);
+    if ((c = fd_item(dlg, FN_ITALIC))) fndlg.italic = (int)button_proc(c, 0x0124, 0, 0);
+    if ((c = fd_item(dlg, FN_UNDER))) fndlg.under = (int)button_proc(c, 0x0124, 0, 0);
+    if ((c = fd_item(dlg, FN_STRIKE))) fndlg.strike = (int)button_proc(c, 0x0124, 0, 0);
+    if ((c = fd_item(dlg, FN_PREV))) repaint(c);
+}
+static uint32_t fndlg_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
+{
+    switch (msg) {
+    case WM_COMMAND: w->dlg_done = 1; w->dlg_result = (mp1 & 0xFFFF) == 1 ? 1 : 2; return 0;
+    case WM_CONTROL:
+        fn_sync(w);
+        if ((mp1 >> 16) == 5 && ((mp1 & 0xFFFF) == FN_NAMES || (mp1 & 0xFFFF) == FN_SIZES)) { w->dlg_done = 1; w->dlg_result = 1; }   /* (LN_ENTER: OK) */
+        return 0;
+    }
+    return def_dlg_proc(w, msg, mp1, mp2);
+}
+static uint32_t api_WinFontDlg(void)                /* (hwndParent, hwndOwner, pfntd) */
+{
+    uint32_t fd = A(2);
+    if (!pm_start() || !ok(fd, 168) || g32(fd) < 168) return 0;
+    uint32_t fl = g32(fd + 36);
+    if (fl & 0x40) { p32(fd + 76, 3); return 0; }            /* FNTS_MODELESS: FNTS_ERR_INVALID_DIALOG */
+    memset(&fndlg, 0, sizeof fndlg);
+    fndlg.fd = fd;
+    char *fam = g32(fd + 28) ? gs(g32(fd + 28)) : 0, *prev = g32(fd + 16) ? gs(g32(fd + 16)) : 0, *sizes = g32(fd + 20) ? gs(g32(fd + 20)) : 0;
+    snprintf(fndlg.fam, sizeof fndlg.fam, "%s", fam && *fam ? fam : "Helvetica");
+    if ((fl & 0x80) && C.mem[fd + 96 + 8]) {                 /* FNTS_INITFROMFATTRS: its face */
+        snprintf(fndlg.fam, sizeof fndlg.fam, "%.32s", (char *)C.mem + fd + 96 + 8);
+        char *b = strcasestr(fndlg.fam, " bold");
+        if (b) { *b = 0; fndlg.bold = 1; }
+        uint16_t sel = g16(fd + 96 + 2);
+        if (sel & 0x20) fndlg.bold = 1;
+        if (sel & 1) fndlg.italic = 1;
+        if (sel & 2) fndlg.under = 1;
+        if (sel & 0x10) fndlg.strike = 1;
+    }
+    fndlg.pt = (int)((int32_t)g32(fd + 32) >> 16);
+    if (fndlg.pt <= 0) fndlg.pt = 10;
+    if (g16(fd + 154) >= 7) fndlg.bold = 1;                   /* usWeight: FWEIGHT_BOLD */
+    if (g32(fd + 44) & 1) fndlg.italic = 1;                  /* flType: FTYPE_ITALIC */
+    snprintf(fndlg.prev, sizeof fndlg.prev, "%s", prev && *prev ? prev : "abcdABCD");
+    pmwin_t *dlg = win_new(0, "#dialog", 0, 300);
+    if (!dlg) return 0;
+    dlg->top = 1; dlg->fixed = 1;
+    dlg->iproc = fndlg_proc;
+    dlg->owner = win(A(1));
+    frame_pixels(dlg, FN_W, FN_H);
+    char *title = g32(fd + 12) ? gs(g32(fd + 12)) : 0;
+    snprintf(dlg->text, sizeof dlg->text, "%s", title && *title ? title : "Font");
+    fd_ctl(dlg, "#5", 1, 300, 12, FN_H - 30, 200, 20, "Name:");
+    fd_ctl(dlg, "#5", 1, 304, 260, FN_H - 30, 100, 20, "Size:");
+    pmwin_t *nl = fd_ctl(dlg, "#7", WS_TABSTOP_, FN_NAMES, 12, 150, 236, FN_H - 186, "");
+    pmwin_t *sl = fd_ctl(dlg, "#7", WS_TABSTOP_, FN_SIZES, 260, 150, 80, FN_H - 186, "");
+    fd_ctl(dlg, "#3", 2 | WS_TABSTOP_, FN_BOLD, 356, FN_H - 56, 96, 22, "Bold");      /* BS_AUTOCHECKBOX */
+    fd_ctl(dlg, "#3", 2 | WS_TABSTOP_, FN_ITALIC, 356, FN_H - 82, 96, 22, "Italic");
+    fd_ctl(dlg, "#3", 2 | WS_TABSTOP_, FN_UNDER, 356, FN_H - 108, 96, 22, "Underline");
+    fd_ctl(dlg, "#3", 2 | WS_TABSTOP_, FN_STRIKE, 356, FN_H - 134, 96, 22, "Strikeout");
+    pmwin_t *pv = fd_ctl(dlg, "#fnprev", 0, FN_PREV, 12, 56, FN_W - 24, 84, "");
+    if (pv) pv->iproc = fnprev_proc;
+    fd_ctl(dlg, "#3", 0x400 | WS_TABSTOP_, 1, 12, 12, 96, 30, "OK");
+    fd_ctl(dlg, "#3", WS_TABSTOP_, 2, 116, 12, 96, 30, "Cancel");
+    /* the families: the faces' families, those the flags allow (FIXEDWIDTHONLY, PROPORTIONALONLY, BITMAPONLY, VECTORONLY) */
+    int seln = -1, sels = -1, k = 0;
+    for (int i = 0; i < NFONTLIST; i++) {
+        int dup = 0;
+        for (int j = 0; j < i; j++) if (!strcmp(font_list[j].family, font_list[i].family)) dup = 1;
+        int mono = font_list[i].ours >= 2;
+        if (dup || ((fl & 0x400) && !mono) || ((fl & 0x800) && mono) || ((fl & 0x100) && font_list[i].outline) || ((fl & 0x200) && !font_list[i].outline)) continue;
+        if (nl) fd_add(nl, font_list[i].family);
+        if (!strcasecmp(font_list[i].family, fndlg.fam)) seln = k;
+        k++;
+    }
+    /* the sizes: the program's ("8 10 12"), or these */
+    char sz[256];
+    snprintf(sz, sizeof sz, "%s", sizes && *sizes ? sizes : "6 8 9 10 11 12 14 16 18 20 24 28 36 48 72");
+    k = 0;
+    for (char *t = strtok(sz, " ,"); t; t = strtok(0, " ,"))
+        if (atoi(t) > 0) { if (sl) fd_add(sl, t); if (atoi(t) == fndlg.pt) sels = k; k++; }
+    if (nl) { lb_t *l = lb(nl); l->sel = seln >= 0 ? seln : 0; lb_show_sel(nl, l); }
+    if (sl) { lb_t *l = lb(sl); l->sel = sels >= 0 ? sels : (l->n > 3 ? 3 : 0); lb_show_sel(sl, l); }
+    pmwin_t *c;
+    if ((c = fd_item(dlg, FN_BOLD))) button_proc(c, 0x0125, (uint32_t)fndlg.bold, 0);
+    if ((c = fd_item(dlg, FN_ITALIC))) button_proc(c, 0x0125, (uint32_t)fndlg.italic, 0);
+    if ((c = fd_item(dlg, FN_UNDER))) button_proc(c, 0x0125, (uint32_t)fndlg.under, 0);
+    if ((c = fd_item(dlg, FN_STRIKE))) button_proc(c, 0x0125, (uint32_t)fndlg.strike, 0);
+    fn_sync(dlg);
+    if (pmb->title) pmb->title(dlg);
+    win_show(dlg, 1);
+    if (nl) set_focus(nl->hwnd);
+    uint32_t hwnd = dlg->hwnd;
+    uint32_t r = dlg_process(hwnd);
+    if (win(hwnd)) win_destroy(win(hwnd));
+    p32(fd + 72, r == 1 ? 1 : 2);                             /* lReturn */
+    p32(fd + 76, 0);                                         /* lSRC */
+    if (r != 1) return hwnd;
+    /* the choice */
+    uint32_t fb = g32(fd + 28), fbl = g16(fd + 164);
+    if (fb && fbl && ok(fb, fbl)) snprintf((char *)C.mem + fb, fbl, "%s", fndlg.fam);   /* pszFamilyname */
+    p32(fd + 32, (uint32_t)fndlg.pt << 16);                 /* fxPointSize */
+    p32(fd + 44, fndlg.italic ? 1 : 0);                      /* flType: FTYPE_ITALIC */
+    p16(fd + 152, (uint16_t)(fndlg.pt * 10));                /* sNominalPointSize */
+    p16(fd + 154, fndlg.bold ? 7 : 5);                       /* usWeight: FWEIGHT_BOLD, _NORMAL */
+    p16(fd + 156, 5);                                        /* usWidth: FWIDTH_NORMAL */
+    int px = fndlg.pt * 3 / 2;
+    p32(fd + 80, (uint32_t)px); p32(fd + 84, (uint32_t)(px / 2)); p32(fd + 88, 0);   /* lEmHeight, lXHeight, lExternalLeading */
+    uint32_t fa = fd + 96;                                   /* FATTRS */
+    memset(C.mem + fa, 0, 56);
+    p16(fa, 56);
+    p16(fa + 2, (uint16_t)((fndlg.italic ? 1 : 0) | (fndlg.under ? 2 : 0) | (fndlg.strike ? 0x10 : 0) | (fndlg.bold ? 0x20 : 0)));
+    snprintf((char *)C.mem + fa + 8, 32, "%s%s", fndlg.fam, fndlg.bold ? " Bold" : "");
+    p16(fa + 54, 4 | 8);                                     /* fsFontUse: FATTR_FONTUSE_OUTLINE, TRANSFORMABLE */
+    return hwnd;
+}
+static uint32_t api_WinDefFontDlgProc(void) { pmwin_t *w = win(A(0)); return w ? fndlg_proc(w, A(1), A(2), A(3)) : 0; }

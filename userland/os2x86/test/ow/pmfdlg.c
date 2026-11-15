@@ -1,6 +1,6 @@
 /* userland/os2x86/test/ow/pmfdlg.c - the standard file dialog: an Open on
  * a filter (fdtest\*.TXT: the files that match, the subdirectories), a
- * file chosen; then a Save As with a name typed. It prints what it gets,
+ * file chosen; then a Save As with a name typed; then the font dialog. It prints what it gets,
  * for run-tests.sh (which makes fdtest first). */
 #define INCL_WIN
 #define INCL_WINSTDFILE
@@ -26,6 +26,19 @@ int main(void)
     strcpy(fd.szFullFile, "fdtest\\sub\\");
     h = WinFileDlg(HWND_DESKTOP, HWND_DESKTOP, &fd);
     printf("save: %s, \"%s\"\n", fd.lReturn == DID_OK ? "OK" : "cancelled", fd.szFullFile);
+    {
+        FONTDLG fn;
+        char family[FACESIZE] = "Helvetica";
+        memset(&fn, 0, sizeof fn);
+        fn.cbSize = sizeof fn;
+        fn.pszFamilyname = family; fn.usFamilyBufLen = sizeof family;
+        fn.fxPointSize = MAKEFIXED(10, 0);
+        fn.pszPreview = "Warp 4";
+        fn.fl = FNTS_CENTER;
+        WinFontDlg(HWND_DESKTOP, HWND_DESKTOP, &fn);
+        printf("font: %s, %s %ld pt, weight %u, face \"%s\", selection %x, use %x\n", fn.lReturn == DID_OK ? "OK" : "cancelled",
+               family, (long)(fn.fxPointSize >> 16), fn.usWeight, fn.fAttrs.szFacename, fn.fAttrs.fsSelection, fn.fAttrs.fsFontUse);
+    }
     WinDestroyMsgQueue(hmq);
     WinTerminate(hab);
     return 0;

@@ -337,7 +337,7 @@ were a `#!/h/OS2/os2x86` script. It contains:
     a program's windows;
   - profiles (OS2.INI and programs' own .INI files, in OS/2's format), a
     help manager instance (the help itself isn't shown yet) and the
-    standard file dialog (Open, Save As).
+    standard file and font dialogs.
 
 OS/2 system DLLs it doesn't have load as stubs. A call it doesn't
 implement prints one line and fails, and `OS2X86_TRACE=1` traces every
