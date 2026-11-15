@@ -414,7 +414,12 @@ static void k_mods(void *d, struct wl_keyboard *k, uint32_t serial, uint32_t dep
 {
     (void)d; (void)k; (void)serial;
     pthread_mutex_lock(&gil);
-    if (xkb_st) xkb_state_update_mask(xkb_st, dep, lat, lock, 0, 0, grp);
+    if (xkb_st) {
+        xkb_state_update_mask(xkb_st, dep, lat, lock, 0, 0, grp);
+        pm_kc = (xkb_state_mod_name_is_active(xkb_st, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE) > 0 ? KC_SHIFT : 0) |
+                (xkb_state_mod_name_is_active(xkb_st, XKB_MOD_NAME_CTRL, XKB_STATE_MODS_EFFECTIVE) > 0 ? KC_CTRL : 0) |
+                (xkb_state_mod_name_is_active(xkb_st, XKB_MOD_NAME_ALT, XKB_STATE_MODS_EFFECTIVE) > 0 ? KC_ALT : 0);
+    }
     pthread_mutex_unlock(&gil);
 }
 static void k_repeat(void *d, struct wl_keyboard *k, int32_t rate, int32_t delay) { (void)d; (void)k; (void)rate; (void)delay; }

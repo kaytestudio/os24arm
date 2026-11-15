@@ -430,7 +430,8 @@ platform-specific are new code.
    WinSetClipbrdData, WinQueryClipbrdData & co.; CF_TEXT, CF_BITMAP):
    on the desktop the Wayland selection, so text goes between PM
    programs and the others (Latin-1 one side, UTF-8 the other); entry
-   fields and MLEs cut, copy and paste through it (Ctrl+X/C/V, Shift+Del,
+   fields (with selections now: Shift and the keys, a drag, a double-click
+   for a word) and MLEs cut, copy and paste through it (Ctrl+X/C/V, Shift+Del,
    Ctrl+Ins, Shift+Ins). WinSetPointer: the desktop's pointer over the
    program's windows takes that shape (its hot spot from the file), PM's
    arrow by default. Value sets (`pm_vs.inc`: a grid of colours, text,

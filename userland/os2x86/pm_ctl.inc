@@ -212,8 +212,8 @@ static uint32_t static_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2
 }
 
 /* ── WC_ENTRYFIELD ───────────────────────────────────────────────────── */
-typedef struct { int cur, limit, changed, ro, first; } ef_t;
-static ef_t *ef(pmwin_t *w) { if (!w->ctl) { w->ctl = calloc(1, sizeof(ef_t)); ((ef_t *)w->ctl)->limit = 32; ((ef_t *)w->ctl)->cur = -1; } return w->ctl; }
+typedef struct { int cur, an, limit, changed, ro, first, drag; } ef_t;   /* (the selection: from an to cur) */
+static ef_t *ef(pmwin_t *w) { if (!w->ctl) { w->ctl = calloc(1, sizeof(ef_t)); ((ef_t *)w->ctl)->limit = 32; ((ef_t *)w->ctl)->cur = ((ef_t *)w->ctl)->an = -1; } return w->ctl; }
 static void clip_put(const char *s);
 static const char *clip_take(void);
 /* the clipboard's keys: 1 cut, 2 copy, 3 paste (Ctrl+X/C/V; PM's Shift+Del, Ctrl+Ins, Shift+Ins) */
@@ -225,11 +225,29 @@ static int clip_key(uint32_t mp1, uint32_t mp2)
     if ((mp1 & KC_SHIFT) && vk == 0x1a) return 3;
     return 0;
 }
+static int ef_lo(ef_t *e) { return e->an < e->cur ? e->an : e->cur; }
+static int ef_hi(ef_t *e) { return e->an < e->cur ? e->cur : e->an; }
+static int ef_del_sel(pmwin_t *w, ef_t *e)      /* the selection out of the text: 1 if there was one */
+{
+    int lo = ef_lo(e), hi = ef_hi(e), n = (int)strlen(w->text);
+    if (hi <= lo) return 0;
+    memmove(w->text + lo, w->text + hi, (size_t)(n - hi + 1));
+    e->cur = e->an = lo;
+    return 1;
+}
+static int ef_at(pmwin_t *w, ef_t *e, int x)     /* the character boundary nearest x */
+{
+    int n = (int)strlen(w->text), k = e->first;
+    x -= (w->style & 8) ? 5 : 3;
+    while (k < n && text_w(w->text + e->first, k - e->first) + text_w(w->text + k, 1) / 2 <= x) k++;
+    return k;
+}
 static uint32_t entry_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
 {
     ef_t *e = ef(w);
     int n = (int)strlen(w->text);
     if (e->cur < 0 || e->cur > n) e->cur = n;
+    if (e->an < 0 || e->an > n) e->an = e->cur;
     switch (msg) {
     case WM_CREATE:
         if (w->style & 0x20) e->ro = 1;                        /* ES_READONLY */
@@ -237,26 +255,48 @@ static uint32_t entry_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
     case WM_PAINT: {
         w->invalid = 0;
         int m = (w->style & 8) ? 3 : 1;                         /* ES_MARGIN */
-        fill(w, 0, 0, w->cx, w->cy, (w->style & WS_DISABLED_) ? C_FACE : w->has_bg ? w->pp_bg : C_LIGHT);
+        uint32_t bg = (w->style & WS_DISABLED_) ? C_FACE : w->has_bg ? w->pp_bg : C_LIGHT, fg = pp_fgc(w, C_TEXT);
+        fill(w, 0, 0, w->cx, w->cy, bg);
         if (w->style & 8) { bevel(w, 0, 0, w->cx, w->cy, 0); bevel(w, 1, 1, w->cx - 1, w->cy - 1, 0); }
         /* (scrolled so the cursor shows) */
         if (e->first > e->cur) e->first = e->cur;
         while (e->first < e->cur && text_w(w->text + e->first, e->cur - e->first) > w->cx - 2 * m - 4) e->first++;
-        int x = m + 2;
+        int x = m + 2, y = (w->cy - (pm_ascent + pm_descent)) / 2 + pm_descent;
+        if (w->style & 0x80) { fg = bg; }                       /* ES_UNREADABLE: not shown */
+        /* the text in three parts: before the selection, it (white on blue), after */
+        int lo = ef_lo(e) > e->first ? ef_lo(e) : e->first, hi = ef_hi(e);
         const char *s = w->text + e->first;
-        int y = (w->cy - (pm_ascent + pm_descent)) / 2 + pm_descent;
-        text_at(w, x, y, s, (int)strlen(s), (w->style & 0x80) ? C_LIGHT : pp_fgc(w, C_TEXT));   /* (ES_UNREADABLE: not shown) */
+        if (hi > lo && pm_focus == w->hwnd) {
+            int x0 = x + text_w(s, lo - e->first), x1 = x0 + text_w(w->text + lo, hi - lo);
+            text_at(w, x, y, s, lo - e->first, fg);
+            fill(w, x0, y - pm_descent, x1, y + pm_ascent, C_HILITE);
+            text_at(w, x0, y, w->text + lo, hi - lo, (w->style & 0x80) ? C_HILITE : C_LIGHT);
+            text_at(w, x1, y, w->text + hi, n - hi, fg);
+        } else text_at(w, x, y, s, (int)strlen(s), fg);
         if (pm_focus == w->hwnd && !e->ro) {
-            int cx = x + text_w(w->text + e->first, e->cur - e->first);
+            int cx = x + text_w(s, e->cur - e->first);
             line(w, cx, y - pm_descent, cx, y + pm_ascent, C_TEXT);
         }
         present(w);
         return 0;
     }
-    case WM_BUTTON1DOWN: {
-        int x = (int16_t)(mp1 & 0xFFFF) - ((w->style & 8) ? 5 : 3), k = e->first;
-        while (k < n && text_w(w->text + e->first, k - e->first + 1) <= x) k++;
-        e->cur = k;
+    case WM_BUTTON1DOWN:
+        e->cur = ef_at(w, e, (int16_t)(mp1 & 0xFFFF));
+        if (!((mp2 >> 16) & KC_SHIFT)) e->an = e->cur;                 /* (Shift+click: to there) */
+        e->drag = 1; pm_capture = w->hwnd;
+        repaint(w);
+        return 1;
+    case WM_MOUSEMOVE:
+        if (e->drag) { int k = ef_at(w, e, (int16_t)(mp1 & 0xFFFF)); if (k != e->cur) { e->cur = k; repaint(w); } }
+        return 1;
+    case WM_BUTTON1UP:
+        if (e->drag) { e->drag = 0; pm_capture = 0; }
+        return 1;
+    case WM_BUTTON1DBLCLK: {                                   /* the word */
+        int k = ef_at(w, e, (int16_t)(mp1 & 0xFFFF)), a = k, b = k;
+        while (a > 0 && w->text[a - 1] != ' ') a--;
+        while (b < n && w->text[b] != ' ') b++;
+        e->an = a; e->cur = b;
         repaint(w);
         return 1;
     }
@@ -264,53 +304,79 @@ static uint32_t entry_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
         if (mp1 & KC_KEYUP) return 1;
         int ck = clip_key(mp1, mp2);
         if (ck) return entry_proc(w, ck == 1 ? 0x0144 : ck == 2 ? 0x0145 : 0x0147, 0, 0);   /* EM_CUT, EM_COPY, EM_PASTE */
-        int ch = (int)(mp2 & 0xFFFF), vk = (int)(mp2 >> 16), done = 1, changed = 0;
+        int ch = (int)(mp2 & 0xFFFF), vk = (int)(mp2 >> 16), done = 1, changed = 0, shift = (mp1 & KC_SHIFT) != 0, moved = -1;
+        if ((mp1 & KC_CTRL) && (mp1 & KC_CHAR) && (ch == '/' || ch == 'a' || ch == 'A')) { e->an = 0; e->cur = n; repaint(w); return 1; }   /* select all */
         if ((mp1 & KC_VIRTUALKEY) && vk) {
             switch (vk) {
-            case 0x05: if (!e->ro && e->cur > 0) { memmove(w->text + e->cur - 1, w->text + e->cur, (size_t)(n - e->cur + 1)); e->cur--; changed = 1; } break;
-            case 0x1b: if (!e->ro && e->cur < n) { memmove(w->text + e->cur, w->text + e->cur + 1, (size_t)(n - e->cur)); changed = 1; } break;
-            case 0x15: if (e->cur > 0) e->cur--; break;
-            case 0x17: if (e->cur < n) e->cur++; break;
-            case 0x14: e->cur = 0; break;
-            case 0x13: e->cur = n; break;
+            case 0x05: if (!e->ro) { if (ef_del_sel(w, e)) changed = 1; else if (e->cur > 0) { memmove(w->text + e->cur - 1, w->text + e->cur, (size_t)(n - e->cur + 1)); e->an = --e->cur; changed = 1; } } break;
+            case 0x1b: if (!e->ro) { if (ef_del_sel(w, e)) changed = 1; else if (e->cur < n) { memmove(w->text + e->cur, w->text + e->cur + 1, (size_t)(n - e->cur)); changed = 1; } } break;
+            case 0x15:                                          /* Left: a selection collapses to its start */
+                moved = !shift && ef_hi(e) > ef_lo(e) ? ef_lo(e) : e->cur > 0 ? e->cur - 1 : 0;
+                if ((mp1 & KC_CTRL)) { int k = e->cur; while (k > 0 && w->text[k - 1] == ' ') k--; while (k > 0 && w->text[k - 1] != ' ') k--; moved = k; }
+                break;
+            case 0x17:
+                moved = !shift && ef_hi(e) > ef_lo(e) ? ef_hi(e) : e->cur < n ? e->cur + 1 : n;
+                if ((mp1 & KC_CTRL)) { int k = e->cur; while (k < n && w->text[k] != ' ') k++; while (k < n && w->text[k] == ' ') k++; moved = k; }
+                break;
+            case 0x14: moved = 0; break;
+            case 0x13: moved = n; break;
             default: done = 0;
             }
         } else if ((mp1 & KC_CHAR) && ch >= 32 && ch != 127 && !(mp1 & (KC_CTRL | KC_ALT))) {
-            if (!e->ro && n < e->limit && n + 1 < (int)sizeof w->text) {
-                memmove(w->text + e->cur + 1, w->text + e->cur, (size_t)(n - e->cur + 1));
-                w->text[e->cur++] = (char)ch;
-                changed = 1;
+            if (!e->ro) {
+                if (ef_del_sel(w, e)) { changed = 1; n = (int)strlen(w->text); }   /* (typing replaces the selection) */
+                if (n < e->limit && n + 1 < (int)sizeof w->text) {
+                    memmove(w->text + e->cur + 1, w->text + e->cur, (size_t)(n - e->cur + 1));
+                    w->text[e->cur++] = (char)ch;
+                    e->an = e->cur;
+                    changed = 1;
+                }
             }
         } else if ((mp1 & KC_CHAR) && ch == 8) {
-            if (!e->ro && e->cur > 0) { memmove(w->text + e->cur - 1, w->text + e->cur, (size_t)(n - e->cur + 1)); e->cur--; changed = 1; }
+            if (!e->ro) { if (ef_del_sel(w, e)) changed = 1; else if (e->cur > 0) { memmove(w->text + e->cur - 1, w->text + e->cur, (size_t)(n - e->cur + 1)); e->an = --e->cur; changed = 1; } }
         } else done = 0;
         if (!done) return pm_send(w->owner ? w->owner : w->parent, msg, mp1, mp2);   /* (Enter, Tab, Esc: the dialog's) */
+        if (moved >= 0) { e->cur = moved; if (!shift) e->an = moved; }
         repaint(w);
         if (changed) { e->changed = 1; notify(w, 4, 0); }      /* EN_CHANGE */
         return 1;
     }
     case 0x0143: e->limit = (int)(mp1 & 0xFFFF); if (e->limit > 255) e->limit = 255; return 1;   /* EM_SETTEXTLIMIT */
     case 0x0140: { int c = e->changed; e->changed = 0; return (uint32_t)c; }                     /* EM_QUERYCHANGED */
-    case 0x0141: return (uint32_t)e->cur | (uint32_t)e->cur << 16;                               /* EM_QUERYSEL */
-    case 0x0142: e->cur = (int)(mp1 >> 16) > n ? n : (int)(mp1 >> 16); repaint(w); return 1;     /* EM_SETSEL */
+    case 0x0141: return (uint32_t)ef_lo(e) | (uint32_t)ef_hi(e) << 16;                           /* EM_QUERYSEL: (first, past the last) */
+    case 0x0142: {                                                                               /* EM_SETSEL: (anchor, cursor) */
+        int a = (int)(mp1 & 0xFFFF), b = (int)(mp1 >> 16);
+        e->an = a > n ? n : a; e->cur = b > n ? n : b;
+        repaint(w);
+        return 1;
+    }
     case 0x014a: return (uint32_t)e->ro;                                                         /* EM_QUERYREADONLY */
     case 0x014b: { int o = e->ro; e->ro = (int)(mp1 & 1); return (uint32_t)o; }                  /* EM_SETREADONLY */
     case 0x0148: return (uint32_t)e->first;                                                      /* EM_QUERYFIRSTCHAR */
     case 0x0149: e->first = (int)(mp1 & 0xFFFF); repaint(w); return 1;
-    case 0x0146: if (!e->ro) { w->text[0] = 0; e->cur = 0; repaint(w); } return 1;               /* EM_CLEAR */
-    case 0x0144: case 0x0145:                                                                    /* EM_CUT, EM_COPY: (no selection here: all of it) */
-        if (w->text[0] && !(w->style & 0x80)) clip_put(w->text);
-        if (msg == 0x0144 && !e->ro) { w->text[0] = 0; e->cur = 0; repaint(w); e->changed = 1; notify(w, 4, 0); }
+    case 0x0146:                                                                                 /* EM_CLEAR: the selection */
+        if (!e->ro && ef_del_sel(w, e)) { repaint(w); e->changed = 1; notify(w, 4, 0); }
         return 1;
-    case 0x0147: {                                                                               /* EM_PASTE: at the cursor, one line */
+    case 0x0144: case 0x0145: {                                                                  /* EM_CUT, EM_COPY: the selection */
+        int lo = ef_lo(e), hi = ef_hi(e);
+        if (hi <= lo || (w->style & 0x80)) return 1;
+        char b[256];
+        snprintf(b, sizeof b, "%.*s", hi - lo, w->text + lo);
+        clip_put(b);
+        if (msg == 0x0144 && !e->ro) { ef_del_sel(w, e); repaint(w); e->changed = 1; notify(w, 4, 0); }
+        return 1;
+    }
+    case 0x0147: {                                                                               /* EM_PASTE: over the selection, one line */
         const char *t = clip_take();
         if (!t || e->ro) return 1;
+        ef_del_sel(w, e);
         for (; *t && *t != '\r' && *t != '\n'; t++) {
             n = (int)strlen(w->text);
             if (n >= e->limit || n + 1 >= (int)sizeof w->text) break;
             memmove(w->text + e->cur + 1, w->text + e->cur, (size_t)(n - e->cur + 1));
             w->text[e->cur++] = *t;
         }
+        e->an = e->cur;
         repaint(w); e->changed = 1; notify(w, 4, 0);
         return 1;
     }
@@ -959,7 +1025,7 @@ static uint32_t api_WinSetDlgItemText(void)
     snprintf(w->text, sizeof w->text, "%s", s ? s : "");
     if (!strcmp(w->cls, "#2")) cb_settext(w);
     ctl_set_text(w, s ? s : "");
-    if (w->ctl && !strcmp(w->cls, "#6")) ef(w)->cur = -1;
+    if (w->ctl && !strcmp(w->cls, "#6")) ef(w)->cur = ef(w)->an = -1;
     repaint(w);
     return 1;
 }
@@ -1207,7 +1273,7 @@ static void cb_show(pmwin_t *w, int on)
 static void cb_settext(pmwin_t *w)                                   /* the combo's text into its entry field */
 {
     pmwin_t *e = win(cbx(w)->ef);
-    if (e) { snprintf(e->text, sizeof e->text, "%s", w->text); ef(e)->cur = -1; repaint(e); }
+    if (e) { snprintf(e->text, sizeof e->text, "%s", w->text); ef(e)->cur = ef(e)->an = -1; repaint(e); }
 }
 static uint32_t combo_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
 {

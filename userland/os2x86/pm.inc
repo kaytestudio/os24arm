@@ -456,6 +456,7 @@ static pmwin_t *win_at(pmwin_t *f, int x, int y)
 }
 
 static void menu_close(pmwin_t *f);
+static int pm_kc;                                            /* the Shift, Ctrl and Alt keys held now (KC_*) */
 /* the backends' input, frame pixels top left: as PM messages */
 static void pm_mouse(pmwin_t *f, int px, int py, int button, int down)
 {
@@ -465,7 +466,8 @@ static void pm_mouse(pmwin_t *f, int px, int py, int button, int down)
     int ax, ay;
     win_abs(w, &ax, &ay);
     uint32_t mp1 = (uint32_t)((x - ax) & 0xFFFF) | (uint32_t)((y - ay) & 0xFFFF) << 16;
-    if (!button) { post(w, w->hwnd, WM_MOUSEMOVE, mp1, 0); return; }
+    uint32_t mp2 = (uint32_t)pm_kc << 16;                    /* (hit test, the keys held) */
+    if (!button) { post(w, w->hwnd, WM_MOUSEMOVE, mp1, mp2); return; }
     static const uint32_t dn[3] = { WM_BUTTON1DOWN, WM_BUTTON2DOWN, WM_BUTTON3DOWN }, up[3] = { WM_BUTTON1UP, WM_BUTTON2UP, WM_BUTTON3UP };
     if (button < 1 || button > 3) return;
     if (down && f->drop && w != f->drop && w->id != 0x8005) { menu_close(f); return; }   /* (FID_MENU: it decides) */
@@ -482,11 +484,12 @@ static void pm_mouse(pmwin_t *f, int px, int py, int button, int down)
     }
     if (down && !(w->style & 0x40000000u)) set_focus((f->client && w == f) ? f->client->hwnd : w->hwnd);
     if (w->style & 0x40000000u) return;                 /* WS_DISABLED */
-    post(w, w->hwnd, down ? msgdown : up[button - 1], mp1, 0);
+    post(w, w->hwnd, down ? msgdown : up[button - 1], mp1, mp2);
 }
 static int key_hook(pmwin_t *f, int ch, int vk, int scan, int kc);
 static void pm_key(pmwin_t *f, int ch, int vk, int scan, int kc)
 {
+    kc |= pm_kc & (KC_SHIFT | KC_CTRL | KC_ALT);
     if ((kc & KC_CTRL) && ch >= 1 && ch <= 26) ch = 'a' + ch - 1;     /* (Ctrl+D: 'd', with KC_CTRL, as PM says it) */
     if (key_hook(f, ch, vk, scan, kc)) return;
     pmwin_t *w = win(pm_focus);
@@ -537,6 +540,8 @@ static int hl_idle(struct timespec *dl)
         int x, y;
         if (!*s) continue;
         if (trace) fprintf(stderr, "[pm] script: %s\n", s);
+        pm_kc = 0;
+        if (!strncmp(s, "shift ", 6)) { pm_kc = KC_SHIFT; s += 6; }   /* (shift vkey left, shift click X Y) */
         if (sscanf(s, "shot %255s", a) == 1) { hl_shot(a); continue; }
         if (!f) { fprintf(stderr, "[pm] %s: no window\n", s); continue; }
         if (sscanf(s, "click %d %d", &x, &y) == 2) { pm_mouse(f, x, y, 1, 1); pm_mouse(f, x, y, 1, 0); return 1; }

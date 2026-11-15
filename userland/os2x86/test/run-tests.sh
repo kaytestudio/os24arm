@@ -161,10 +161,10 @@ PY
        grep -q "CN_ENTER config.sys" <<< "$cnrout" && grep -q "sorted: autoexec.bat config.sys os2.ini readme.txt startup.cmd" <<< "$cnrout" &&
        grep -q "now: autoexec.bat os2.ini readme.txt startup.cmd" <<< "$cnrout" && grep -q "done: 4 records, view icon" <<< "$cnrout"
     then echo "PM container: ok"; else echo "PM container: FAIL"; echo "$cnrout"; owfail=1; fi
-    # the clipboard: CF_TEXT set and read back; an entry field's Ctrl+V, Ctrl+C, an MLE's Ctrl+V; WinSetPointer
-    clipout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf OS2X86_PM_SCRIPT="click 100 60; ctrl v; key !; ctrl c; click 100 150; ctrl v; enter; ctrl v; close" ../os2x86 pmclip.exe 2>&1 | tr -d '\r')"
+    # the clipboard: CF_TEXT set and read back; an entry field's Ctrl+V, a selection (Shift+keys) copied, then typed over; an MLE's Ctrl+V; WinSetPointer
+    clipout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf OS2X86_PM_SCRIPT="click 100 60; ctrl v; key !; shift vkey home; ctrl c; vkey end; shift vkey left; key ?; click 100 150; ctrl v; enter; ctrl v; close" ../os2x86 pmclip.exe 2>&1 | tr -d '\r')"
     if grep -q 'put: "Hello, clipboard" (have 1, info 400, first format 1)' <<< "$clipout" && grep -q "pointer: set 1, same 1" <<< "$clipout" &&
-       grep -q 'entry "Hello, clipboard!", mle "Hello, clipboard!||Hello, clipboard!"' <<< "$clipout" && grep -q 'done: "Hello, clipboard!"' <<< "$clipout"
+       grep -q 'entry "Hello, clipboard?", mle "Hello, clipboard!||Hello, clipboard!"' <<< "$clipout" && grep -q 'done: "Hello, clipboard!"' <<< "$clipout"
     then echo "PM clipboard: ok"; else echo "PM clipboard: FAIL"; echo "$clipout"; owfail=1; fi
     # a value set (colours, text: click, double-click, a key) and a circular slider (its + button, a drag round the dial)
     vsout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf OS2X86_PM_SCRIPT="click 190 30; dblclick 120 65; vkey right; click 170 199; drag 120 125 150 148; close" ../os2x86 pmvs.exe 2>&1 | tr -d '\r')"
