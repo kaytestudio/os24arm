@@ -857,6 +857,13 @@ enum { HIT_NONE, HIT_CONTENT, HIT_TITLE, HIT_SYSMENU, HIT_CLOSE, HIT_MAX, HIT_HI
        HIT_MENUBAR };
 static const int BTN_W = 18, BTN_H = 16;
 static int btn_x(const Window *w, int i) { return w->fw() - B - 2 - (i + 1) * (BTN_W + 1); }
+/* a client that fixed its size (the same minimum and maximum: a dialog, a message box): no maximize, no resizing */
+static bool fixed_size(const Window *w)
+{
+    if (!w->top) return false;
+    const auto &c = w->top->current;
+    return c.min_width > 0 && c.min_width == c.max_width && c.min_height > 0 && c.min_height == c.max_height;
+}
 
 static void draw_button(pixman_image_t *im, int x, int y, int kind)
 {
@@ -894,15 +901,16 @@ static void draw_window(Window *w)
     if (on) gradient_h(im, B, B, W - 2 * B, T - 1, schemes[S.scheme].t1, schemes[S.scheme].t2);
     else fill(im, B, B, W - 2 * B, T - 1, C_TITLE_OFF);
     draw_icon(im, window_icon(w), B + 2, B + 1, 16);
-    int text_right = btn_x(w, 2) - 6;
+    bool fixed = fixed_size(w);
+    int text_right = btn_x(w, fixed ? 1 : 2) - 6;
     std::string t = w->titleText();
     int tw = text_width(TEXT_BOLD, t.c_str());
     int tx = std::max(B + 24, B + 20 + (text_right - B - 20 - tw) / 2);
     text_draw(im, TEXT_BOLD, tx, B + T / 2 + text_ascent(TEXT_BOLD) / 2 - 1, t.c_str(),
               on ? C_WHITE : 0xFF303030, text_right);
     draw_button(im, btn_x(w, 0), B + 1, HIT_CLOSE);
-    draw_button(im, btn_x(w, 1), B + 1, HIT_MAX);
-    draw_button(im, btn_x(w, 2), B + 1, HIT_HIDE);
+    if (fixed) draw_button(im, btn_x(w, 1), B + 1, HIT_HIDE);
+    else { draw_button(im, btn_x(w, 1), B + 1, HIT_MAX); draw_button(im, btn_x(w, 2), B + 1, HIT_HIDE); }
     if (w->kind == Window::FOLDER) draw_folder_content(w, im, B, B + T);
     else if (w->kind == Window::WINLIST) draw_winlist_content(w, im, B, B + T);
     else if (w->kind == Window::INFO) draw_info_content(w, im, B, B + T);
@@ -1254,6 +1262,7 @@ static void close_window(Window *w);
 
 static void toggle_maximize(Window *w)
 {
+    if (!w->maximized && fixed_size(w)) return;
     if (!w->maximized) {
         w->sx = w->x; w->sy = w->y; w->scw = w->cw; w->sch = w->ch;
         w->x = 0; w->y = BAR;
@@ -2328,6 +2337,14 @@ static void system_menu(int x, int y)
 
 static void window_menu(Window *w, int x, int y)
 {
+    if (fixed_size(w)) {
+        open_menu(x, y, {
+            { "Hide", [w] { hide(w); } },
+            { "Window List", [] { toggle_winlist(); } },
+            { "Close", [w] { close_window(w); } },
+        });
+        return;
+    }
     open_menu(x, y, {
         { w->maximized ? "Restore" : "Maximize", [w] { toggle_maximize(w); } },
         { "Hide", [w] { hide(w); } },
@@ -2465,12 +2482,14 @@ static int frame_hit(Window *w, int fx, int fy, uint32_t *edges)
         if (fx >= W - C) *edges |= WLR_EDGE_RIGHT;
         if (fy < C) *edges |= WLR_EDGE_TOP;
         if (fy >= H - C) *edges |= WLR_EDGE_BOTTOM;
+        if (fixed_size(w)) { *edges = 0; return HIT_TITLE; }  /* (a fixed size: its border moves it) */
         return HIT_BORDER;
     }
     if (fy < B + T) {
         if (fx < B + 20) return HIT_SYSMENU;
-        for (int i = 0; i < 3; i++)
-            if (fx >= btn_x(w, i) && fx < btn_x(w, i) + BTN_W) return i == 0 ? HIT_CLOSE : i == 1 ? HIT_MAX : HIT_HIDE;
+        bool fixed = fixed_size(w);
+        for (int i = 0; i < (fixed ? 2 : 3); i++)
+            if (fx >= btn_x(w, i) && fx < btn_x(w, i) + BTN_W) return i == 0 ? HIT_CLOSE : i == 1 && !fixed ? HIT_MAX : HIT_HIDE;
         return HIT_TITLE;
     }
     if ((w->kind == Window::FOLDER || w->kind == Window::EDITOR) && fy < B + T + MENUBAR) return HIT_MENUBAR;

@@ -230,7 +230,8 @@ platform-specific are new code.
    window (server-side decoration: a 3D border to resize by, a title bar
    to move by - blue when active, double-click maximizes, right-click a
    menu - the system menu icon (double-click closes) and hide, maximize
-   and close buttons). Folders open as windows of the real directories
+   and close buttons; a window that fixed its size - a dialog, a message
+   box - has no maximize and isn't resized). Folders open as windows of the real directories
    (UNIXROOT's and the system's folders stay hidden), with a menu bar -
    Folder (Open parent, Refresh now, Close), Edit (Select all), View
    (Icon, Tree and Details views; Sort by name, type, size or last
