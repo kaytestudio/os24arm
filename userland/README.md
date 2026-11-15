@@ -393,9 +393,11 @@ platform-specific are new code.
    the thumb dragged; WM_VSCROLL/HSCROLL, SBM_ messages), combo boxes (a
    drop-down list over the dialog), accelerators (FCF_ACCELTABLE,
    WinLoadAccelTable & co.) and the menu by the keyboard (Alt+its letter,
-   F10, the arrows, Enter, Esc). Not there yet: spin buttons, MLEs,
-   notebooks, containers and the like, icons and bitmaps, fonts beyond
-   the one. OS/2's DLLs that aren't
+   F10, the arrows, Enter, Esc), the multi-line edit control (typing,
+   the keys, its scroll bar; MLM_IMPORT/EXPORT, MLM_INSERT, selections,
+   line queries; CR LF out) and spin buttons (numbers in a range, or an
+   array of strings). Not there yet: notebooks, containers, sliders and
+   the like, icons and bitmaps, fonts beyond the one. OS/2's DLLs that aren't
    here (PMSHAPI, HELPMGR, TCP32DLL, ...) load as stubs, so a program
    that only links them in runs; a call into one says so and returns 0. Calls it doesn't have yet print
    one line on stderr and return error 1; `OS2X86_TRACE=1` lists every
@@ -410,7 +412,8 @@ platform-specific are new code.
    DLL of its own (moved, initialised, DosLoadModule) and two PM
    programs (headless, scripted: a window, its painting checked; a menu,
    a dialog from a resource with its controls, by mouse and by keys;
-   scroll bars, a combo box, accelerators, the menu by keys). They pass on the system too.
+   scroll bars, a combo box, accelerators, the menu by keys; an MLE and
+   spin buttons). They pass on the system too.
 
    `userland/apps/os2cmd.c` relays a terminal to `/dev/os2cmd`, which runs
    each line in the shell of `kernel/src/main.c` - DIR, COPY, MOUNT, USB,

@@ -1,0 +1,17 @@
+/* userland/os2x86/test/ow/pmedit.rc - pmedit's dialog: an MLE, spin buttons */
+#include <os2.h>
+#define ID_DLG 100
+#define IDC_MLE 101
+#define IDC_SPIN 102
+#define IDC_DAYS 103
+
+DLGTEMPLATE ID_DLG
+BEGIN
+    DIALOG "Edit", ID_DLG, 20, 20, 200, 140, WS_VISIBLE, FCF_TITLEBAR | FCF_SYSMENU | FCF_DLGBORDER
+    BEGIN
+        MLE "", IDC_MLE, 8, 50, 184, 82, MLS_BORDER | MLS_VSCROLL | WS_TABSTOP
+        SPINBUTTON IDC_SPIN, 8, 30, 50, 12, SPBS_NUMERICONLY | SPBS_MASTER | WS_TABSTOP
+        SPINBUTTON IDC_DAYS, 70, 30, 70, 12, SPBS_MASTER | SPBS_READONLY | WS_TABSTOP
+        DEFPUSHBUTTON "OK", DID_OK, 8, 8, 50, 14
+    END
+END

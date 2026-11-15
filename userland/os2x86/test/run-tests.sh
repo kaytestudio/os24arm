@@ -34,6 +34,8 @@ if [ -x "$W/armo64/wcl386" ] || [ -x "$W/binl64/wcl386" ]; then
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm -i="$S" "$S/pmctl.c" >/dev/null && wrc -q -bt=os2 pmctl.res pmctl.exe >/dev/null
     wrc -q -r -bt=os2 -i="$S" "$S/pmmore.rc" -fo=pmmore.res >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm -i="$S" "$S/pmmore.c" >/dev/null && wrc -q -bt=os2 pmmore.res pmmore.exe >/dev/null
+    wrc -q -r -bt=os2 -i="$S" "$S/pmedit.rc" -fo=pmedit.res >/dev/null
+    wcl386 -q -za99 -bt=os2 -l=os2v2_pm -i="$S" "$S/pmedit.c" >/dev/null && wrc -q -bt=os2 pmedit.res pmedit.exe >/dev/null
     owfail=0
     echo "== OpenWatcom programs"
     ../os2x86 owtest.exe </dev/null | grep -E "^FAIL|passed|failed" || owfail=1
@@ -75,6 +77,13 @@ click 250 130; click 220 130; enter; vkey f10; vkey down; vkey enter; alt f; key
        echo "$moreout" | grep -q 'combo "Cherry", item 2' && echo "$moreout" | grep -q "WM_HSCROLL 4 -> 9" &&
        echo "$moreout" | grep -q "IDM_REFRESH (source 2)" && echo "$moreout" | grep -q "IDM_EXIT"
     then echo "PM scroll bars, combo box, keys: ok"; else echo "PM scroll bars, combo box, keys: FAIL"; echo "$moreout"; owfail=1; fi
+    # the multi-line edit control and spin buttons
+    editout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf \
+        OS2X86_PM_SCRIPT="click 200 40; key !; enter; key Line3; click 93 200; click 93 200; click 30 207; vkey down; click 236 200; click 50 250" \
+        ../os2x86 pmedit.exe 2>&1)"
+    if echo "$editout" | grep -q 'WinDlgBox 1: text "HelloRNWorld!RNLine3", export "HelloRNWorld!RNLine3", 3 lines, some changes, spin 4, day Tue' &&
+       echo "$editout" | grep -q "line 2 is 6 long"
+    then echo "PM MLE, spin buttons: ok"; else echo "PM MLE, spin buttons: FAIL"; echo "$editout"; owfail=1; fi
     [ "$owfail" = 0 ] || st=1
 else
     echo "(no OpenWatcom: its programs not tried)"

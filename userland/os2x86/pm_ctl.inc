@@ -688,6 +688,8 @@ static pmwin_t *menu_load(pmwin_t *f, uint32_t hmod, uint32_t id)
 
 static uint32_t scroll_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2);
 static uint32_t combo_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2);
+static uint32_t mle_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2);
+static uint32_t spin_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2);
 static pmproc_t builtin_proc(const char *cls)
 {
     if (!strcmp(cls, "#3")) return button_proc;
@@ -696,6 +698,8 @@ static pmproc_t builtin_proc(const char *cls)
     if (!strcmp(cls, "#7")) return list_proc;
     if (!strcmp(cls, "#8")) return scroll_proc;
     if (!strcmp(cls, "#2")) return combo_proc;
+    if (!strcmp(cls, "#10")) return mle_proc;
+    if (!strcmp(cls, "#32")) return spin_proc;
     return 0;
 }
 
@@ -747,6 +751,8 @@ static uint32_t def_dlg_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp
     return 0;
 }
 static void cb_settext(pmwin_t *w);
+static int ctl_get_text(pmwin_t *w, char *out, int max);
+static int ctl_set_text(pmwin_t *w, const char *s);
 static uint32_t api_WinDefDlgProc(void) { pmwin_t *w = win(A(0)); return w ? def_dlg_proc(w, A(1), A(2), A(3)) : 0; }
 
 /* the template's items, from item i (and its children) under parent */
@@ -869,6 +875,7 @@ static uint32_t api_WinSetDlgItemText(void)
     if (!w) return 0;
     snprintf(w->text, sizeof w->text, "%s", s ? s : "");
     if (!strcmp(w->cls, "#2")) cb_settext(w);
+    ctl_set_text(w, s ? s : "");
     if (w->ctl && !strcmp(w->cls, "#6")) ef(w)->cur = -1;
     repaint(w);
     return 1;
@@ -878,13 +885,22 @@ static uint32_t api_WinQueryDlgItemText(void) /* (hwndDlg, idItem, lMaxText, psz
     pmwin_t *w = dlg_item(A(0), A(1));
     uint32_t n = A(2), b = A(3);
     if (!w || !n || !ok(b, n)) return 0;
+    int k = ctl_get_text(w, (char *)C.mem + b, (int)n);
+    if (k >= 0) return (uint32_t)k;
     uint32_t l = (uint32_t)strlen(w->text);
     if (l > n - 1) l = n - 1;
     memcpy(C.mem + b, w->text, l);
     C.mem[b + l] = 0;
     return l;
 }
-static uint32_t api_WinQueryDlgItemTextLength(void) { pmwin_t *w = dlg_item(A(0), A(1)); return w ? (uint32_t)strlen(w->text) : 0; }
+static uint32_t api_WinQueryDlgItemTextLength(void)
+{
+    pmwin_t *w = dlg_item(A(0), A(1));
+    if (!w) return 0;
+    static char tmp[65536];
+    int k = ctl_get_text(w, tmp, sizeof tmp);
+    return k >= 0 ? (uint32_t)k : (uint32_t)strlen(w->text);
+}
 static uint32_t api_WinQueryDlgItemShort(void)    /* (hwndDlg, idItem, pResult, fSigned) */
 {
     pmwin_t *w = dlg_item(A(0), A(1));
@@ -1295,5 +1311,417 @@ static int key_hook(pmwin_t *f, int ch, int vk, int scan, int kc)
     if (!cmd) return 0;
     pmwin_t *t = f->client ? f->client : f;
     post(t, t->hwnd, (cmd & 0x10000) ? WM_SYSCOMMAND : WM_COMMAND, cmd & 0xFFFF, 3);   /* CMDSRC_ACCELERATOR */
+    return 1;
+}
+
+/* ── WC_MLE: text of many lines (LF inside; CR LF out, as MLFIE_CFTEXT) ─ */
+typedef struct { char *t; int len, cap, cur, anchor, top, limit, ro, changed, fmt; uint32_t iebuf, iecb; uint32_t vsb; } mle_t;
+static char *mle_clip;                                       /* (cut, copy, paste: here, for now) */
+static mle_t *mle(pmwin_t *w)
+{
+    if (!w->ctl) {
+        mle_t *m = calloc(1, sizeof *m);
+        m->cap = 256; m->t = calloc(1, (size_t)m->cap); m->limit = 4096; m->fmt = 0;
+        w->ctl = m;
+    }
+    return w->ctl;
+}
+static void mle_room(mle_t *m, int n) { if (m->len + n + 1 > m->cap) { while (m->len + n + 1 > m->cap) m->cap *= 2; m->t = realloc(m->t, (size_t)m->cap); } }
+static int mle_line_of(mle_t *m, int at) { int l = 0; for (int i = 0; i < at && i < m->len; i++) if (m->t[i] == '\n') l++; return l; }
+static int mle_line_start(mle_t *m, int line) { int at = 0; for (int l = 0; l < line && at < m->len; at++) if (m->t[at] == '\n') l++; return at; }
+static int mle_line_end(mle_t *m, int at) { while (at < m->len && m->t[at] != '\n') at++; return at; }
+static int mle_lines(mle_t *m) { return mle_line_of(m, m->len) + 1; }
+static int mle_rows(pmwin_t *w) { int r = (w->cy - 4) / pm_lineh; return r < 1 ? 1 : r; }
+/* text in, as a program gives it: CR LF and CR become LF */
+static int mle_insert(pmwin_t *w, int at, const char *s, int n)
+{
+    mle_t *m = mle(w);
+    char *tmp = malloc((size_t)n + 1);
+    int k = 0;
+    for (int i = 0; i < n; i++) {
+        if (s[i] == '\r') { if (i + 1 < n && s[i + 1] == '\n') continue; tmp[k++] = '\n'; }
+        else tmp[k++] = s[i];
+    }
+    if (m->len + k > m->limit) k = m->limit - m->len;
+    if (k < 0) k = 0;
+    mle_room(m, k);
+    memmove(m->t + at + k, m->t + at, (size_t)(m->len - at + 1));
+    memcpy(m->t + at, tmp, (size_t)k);
+    m->len += k;
+    free(tmp);
+    if (k) { m->changed = 1; notify(w, 7, 0); }              /* MLN_CHANGE */
+    return k;
+}
+static void mle_delete(pmwin_t *w, int at, int n)
+{
+    mle_t *m = mle(w);
+    if (at < 0) at = 0;
+    if (at + n > m->len) n = m->len - at;
+    if (n <= 0) return;
+    memmove(m->t + at, m->t + at + n, (size_t)(m->len - at - n + 1));
+    m->len -= n;
+    m->changed = 1;
+    notify(w, 7, 0);
+}
+static int mle_del_sel(pmwin_t *w)
+{
+    mle_t *m = mle(w);
+    if (m->anchor == m->cur) return 0;
+    int a = m->anchor < m->cur ? m->anchor : m->cur, b = m->anchor < m->cur ? m->cur : m->anchor;
+    mle_delete(w, a, b - a);
+    m->cur = m->anchor = a;
+    return 1;
+}
+/* out, as the format says: CR LF (MLFIE_CFTEXT, MLFIE_WINFMT) or as it is (MLFIE_NOTRANS) */
+static int mle_export(mle_t *m, int from, int n, char *out, int max)
+{
+    int k = 0;
+    for (int i = from; i < from + n && i < m->len && k < max; i++) {
+        if (m->t[i] == '\n' && m->fmt != 1) { if (k + 2 > max) break; out[k++] = '\r'; }
+        out[k++] = m->t[i];
+    }
+    return k;
+}
+static void mle_scroll_to_cursor(pmwin_t *w, mle_t *m)
+{
+    int l = mle_line_of(m, m->cur), rows = mle_rows(w);
+    if (l < m->top) m->top = l;
+    if (l >= m->top + rows) m->top = l - rows + 1;
+    pmwin_t *s = win(m->vsb);
+    if (s) {
+        int hi = mle_lines(m) - rows;
+        if (hi < 0) hi = 0;
+        scroll_proc(s, 0x01a0, (uint32_t)m->top, (uint32_t)hi << 16);
+        scroll_proc(s, 0x01a6, (uint32_t)rows | (uint32_t)mle_lines(m) << 16, 0);
+    }
+}
+static uint32_t mle_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
+{
+    mle_t *m = mle(w);
+    switch (msg) {
+    case WM_CREATE:
+        if (w->style & 0x10) m->ro = 1;                       /* MLS_READONLY */
+        if (w->style & 4) {                                   /* MLS_VSCROLL: a scroll bar of its own */
+            pmwin_t *s = win_new(w, "#8", 1, 0);
+            if (s) { s->x = w->cx - 16; s->y = 0; s->cx = 16; s->cy = w->cy; s->owner = w; s->visible = 1; m->vsb = s->hwnd; }
+        }
+        return 0;
+    case WM_DESTROY: free(m->t); m->t = 0; return 0;
+    case WM_PAINT: {
+        w->invalid = 0;
+        int sbw = m->vsb ? 16 : 0, b = (w->style & 2) ? 1 : 0;       /* MLS_BORDER */
+        fill(w, 0, 0, w->cx - sbw, w->cy, (w->style & WS_DISABLED_) ? C_FACE : C_LIGHT);
+        if (b) bevel(w, 0, 0, w->cx - sbw, w->cy, 0);
+        int rows = mle_rows(w), at = mle_line_start(m, m->top);
+        int s0 = m->anchor < m->cur ? m->anchor : m->cur, s1 = m->anchor < m->cur ? m->cur : m->anchor;
+        for (int r = 0; r < rows && at <= m->len; r++) {
+            int e = mle_line_end(m, at), ybase = w->cy - 2 - (r + 1) * pm_lineh + pm_descent + (pm_lineh - pm_ascent - pm_descent) / 2;
+            int x = 3;
+            for (int i = at; i < e; i++) {
+                char ch = m->t[i] == '\t' ? ' ' : m->t[i];
+                int cw = glyph((unsigned char)ch)->adv * (m->t[i] == '\t' ? 4 : 1);
+                if (i >= s0 && i < s1) fill(w, x, ybase - pm_descent, x + cw, ybase + pm_ascent, C_HILITE);
+                text_at(w, x, ybase, &ch, 1, i >= s0 && i < s1 ? C_LIGHT : C_TEXT);
+                if (m->t[i] == '\t') x += cw - glyph(' ')->adv;
+                x += glyph((unsigned char)ch)->adv;
+            }
+            if (pm_focus == w->hwnd && !m->ro && m->cur >= at && m->cur <= e) {
+                int cx = 3;
+                for (int i = at; i < m->cur; i++) cx += m->t[i] == '\t' ? glyph(' ')->adv * 4 : glyph((unsigned char)m->t[i])->adv;
+                line(w, cx, ybase - pm_descent, cx, ybase + pm_ascent, C_TEXT);
+            }
+            if (e >= m->len) break;
+            at = e + 1;
+        }
+        present(w);
+        return 0;
+    }
+    case WM_BUTTON1DOWN: {
+        int x = (int16_t)(mp1 & 0xFFFF), y = (int16_t)(mp1 >> 16);
+        int l = m->top + (w->cy - 2 - y) / pm_lineh, nl = mle_lines(m);
+        if (l >= nl) l = nl - 1;
+        int at = mle_line_start(m, l), e = mle_line_end(m, at), cx = 3;
+        while (at < e) { int cw = glyph((unsigned char)m->t[at])->adv; if (cx + cw / 2 > x) break; cx += cw; at++; }
+        m->cur = m->anchor = at;
+        repaint(w);
+        return 1;
+    }
+    case 0x0031: {                                            /* its scroll bar's WM_VSCROLL */
+        int cmd = (int)(mp2 >> 16), rows = mle_rows(w), hi = mle_lines(m) - rows;
+        if (hi < 0) hi = 0;
+        if (cmd == 1) m->top--; else if (cmd == 2) m->top++; else if (cmd == 3) m->top -= rows; else if (cmd == 4) m->top += rows;
+        else if (cmd == 5 || cmd == 6) m->top = (int16_t)(mp2 & 0xFFFF);
+        else return 0;
+        if (m->top > hi) m->top = hi;
+        if (m->top < 0) m->top = 0;
+        pmwin_t *s = win(m->vsb);
+        if (s) scroll_proc(s, 0x01a1, (uint32_t)m->top, 0);
+        repaint(w);
+        return 0;
+    }
+    case WM_CHAR: {
+        if (mp1 & KC_KEYUP) return 1;
+        int ch = (mp1 & KC_CHAR) ? (int)(mp2 & 0xFFFF) : 0, vk = (mp1 & KC_VIRTUALKEY) ? (int)(mp2 >> 16) : 0;
+        int shift = (mp1 & KC_SHIFT) != 0, ctrl = (mp1 & KC_CTRL) != 0, moved = 0;
+        int l = mle_line_of(m, m->cur), col = m->cur - mle_line_start(m, l);
+        switch (vk) {
+        case 0x15: if (m->cur > 0) m->cur--; moved = 1; break;
+        case 0x17: if (m->cur < m->len) m->cur++; moved = 1; break;
+        case 0x16: case 0x18: case 0x11: case 0x12: {
+            int d = vk == 0x16 ? -1 : vk == 0x18 ? 1 : vk == 0x11 ? -mle_rows(w) : mle_rows(w), nl = l + d;
+            if (nl < 0) nl = 0;
+            if (nl >= mle_lines(m)) nl = mle_lines(m) - 1;
+            int s = mle_line_start(m, nl), e = mle_line_end(m, s);
+            m->cur = s + col < e ? s + col : e;
+            moved = 1;
+            break;
+        }
+        case 0x14: m->cur = ctrl ? 0 : mle_line_start(m, l); moved = 1; break;
+        case 0x13: m->cur = ctrl ? m->len : mle_line_end(m, m->cur); moved = 1; break;
+        case 0x05: if (!m->ro && !mle_del_sel(w) && m->cur > 0) { mle_delete(w, m->cur - 1, 1); m->cur--; } m->anchor = m->cur; break;
+        case 0x1b: if (!m->ro && !mle_del_sel(w)) mle_delete(w, m->cur, 1); m->anchor = m->cur; break;
+        case 0x08: case 0x1e: if (!m->ro) { mle_del_sel(w); m->cur += mle_insert(w, m->cur, "\n", 1); m->anchor = m->cur; } break;
+        case 0x06:                                            /* Tab: a tab, unless MLS_IGNORETAB */
+            if ((w->style & 0x20) || m->ro) return pm_send(w->owner ? w->owner : w->parent, msg, mp1, mp2);
+            mle_del_sel(w); m->cur += mle_insert(w, m->cur, "\t", 1); m->anchor = m->cur;
+            break;
+        case 0x0f: return pm_send(w->owner ? w->owner : w->parent, msg, mp1, mp2);   /* Esc: the dialog's */
+        default:
+            if (ch == '\r') { if (!m->ro) { mle_del_sel(w); m->cur += mle_insert(w, m->cur, "\n", 1); m->anchor = m->cur; } break; }
+            if (ch == 8) { if (!m->ro && !mle_del_sel(w) && m->cur > 0) { mle_delete(w, m->cur - 1, 1); m->cur--; } m->anchor = m->cur; break; }
+            if (ch == 27) return pm_send(w->owner ? w->owner : w->parent, msg, mp1, mp2);
+            if (ch >= 32 && ch != 127 && !(mp1 & (KC_CTRL | KC_ALT))) {
+                if (!m->ro) { char c = (char)ch; mle_del_sel(w); m->cur += mle_insert(w, m->cur, &c, 1); m->anchor = m->cur; }
+                break;
+            }
+            return pm_send(w->owner ? w->owner : w->parent, msg, mp1, mp2);
+        }
+        if (moved && !shift) m->anchor = m->cur;
+        mle_scroll_to_cursor(w, m);
+        repaint(w);
+        return 1;
+    }
+    case 0x01b0: m->limit = (int)mp1 > 0 ? (int)mp1 : 0x7FFFFFFF; return 1;          /* MLM_SETTEXTLIMIT */
+    case 0x01b1: return (uint32_t)m->limit;                                          /* MLM_QUERYTEXTLIMIT */
+    case 0x01c0: return (uint32_t)m->len;                                            /* MLM_QUERYTEXTLENGTH */
+    case 0x01c8: {                                                                   /* MLM_QUERYFORMATTEXTLENGTH: (ipt, cch) */
+        int from = (int)mp1, n = (int32_t)mp2 < 0 ? m->len : (int)mp2, k = 0;
+        for (int i = from; i < from + n && i < m->len; i++) k += m->t[i] == '\n' && m->fmt != 1 ? 2 : 1;
+        return (uint32_t)k;
+    }
+    case 0x01c1: m->fmt = (int)mp1; return 1;                                         /* MLM_FORMAT */
+    case 0x01c2: m->iebuf = mp1; m->iecb = mp2; return 1;                             /* MLM_SETIMPORTEXPORT */
+    case 0x01df: p32(mp1, m->iebuf); p32(mp2, m->iecb); return 1;                      /* MLM_QUERYIMPORTEXPORT */
+    case 0x01c3: {                                                                   /* MLM_IMPORT: (pipt, cb) */
+        int at = (int32_t)g32(mp1), n = (int)mp2;
+        if (at < 0 || at > m->len) at = m->len;
+        char *s = gp(m->iebuf, (uint32_t)n);
+        if (!s) return 0;
+        int k = mle_insert(w, at, s, n);
+        p32(mp1, (uint32_t)(at + k));
+        repaint(w);
+        return (uint32_t)n;
+    }
+    case 0x01c4: {                                                                   /* MLM_EXPORT: (pipt, pcb) */
+        int at = (int32_t)g32(mp1), n = (int)g32(mp2), max = (int)m->iecb;
+        char *b = gp(m->iebuf, m->iecb);
+        if (!b || at < 0) return 0;
+        int k = mle_export(m, at, n, b, max < n ? max : n), used = 0;
+        for (int i = at; used < k && i < m->len; i++) { used += m->t[i] == '\n' && m->fmt != 1 ? 2 : 1; p32(mp1, (uint32_t)(i + 1)); }
+        p32(mp2, (uint32_t)(n - k));
+        return (uint32_t)k;
+    }
+    case 0x01c9: {                                                                   /* MLM_INSERT: psz */
+        char *s = gs(mp1);
+        if (!s || m->ro) return 0;
+        mle_del_sel(w);
+        int k = mle_insert(w, m->cur, s, (int)strlen(s));
+        m->cur += k; m->anchor = m->cur;
+        repaint(w);
+        return (uint32_t)k;
+    }
+    case 0x01c6: mle_delete(w, (int)mp1, (int)mp2); if (m->cur > m->len) m->cur = m->len; m->anchor = m->cur; repaint(w); return (uint32_t)mp2;   /* MLM_DELETE */
+    case 0x01ca: {                                                                   /* MLM_SETSEL: anchor, cursor */
+        int a = (int32_t)mp1, c = (int32_t)mp2;
+        m->anchor = a < 0 || a > m->len ? m->len : a;
+        m->cur = c < 0 || c > m->len ? m->len : c;
+        mle_scroll_to_cursor(w, m);
+        repaint(w);
+        return 1;
+    }
+    case 0x01cb: {                                                                   /* MLM_QUERYSEL */
+        int lo = m->anchor < m->cur ? m->anchor : m->cur, hi = m->anchor < m->cur ? m->cur : m->anchor;
+        switch (mp1) {
+        case 1: return (uint32_t)lo;
+        case 2: return (uint32_t)hi;
+        case 3: return (uint32_t)m->anchor;
+        case 4: return (uint32_t)m->cur;
+        default: return (uint32_t)(lo & 0xFFFF) | (uint32_t)hi << 16;
+        }
+    }
+    case 0x01cc: {                                                                   /* MLM_QUERYSELTEXT: buffer */
+        int lo = m->anchor < m->cur ? m->anchor : m->cur, hi = m->anchor < m->cur ? m->cur : m->anchor;
+        char *b = gp(mp1, (uint32_t)(2 * (hi - lo) + 1));
+        if (!b) return 0;
+        int k = mle_export(m, lo, hi - lo, b, 2 * (hi - lo));
+        b[k] = 0;
+        return (uint32_t)k;
+    }
+    case 0x01bc: return (uint32_t)mle_lines(m);                                       /* MLM_QUERYLINECOUNT */
+    case 0x01bd: return (int32_t)mp1 < 0 ? (uint32_t)mle_line_start(m, mle_line_of(m, m->cur)) : (uint32_t)mle_line_start(m, (int)mp1);   /* MLM_CHARFROMLINE */
+    case 0x01be: return (uint32_t)mle_line_of(m, (int32_t)mp1 < 0 ? m->cur : (int)mp1);   /* MLM_LINEFROMCHAR */
+    case 0x01bf: {                                                                   /* MLM_QUERYLINELENGTH */
+        int at = (int32_t)mp1 < 0 ? m->cur : (int)mp1, s = mle_line_start(m, mle_line_of(m, at));
+        return (uint32_t)(mle_line_end(m, s) - s);
+    }
+    case 0x01b8: { int o = m->ro; m->ro = (int)(mp1 & 1); return (uint32_t)o; }      /* MLM_SETREADONLY */
+    case 0x01b9: return (uint32_t)m->ro;                                             /* MLM_QUERYREADONLY */
+    case 0x01ba: return (uint32_t)m->changed;                                        /* MLM_QUERYCHANGED */
+    case 0x01bb: { int o = m->changed; m->changed = (int)(mp1 & 1); return (uint32_t)o; }   /* MLM_SETCHANGED */
+    case 0x01d6: return (uint32_t)mle_line_start(m, m->top);                         /* MLM_QUERYFIRSTCHAR */
+    case 0x01d7: m->top = mle_line_of(m, (int)mp1); repaint(w); return 1;            /* MLM_SETFIRSTCHAR */
+    case 0x01db: if (!m->ro) { mle_del_sel(w); repaint(w); } return 1;               /* MLM_CLEAR */
+    case 0x01d8: case 0x01d9: {                                                      /* MLM_CUT, MLM_COPY */
+        int lo = m->anchor < m->cur ? m->anchor : m->cur, hi = m->anchor < m->cur ? m->cur : m->anchor;
+        free(mle_clip);
+        mle_clip = strndup(m->t + lo, (size_t)(hi - lo));
+        if (msg == 0x01d8 && !m->ro) { mle_del_sel(w); repaint(w); }
+        return 1;
+    }
+    case 0x01da:                                                                     /* MLM_PASTE */
+        if (mle_clip && !m->ro) { mle_del_sel(w); m->cur += mle_insert(w, m->cur, mle_clip, (int)strlen(mle_clip)); m->anchor = m->cur; repaint(w); }
+        return 1;
+    case 0x01dc: case 0x01dd: case 0x01cf: case 0x01b4: case 0x01b6: case 0x01d2: case 0x01d4: return 1;
+    case 0x01cd: case 0x01ce: return 0;                                              /* (no undo yet) */
+    case 0x01b5: return (w->style & 1) != 0;                                         /* MLM_QUERYWRAP */
+    case 0x01b7: return 32;                                                          /* MLM_QUERYTABSTOP */
+    }
+    return 0;
+}
+
+/* ── WC_SPINBUTTON: a number in a range, or one of an array ──────────── */
+typedef struct { int32_t lo, hi, val; char **arr; int narr; } spb_t;
+static spb_t *spb(pmwin_t *w) { if (!w->ctl) { w->ctl = calloc(1, sizeof(spb_t)); ((spb_t *)w->ctl)->hi = 100; } return w->ctl; }
+static void spb_text(pmwin_t *w, spb_t *s)
+{
+    if (s->narr) snprintf(w->text, sizeof w->text, "%s", s->val >= 0 && s->val < s->narr ? s->arr[s->val] : "");
+    else snprintf(w->text, sizeof w->text, "%d", s->val);
+}
+static void spb_spin(pmwin_t *w, int by)
+{
+    spb_t *s = spb(w);
+    int32_t lo = s->narr ? 0 : s->lo, hi = s->narr ? s->narr - 1 : s->hi;
+    int32_t v = s->val + by;
+    if (v > hi) v = lo + (v - hi - 1);                        /* (around, as PM spins) */
+    if (v < lo) v = hi - (lo - v - 1);
+    if (v != s->val) {
+        s->val = v;
+        spb_text(w, s);
+        repaint(w);
+        notify(w, by > 0 ? 0x20A : 0x20B, 0);                 /* SPBN_UPARROW, SPBN_DOWNARROW */
+        notify(w, 0x20D, 0);                                  /* SPBN_CHANGE */
+    }
+}
+static uint32_t spin_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
+{
+    spb_t *s = spb(w);
+    int bw = 16;
+    switch (msg) {
+    case WM_CREATE:
+        if (mp1 && ok(mp1, 16)) { s->lo = (int32_t)g32(mp1 + 8); s->hi = (int32_t)g32(mp1 + 12); }   /* SPBCDATA */
+        s->val = s->lo;
+        spb_text(w, s);
+        return 0;
+    case WM_DESTROY: for (int i = 0; i < s->narr; i++) free(s->arr[i]); free(s->arr); return 0;
+    case WM_PAINT: {
+        w->invalid = 0;
+        fill(w, 0, 0, w->cx - bw, w->cy, C_LIGHT);
+        if (!(w->style & 0x20)) bevel(w, 0, 0, w->cx - bw, w->cy, 0);   /* (SPBS_NOBORDER) */
+        int just = (int)(w->style & 0x0C), tw = plain_w(w->text);
+        int x = just == 0x04 ? w->cx - bw - 4 - tw : just == 0x0C ? (w->cx - bw - tw) / 2 : 4;
+        text_mid(w, x, 0, w->cy, w->text, C_TEXT);
+        if (pm_focus == w->hwnd) for (int k = x; k < x + tw; k += 2) pel(w, k, 2, C_TEXT);
+        int h = w->cy / 2;
+        fill(w, w->cx - bw, h, w->cx, w->cy, C_FACE); bevel(w, w->cx - bw, h, w->cx, w->cy, 1); tri(w, w->cx - bw / 2, h + (w->cy - h) / 2, 0);
+        fill(w, w->cx - bw, 0, w->cx, h, C_FACE); bevel(w, w->cx - bw, 0, w->cx, h, 1); tri(w, w->cx - bw / 2, h / 2, 1);
+        present(w);
+        return 0;
+    }
+    case WM_BUTTON1DOWN: {
+        int x = (int16_t)(mp1 & 0xFFFF), y = (int16_t)(mp1 >> 16);
+        if (x >= w->cx - bw) { spb_spin(w, y >= w->cy / 2 ? 1 : -1); notify(w, 0x20C, 0); }   /* SPBN_ENDSPIN */
+        return 1;
+    }
+    case WM_CHAR: {
+        if (mp1 & KC_KEYUP) return 1;
+        int vk = (mp1 & KC_VIRTUALKEY) ? (int)(mp2 >> 16) : 0, ch = (mp1 & KC_CHAR) ? (int)(mp2 & 0xFFFF) : 0;
+        if (vk == 0x16) { spb_spin(w, 1); return 1; }
+        if (vk == 0x18) { spb_spin(w, -1); return 1; }
+        if (vk == 0x11) { spb_spin(w, 10); return 1; }
+        if (vk == 0x12) { spb_spin(w, -10); return 1; }
+        if (!s->narr && !(w->style & 2) && ((ch >= '0' && ch <= '9') || ch == '-' || ch == 8)) {   /* (not SPBS_READONLY: typed) */
+            int n = (int)strlen(w->text);
+            if (ch == 8) { if (n) w->text[n - 1] = 0; }
+            else if (n < 11) { w->text[n] = (char)ch; w->text[n + 1] = 0; }
+            s->val = (int32_t)strtol(w->text, 0, 10);
+            repaint(w);
+            notify(w, 0x20D, 0);
+            return 1;
+        }
+        return pm_send(w->owner ? w->owner : w->parent, msg, mp1, mp2);
+    }
+    case 0x207:                                                                       /* SPBM_SETLIMITS: upper, lower */
+        s->hi = (int32_t)mp1; s->lo = (int32_t)mp2;
+        if (s->val < s->lo) s->val = s->lo;
+        if (s->val > s->hi) s->val = s->hi;
+        spb_text(w, s); repaint(w);
+        return 1;
+    case 0x200: s->hi = (int32_t)mp1; s->lo = (int32_t)mp2; return 1;                 /* SPBM_OVERRIDESETLIMITS */
+    case 0x201: p32(mp1, (uint32_t)s->hi); p32(mp2, (uint32_t)s->lo); return 1;        /* SPBM_QUERYLIMITS */
+    case 0x208: s->val = (int32_t)mp1; spb_text(w, s); repaint(w); return 1;          /* SPBM_SETCURRENTVALUE */
+    case 0x206: {                                                                     /* SPBM_SETARRAY: papsz, count */
+        for (int i = 0; i < s->narr; i++) free(s->arr[i]);
+        free(s->arr);
+        s->narr = (int)(mp2 & 0xFFFF);
+        s->arr = calloc((size_t)(s->narr ? s->narr : 1), sizeof *s->arr);
+        for (int i = 0; i < s->narr; i++) { char *t = gs(g32(mp1 + 4u * (uint32_t)i)); s->arr[i] = strdup(t ? t : ""); }
+        s->val = 0;
+        spb_text(w, s); repaint(w);
+        return 1;
+    }
+    case 0x205: {                                                                     /* SPBM_QUERYVALUE: pStore, (cch, flags) */
+        uint32_t cch = mp2 & 0xFFFF;
+        if (!mp1) return 1;
+        if (!cch) return p32(mp1, (uint32_t)s->val);
+        char *b = gp(mp1, cch);
+        if (!b) return 0;
+        snprintf(b, cch, "%s", w->text);
+        return 1;
+    }
+    case 0x203: spb_spin(w, (int)(mp1 ? mp1 : 1)); return 1;                          /* SPBM_SPINUP */
+    case 0x204: spb_spin(w, -(int)(mp1 ? mp1 : 1)); return 1;                         /* SPBM_SPINDOWN */
+    case 0x202: case 0x209: return 1;                                                 /* SPBM_SETTEXTLIMIT, SETMASTER */
+    }
+    return 0;
+}
+
+/* the window text of the controls that keep theirs elsewhere (an MLE's
+ * is longer than w->text): -1 for the others */
+static int ctl_get_text(pmwin_t *w, char *out, int max)
+{
+    if (strcmp(w->cls, "#10") || !w->ctl) return -1;
+    mle_t *m = w->ctl;
+    int k = mle_export(m, 0, m->len, out, max - 1);
+    out[k] = 0;
+    return k;
+}
+static int ctl_set_text(pmwin_t *w, const char *s)
+{
+    if (strcmp(w->cls, "#10")) return 0;
+    mle_t *m = mle(w);
+    m->len = 0; m->t[0] = 0; m->cur = m->anchor = m->top = 0;
+    mle_insert(w, 0, s, (int)strlen(s));
+    m->changed = 0;
+    repaint(w);
     return 1;
 }

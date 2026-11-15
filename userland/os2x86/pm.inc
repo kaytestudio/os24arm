@@ -856,6 +856,8 @@ static uint32_t api_WinDrawText(void)
     return (uint32_t)n;
 }
 static void cb_settext(pmwin_t *w);
+static int ctl_get_text(pmwin_t *w, char *out, int max);
+static int ctl_set_text(pmwin_t *w, const char *s);
 static uint32_t api_WinSetWindowText(void)
 {
     pmwin_t *w = win(A(0));
@@ -863,6 +865,7 @@ static uint32_t api_WinSetWindowText(void)
     if (!w) return 0;
     snprintf(w->text, sizeof w->text, "%s", s ? s : "");
     if (!strcmp(w->cls, "#2")) cb_settext(w);
+    ctl_set_text(w, s ? s : "");
     pmwin_t *t = w;
     if (!w->top && w->parent && w->parent->top && w->parent->client == w) t = w->parent;
     if (t->top && pmb && pmb->title) pmb->title(t);
@@ -874,13 +877,22 @@ static uint32_t api_WinQueryWindowText(void)  /* (hwnd, cchBufferMax, pchBuffer)
     pmwin_t *w = win(A(0));
     uint32_t n = A(1), b = A(2);
     if (!w || !n || !ok(b, n)) return 0;
+    int k = ctl_get_text(w, (char *)C.mem + b, (int)n);
+    if (k >= 0) return (uint32_t)k;
     uint32_t l = (uint32_t)strlen(w->text);
     if (l > n - 1) l = n - 1;
     memcpy(C.mem + b, w->text, l);
     C.mem[b + l] = 0;
     return l;
 }
-static uint32_t api_WinQueryWindowTextLength(void) { pmwin_t *w = win(A(0)); return w ? (uint32_t)strlen(w->text) : 0; }
+static uint32_t api_WinQueryWindowTextLength(void)
+{
+    pmwin_t *w = win(A(0));
+    if (!w) return 0;
+    static char tmp[65536];
+    int k = ctl_get_text(w, tmp, sizeof tmp);
+    return k >= 0 ? (uint32_t)k : (uint32_t)strlen(w->text);
+}
 static uint32_t words_get(pmwin_t *w, int32_t i, int sz)
 {
     if (i == -2) return w->style | (w->visible ? WS_VISIBLE_ : 0);   /* QWL_STYLE */
