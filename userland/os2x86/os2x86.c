@@ -522,13 +522,13 @@ static int unpack2(uint8_t *dst, uint32_t dsz, const uint8_t *s, uint32_t n)
 }
 
 /* ── thunks: the imports from the system ────────────────────────────── */
-static const char *libs[64] = { "DOSCALLS", "NLS", "MSG", "QUECALLS", "SESMGR", "KBDCALLS", "VIOCALLS", "MOUCALLS", "PMWIN", "PMGPI", "PMDRAG", "PMSHAPI", "HELPMGR", "PMCTLS", 0 };
-enum { L_DOS, L_NLS, L_MSG, L_QUE, L_SES, L_KBD, L_VIO, L_MOU, L_PMWIN, L_PMGPI, L_PMDRAG, L_PMSHAPI, L_HELPMGR, L_PMCTLS, NLIBS };
+static const char *libs[64] = { "DOSCALLS", "NLS", "MSG", "QUECALLS", "SESMGR", "KBDCALLS", "VIOCALLS", "MOUCALLS", "PMWIN", "PMGPI", "PMDRAG", "PMSHAPI", "HELPMGR", "PMCTLS", "PMSPL", 0 };
+enum { L_DOS, L_NLS, L_MSG, L_QUE, L_SES, L_KBD, L_VIO, L_MOU, L_PMWIN, L_PMGPI, L_PMDRAG, L_PMSHAPI, L_HELPMGR, L_PMCTLS, L_PMSPL, NLIBS };
 static int nlibs = NLIBS;
 /* OS/2's own DLLs that aren't here (yet): a program that imports from one
  * still starts (C runtimes link Presentation Manager's message box in for
  * their error reports); a call into one says so and returns 0 */
-static const char *const sysdlls[] = { "PMSPL", "PMVIOP",
+static const char *const sysdlls[] = { "PMVIOP",
     "PMWP", "PMMERGE", "PMBIDI", "PMPIC", "PMATM", "PMPRINTF", "PMSEC", "BDCALLS", "MONCALLS",
     "NAMPIPES", "SO32DLL", "TCP32DLL", "SOM", "SOMU", "MMPM", "MDM", "UCONV", "LIBUNI", 0 };
 
@@ -3604,6 +3604,12 @@ static const api_t apis[] = {
     { L_NLS, 3, "DosGetCtryInfo", n16_DosGetCtryInfo, 16 },
     { L_NLS, 4, "DosGetDBCSEv", n16_DosGetDBCSEv, 10 },
     { L_PMGPI, 356, "GpiBox", api_GpiBox, 0 },
+    { L_PMGPI, 605, "DevEscape", api_DevEscape, 0 },
+    { L_PMGPI, 607, "DevQueryDeviceNames", api_DevQueryDeviceNames, 0 },
+    { L_PMGPI, 608, "DevQueryHardcopyCaps", api_DevQueryHardcopyCaps, 0 },
+    { L_PMGPI, 609, "DevPostDeviceModes", api_DevPostDeviceModes, 0 },
+    { L_PMSPL, 399, "SplEnumQueue", api_SplEnumQueue, 0 },
+    { L_PMSPL, 397, "SplQueryQueue", api_SplQueryQueue, 0 },
     { L_PMWIN, 794, "WinOpenWindowDC", api_WinOpenWindowDC, 0 },
     { L_PMGPI, 538, "GpiSetModelTransformMatrix", api_GpiSetModelTransformMatrix, 0 },
     { L_PMGPI, 468, "GpiQueryModelTransformMatrix", api_GpiQueryModelTransformMatrix, 0 },

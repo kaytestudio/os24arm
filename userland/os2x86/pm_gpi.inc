@@ -178,16 +178,34 @@ static uint32_t api_GpiCreateBitmap(void)     /* (hps, pbmpNew, flOptions, pbIni
 
 /* device contexts: memory ones (a PS of theirs draws into the bitmap
  * selected), a window's */
-typedef struct { int used, memory; uint32_t hwnd; } pmdc_t;
+typedef struct { int used, memory; uint32_t hwnd; int printer; } pmdc_t;   /* (printer: hwnd its page - pm_print.inc) */
 static pmdc_t pmdcs[64];
 static pmdc_t *dc_get(uint32_t h) { h -= 0xD000; return h < 64 && pmdcs[h].used ? &pmdcs[h] : 0; }
 static uint32_t dc_new(int memory, uint32_t hwnd)
 {
-    for (int i = 0; i < 64; i++) if (!pmdcs[i].used) { pmdcs[i] = (pmdc_t){ 1, memory, hwnd }; return 0xD000 + (uint32_t)i; }
+    for (int i = 0; i < 64; i++) if (!pmdcs[i].used) { pmdcs[i] = (pmdc_t){ 1, memory, hwnd, 0 }; return 0xD000 + (uint32_t)i; }
     return 0;
 }
-static uint32_t api_DevOpenDC(void) { return dc_new(A(1) == 8, 0); }   /* (hab, lType: OD_MEMORY, ...) */
-static uint32_t api_DevCloseDC(void) { pmdc_t *d = dc_get(A(0)); if (!d) return 0; d->used = 0; return 1; }
+static uint32_t api_DevOpenDC(void)               /* (hab, lType: OD_MEMORY; OD_QUEUED, OD_DIRECT, OD_INFO - the printer, a page; ...) */
+{
+    uint32_t h = dc_new(A(1) == 8, 0);
+    pmdc_t *d = dc_get(h);
+    if (d && (A(1) == 2 || A(1) == 5 || A(1) == 6)) {
+        pmwin_t *b = bmp_new(1240, 1754);                    /* (pm_print.inc's PR_W, PR_H) */
+        if (!b) { d->used = 0; return 0; }
+        for (int i = 0; i < b->pw * b->ph; i++) b->px[i] = 0xFFFFFFFFu;
+        d->printer = 1; d->hwnd = b->hwnd;
+    }
+    return h;
+}
+static uint32_t api_DevCloseDC(void)
+{
+    pmdc_t *d = dc_get(A(0));
+    if (!d) return 0;
+    if (d->printer && win(d->hwnd)) win_destroy(win(d->hwnd));
+    d->used = 0;
+    return 1;
+}
 static uint32_t api_WinQueryWindowDC(void) { pmwin_t *w = win(A(0)); return w ? dc_new(0, w->hwnd) : 0; }
 static uint32_t api_WinOpenWindowDC(void) { pmwin_t *w = win(A(0)); return w ? dc_new(0, w->hwnd) : 0; }   /* (hwnd): a DC for GpiCreatePS */
 static uint32_t api_DevQueryCaps(void)            /* (hdc, lStart, lCount, alArray) */
@@ -196,11 +214,14 @@ static uint32_t api_DevQueryCaps(void)            /* (hdc, lStart, lCount, alArr
     if (!ok(p, n * 4)) return 0;
     for (uint32_t i = 0; i < n; i++) {
         uint32_t k = s + i, v = 0;
+        pmdc_t *d = dc_get(A(0));
+        int pr = d && d->printer;
         switch (k) {
-        case 4: v = 1920; break;                 /* CAPS_WIDTH */
-        case 5: v = 1080; break;                 /* CAPS_HEIGHT */
-        case 8: v = 3780; break;                 /* (pels a metre) */
-        case 9: v = 3780; break;
+        case 2: v = pr ? 3 : 2; break;           /* CAPS_TECHNOLOGY: RASTER_PRINTER, RASTER_DISPLAY */
+        case 4: v = pr ? 1240 : 1920; break;     /* CAPS_WIDTH */
+        case 5: v = pr ? 1754 : 1080; break;     /* CAPS_HEIGHT */
+        case 8: v = pr ? 5906 : 3780; break;     /* (pels a metre) */
+        case 9: v = pr ? 5906 : 3780; break;
         case 12: v = 1; break;                   /* CAPS_COLOR_PLANES */
         case 13: v = 24; break;                  /* CAPS_COLOR_BITCOUNT */
         case 14: v = 16777216; break;            /* CAPS_COLORS */
@@ -210,7 +231,7 @@ static uint32_t api_DevQueryCaps(void)            /* (hdc, lStart, lCount, alArr
     }
     return 1;
 }
-static void geo_set_units(pmps_t *ps, uint32_t opts, uint32_t psizl);
+static void geo_set_units(pmps_t *ps, uint32_t opts, uint32_t psizl, int dpm);
 static uint32_t api_GpiCreatePS(void)             /* (hab, hdc, psizlSize, flOptions) */
 {
     pmdc_t *d = dc_get(A(1));
@@ -218,7 +239,7 @@ static uint32_t api_GpiCreatePS(void)             /* (hab, hdc, psizlSize, flOpt
         if (!pmpss[i].used) {
             geo_free(&pmpss[i]);
             pmpss[i] = (pmps_t){ 1, d && !d->memory ? d->hwnd : 0, -3, -3, 0, 0, 0, 3, 0, 0, 0, 0, 0 };
-            geo_set_units(&pmpss[i], A(3), A(2));            /* (its page units, its page's size) */
+            geo_set_units(&pmpss[i], A(3), A(2), d && d->printer ? 5906 : 3780);   /* (its page units at its resolution; its page's size) */
             return 0xA000 + (uint32_t)i;
         }
     return 0;

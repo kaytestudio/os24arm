@@ -518,6 +518,14 @@ platform-specific are new code.
    REPLACE, ADD, PREEMPT), GpiTranslate, GpiScale, GpiRotate, GpiConvert
    between world, model, page and device: positions stay the program's,
    lines, areas, text, markers, pels and the clip made the device's.
+   Printing (`pm_print.inc`): one printer, PDF - a queued or direct
+   printer DC is an A4 page at 150 dpi that the presentation space on it
+   draws into (page units at its resolution, the default font too);
+   DevEscape STARTDOC, NEWFRAME, ENDDOC (ABORTDOC, GETJOBID) make the
+   document a PDF of its pages (images, RunLengthDecode) in
+   $OS2X86_PRINT - on the desktop D:\\PRINT on the stick - named after
+   it; SplEnumQueue, SplQueryQueue, DevQueryHardcopyCaps, DevQueryCaps
+   and DevQueryDeviceNames tell of it.
    Profiles (`pm_prf.inc`, PMSHAPI): PrfQueryProfileString/Int/Data/Size,
    PrfWriteProfileString/Data (deleting keys and applications too),
    enumerating them, PrfOpenProfile for a program's own .INI files - in

@@ -22,7 +22,7 @@ typedef struct {
     /* world to device: model (and viewing) transform, then the default view, then page units / the page viewport */
     double model[6], view[6], seg[6], page[6];                   /* (a, b, c, d, e, f: x' = a x + c y + e, y' = b x + d y + f) */
     double m[6], inv[6];                                         /* (all of them, combined; its inverse) */
-    int ident, units, pagecx, pagecy;
+    int ident, units, pagecx, pagecy, dpm;
 } geo_t;
 static const double IDM[6] = { 1, 0, 0, 1, 0, 0 };
 static void mat_mul(double *r, const double *p, const double *q)   /* r = p then q */
@@ -74,6 +74,7 @@ static void ps_to_dev(pmps_t *ps, double x, double y, int *dx, int *dy)
     if (!g || g->ident) { *dx = (int)lround(x); *dy = (int)lround(y); return; }
     *dx = (int)lround(g->m[0] * x + g->m[2] * y + g->m[4]); *dy = (int)lround(g->m[1] * x + g->m[3] * y + g->m[5]);
 }
+static int ps_dpm(pmps_t *ps) { geo_t *g = ps->geo; return g && g->dpm ? g->dpm : 3780; }
 static void ps_from_dev(pmps_t *ps, double x, double y, int *wx, int *wy)
 {
     geo_t *g = ps->geo;
@@ -689,14 +690,15 @@ static uint32_t api_GpiConvert(void)
     return 1;
 }
 /* the page: its units (GpiCreatePS), its viewport (GpiSetPageViewport: the page's size in units onto that device rectangle) */
-static void geo_set_units(pmps_t *ps, uint32_t opts, uint32_t psizl)
+static void geo_set_units(pmps_t *ps, uint32_t opts, uint32_t psizl, int dpm)
 {
     geo_t *g = geo(ps);
     g->units = (int)(opts & 0x1C);
     if (!g->units) g->units = 8;
     g->pagecx = psizl && ok(psizl, 8) ? (int32_t)g32(psizl) : 0;
     g->pagecy = psizl && ok(psizl, 8) ? (int32_t)g32(psizl + 4) : 0;
-    double u = unit_pels(g->units);
+    double u = g->units == 8 || g->units == 4 ? 1 : unit_pels(g->units) * dpm / 3780.0;   /* (pels, arbitrary: the device's own) */
+    g->dpm = dpm;
     double m[6] = { u, 0, 0, u, 0, 0 };
     memcpy(g->page, m, sizeof m);
     geo_combine(g);
@@ -707,7 +709,7 @@ static uint32_t api_GpiSetPageViewport(void)              /* (hps, prclViewport)
     if (!ok(A(1), 16)) return 0;
     double x0 = (int32_t)g32(A(1)), y0 = (int32_t)g32(A(1) + 4), x1 = (int32_t)g32(A(1) + 8), y1 = (int32_t)g32(A(1) + 12);
     pmwin_t *w = ps_win(ps);
-    double pcx = g->pagecx > 0 ? g->pagecx : w ? w->cx / unit_pels(g->units) : 1, pcy = g->pagecy > 0 ? g->pagecy : w ? w->cy / unit_pels(g->units) : 1;
+    double pcx = g->pagecx > 0 ? g->pagecx : w ? w->cx / (unit_pels(g->units) * (g->dpm ? g->dpm : 3780) / 3780.0) : 1, pcy = g->pagecy > 0 ? g->pagecy : w ? w->cy / (unit_pels(g->units) * (g->dpm ? g->dpm : 3780) / 3780.0) : 1;
     double m[6] = { (x1 - x0) / pcx, 0, 0, (y1 - y0) / pcy, x0, y0 };
     memcpy(g->page, m, sizeof m);
     geo_combine(g);
@@ -718,7 +720,7 @@ static uint32_t api_GpiQueryPageViewport(void)
     GEO_PS;
     if (!ok(A(1), 16)) return 0;
     pmwin_t *w = ps_win(ps);
-    double pcx = g->pagecx > 0 ? g->pagecx : w ? w->cx / unit_pels(g->units) : 0, pcy = g->pagecy > 0 ? g->pagecy : w ? w->cy / unit_pels(g->units) : 0;
+    double pcx = g->pagecx > 0 ? g->pagecx : w ? w->cx / (unit_pels(g->units) * (g->dpm ? g->dpm : 3780) / 3780.0) : 0, pcy = g->pagecy > 0 ? g->pagecy : w ? w->cy / (unit_pels(g->units) * (g->dpm ? g->dpm : 3780) / 3780.0) : 0;
     p32(A(1), (uint32_t)(int32_t)lround(g->page[4])); p32(A(1) + 4, (uint32_t)(int32_t)lround(g->page[5]));
     p32(A(1) + 8, (uint32_t)(int32_t)lround(g->page[4] + g->page[0] * pcx)); p32(A(1) + 12, (uint32_t)(int32_t)lround(g->page[5] + g->page[3] * pcy));
     return 1;

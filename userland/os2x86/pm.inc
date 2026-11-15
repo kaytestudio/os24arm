@@ -1262,6 +1262,7 @@ static uint32_t pm_msgbox(const char *text, const char *cap, uint32_t style)
 /* ── PMGPI ───────────────────────────────────────────────────────────── */
 static void ps_to_dev(pmps_t *ps, double x, double y, int *dx, int *dy);
 static void ps_from_dev(pmps_t *ps, double x, double y, int *wx, int *wy);
+static int ps_dpm(pmps_t *ps);
 static uint32_t api_GpiSetColor(void) { pmps_t *ps = ps_get(A(0)); if (!ps) return 0; ps->color = (int32_t)A(1); return 1; }
 static uint32_t api_GpiQueryColor(void) { pmps_t *ps = ps_get(A(0)); return ps ? (uint32_t)ps->color : 0xFFFFFF01u; }
 static uint32_t api_GpiSetBackColor(void) { pmps_t *ps = ps_get(A(0)); if (!ps) return 0; ps->back = (int32_t)A(1); return 1; }
@@ -1289,6 +1290,8 @@ static uint32_t char_string(pmps_t *ps, int n, uint32_t ps_str)
     if (!w || !s) return 0;
     pmfont_t *save = pmf;
     pmf = ps_font(ps);
+    int dpm = ps_dpm(ps);
+    if (!ps->font && dpm != 3780) pmf = font_get(pmf->face, (int)lround(15.0 * dpm / 3780));   /* (a printer's: the default font at its resolution) */
     int dx, dy, wx, wy;
     ps_to_dev(ps, ps->x, ps->y, &dx, &dy);                   /* (the world's position on the device; the end back in the world's) */
     dx = text_at(w, dx, dy, s, n, pm_rgb(ps->color, ps->rgb, 0));
@@ -1537,6 +1540,7 @@ static pmwin_t *ptr_get(uint32_t h);
 #include "pm_geo.inc"
 #include "pm_prf.inc"
 #include "pm_fdlg.inc"
+#include "pm_print.inc"
 
 /* ── the clipboard (WinOpenClipbrd & co.): CF_TEXT, CF_BITMAP; on the
  * desktop the Wayland one (pm_wl.inc), so text goes between programs ── */

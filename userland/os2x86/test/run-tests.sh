@@ -58,6 +58,7 @@ if [ -x "$W/armo64/wcl386" ] || [ -x "$W/binl64/wcl386" ]; then
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmfdlg.c" >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmquery.c" >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmxform.c" >/dev/null
+    wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmprint.c" >/dev/null
     wrc -q -r -bt=os2 -i="$S" "$S/pmowner.rc" -fo=pmowner.res >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmowner.c" >/dev/null && wrc -q -bt=os2 pmowner.res pmowner.exe >/dev/null
     owfail=0
@@ -247,6 +248,26 @@ if bad: print(*bad, sep='\n')
 sys.exit(1 if bad else 0)
 PY
     then echo "PM page units, transforms: ok"; else echo "PM page units, transforms: FAIL"; echo "$xfout"; owfail=1; fi
+    # printing: the PDF queue, a printer DC (A4, 150 dpi), two pages in PU_LOENGLISH - the PDF read back, its first page's pixels
+    rm -rf printed
+    prout="$(OS2X86_PRINT="$PWD/printed" OS2X86_PM=headless ../os2x86 pmprint.exe 2>&1 | tr -d '\r')"
+    if grep -q "^queue: PDF$" <<< "$prout" && grep -q "^page: 1240 x 1754 pels, form A4 210 x 297 mm$" <<< "$prout" && grep -q "^job 1$" <<< "$prout" &&
+       python3 - printed/test_page.pdf <<'PY'
+import re, sys
+d = open(sys.argv[1], 'rb').read()
+pages = int(re.search(rb'/Type /Pages /Count (\d+)', d).group(1))
+m = re.search(rb'/Width (\d+) /Height (\d+) .*?/Length (\d+) >>\nstream\n', d)
+w, h, n = int(m.group(1)), int(m.group(2)), int(m.group(3))
+s, o, i = d[m.end():m.end() + n], bytearray(), 0
+while s[i] != 128:                                   # RunLengthDecode
+    c = s[i]
+    if c < 128: o += s[i + 1:i + 2 + c]; i += 2 + c
+    else: o += bytes([s[i + 1]]) * (257 - c); i += 2
+at = lambda x, y: tuple(o[((h - 1 - y) * w + x) * 3:((h - 1 - y) * w + x) * 3 + 3])   # (from the bottom)
+ok = pages == 2 and len(o) == w * h * 3 and at(300, 300) == (0, 0, 255) and at(140, 300) == (255, 255, 255) and at(460, 300) == (255, 255, 255)
+sys.exit(0 if ok else 1)
+PY
+    then echo "PM printing (PDF): ok"; else echo "PM printing (PDF): FAIL"; echo "$prout"; owfail=1; fi
     # a 16-bit OS/2 1.x program (NE), OpenWatcom's 16-bit C runtime (its libraries unpacked from the snapshot, when needed)
     if [ ! -d "$W/lib286/os2" ] && [ -f "$OUT/dl/ow.tar.xz" ]; then (cd "$W" && tar xJf "$OUT/dl/ow.tar.xz" ./lib286) 2>/dev/null; fi
     if [ -x "$B/wcl" ] && [ -d "$W/lib286/os2" ]; then
