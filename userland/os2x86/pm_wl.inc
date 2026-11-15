@@ -175,6 +175,8 @@ static void src_dnd_drop(void *d, struct wl_data_source *s) { (void)d; (void)s; 
 static void src_dnd_finished(void *d, struct wl_data_source *s) { (void)d; (void)s; }
 static void src_action(void *d, struct wl_data_source *s, uint32_t a) { (void)d; (void)s; (void)a; }
 static const struct wl_data_source_listener src_l = { src_target, src_send, src_cancelled, src_dnd_drop, src_dnd_finished, src_action };
+static int wl_clip_pending;
+static void wl_clip_offer(void);
 static void wl_clip_set(const char *text)       /* (gil held) */
 {
     if (!wl_ddm || !wl_dd) return;
@@ -189,6 +191,12 @@ static void wl_clip_set(const char *text)       /* (gil held) */
     free(wl_clip_utf8);
     wl_clip_utf8 = u;
     pthread_mutex_unlock(&wl_clip_mx);
+    if (!wl_serial) { wl_clip_pending = 1; return; }   /* (no input yet: the compositor wants an input's serial - offered at the first) */
+    wl_clip_offer();
+}
+static void wl_clip_offer(void)                 /* (gil held) */
+{
+    wl_clip_pending = 0;
     struct wl_data_source *s = wl_data_device_manager_create_data_source(wl_ddm);
     wl_data_source_add_listener(s, &src_l, 0);
     wl_data_source_offer(s, "text/plain;charset=utf-8");
@@ -322,9 +330,10 @@ static void p_motion(void *d, struct wl_pointer *p, uint32_t t, wl_fixed_t x, wl
 static void p_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t t, uint32_t button, uint32_t state)
 {
     (void)d; (void)p; (void)t;
-    wl_serial = serial;
     int b = button == 0x110 ? 1 : button == 0x111 ? 2 : button == 0x112 ? 3 : 0;     /* BTN_LEFT RIGHT MIDDLE */
     pthread_mutex_lock(&gil);
+    wl_serial = serial;
+    if (wl_clip_pending) wl_clip_offer();
     if (b && wl_ptr_frame && wl_ptr_frame->used) {
         if (state) wl_kbd_frame = wl_ptr_frame;
         pm_mouse(wl_ptr_frame, wl_px, wl_py, b, state == WL_POINTER_BUTTON_STATE_PRESSED);
@@ -363,9 +372,11 @@ static void k_keymap(void *d, struct wl_keyboard *k, uint32_t fmt, int32_t fd, u
 }
 static void k_enter(void *d, struct wl_keyboard *k, uint32_t serial, struct wl_surface *s, struct wl_array *keys)
 {
-    (void)d; (void)k; (void)serial; (void)keys;
+    (void)d; (void)k; (void)keys;
     pthread_mutex_lock(&gil);
     wl_kbd_frame = wl_frame_of(s);
+    wl_serial = serial;                          /* (the focus's serial: good for the selection too) */
+    if (wl_clip_pending) wl_clip_offer();
     pthread_mutex_unlock(&gil);
 }
 static void k_leave(void *d, struct wl_keyboard *k, uint32_t serial, struct wl_surface *s)
@@ -375,9 +386,10 @@ static void k_leave(void *d, struct wl_keyboard *k, uint32_t serial, struct wl_s
 static void k_key(void *d, struct wl_keyboard *k, uint32_t serial, uint32_t t, uint32_t key, uint32_t state)
 {
     (void)d; (void)k; (void)t;
-    wl_serial = serial;
     if (state != WL_KEYBOARD_KEY_STATE_PRESSED) return;
     pthread_mutex_lock(&gil);
+    wl_serial = serial;
+    if (wl_clip_pending) wl_clip_offer();
     pmwin_t *f = wl_kbd_frame;
     if (f && f->used && xkb_st) {
         xkb_keysym_t sym = xkb_state_key_get_one_sym(xkb_st, key + 8);

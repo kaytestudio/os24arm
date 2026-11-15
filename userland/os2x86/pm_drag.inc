@@ -156,8 +156,9 @@ static uint32_t api_DrgDrag(void)   /* (hwndSource, pdinfo, pdimg, cdimg, vkTerm
     pmq_t *q = myq();
     if (!drg_ok(d) || !q || drg_active) return 0;
     p32(d + 8, A(0));                                        /* hwndSource */
-    uint32_t img = A(2) && ok(A(2), 8) ? g32(A(2) + 4) : 0;  /* (DRAGIMAGE's hImage: an icon to drag, when DRG_ICON) */
-    uint32_t ptr_drag = A(2) && (g32(A(2) + 20) & 1) && ptr_get(img) ? img : sys_pointer(1), ptr_no = sys_pointer(18);
+    /* DRAGIMAGE: cb, cptl (16 bits), hImage, sizlStretch, fl (DRG_ICON: hImage an icon - the pointer while it's dragged) */
+    uint32_t img = A(2) && ok(A(2), 20) ? g32(A(2) + 4) : 0;
+    uint32_t ptr_drag = img && (g32(A(2) + 16) & 1) && ptr_get(img) ? img : sys_pointer(1), ptr_no = sys_pointer(18);
     uint32_t target = 0, answer = 0, before = pm_pointer;
     drg_active = 1;
     pm_capture = 0;
