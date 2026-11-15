@@ -402,8 +402,14 @@ platform-specific are new code.
    GpiBitBlt/GpiWCBitBlt with the usual ROPs, memory device contexts and
    presentation spaces (DevOpenDC, GpiCreatePS, GpiSetBitmap): a bitmap
    is a window never shown, so whatever draws into windows draws into
-   bitmaps. Not there yet: icons and pointers, notebooks, containers,
-   sliders and the like, fonts beyond the one. OS/2's DLLs that aren't
+   bitmaps. Icons and pointers: WinLoadPointer from ICON/POINTER
+   resources (bitmap arrays, the device-independent image; colour and
+   monochrome; the AND mask the first half of the mask, the XOR the
+   second), WinDrawPointer (DP_MINI, DP_INVERTED, DP_HALFTONED), system
+   icons (WinQuerySysPointer: information, question, warning, error,
+   drawn here; message boxes show theirs), SS_ICON, SS_SYSICON and
+   SS_BITMAP statics. Not there yet: notebooks, containers, sliders and
+   the like, the pointer's shape on the desktop, fonts beyond the one. OS/2's DLLs that aren't
    here (PMSHAPI, HELPMGR, TCP32DLL, ...) load as stubs, so a program
    that only links them in runs; a call into one says so and returns 0. Calls it doesn't have yet print
    one line on stderr and return error 1; `OS2X86_TRACE=1` lists every
@@ -419,7 +425,8 @@ platform-specific are new code.
    programs (headless, scripted: a window, its painting checked; a menu,
    a dialog from a resource with its controls, by mouse and by keys;
    scroll bars, a combo box, accelerators, the menu by keys; an MLE and
-   spin buttons; bitmaps, their pixels checked). They pass on the system too.
+   spin buttons; bitmaps and icons - a real OS/2 one from OpenWatcom's
+   samples - their pixels checked). They pass on the system too.
 
    `userland/apps/os2cmd.c` relays a terminal to `/dev/os2cmd`, which runs
    each line in the shell of `kernel/src/main.c` - DIR, COPY, MOUNT, USB,

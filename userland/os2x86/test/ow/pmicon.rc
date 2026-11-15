@@ -1,0 +1,7 @@
+/* userland/os2x86/test/ow/pmicon.rc - pmicon's icons: OpenWatcom's own
+ * (samples/os2/som/wps/owobject.ico, a real OS/2 colour icon array) and
+ * mkbmp.py's (transparent corners, an inverting square), and a dialog
+ * with an SS_ICON */
+#include <os2.h>
+ICON 1 "owobject.ico"
+ICON 2 "trans.ico"

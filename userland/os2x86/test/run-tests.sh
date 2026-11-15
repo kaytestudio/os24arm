@@ -38,6 +38,12 @@ if [ -x "$W/armo64/wcl386" ] || [ -x "$W/binl64/wcl386" ]; then
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm -i="$S" "$S/pmedit.c" >/dev/null && wrc -q -bt=os2 pmedit.res pmedit.exe >/dev/null
     python3 -I "$S/mkbmp.py" . && wrc -q -r -bt=os2 -i="$S" "$S/pmbmp.rc" -fo=pmbmp.res >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm -i="$S" "$S/pmbmp.c" >/dev/null && wrc -q -bt=os2 pmbmp.res pmbmp.exe >/dev/null
+    # (a real OS/2 icon: OpenWatcom's own sample, from its snapshot's archive if it's here; else mkbmp.py's again)
+    [ -f owobject.ico ] || { [ -f "$ROOT/build/os2x86-test/dl/ow.tar.xz" ] && mkdir -p ow-src &&
+        tar xJf "$ROOT/build/os2x86-test/dl/ow.tar.xz" -C ow-src ./samples/os2/som/wps/owobject.ico 2>/dev/null &&
+        cp ow-src/samples/os2/som/wps/owobject.ico .; } || cp trans.ico owobject.ico
+    wrc -q -r -bt=os2 -i="$S" "$S/pmicon.rc" -fo=pmicon.res >/dev/null
+    wcl386 -q -za99 -bt=os2 -l=os2v2_pm -i="$S" "$S/pmicon.c" >/dev/null && wrc -q -bt=os2 pmicon.res pmicon.exe >/dev/null
     owfail=0
     echo "== OpenWatcom programs"
     ../os2x86 owtest.exe </dev/null | grep -E "^FAIL|passed|failed" || owfail=1
@@ -99,6 +105,32 @@ ok = ok and at(205, 15) == (0, 200, 0) and at(260, 20) == (255, 255, 0) and at(2
 sys.exit(0 if ok else 1)
 PY
     then echo "PM bitmaps: ok"; else echo "PM bitmaps: FAIL"; echo "$bmpout"; owfail=1; fi
+    # icons: a real one (array, colour), masks (transparent, inverting), DP_MINI, a system icon, SS_ICON, a message box's
+    icoout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf OS2X86_PM_SCRIPT="shot ico.ppm; key m; enter; close" ../os2x86 pmicon.exe 2>&1)"
+    if echo "$icoout" | grep -q "pointers yes yes yes" && echo "$icoout" | grep -q "WinMessageBox 1" &&
+       python3 -I - ico.ppm owobject.ico <<'PY'
+import sys, struct
+d = open(sys.argv[1], 'rb').read().split(b'\n', 3); w, h = map(int, d[1].split()); px = d[3]
+at = lambda x, y: tuple(px[((h - 1 - y) * w + x) * 3:((h - 1 - y) * w + x) * 3 + 3])
+ok = at(60, 10) == (204, 204, 204) and at(76, 18) == (0, 255, 0) and at(75, 25) == (51, 51, 51)   # transparent, green, inverted
+ok = ok and at(266, 18) == (0, 255, 0) and at(250, 10) == (204, 204, 204)                         # the SS_ICON
+# the real icon: its colours as the file has them (the device-independent image, 4 bits, bottom row first)
+f = open(sys.argv[2], 'rb').read()
+o = 14 if f[:2] == b'BA' else 0
+cm = struct.unpack_from('<I', f, o + 14)[0]
+c = o + 14 + cm + 2 * (3 if cm == 12 else 4)
+coff = struct.unpack_from('<I', f, c + 10)[0]
+cinfo = c + 14; ccm = struct.unpack_from('<I', f, cinfo)[0]
+bpp = struct.unpack_from('<H', f, cinfo + (10 if ccm == 12 else 14))[0]
+pal = cinfo + ccm; pe = 3 if ccm == 12 else 4
+for (x, y) in ((5, 5), (16, 16), (20, 26), (10, 28)):
+    if bpp != 4: break
+    b = f[coff + y * 16 + x // 2]; i = (b >> 4) if x % 2 == 0 else (b & 15)
+    want = (f[pal + pe * i + 2], f[pal + pe * i + 1], f[pal + pe * i])
+    ok = ok and at(10 + x, 10 + y) == want
+sys.exit(0 if ok else 1)
+PY
+    then echo "PM icons: ok"; else echo "PM icons: FAIL"; echo "$icoout"; owfail=1; fi
     [ "$owfail" = 0 ] || st=1
 else
     echo "(no OpenWatcom: its programs not tried)"

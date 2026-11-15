@@ -156,6 +156,11 @@ static uint32_t button_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2
 }
 
 /* ── WC_STATIC ───────────────────────────────────────────────────────── */
+static uint32_t sys_pointer(uint32_t id);
+static pmwin_t *bmp_from_file(const uint8_t *d, size_t n);
+static pmwin_t *ptr_from_file(const uint8_t *d, size_t n);
+static void ptr_draw(pmwin_t *t, int x, int y, pmwin_t *p, uint32_t fs);
+static void blit(pmwin_t *t, int tx0, int ty0, int tx1, int ty1, pmwin_t *s, int sx0, int sy0, int sx1, int sy1, uint32_t r, uint32_t pat);
 static uint32_t static_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
 {
     (void)mp1; (void)mp2;
@@ -173,6 +178,20 @@ static uint32_t static_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2
             fill(w, 6, ty - pm_ascent / 2 - 2, 10 + tw, w->cy, C_FACE);
             text_at(w, 8, w->cy - pm_ascent, p, (int)strlen(p), C_TEXT);
         }
+    } else if (t == 3 || t == 4 || t == 0x0B) {                 /* SS_ICON, SS_BITMAP, SS_SYSICON: "#id" */
+        fill(w, 0, 0, w->cx, w->cy, C_FACE);
+        uint32_t id = w->text[0] == '#' ? (uint32_t)atoi(w->text + 1) : (uint32_t)atoi(w->text);
+        if (!w->ctl) {
+            w->ctl = calloc(1, sizeof(uint32_t));
+            uint32_t a, n;
+            pmwin_t *g = 0;
+            if (t == 0x0B) *(uint32_t *)w->ctl = sys_pointer(id);
+            else if (find_resource(0, t == 4 ? 2 : 1, id, &a, &n) && ok(a, n)) g = t == 4 ? bmp_from_file(C.mem + a, n) : ptr_from_file(C.mem + a, n);
+            if (g) *(uint32_t *)w->ctl = g->hwnd;
+        }
+        pmwin_t *g = win(*(uint32_t *)w->ctl);
+        if (g && !strcmp(g->cls, "#bitmap")) blit(w, 0, w->cy - g->cy, g->cx, w->cy, g, 0, 0, g->cx, g->cy, 0xCC, 0);
+        else if (g) ptr_draw(w, 0, w->cy - g->cy, g, 0);
     } else if (t >= 5 && t <= 10) {                             /* rectangles and frames */
         uint32_t c = (t == 5 || t == 8) ? C_TEXT : (t == 6 || t == 9) ? C_DARK : C_FACE;
         if (t <= 7) fill(w, 0, 0, w->cx, w->cy, c);

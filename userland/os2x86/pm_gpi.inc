@@ -324,3 +324,175 @@ static uint32_t api_GpiBitBlt(void)           /* (hpsTarget, hpsSource, lCount, 
     return bitblt(ps_get(A(0)), s ? ps_win(s) : 0, A(2), A(3), A(4));
 }
 static uint32_t api_GpiWCBitBlt(void) { return bitblt(ps_get(A(0)), bmp_get(A(1)), A(2), A(3), A(4)); }   /* (hpsTarget, hbmSource, ...) */
+
+/* ── icons and pointers ──────────────────────────────────────────────────
+ * From ICON/POINTER resources: a bitmap array (BA) of them, the device-
+ * independent one taken (cxDisplay 0); each a 1-bit mask twice as high -
+ * the AND mask its first half, the XOR mask the second - and, for colour
+ * ones (CI, CP), a colour image after it. Drawn: AND 0 the image (black or
+ * white by XOR for a monochrome one), AND 1 XOR 0 transparent, AND 1 XOR 1
+ * the screen inverted. A pointer here: a hidden window, its pixels the
+ * image, the masks beside. */
+typedef struct { uint8_t *andm, *xorm; int mono; } ptr_t;
+static pmwin_t *ptr_get(uint32_t h) { pmwin_t *p = win(h); return p && !strcmp(p->cls, "#pointer") ? p : 0; }
+static pmwin_t *ptr_new(int w, int h, int mono)
+{
+    pmwin_t *p = win_new(0, "#pointer", 0, 0);
+    if (!p) return 0;
+    p->top = 1; p->fixed = 1;
+    frame_pixels(p, w, h);
+    ptr_t *t = calloc(1, sizeof *t);
+    t->andm = calloc((size_t)w * (size_t)h, 1);
+    t->xorm = calloc((size_t)w * (size_t)h, 1);
+    t->mono = mono;
+    p->ctl = t;
+    return p;
+}
+static void ptr_free(pmwin_t *p)
+{
+    ptr_t *t = p ? p->ctl : 0;
+    if (t) { free(t->andm); free(t->xorm); }
+    if (p) win_destroy(p);
+}
+static uint32_t rd32le(const uint8_t *d) { return d[0] | d[1] << 8 | d[2] << 16 | (uint32_t)d[3] << 24; }
+static pmwin_t *ptr_from_file(const uint8_t *d, size_t n)
+{
+    size_t h = 0;
+    if (n >= 14 && d[0] == 'B' && d[1] == 'A') {             /* an array: the device-independent one, else the first */
+        size_t o = 0, pick = 14;
+        for (int k = 0; k < 16 && o + 14 <= n; k++) {
+            if (d[o] != 'B' || d[o + 1] != 'A') break;
+            if (!(d[o + 10] | d[o + 11] | d[o + 12] | d[o + 13])) { pick = o + 14; break; }
+            uint32_t next = rd32le(d + o + 6);
+            if (!next || next <= o) break;
+            o = next;
+        }
+        h = pick;
+    }
+    if (h + 14 + 12 > n) return 0;
+    int color = (d[h] == 'C' && (d[h + 1] == 'I' || d[h + 1] == 'P'));
+    if (!color && !((d[h] == 'I' && d[h + 1] == 'C') || (d[h] == 'P' && d[h + 1] == 'T'))) return 0;
+    const uint8_t *mi = d + h + 14;
+    uint32_t mfix = rd32le(mi), moff = rd32le(d + h + 10);
+    int w = mfix == 12 ? (mi[4] | mi[5] << 8) : (int)rd32le(mi + 4), h2 = mfix == 12 ? (mi[6] | mi[7] << 8) : (int)rd32le(mi + 8);
+    int ih = h2 / 2;
+    if (w <= 0 || ih <= 0 || w > 256 || ih > 256) return 0;
+    uint32_t mrow = (uint32_t)((w + 31) / 32 * 4);
+    if (moff + mrow * (uint32_t)h2 > n) return 0;
+    pmwin_t *p = ptr_new(w, ih, !color);
+    if (!p) return 0;
+    ptr_t *t = p->ctl;
+    for (int r = 0; r < ih; r++)                              /* (r: from the bottom) */
+        for (int x = 0; x < w; x++) {
+            int ty = ih - 1 - r;
+            t->andm[ty * w + x] = (d[moff + (uint32_t)r * mrow + (uint32_t)x / 8] >> (7 - (x & 7))) & 1;
+            t->xorm[ty * w + x] = (d[moff + (uint32_t)(r + ih) * mrow + (uint32_t)x / 8] >> (7 - (x & 7))) & 1;
+        }
+    if (color) {                                              /* the colour image: its header after the mask's */
+        size_t ch = h + 14 + mfix + 2 * (mfix == 12 ? 3 : 4);
+        if (ch + 14 + 12 <= n) {
+            uint32_t coff = rd32le(d + ch + 10);
+            const uint8_t *ci = d + ch + 14;
+            uint32_t *tmp = calloc((size_t)w * (size_t)ih, 4);
+            if (tmp && coff < n && !bits_decode(d + coff, n - coff, ci, n - (size_t)(ci - d), w, ih, tmp, w, 0))
+                for (int y = 0; y < ih; y++) memcpy(p->px + (size_t)(ih - 1 - y) * (size_t)w, tmp + (size_t)y * (size_t)w, (size_t)w * 4);
+            free(tmp);
+        }
+    }
+    return p;
+}
+/* the pointer at (x, y) - its bottom left - of window t; half its size for DP_MINI */
+static void ptr_draw(pmwin_t *t, int x, int y, pmwin_t *p, uint32_t fs)
+{
+    ptr_t *m = p->ctl;
+    int st = (fs & 4) ? 2 : 1, w = p->cx, h = p->cy;
+    for (int ty = 0; ty < h; ty += st)
+        for (int tx = 0; tx < w; tx += st) {
+            int i = ty * w + tx, px = x + tx / st, py = y + (h - 1 - ty) / st;
+            int a = m->andm[i], xo = m->xorm[i];
+            uint32_t c;
+            if (a && !xo) continue;                                         /* transparent */
+            if (a && xo) c = ~getpel(t, px, py) & 0xFFFFFF;                 /* the screen, inverted */
+            else c = m->mono ? (xo ? 0xFFFFFF : 0) : p->px[i] & 0xFFFFFF;
+            if ((fs & 2) && !(a && xo)) c = ~c & 0xFFFFFF;                  /* DP_INVERTED */
+            if ((fs & 1) && ((px + py) & 1)) continue;                      /* DP_HALFTONED */
+            pel(t, px, py, c);
+        }
+}
+static void disc(pmwin_t *p, int cx, int cy, int r, uint32_t c, ptr_t *m)   /* (a pointer's: opaque there) */
+{
+    for (int y = 0; y < p->cy; y++)
+        for (int x = 0; x < p->cx; x++) {
+            int dx = 2 * x + 1 - 2 * cx, dy = 2 * y + 1 - 2 * cy;
+            if (dx * dx + dy * dy <= 4 * r * r) { p->px[y * p->cx + x] = 0xFF000000u | c; if (m) m->andm[y * p->cx + x] = 0; }
+        }
+}
+/* the system's: drawn here (SPTR_ICONINFORMATION ... ICONWARNING, the arrow) */
+static uint32_t sys_ptrs[16];
+static uint32_t sys_pointer(uint32_t id)
+{
+    if (id >= 16) return 0;
+    if (win(sys_ptrs[id])) return sys_ptrs[id];
+    pmwin_t *p = ptr_new(32, 32, 0);
+    if (!p) return 0;
+    ptr_t *m = p->ctl;
+    memset(m->andm, 1, 32 * 32);                               /* (all transparent, then the shape) */
+    const char *mark = 0;
+    uint32_t bg = 0, fg = 0xFFFFFF;
+    switch (id) {
+    case 11: bg = 0x2050C0; mark = "i"; break;                 /* SPTR_ICONINFORMATION */
+    case 12: bg = 0x2050C0; mark = "?"; break;                 /* SPTR_ICONQUESTION */
+    case 13: bg = 0xC02020; mark = "X"; break;                 /* SPTR_ICONERROR */
+    case 14:                                                   /* SPTR_ICONWARNING: a triangle */
+        for (int y = 2; y < 30; y++) for (int x = 16 - (y - 2) / 2 - 1; x <= 16 + (y - 2) / 2; x++)
+            if (x >= 0 && x < 32) { p->px[y * 32 + x] = 0xFFF0C800u; m->andm[y * 32 + x] = 0; }
+        mark = "!"; fg = 0; break;
+    default:                                                   /* the arrow, the others: an arrow */
+        for (int y = 0; y < 20; y++) for (int x = 0; x <= y / 2 + 1 && x < 32; x++) { p->px[y * 32 + x] = x == 0 || x == y / 2 + 1 || y == 19 ? 0xFF000000u : 0xFFFFFFFFu; m->andm[y * 32 + x] = 0; }
+        break;
+    }
+    if (bg) disc(p, 16, 16, 15, bg, m);
+    if (mark) {                                                /* (its pixels: the mask stays as the shape made it) */
+        int tw = text_w(mark, 1);
+        text_at(p, 16 - tw / 2, 10, mark, 1, fg);
+    }
+    sys_ptrs[id] = p->hwnd;
+    return p->hwnd;
+}
+static uint32_t api_WinLoadPointer(void)          /* (hwndDesktop, hmod, idres) */
+{
+    uint32_t a, n;
+    if (!find_resource(A(1), 1, A(2), &a, &n) || !ok(a, n)) return 0;   /* RT_POINTER */
+    pmwin_t *p = ptr_from_file(C.mem + a, n);
+    return p ? p->hwnd : 0;
+}
+static uint32_t api_WinDestroyPointer(void)
+{
+    pmwin_t *p = ptr_get(A(0));
+    if (!p) return 0;
+    for (int i = 0; i < 16; i++) if (sys_ptrs[i] == p->hwnd) return 1;  /* (the system's stay) */
+    ptr_free(p);
+    return 1;
+}
+static uint32_t api_WinDrawPointer(void)          /* (hps, x, y, hptr, fs) */
+{
+    pmps_t *ps = ps_get(A(0));
+    pmwin_t *t = ps_win(ps), *p = ptr_get(A(3));
+    if (!t || !p) return 0;
+    ptr_draw(t, (int32_t)A(1), (int32_t)A(2), p, A(4));
+    present(t);
+    return 1;
+}
+static uint32_t api_WinQuerySysPointer(void) { return sys_pointer(A(1)); }   /* (hwndDesktop, iptr, fCopy) */
+static uint32_t api_WinQueryPointer(void) { return sys_pointer(1); }
+static uint32_t api_WinSetPointer(void) { return 1; }                        /* (the compositor's pointer stays) */
+static uint32_t api_WinQueryPointerInfo(void)     /* (hptr, pptriPointerInfo) */
+{
+    pmwin_t *p = ptr_get(A(0));
+    uint32_t q = A(1);
+    if (!p || !ok(q, 28)) return 0;
+    memset(C.mem + q, 0, 28);
+    p32(q, ((ptr_t *)p->ctl)->mono ? 1 : 1);                 /* fPointer */
+    p32(q + 4, 0); p32(q + 8, (uint32_t)p->cy / 2);
+    return 1;
+}

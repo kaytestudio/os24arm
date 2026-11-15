@@ -999,6 +999,8 @@ static uint32_t api_WinStopTimer(void)
     return 0;
 }
 
+static uint32_t sys_pointer(uint32_t id);
+static void ptr_draw(pmwin_t *t, int x, int y, pmwin_t *p, uint32_t fs);
 /* message boxes: a frame of their own, modal (the program's other
  * windows still get their messages meanwhile) */
 static const char *const mb_labels[9][3] = {
@@ -1022,13 +1024,16 @@ static uint32_t mb_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
     case WM_PAINT: {
         w->invalid = 0;
         fill(w, 0, 0, w->cx, w->cy, 0xCCCCCC);
+        int icon = (int)((w->mb_style >> 4) & 7), tx = 18;          /* MB_ICONQUESTION, EXCLAMATION, ASTERISK, HAND */
+        static const uint32_t sptr[5] = { 0, 12, 14, 11, 13 };
+        if (icon >= 1 && icon <= 4) { pmwin_t *p = win(sys_pointer(sptr[icon])); if (p) ptr_draw(w, 14, w->cy - 14 - 32, p, 0); tx = 58; }
         /* the text, line by line */
         int y = w->cy - 18 - pm_ascent;
         const char *s = w->text;
         while (*s) {
             const char *e = strchr(s, '\n');
             int l = e ? (int)(e - s) : (int)strlen(s);
-            text_at(w, 18, y, s, l, 0x000000);
+            text_at(w, tx, y, s, l, 0x000000);
             y -= pm_lineh;
             s += l + (e ? 1 : 0);
         }
@@ -1096,6 +1101,7 @@ static uint32_t api_WinMessageBox(void)       /* (hwndParent, hwndOwner, pszText
         s = e + 1;
     }
     int cx = widest + 36, cy = lines * pm_lineh + 72;
+    if ((style >> 4) & 7) { cx += 40; if (cy < 32 + 28 + 48) cy = 32 + 28 + 48; }   /* (the icon's room) */
     if (cx < 3 * 92 + 24) cx = 3 * 92 + 24;
     frame_pixels(w, cx, cy);
     snprintf(w->mb_caption, sizeof w->mb_caption, "%s", cap && *cap ? cap : "Message");
