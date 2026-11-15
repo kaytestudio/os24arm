@@ -963,18 +963,26 @@ static void step(cpu_t *c)
     }
     case 0xC6: modrm(c, &in); setE(c, &in, 8, fetch8(c)); return;
     case 0xC7: modrm(c, &in); setE(c, &in, os, fetchv(c, os)); return;
-    case 0xC8: {                                 /* ENTER */
+    case 0xC8: {                                 /* ENTER: (16-bit operands: BP, 2 bytes each; a 16-bit stack: SP) */
         uint16_t size = fetch16(c);
         uint8_t level = fetch8(c) & 31;
-        push32(c, c->r[EBP]);
-        uint32_t frame = c->r[ESP];
-        for (int i = 1; i < level; i++) { c->r[EBP] -= 4; push32(c, rd32(c, c->r[EBP])); }
-        if (level) push32(c, frame);
-        c->r[EBP] = frame;
-        c->r[ESP] -= size;
+        int o16 = os == 16;
+        if (o16) push16(c, (uint16_t)c->r[EBP]); else push32(c, c->r[EBP]);
+        uint32_t frame = sp_get(c), bp = c->r[EBP];
+        for (int i = 1; i < level; i++) {
+            bp -= o16 ? 2 : 4;
+            uint32_t at = sp_at(c, c->stack16 ? bp & 0xFFFF : bp);
+            if (o16) push16(c, rd16(c, at)); else push32(c, rd32(c, at));
+        }
+        if (level) { if (o16) push16(c, (uint16_t)frame); else push32(c, frame); }
+        if (o16) c->r[EBP] = (c->r[EBP] & 0xFFFF0000) | (frame & 0xFFFF); else c->r[EBP] = frame;
+        sp_set(c, sp_get(c) - size);
         return;
     }
-    case 0xC9: c->r[ESP] = c->r[EBP]; c->r[EBP] = pop32(c); return;
+    case 0xC9:                                   /* LEAVE */
+        sp_set(c, c->stack16 ? c->r[EBP] & 0xFFFF : c->r[EBP]);
+        if (os == 16) c->r[EBP] = (c->r[EBP] & 0xFFFF0000) | pop16(c); else c->r[EBP] = pop32(c);
+        return;
     case 0xCC: c->int_no = 3; trap(c, CPU_INT); return;
     case 0xCD: c->int_no = fetch8(c); trap(c, CPU_INT); return;
     case 0xCE: if (c->eflags & F_OF) { c->int_no = 4; trap(c, CPU_INT); } return;

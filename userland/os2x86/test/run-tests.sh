@@ -228,6 +228,13 @@ PY
     if grep -q 'open: shown, OK, "C:.*\\fdtest\\B.TXT", 1$' <<< "$fdout" && grep -q 'save: OK, "C:.*\\fdtest\\sub\\new.txt"$' <<< "$fdout" &&
        grep -q 'font: OK, Courier 14 pt, weight 7, face "Courier Bold", selection 20, use c' <<< "$fdout"
     then echo "PM file and font dialogs: ok"; else echo "PM file and font dialogs: FAIL"; echo "$fdout"; owfail=1; fi
+    # a 16-bit OS/2 1.x program (NE), OpenWatcom's 16-bit C runtime (its libraries unpacked from the snapshot, when needed)
+    if [ ! -d "$W/lib286/os2" ] && [ -f "$OUT/dl/ow.tar.xz" ]; then (cd "$W" && tar xJf "$OUT/dl/ow.tar.xz" ./lib286) 2>/dev/null; fi
+    if [ -x "$B/wcl" ] && [ -d "$W/lib286/os2" ]; then
+        INCLUDE="$W/h:$W/h/os21x" wcl -q -bt=os2 -l=os2 -fpi "$T/test/ow16/test16.c" >/dev/null
+        out16="$(../os2x86 test16.exe one "two words" 2>&1; echo "exit $?")"
+        if grep -q "^passed" <<< "$out16" && grep -q "^exit 42" <<< "$out16"; then echo "16-bit (NE): ok"; else echo "16-bit (NE): FAIL"; echo "$out16"; owfail=1; fi
+    fi
     [ "$owfail" = 0 ] || st=1
 else
     echo "(no OpenWatcom: its programs not tried)"

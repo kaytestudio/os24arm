@@ -595,9 +595,9 @@ static bool hidden_at_root(const std::string &n)
 }
 
 /* what the object at path p is (named label): its icon, what opening it does */
-/* an x86 OS/2 program (LX, after its DOS stub or not, for a 386-586)? 0
- * no, else its type (LX module flags 0x700: 1 full screen, 2 windowed text,
- * 3 Presentation Manager) - os2x86 runs those */
+/* an x86 OS/2 program (LX, after its DOS stub or not, for a 386-586; or a
+ * 16-bit NE one)? 0 no, else its type (LX module flags 0x700: 1 full
+ * screen, 2 windowed text, 3 Presentation Manager) - os2x86 runs those */
 static int x86_os2(const std::string &p)
 {
     unsigned char h[0x40] = { 0 };
@@ -608,6 +608,9 @@ static int x86_os2(const std::string &p)
         unsigned char lx[0x14];
         if (pread(fd, lx, sizeof lx, off) == (ssize_t)sizeof lx && lx[0] == 'L' && lx[1] == 'X' && lx[8] >= 1 && lx[8] <= 4 && !lx[9])
             r = ((lx[0x11] >> 0) & 7) ? (lx[0x11] & 7) : 2;
+        unsigned char ne[0x38];                          /* a 16-bit OS/2 1.x program (NE, for OS/2, not a DLL): text, in a terminal */
+        if (off && pread(fd, ne, sizeof ne, off) == (ssize_t)sizeof ne && ne[0] == 'N' && ne[1] == 'E' && (ne[0x36] == 1 || !ne[0x36]) && !(ne[0x0D] & 0x80))
+            r = 2;
     }
     close(fd);
     return r;

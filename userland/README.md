@@ -330,6 +330,21 @@ platform-specific are new code.
    themselves). `RUN` at the system console starts them the same way,
    in the shell's directory, the console raw while they run.
 
+   16-bit OS/2 1.x programs (NE executables) run too (`ne16.inc`): each
+   segment in a 64 KB tile of its own (its selector the tile's), the
+   relocations applied (offsets, selectors, far pointers; chained or
+   additive; internal, by entry ordinal, imported by ordinal or name),
+   started as OS/2 starts them (AX the environment's selector, BX the
+   command line's offset, DS the automatic data); about 50 of the 16-bit
+   DOSCALLS and NLS calls (DosOpen, DosRead, DosWrite, DosChgFilePtr,
+   DosFindFirst/Next, DosAllocSeg, DosGetInfoSeg, DosGetEnv, DosScanEnv
+   ...) - most of them the 32-bit calls underneath, their arguments and
+   results converted - and the 16-bit KBD/VIO/MOU calls the 32-bit
+   programs use. The kernel and the Workplace Shell hand NE programs to
+   os2x86 as they do LX ones. Not yet: a program's own 16-bit DLLs,
+   DosExecPgm, threads and semaphores, 16-bit Presentation Manager.
+   `OS2X86_ITRACE=1` traces every instruction (CS:IP, its bytes, the
+   registers).
    32-bit x86 OS/2 programs (real OS/2 2.x-4.x console .EXEs: LX, usually
    after a DOS "MZ" stub, CPU type 386-586) run through an emulator,
    `userland/os2x86` (`\OS2\os2x86` on the stick): the kernel's execve

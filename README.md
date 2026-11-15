@@ -12,8 +12,9 @@ programs of three kinds:
 - **Linux programs**: static AArch64 Linux ELF binaries run unmodified on
   a Linux system-call layer, so musl, busybox, wlroots, foot, GNU
   binutils and clang/LLVM all run here;
-- **real 32-bit x86 OS/2 programs**, text mode and Presentation Manager,
-  through a built-in emulator (`os2x86`).
+- **real x86 OS/2 programs**: 32-bit ones, text mode and Presentation
+  Manager, and 16-bit OS/2 1.x text programs, through a built-in emulator
+  (`os2x86`).
 
 Smaller ports boot to a serial prompt on the BeagleBone Black (ARMv7),
 the BeagleV-Ahead (RISC-V) and QEMU's RISC-V `virt` machine.
@@ -312,8 +313,9 @@ program. `KAYTEVM.EXE` is another such program. Type `CMD` in a prompt,
 
 ### x86 OS/2 programs
 
-`userland/os2x86` runs real 32-bit OS/2 2.x-4.x executables, built for
-x86, on this ARM system. The kernel hands any x86 LX image to it as if it
+`userland/os2x86` runs real OS/2 executables built for x86 on this ARM
+system: 32-bit OS/2 2.x-4.x programs (LX) and 16-bit OS/2 1.x text
+programs (NE). The kernel hands any x86 LX image to it as if it
 were a `#!/h/OS2/os2x86` script. It contains:
 
 - **an i386 interpreter** with the x87, 16-bit code and OS/2's tiled LDT

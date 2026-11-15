@@ -2713,13 +2713,15 @@ static int shebang(char *path, uint32_t *used, int *argc, int envc)
     int fd = vfs_open(path, O_RDONLY);
     if (fd < 0) return 0;
     int n = vfs_read(fd, head, sizeof head - 1);
-    /* a 32-bit x86 OS/2 program (LX, usually after a DOS "MZ" stub):
-     * the emulator runs it, as if it said #!/h/OS2/os2x86 */
+    /* an x86 OS/2 program (32-bit LX, usually after a DOS "MZ" stub; or a
+     * 16-bit NE one): the emulator runs it, as if it said #!/h/OS2/os2x86 */
     if (n >= 2 && ((head[0] == 'M' && head[1] == 'Z' && n >= 0x40) || (head[0] == 'L' && head[1] == 'X'))) {
         uint32_t lxo = 0;
-        uint8_t lx[10];
+        uint8_t lx[0x38];
         if (head[0] == 'M') kmemcpy(&lxo, head + 0x3C, 4);
-        if (read_at(fd, lxo, lx, sizeof lx) == 0 && lx[0] == 'L' && lx[1] == 'X' && lx[8] >= 1 && lx[8] <= 4 && !lx[9]) {
+        int got = read_at(fd, lxo, lx, sizeof lx) == 0;
+        if (got && ((lx[0] == 'L' && lx[1] == 'X' && lx[8] >= 1 && lx[8] <= 4 && !lx[9]) ||
+                    (lxo && lx[0] == 'N' && lx[1] == 'E' && (lx[0x36] == 1 || !lx[0x36])))) {   /* (16-bit OS/2 1.x, NE: os2x86 too) */
             kstrncpy(head, "#!" OS2X86_EMULATOR "\n", sizeof head);
             n = (int)kstrlen(head);
         }

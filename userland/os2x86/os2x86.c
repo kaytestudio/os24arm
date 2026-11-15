@@ -1002,10 +1002,18 @@ static void checkpoint(void)
     if (me->kill) thread_end(0);
 }
 
+static int itrace;                          /* OS2X86_ITRACE=1: every instruction's place and bytes, on stderr */
 static void run(int nested)
 {
     for (;;) {
-        int r = cpu_run(&C, nlive > 1 ? 1L << 15 : 1L << 22);
+        if (itrace) {
+            uint32_t l = C.cs_base + C.eip;
+            fprintf(stderr, "%04x:%04x  %02x %02x %02x %02x  ax=%04x bx=%04x cx=%04x dx=%04x sp=%04x bp=%04x si=%04x di=%04x ds=%04x es=%04x ss=%04x\n",
+                    C.sreg[1], C.eip, ok(l, 4) ? C.mem[l] : 0, ok(l, 4) ? C.mem[l + 1] : 0, ok(l, 4) ? C.mem[l + 2] : 0, ok(l, 4) ? C.mem[l + 3] : 0,
+                    C.r[EAX] & 0xFFFF, C.r[EBX] & 0xFFFF, C.r[ECX] & 0xFFFF, C.r[EDX] & 0xFFFF, C.r[ESP] & 0xFFFF, C.r[EBP] & 0xFFFF,
+                    C.r[ESI] & 0xFFFF, C.r[EDI] & 0xFFFF, C.sreg[3], C.sreg[0], C.sreg[2]);
+        }
+        int r = cpu_run(&C, itrace ? 1 : nlive > 1 ? 1L << 15 : 1L << 22);
         if (r == CPU_STEPS) { if (nlive > 1) checkpoint(); continue; }
         if (r == CPU_THUNK) {
             uint32_t o = C.cs_base + C.eip - C.thunk_lo;
@@ -3086,6 +3094,7 @@ static uint32_t api_VioGetCp(void) { p16(FP(2), 437); return 0; }   /* (reserved
 static uint32_t api_ok16(void) { return 0; }
 
 #include "pm.inc"
+#include "ne16.inc"
 
 static const api_t apis[] = {
     { L_DOS, 110, "DosForceDelete", api_DosDelete, 0 },
@@ -3368,6 +3377,58 @@ static const api_t apis[] = {
     { L_PMGPI, 504, "GpiSetBackColor", api_GpiSetBackColor, 0 },
     { L_PMGPI, 404, "GpiMove", api_GpiMove, 0 },
     { L_PMGPI, 398, "GpiLine", api_GpiLine, 0 },
+    { L_DOS, 5, "DosExit", d16_DosExit, 4 },
+    { L_DOS, 8, "DosGetInfoSeg", d16_DosGetInfoSeg, 8 },
+    { L_DOS, 9, "DosGetPrty", d16_DosGetPrty, 8 },
+    { L_DOS, 11, "DosSetPrty", d16_DosSetPrty, 8 },
+    { L_DOS, 13, "DosHoldSignal", d16_DosHoldSignal, 2 },
+    { L_DOS, 14, "DosSetSigHandler", d16_DosSetSigHandler, 16 },
+    { L_DOS, 32, "DosSleep", d16_DosSleep, 4 },
+    { L_DOS, 33, "DosGetDateTime", d16_DosGetDateTime, 4 },
+    { L_DOS, 34, "DosAllocSeg", d16_DosAllocSeg, 8 },
+    { L_DOS, 38, "DosReallocSeg", d16_DosReallocSeg, 4 },
+    { L_DOS, 39, "DosFreeSeg", d16_DosFreeSeg, 2 },
+    { L_DOS, 41, "DosGetHugeShift", d16_DosGetHugeShift, 4 },
+    { L_DOS, 49, "DosGetMachineMode", d16_DosGetMachineMode, 4 },
+    { L_DOS, 50, "DosBeep", d16_DosBeep, 4 },
+    { L_DOS, 52, "DosDevConfig", d16_DosDevConfig, 8 },
+    { L_DOS, 56, "DosBufReset", d16_DosBufReset, 2 },
+    { L_DOS, 57, "DosChDir", d16_DosChDir, 8 },
+    { L_DOS, 58, "DosChgFilePtr", d16_DosChgFilePtr, 12 },
+    { L_DOS, 59, "DosClose", d16_DosClose, 2 },
+    { L_DOS, 60, "DosDelete", d16_DosDelete, 8 },
+    { L_DOS, 61, "DosDupHandle", d16_DosDupHandle, 6 },
+    { L_DOS, 63, "DosFindClose", d16_DosFindClose, 2 },
+    { L_DOS, 64, "DosFindFirst", d16_DosFindFirst, 24 },
+    { L_DOS, 65, "DosFindNext", d16_DosFindNext, 12 },
+    { L_DOS, 66, "DosMkDir", d16_DosMkDir, 8 },
+    { L_DOS, 67, "DosMove", d16_DosMove, 12 },
+    { L_DOS, 68, "DosNewSize", d16_DosNewSize, 6 },
+    { L_DOS, 70, "DosOpen", d16_DosOpen, 26 },
+    { L_DOS, 71, "DosQCurDir", d16_DosQCurDir, 10 },
+    { L_DOS, 72, "DosQCurDisk", d16_DosQCurDisk, 8 },
+    { L_DOS, 73, "DosQFHandState", d16_DosQFHandState, 6 },
+    { L_DOS, 74, "DosQFileInfo", d16_DosQFileInfo, 10 },
+    { L_DOS, 75, "DosQFileMode", d16_DosQFileMode, 12 },
+    { L_DOS, 76, "DosQFSInfo", d16_DosQFSInfo, 10 },
+    { L_DOS, 77, "DosQHandType", d16_DosQHandType, 10 },
+    { L_DOS, 80, "DosRmDir", d16_DosRmDir, 8 },
+    { L_DOS, 81, "DosSelectDisk", d16_DosSelectDisk, 2 },
+    { L_DOS, 82, "DosSetFHandState", d16_DosSetFHandState, 4 },
+    { L_DOS, 84, "DosSetFileMode", d16_DosSetFileMode, 10 },
+    { L_DOS, 85, "DosSetMaxFH", d16_DosSetMaxFH, 2 },
+    { L_DOS, 89, "DosSetVec", d16_DosSetVec, 8 },
+    { L_DOS, 91, "DosGetEnv", d16_DosGetEnv, 8 },
+    { L_DOS, 92, "DosGetVersion", d16_DosGetVersion, 4 },
+    { L_DOS, 94, "DosGetPID", d16_DosGetPID, 4 },
+    { L_DOS, 120, "DosError", d16_DosError, 2 },
+    { L_DOS, 130, "DosGetCp", d16_DosGetCp, 10 },
+    { L_DOS, 137, "DosRead", d16_DosRead, 12 },
+    { L_DOS, 138, "DosWrite", d16_DosWrite, 12 },
+    { L_DOS, 152, "DosScanEnv", d16_DosScanEnv, 8 },
+    { L_NLS, 1, "DosCaseMap", n16_DosCaseMap, 10 },
+    { L_NLS, 3, "DosGetCtryInfo", n16_DosGetCtryInfo, 16 },
+    { L_NLS, 4, "DosGetDBCSEv", n16_DosGetDBCSEv, 10 },
     { L_PMGPI, 356, "GpiBox", api_GpiBox, 0 },
     { L_PMCTLS, 2, "WinFontDlg", api_WinFontDlg, 0 },
     { L_PMCTLS, 3, "WinDefFontDlgProc", api_WinDefFontDlgProc, 0 },
@@ -3522,6 +3583,7 @@ int main(int argc, char **argv)
         }
     }
     trace = getenv("OS2X86_TRACE") && *getenv("OS2X86_TRACE") && strcmp(getenv("OS2X86_TRACE"), "0");
+    itrace = getenv("OS2X86_ITRACE") && *getenv("OS2X86_ITRACE") && strcmp(getenv("OS2X86_ITRACE"), "0");
     const char *mb = getenv("OS2X86_MEM");
     uint64_t size = (uint64_t)(mb ? strtoul(mb, 0, 10) : 512) << 20;
     if (size < (16u << 20)) size = 16u << 20;
@@ -3549,6 +3611,25 @@ int main(int argc, char **argv)
     const char *b = strrchr(h, '/');
     prog_name = b ? b + 1 : h;
     snprintf(exe_dir, sizeof exe_dir, "%.*s", b ? (int)(b - h) : 1, b ? h : ".");
+    {                                        /* a 16-bit program (NE): ne16.inc */
+        FILE *pf = fopen(h, "rb");
+        if (pf) {
+            fseek(pf, 0, SEEK_END);
+            long fl = ftell(pf);
+            fseek(pf, 0, SEEK_SET);
+            uint8_t *fb = fl > 0 && fl < (32 << 20) ? malloc((size_t)fl) : 0;
+            size_t got = fb ? fread(fb, 1, (size_t)fl, pf) : 0;
+            fclose(pf);
+            uint32_t neo = fb ? ne_header(fb, got) : 0;
+            if (neo) {
+                exe = calloc(1, sizeof *exe);
+                snprintf(exe->path, sizeof exe->path, "%s", h);
+                snprintf(exe->name, sizeof exe->name, "%s", prog_name);
+                ne_main(h, fb, got, neo, argc, argv);
+            }
+            free(fb);
+        }
+    }
     exe = load_module(h, 0, err, sizeof err);
     if (!exe) die(err[0] == 'S' && !strncmp(err, "SYS0002", 7) ? 2 : 193, "%s", err);
     uint32_t eo = H(exe, LX_EIPOBJ);
