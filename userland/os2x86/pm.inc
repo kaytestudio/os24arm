@@ -131,7 +131,7 @@ struct pmwin {
     uint32_t haccel;                    /* a frame's accelerator table */
     uint32_t dlg_result;
 };
-#define MAXWIN 256
+#define MAXWIN 1024                     /* (windows, controls, and bitmaps: they're hidden windows) */
 static pmwin_t pmwins[MAXWIN];
 static pmclass_t pmclasses[64];
 static int npmclasses;
@@ -1230,3 +1230,4 @@ static uint32_t api_GpiQueryTextBox(void)     /* (hps, lCount1, pchString, lCoun
 }
 
 #include "pm_ctl.inc"
+#include "pm_gpi.inc"

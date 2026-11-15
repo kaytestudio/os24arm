@@ -36,6 +36,8 @@ if [ -x "$W/armo64/wcl386" ] || [ -x "$W/binl64/wcl386" ]; then
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm -i="$S" "$S/pmmore.c" >/dev/null && wrc -q -bt=os2 pmmore.res pmmore.exe >/dev/null
     wrc -q -r -bt=os2 -i="$S" "$S/pmedit.rc" -fo=pmedit.res >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm -i="$S" "$S/pmedit.c" >/dev/null && wrc -q -bt=os2 pmedit.res pmedit.exe >/dev/null
+    python3 -I "$S/mkbmp.py" . && wrc -q -r -bt=os2 -i="$S" "$S/pmbmp.rc" -fo=pmbmp.res >/dev/null
+    wcl386 -q -za99 -bt=os2 -l=os2v2_pm -i="$S" "$S/pmbmp.c" >/dev/null && wrc -q -bt=os2 pmbmp.res pmbmp.exe >/dev/null
     owfail=0
     echo "== OpenWatcom programs"
     ../os2x86 owtest.exe </dev/null | grep -E "^FAIL|passed|failed" || owfail=1
@@ -84,6 +86,19 @@ click 250 130; click 220 130; enter; vkey f10; vkey down; vkey enter; alt f; key
     if echo "$editout" | grep -q 'WinDlgBox 1: text "HelloRNWorld!RNLine3", export "HelloRNWorld!RNLine3", 3 lines, some changes, spin 4, day Tue' &&
        echo "$editout" | grep -q "line 2 is 6 long"
     then echo "PM MLE, spin buttons: ok"; else echo "PM MLE, spin buttons: FAIL"; echo "$editout"; owfail=1; fi
+    # bitmaps: three formats from resources, stretched, a memory PS blitted; the pixels checked
+    bmpout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf OS2X86_PM_SCRIPT="shot bmp.ppm; close" ../os2x86 pmbmp.exe 2>&1)"
+    if echo "$bmpout" | grep -q "b1 64x48, b2 32x32, b3 16x16" && echo "$bmpout" | grep -q "(5,5) ffff00, (0,0) 000000" &&
+       python3 -I - bmp.ppm <<'PY'
+import sys
+d = open(sys.argv[1], 'rb').read().split(b'\n', 3); w, h = map(int, d[1].split()); px = d[3]
+at = lambda x, y: tuple(px[((h - 1 - y) * w + x) * 3:((h - 1 - y) * w + x) * 3 + 3])   # PM's coordinates, y up
+ok = at(10 + 5, 10 + 5) == (20, 25, 128) and at(10 + 63, 10 + 47) == (252, 235, 128)    # the gradient, its corners
+ok = ok and at(102, 12) == (255, 0, 0) and at(102 + 16, 12) == (0, 0, 255)               # the checkerboard, stretched
+ok = ok and at(205, 15) == (0, 200, 0) and at(260, 20) == (255, 255, 0) and at(250, 10) == (0, 0, 0)
+sys.exit(0 if ok else 1)
+PY
+    then echo "PM bitmaps: ok"; else echo "PM bitmaps: FAIL"; echo "$bmpout"; owfail=1; fi
     [ "$owfail" = 0 ] || st=1
 else
     echo "(no OpenWatcom: its programs not tried)"

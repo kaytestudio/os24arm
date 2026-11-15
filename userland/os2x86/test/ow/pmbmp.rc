@@ -1,0 +1,5 @@
+/* userland/os2x86/test/ow/pmbmp.rc - pmbmp's bitmaps (mkbmp.py makes them) */
+#include <os2.h>
+BITMAP 1 "grad.bmp"
+BITMAP 2 "check.bmp"
+BITMAP 3 "old.bmp"
