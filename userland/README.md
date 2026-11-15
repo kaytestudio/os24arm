@@ -353,9 +353,16 @@ platform-specific are new code.
    lock lets one run at a time, given up while a call waits and every
    32768 instructions), event, mutex and muxwait semaphores that really
    wait, exit lists, x86 DLLs it brings along (the program's directory,
-   the current one, LIBPATH; their initialisation runs). Not there yet:
-   the 16-bit KBD/VIO/MOU calls, Presentation Manager (PMWIN & co.: such a
-   program stops at once, saying so). Calls it doesn't have yet print
+   the current one, LIBPATH; their initialisation runs), and the 16-bit
+   console calls the C runtimes reach through a 16-bit thunk (getch,
+   kbhit, cgets, putch: KbdCharIn/Peek/StringIn, VioWrtTTY, VioGetMode,
+   VioSetCurPos/GetCurPos, VioScrollUp/Dn, VioWrtCharStr(Att)/NChar/NCell/
+   CellStr, cursor type: on this terminal, ANSI): for those the CPU has
+   OS/2's tiled LDT (selector n*8+7 is the 64 KB at n*64K), 16-bit code
+   and stacks, far jumps, calls and returns, LSS/LDS/LES, and the call is
+   Pascal (the callee pops, the result in AX). A 16-bit call it doesn't
+   have stops the program, naming it. Not there yet: MOU, Presentation
+   Manager (PMWIN & co.: such a program stops at once, saying so). Calls it doesn't have yet print
    one line on stderr and return error 1; `OS2X86_TRACE=1` lists every
    call. `userland/os2x86/test/run-tests.sh` runs its test program
    (freestanding C, `os2test.c`, made an LX .EXE by `elf2lx.py`) on the

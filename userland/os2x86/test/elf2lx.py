@@ -31,7 +31,9 @@ IMPORTS = {   # name: (module, ordinal)
     'DosReleaseMutexSem': ('DOSCALLS', 335), 'DosCreateEventSem': ('DOSCALLS', 324),
     'DosPostEventSem': ('DOSCALLS', 328), 'DosWaitEventSem': ('DOSCALLS', 329), 'DosCloseEventSem': ('DOSCALLS', 326),
     'DosCloseMutexSem': ('DOSCALLS', 333), 'DosCreateMuxWaitSem': ('DOSCALLS', 337),
-    'DosWaitMuxWaitSem': ('DOSCALLS', 340),
+    'DosWaitMuxWaitSem': ('DOSCALLS', 340), 'DosFlatToSel': ('DOSCALLS', 425),
+    'VIO16WRTTTY': ('VIOCALLS', 19), 'VIO16GETMODE': ('VIOCALLS', 21), 'VIO16GETCP': ('VIOCALLS', 40),
+    'KBD16PEEK': ('KBDCALLS', 22),
 }
 
 def main():

@@ -40,6 +40,53 @@ APIRET DosSleep(ULONG ms);
 
 static int fails;
 
+/* a 16-bit call as OpenWatcom's runtime makes one (clib far16fun:
+ * __Far16Func2): the arguments copied to the stack, a 16:16 stack (LSS
+ * SP), a 16-bit code segment that loads DS, ES and makes the far call,
+ * then back with a 16:32 jump and LSS ESP through the 16-bit SS.
+ *   ULONG far16_call(ULONG target16, void *args, ULONG bytes)  -> DX:AX */
+__asm__(
+    "    .text\n"
+    "flat_to_16:\n"                         /* ULONG flat_to_16(void *): DosFlatToSel (EAX in, EAX out) */
+    "    movl 4(%esp), %eax\n"
+    "    call DosFlatToSel\n"
+    "    ret\n"
+    "far16_call:\n"
+    "    pushl %ebp\n pushl %edi\n pushl %ebx\n pushl %esi\n pushl %es\n pushl %ds\n"
+    "    movl 28(%esp), %eax\n"
+    "    movl 32(%esp), %esi\n"
+    "    movl 36(%esp), %ecx\n"
+    "    movl %esp, %ebp\n"
+    "    pushl %ss\n pushl %ebp\n pushl %eax\n"
+    "    addl $3, %ecx\n andb $-4, %cl\n"
+    "    xorl %ebp, %ebp\n movw %cx, %bp\n"
+    "    subl %ecx, %esp\n movl %esp, %edi\n shrl %ecx\n"
+    "    rep movsw\n"
+    "    movl %esp, %eax\n"
+    "    call DosFlatToSel\n"
+    "    pushl %eax\n"
+    "    addw %ax, %bp\n"
+    "    lssw (%esp), %sp\n"
+    "    ljmpw *f16_ptr\n"
+    "back32:\n"
+    "    lssl 4(%ebp), %esp\n"
+    "    roll $16, %eax\n movw %dx, %ax\n roll $16, %eax\n"
+    "    popl %ds\n popl %es\n popl %esi\n popl %ebx\n popl %edi\n popl %ebp\n"
+    "    ret\n"
+    "    .code16\n"
+    "f16_stub:\n"
+    "    movw %ss, %cx\n movw %cx, %ds\n movw %cx, %es\n"
+    "    lcallw *(%bp)\n"
+    "    ljmpl $0x5b, $back32\n"
+    "    .code32\n"
+    "    .data\n"
+    "f16_ptr: .short 0, 0\n"
+    "    .text\n");
+extern ULONG flat_to_16(const void *p);
+extern ULONG far16_call(ULONG target, void *args, ULONG bytes);
+extern unsigned short f16_ptr[2];
+extern char f16_stub[], VIO16WRTTTY[], VIO16GETMODE[], VIO16GETCP[], KBD16PEEK[];
+
 static ULONG slen(const char *s) { ULONG n = 0; while (s[n]) n++; return n; }
 static void out(const char *s) { ULONG a; DosWrite(1, s, slen(s), &a); }
 static void num(ULONG v)
@@ -187,6 +234,32 @@ ULONG start(void)
     check(DosWaitMuxWaitSem(mux, 2000, &user) == 0 && user == 5, "DosWaitMuxWaitSem");
     ULONG any = 0;
     check(DosWaitThread(&any, 0) == 0 && any == tw && woke == 77, "event wakes the other thread");
+
+    /* the 16-bit calls (Pascal: the last argument at the lowest address) */
+    ULONG s16 = flat_to_16(f16_stub);
+    f16_ptr[0] = (unsigned short)s16;
+    f16_ptr[1] = (unsigned short)(s16 >> 16);
+    check(((s16 >> 16) & 7) == 7, "DosFlatToSel: a tiled selector");
+    static char msg[] = "  (16-bit VioWrtTTY)\r\n";
+    ULONG pm = flat_to_16(msg);
+    unsigned short a1[4] = { 0, (unsigned short)(sizeof msg - 1), (unsigned short)pm, (unsigned short)(pm >> 16) };
+    check((far16_call(flat_to_16(VIO16WRTTTY), a1, 8) & 0xFFFF) == 0, "VioWrtTTY through a 16-bit thunk");
+    static unsigned short vmi[7] = { 14 };
+    ULONG pv = flat_to_16(vmi);
+    unsigned short a2[3] = { 0, (unsigned short)pv, (unsigned short)(pv >> 16) };
+    check((far16_call(flat_to_16(VIO16GETMODE), a2, 6) & 0xFFFF) == 0 && vmi[2] >= 20 && vmi[3] >= 5, "VioGetMode");
+    out("  screen "); num(vmi[2]); out("x"); num(vmi[3]); out("\n");
+    static unsigned short cp;
+    ULONG pc = flat_to_16(&cp);
+    unsigned short a3[4] = { 0, (unsigned short)pc, (unsigned short)(pc >> 16), 0 };
+    check(far16_call(flat_to_16(VIO16GETCP), a3, 8) == 0 && cp == 437, "VioGetCp");
+    static unsigned char ki[10] = { 0xAA, 0xAA, 0xAA };
+    ULONG pk = flat_to_16(ki);
+    unsigned short a4[3] = { 0, (unsigned short)pk, (unsigned short)(pk >> 16) };
+    check(far16_call(flat_to_16(KBD16PEEK), a4, 6) == 0 && ki[2] == 0, "KbdPeek (no key)");
+    unsigned short ds, ss;
+    __asm__ volatile("movw %%ds, %0\n\tmovw %%ss, %1" : "=r"(ds), "=r"(ss));
+    check(ds == 0x53 && ss == 0x53, "back in the flat segments");
 
     out(fails ? "some tests failed\n" : "all passed\n");
     DosExit(1, (ULONG)fails);

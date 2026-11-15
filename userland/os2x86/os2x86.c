@@ -33,6 +33,9 @@
 #include <strings.h>
 #include <time.h>
 #include <unistd.h>
+#include <poll.h>
+#include <termios.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
@@ -506,7 +509,7 @@ static const char *const libs[] = { "DOSCALLS", "NLS", "MSG", "QUECALLS", "SESMG
 enum { L_DOS, L_NLS, L_MSG, L_QUE, L_SES, L_KBD, L_VIO, L_MOU, NLIBS };
 
 typedef uint32_t (*api_fn)(void);
-typedef struct { int lib; uint16_t ord; const char *name; api_fn fn; } api_t;
+typedef struct { int lib; uint16_t ord; const char *name; api_fn fn; uint8_t a16; } api_t;   /* a16: a 16-bit call, its arguments' bytes */
 static const api_t apis[];
 
 enum { T_EXIT, T_CBRET, T_THREXIT, T_FIRST };
@@ -933,7 +936,7 @@ static void setup_process(int argc, char **argv)
     p32(pib + 16, envp);
     p32(pib + 20, 0);
     p32(pib + 24, 2);                       /* a VIO (windowable) program */
-    C.fs_base = tib;
+    C.fs_base = C.tib = tib;
     C.r[ESP] = stack_top;
     process_ready = 1;
 }
@@ -943,6 +946,7 @@ static void setup_process(int argc, char **argv)
 static int running_exitlist;
 static void exception(int why);
 static void api_call(int idx);
+static void api16(thunk_t *t);
 static void thread_end(uint32_t code) __attribute__((noreturn));
 
 /* another thread's turn; then as DosSuspendThread, DosEnterCritSec,
@@ -960,7 +964,7 @@ static void run(int nested)
         int r = cpu_run(&C, nlive > 1 ? 1L << 15 : 1L << 22);
         if (r == CPU_STEPS) { if (nlive > 1) checkpoint(); continue; }
         if (r == CPU_THUNK) {
-            uint32_t o = C.eip - C.thunk_lo;
+            uint32_t o = C.cs_base + C.eip - C.thunk_lo;
             int idx = (int)(o / T_SLOT);
             if (o % T_SLOT || idx >= nthunks) { exception(CPU_FAULT); continue; }
             if (idx == T_CBRET) {
@@ -1022,11 +1026,32 @@ static void thread_end(uint32_t code)
     pthread_exit(0);
 }
 
+/* a 16-bit call (far, Pascal): SS:SP the return address, then the
+ * arguments, the last one first; it pops them; the result in AX */
+static _Thread_local uint32_t a16;
+static void api16(thunk_t *t)
+{
+    uint32_t sp = C.stack16 ? C.r[ESP] & 0xFFFF : C.r[ESP];
+    uint32_t at = C.ss_base + sp, ip = g16(at), cs = g16(at + 2);
+    if (!t->api || !t->api->a16)
+        die(255, "%s: %s.%u%s%s (a 16-bit call) isn't there yet", prog_name, libs[t->lib], t->ord,
+            t->name[0] ? " " : "", t->name);
+    a16 = at + 4;
+    uint32_t rv = t->api->fn();
+    if (trace) fprintf(stderr, "[os2x86] %s.%s (16-bit) = %u\n", libs[t->lib], t->api->name, rv);
+    C.r[EAX] = (C.r[EAX] & 0xFFFF0000) | (rv & 0xFFFF);
+    sp += 4 + t->api->a16;
+    C.r[ESP] = C.stack16 ? (C.r[ESP] & 0xFFFF0000) | (sp & 0xFFFF) : sp;
+    cpu_load_seg(&C, 1, (uint16_t)cs);
+    C.eip = ip;
+}
+
 static void api_call(int idx)
 {
     thunk_t *t = &thunks[idx];
     if (idx == T_EXIT) do_exit(C.r[EAX]);
     if (idx == T_THREXIT) thread_end(C.r[EAX]);
+    if (C.code16) { api16(t); return; }
     uint32_t ret = g32(C.r[ESP]), rv;
     uint32_t a0 = A(0), a1 = A(1), a2 = A(2), a3 = A(3);
     api_noret = 0;
@@ -2112,7 +2137,7 @@ static uint32_t api_DosCreateThread(void)
     p32(ttib, 0xFFFFFFFF); p32(ttib + 4, stack); p32(ttib + 8, top); p32(ttib + 12, ttib2);
     p32(ttib + 16, 20); p32(ttib + 20, t->tid);
     p32(ttib2, t->tid); p32(ttib2 + 4, 0x200); p32(ttib2 + 8, 20);
-    t->cpu.fs_base = ttib;
+    t->cpu.fs_base = t->cpu.tib = ttib;
     /* fn(param), returning to the end of the thread */
     p32(top - 4, param);
     p32(top - 8, thunk_addr(T_THREXIT));
@@ -2410,117 +2435,427 @@ static uint32_t api_DosPutMessage(void)
     return 0;
 }
 
+/* ── KBDCALLS, VIOCALLS: the 16-bit console calls, on this terminal ─── */
+static uint16_t W(uint32_t o) { return g16(a16 + o); }
+static uint32_t FP(uint32_t o) { uint32_t v = g32(a16 + o); return ((v >> 19) << 16) + (v & 0xFFFF); }   /* 16:16: flat */
+
+static int kbd_pend_ch = -1, kbd_pend_scan;    /* a key KbdPeek saw */
+static int rd1(int ms)                          /* a byte from stdin, waiting ms (-1: as long as it takes) */
+{
+    struct pollfd p = { 0, POLLIN, 0 };
+    int r;
+    UNLOCKED(r = poll(&p, 1, ms));
+    if (r <= 0) return -1;
+    unsigned char ch;
+    ssize_t n;
+    UNLOCKED(n = read(0, &ch, 1));
+    return n == 1 ? ch : -2;
+}
+/* a key: its character (0xE0 for the extended ones) and scan code */
+static int kbd_key(int wait, int *scan)
+{
+    if (kbd_pend_ch >= 0) { int ch = kbd_pend_ch; *scan = kbd_pend_scan; kbd_pend_ch = -1; return ch; }
+    struct termios old, raw;
+    int tty = tcgetattr(0, &old) == 0;
+    if (tty) { raw = old; raw.c_lflag &= ~(tcflag_t)(ICANON | ECHO); raw.c_cc[VMIN] = 1; raw.c_cc[VTIME] = 0; tcsetattr(0, TCSANOW, &raw); }
+    int ch = rd1(wait ? -1 : 0);
+    *scan = 0;
+    if (ch == 27) {                             /* ESC [ A ...: the cursor keys */
+        int c2 = rd1(40);
+        if (c2 == '[' || c2 == 'O') {
+            int c3 = rd1(40), n = 0;
+            while (c3 >= '0' && c3 <= '9') { n = n * 10 + c3 - '0'; c3 = rd1(40); }
+            static const char k[] = "ABCDHF";
+            static const int sc[] = { 0x48, 0x50, 0x4D, 0x4B, 0x47, 0x4F };
+            const char *f = c3 > 0 ? strchr(k, c3) : 0;
+            if (f && c3) { ch = 0xE0; *scan = sc[f - k]; }
+            else if (c3 == '~') {
+                static const int tl[] = { 0, 0x47, 0x52, 0x53, 0x4F, 0x49, 0x51 };
+                if (n >= 1 && n <= 6) { ch = 0xE0; *scan = tl[n]; }
+                else if (n >= 11 && n <= 15) { ch = 0; *scan = 0x3B + n - 11; }        /* F1-F5 */
+                else if (n >= 17 && n <= 21) { ch = 0; *scan = 0x40 + n - 17; }       /* F6-F10 */
+            }
+        } else if (c2 >= 0) { kbd_pend_ch = c2; kbd_pend_scan = 0; }
+        if (ch == 27) *scan = 1;
+    } else if (ch == '\n') { ch = '\r'; *scan = 0x1C; }
+    else if (ch == 127) { ch = 8; *scan = 0x0E; }
+    if (tty) tcsetattr(0, TCSANOW, &old);
+    return ch < 0 ? -1 : ch;
+}
+static void put_keyinfo(uint32_t p, int ch, int scan)
+{
+    if (!ok(p, 10)) return;
+    memset(C.mem + p, 0, 10);
+    if (ch < 0) return;
+    p8(p, (uint8_t)ch); p8(p + 1, (uint8_t)scan);
+    p8(p + 2, (uint8_t)(0x40 | (ch == 0 || ch == 0xE0 ? 2 : 0)));      /* final character; extended */
+    p32(p + 6, (uint32_t)ms_now());
+}
+static uint32_t api_KbdCharIn(void)           /* (pkbci, fWait, hkbd) */
+{
+    int scan, ch = kbd_key(W(2) == 0, &scan);
+    put_keyinfo(FP(4), ch, scan);
+    return 0;
+}
+static uint32_t api_KbdPeek(void)             /* (pkbci, hkbd) */
+{
+    if (kbd_pend_ch < 0) {
+        int scan, ch = kbd_key(0, &scan);
+        if (ch >= 0) { kbd_pend_ch = ch; kbd_pend_scan = scan; }
+    }
+    put_keyinfo(FP(2), kbd_pend_ch, kbd_pend_scan);
+    return 0;
+}
+static uint32_t api_KbdStringIn(void)         /* (pch, pchIn {cb, cchIn}, fsWait, hkbd) */
+{
+    uint32_t buf = FP(8), in = FP(4), cb = g16(in), n = 0;
+    if (kbd_pend_ch > 0 && cb) { p8(buf, (uint8_t)kbd_pend_ch); n = 1; }
+    kbd_pend_ch = -1;
+    while (n < cb) {
+        int ch = rd1(-1);
+        if (ch < 0 || ch == '\n') break;
+        if (ch == '\r') continue;
+        p8(buf + n++, (uint8_t)ch);
+    }
+    if (n < cb) p8(buf + n, '\r');
+    p16(in + 2, (uint16_t)n);
+    return 0;
+}
+static uint32_t api_KbdFlushBuffer(void) { tcflush(0, TCIFLUSH); kbd_pend_ch = -1; return 0; }
+static uint32_t api_KbdGetStatus(void)        /* (pkbdinfo, hkbd) */
+{
+    uint32_t p = FP(2);
+    if (!ok(p, 10)) return ERROR_INVALID_PARAMETER;
+    memset(C.mem + p, 0, 10);
+    p16(p, 10);
+    p16(p + 2, 0x0009);                          /* echo on, cooked */
+    p16(p + 4, '\r');
+    return 0;
+}
+
+static void tty_out(const char *s, size_t n)
+{
+    size_t done = 0;
+    while (done < n) {
+        ssize_t w;
+        UNLOCKED(w = write(1, s + done, n - done));
+        if (w <= 0) break;
+        done += (size_t)w;
+    }
+}
+static void tty_printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void tty_printf(const char *fmt, ...)
+{
+    char b[256];
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(b, sizeof b, fmt, ap);
+    va_end(ap);
+    if (n > 0) tty_out(b, (size_t)n < sizeof b ? (size_t)n : sizeof b - 1);
+}
+static void screen_size(int *rows, int *cols)
+{
+    struct winsize ws;
+    *rows = 25; *cols = 80;
+    if (ioctl(1, TIOCGWINSZ, &ws) == 0 && ws.ws_row && ws.ws_col) { *rows = ws.ws_row; *cols = ws.ws_col; }
+}
+static void attr_out(uint8_t a)                  /* a text attribute: CGA colours as ANSI ones */
+{
+    static const int map[8] = { 0, 4, 2, 6, 1, 5, 3, 7 };
+    tty_printf("\033[0;%d;%dm", (a & 8 ? 90 : 30) + map[a & 7], 40 + map[(a >> 4) & 7]);
+}
+static void at(uint32_t row, uint32_t col) { tty_printf("\033[%u;%uH", row + 1, col + 1); }
+
+static uint32_t api_VioWrtTTY(void)           /* (pch, cb, hvio) */
+{
+    uint32_t n = W(2);
+    char *p = gp(FP(4), n);
+    if (!p && n) return ERROR_INVALID_PARAMETER;
+    tty_out(p, n);
+    return 0;
+}
+static uint32_t api_VioGetMode(void)          /* (pvmi, hvio) */
+{
+    uint32_t p = FP(2), cb = g16(p);
+    if (!ok(p, 2) || cb < 2) return ERROR_INVALID_PARAMETER;
+    int rows, cols;
+    screen_size(&rows, &cols);
+    uint8_t m[34] = { 0 };
+    m[2] = 1;                                     /* VGMT_OTHER: colour text */
+    m[3] = 4;                                     /* 16 colours */
+    m[4] = (uint8_t)cols; m[5] = (uint8_t)(cols >> 8);
+    m[6] = (uint8_t)rows; m[7] = (uint8_t)(rows >> 8);
+    m[8] = (uint8_t)(cols * 9); m[9] = (uint8_t)((cols * 9) >> 8);
+    m[10] = (uint8_t)(rows * 16); m[11] = (uint8_t)((rows * 16) >> 8);
+    if (cb > sizeof m) cb = sizeof m;
+    if (!ok(p, cb)) return ERROR_INVALID_PARAMETER;
+    memcpy(C.mem + p + 2, m + 2, cb - 2);
+    return 0;
+}
+static uint32_t cur_row, cur_col;
+static uint32_t api_VioSetCurPos(void)        /* (row, col, hvio) */
+{
+    cur_row = W(4); cur_col = W(2);
+    at(cur_row, cur_col);
+    return 0;
+}
+static uint32_t api_VioGetCurPos(void)        /* (prow, pcol, hvio) */
+{
+    struct termios old, raw;
+    if (isatty(0) && isatty(1) && tcgetattr(0, &old) == 0) {
+        raw = old;
+        raw.c_lflag &= ~(tcflag_t)(ICANON | ECHO);
+        tcsetattr(0, TCSANOW, &raw);
+        tty_out("\033[6n", 4);                    /* the terminal says: ESC [ row ; col R */
+        int r = 0, cl = 0, ch, *v = &r;
+        if (rd1(200) == 27 && rd1(200) == '[') {
+            while ((ch = rd1(200)) >= 0 && ch != 'R') {
+                if (ch == ';') v = &cl;
+                else if (ch >= '0' && ch <= '9') *v = *v * 10 + ch - '0';
+            }
+            if (r && cl) { cur_row = (uint32_t)r - 1; cur_col = (uint32_t)cl - 1; }
+        }
+        tcsetattr(0, TCSANOW, &old);
+    }
+    p16(FP(6), (uint16_t)cur_row);
+    p16(FP(2), (uint16_t)cur_col);
+    return 0;
+}
+static void scroll(int up)                     /* (top, left, bot, right, lines, pcell, hvio) */
+{
+    int rows, cols;
+    screen_size(&rows, &cols);
+    uint32_t top = W(14), left = W(12), bot = W(10), right = W(8), lines = W(6), cell = FP(2);
+    if (bot >= (uint32_t)rows) bot = (uint32_t)rows - 1;
+    if (right >= (uint32_t)cols) right = (uint32_t)cols - 1;
+    if (top > bot || left > right) return;
+    uint8_t ch = ok(cell, 2) ? C.mem[cell] : ' ', a = ok(cell, 2) ? C.mem[cell + 1] : 7;
+    attr_out(a);
+    tty_out("\0337", 2);
+    if (lines >= bot - top + 1 || left > 0 || right + 1 < (uint32_t)cols) {
+        /* the whole area (or not the full width: cleared) */
+        if (lines) for (uint32_t r = top; r <= bot; r++) {
+            at(r, left);
+            for (uint32_t k = left; k <= right; k++) tty_out((char *)&ch, 1);
+        }
+    } else if (lines) {
+        tty_printf("\033[%u;%ur\033[%u%c\033[r", top + 1, bot + 1, lines, up ? 'S' : 'T');
+    }
+    tty_out("\0338\033[0m", 6);
+}
+static uint32_t api_VioScrollUp(void) { scroll(1); return 0; }
+static uint32_t api_VioScrollDn(void) { scroll(0); return 0; }
+static uint32_t api_VioWrtCharStr(void)       /* (pch, cb, row, col, hvio) */
+{
+    uint32_t n = W(6);
+    char *p = gp(FP(8), n);
+    if (!p && n) return ERROR_INVALID_PARAMETER;
+    tty_out("\0337", 2); at(W(4), W(2)); tty_out(p, n); tty_out("\0338", 2);
+    return 0;
+}
+static uint32_t api_VioWrtCharStrAtt(void)    /* (pch, cb, row, col, pattr, hvio) */
+{
+    uint32_t n = W(10), pa = FP(2);
+    char *p = gp(FP(12), n);
+    if (!p && n) return ERROR_INVALID_PARAMETER;
+    tty_out("\0337", 2); at(W(8), W(6)); attr_out(ok(pa, 1) ? C.mem[pa] : 7);
+    tty_out(p, n); tty_out("\033[0m\0338", 6);
+    return 0;
+}
+static uint32_t api_VioWrtNChar(void)         /* (pch, times, row, col, hvio) */
+{
+    uint32_t n = W(6), pc = FP(8);
+    char ch = ok(pc, 1) ? (char)C.mem[pc] : ' ';
+    tty_out("\0337", 2); at(W(4), W(2));
+    for (uint32_t i = 0; i < n; i++) tty_out(&ch, 1);
+    tty_out("\0338", 2);
+    return 0;
+}
+static uint32_t api_VioWrtNCell(void)         /* (pcell, times, row, col, hvio) */
+{
+    uint32_t n = W(6), pc = FP(8);
+    char ch = ok(pc, 2) ? (char)C.mem[pc] : ' ';
+    tty_out("\0337", 2); at(W(4), W(2)); attr_out(ok(pc, 2) ? C.mem[pc + 1] : 7);
+    for (uint32_t i = 0; i < n; i++) tty_out(&ch, 1);
+    tty_out("\033[0m\0338", 6);
+    return 0;
+}
+static uint32_t api_VioWrtCellStr(void)       /* (pcells, cb, row, col, hvio) */
+{
+    uint32_t n = W(6) & ~1u, pc = FP(8);
+    if (!ok(pc, n ? n : 1)) return ERROR_INVALID_PARAMETER;
+    tty_out("\0337", 2); at(W(4), W(2));
+    for (uint32_t i = 0; i < n; i += 2) { if (!i || C.mem[pc + i + 1] != C.mem[pc + i - 1]) attr_out(C.mem[pc + i + 1]); tty_out((char *)C.mem + pc + i, 1); }
+    tty_out("\033[0m\0338", 6);
+    return 0;
+}
+static uint32_t api_VioReadCellStr(void)      /* (pcells, pcb, row, col, hvio): not readable here: blanks */
+{
+    uint32_t pcb = FP(6), b = FP(10), n = g16(pcb) & ~1u;
+    if (!ok(b, n ? n : 1)) return ERROR_INVALID_PARAMETER;
+    for (uint32_t i = 0; i < n; i += 2) { C.mem[b + i] = ' '; C.mem[b + i + 1] = 7; }
+    return 0;
+}
+static uint32_t api_VioReadCharStr(void)      /* (pch, pcb, row, col, hvio) */
+{
+    uint32_t pcb = FP(6), b = FP(10), n = g16(pcb);
+    if (!ok(b, n ? n : 1)) return ERROR_INVALID_PARAMETER;
+    memset(C.mem + b, ' ', n);
+    return 0;
+}
+static uint16_t cur_type[4] = { 14, 15, 1, 0 };
+static uint32_t api_VioGetCurType(void)       /* (pci, hvio) */
+{
+    uint32_t p = FP(2);
+    for (int i = 0; i < 4; i++) p16(p + 2 * (uint32_t)i, cur_type[i]);
+    return 0;
+}
+static uint32_t api_VioSetCurType(void)       /* (pci, hvio) */
+{
+    uint32_t p = FP(2);
+    for (int i = 0; i < 4; i++) cur_type[i] = g16(p + 2 * (uint32_t)i);
+    tty_out(cur_type[3] == 0xFFFF ? "\033[?25l" : "\033[?25h", 6);
+    return 0;
+}
+static uint32_t api_VioGetCp(void) { p16(FP(2), 437); return 0; }   /* (reserved, pcp, hvio) */
+static uint32_t api_ok16(void) { return 0; }
+
 static const api_t apis[] = {
-    { L_DOS, 110, "DosForceDelete", api_DosDelete },
-    { L_DOS, 111, "DosKillThread", api_DosKillThread },
-    { L_DOS, 209, "DosSetMaxFH", api_ok },
-    { L_DOS, 210, "DosSetVerify", api_ok },
-    { L_DOS, 212, "DosError", api_ok },
-    { L_DOS, 218, "DosSetFileInfo", api_DosSetFileInfo },
-    { L_DOS, 219, "DosSetPathInfo", api_DosSetPathInfo },
-    { L_DOS, 220, "DosSetDefaultDisk", api_DosSetDefaultDisk },
-    { L_DOS, 221, "DosSetFHState", api_DosSetFHState },
-    { L_DOS, 223, "DosQueryPathInfo", api_DosQueryPathInfo },
-    { L_DOS, 224, "DosQueryHType", api_DosQueryHType },
-    { L_DOS, 225, "DosQueryVerify", api_DosQueryVerify },
-    { L_DOS, 226, "DosDeleteDir", api_DosDeleteDir },
-    { L_DOS, 227, "DosScanEnv", api_DosScanEnv },
-    { L_DOS, 229, "DosSleep", api_DosSleep },
-    { L_DOS, 230, "DosGetDateTime", api_DosGetDateTime },
-    { L_DOS, 231, "DosDevConfig", api_DosDevConfig },
-    { L_DOS, 232, "DosEnterCritSec", api_DosEnterCritSec },
-    { L_DOS, 233, "DosExitCritSec", api_DosExitCritSec },
-    { L_DOS, 234, "DosExit", api_DosExit },
-    { L_DOS, 235, "DosKillProcess", api_DosKillProcess },
-    { L_DOS, 236, "DosSetPriority", api_ok },
-    { L_DOS, 237, "DosResumeThread", api_DosResumeThread },
-    { L_DOS, 238, "DosSuspendThread", api_DosSuspendThread },
-    { L_DOS, 239, "DosCreatePipe", api_DosCreatePipe },
-    { L_DOS, 254, "DosResetBuffer", api_DosResetBuffer },
-    { L_DOS, 255, "DosSetCurrentDir", api_DosSetCurrentDir },
-    { L_DOS, 256, "DosSetFilePtr", api_DosSetFilePtr },
-    { L_DOS, 257, "DosClose", api_DosClose },
-    { L_DOS, 258, "DosCopy", api_DosCopy },
-    { L_DOS, 259, "DosDelete", api_DosDelete },
-    { L_DOS, 260, "DosDupHandle", api_DosDupHandle },
-    { L_DOS, 263, "DosFindClose", api_DosFindClose },
-    { L_DOS, 264, "DosFindFirst", api_DosFindFirst },
-    { L_DOS, 265, "DosFindNext", api_DosFindNext },
-    { L_DOS, 270, "DosCreateDir", api_DosCreateDir },
-    { L_DOS, 271, "DosMove", api_DosMove },
-    { L_DOS, 272, "DosSetFileSize", api_DosSetFileSize },
-    { L_DOS, 273, "DosOpen", api_DosOpen },
-    { L_DOS, 274, "DosQueryCurrentDir", api_DosQueryCurrentDir },
-    { L_DOS, 275, "DosQueryCurrentDisk", api_DosQueryCurrentDisk },
-    { L_DOS, 276, "DosQueryFHState", api_DosQueryFHState },
-    { L_DOS, 278, "DosQueryFSInfo", api_DosQueryFSInfo },
-    { L_DOS, 279, "DosQueryFileInfo", api_DosQueryFileInfo },
-    { L_DOS, 280, "DosWaitChild", api_DosWaitChild },
-    { L_DOS, 281, "DosRead", api_DosRead },
-    { L_DOS, 282, "DosWrite", api_DosWrite },
-    { L_DOS, 283, "DosExecPgm", api_DosExecPgm },
-    { L_DOS, 286, "DosBeep", api_DosBeep },
-    { L_DOS, 291, "DosQueryCp", api_DosQueryCp },
-    { L_DOS, 292, "DosSetDateTime", api_ok },
-    { L_DOS, 296, "DosExitList", api_DosExitList },
-    { L_DOS, 299, "DosAllocMem", api_DosAllocMem },
-    { L_DOS, 300, "DosAllocSharedMem", api_DosAllocSharedMem },
-    { L_DOS, 302, "DosGetSharedMem", api_ok },
-    { L_DOS, 304, "DosFreeMem", api_DosFreeMem },
-    { L_DOS, 305, "DosSetMem", api_ok },
-    { L_DOS, 306, "DosQueryMem", api_DosQueryMem },
-    { L_DOS, 311, "DosCreateThread", api_DosCreateThread },
-    { L_DOS, 312, "DosGetInfoBlocks", api_DosGetInfoBlocks },
-    { L_DOS, 318, "DosLoadModule", api_DosLoadModule },
-    { L_DOS, 319, "DosQueryModuleHandle", api_DosQueryModuleHandle },
-    { L_DOS, 320, "DosQueryModuleName", api_DosQueryModuleName },
-    { L_DOS, 321, "DosQueryProcAddr", api_DosQueryProcAddr },
-    { L_DOS, 322, "DosFreeModule", api_ok },
-    { L_DOS, 323, "DosQueryAppType", api_DosQueryAppType },
-    { L_DOS, 324, "DosCreateEventSem", api_DosCreateEventSem },
-    { L_DOS, 325, "DosOpenEventSem", api_DosOpenSem },
-    { L_DOS, 326, "DosCloseEventSem", api_DosCloseSem },
-    { L_DOS, 327, "DosResetEventSem", api_DosResetEventSem },
-    { L_DOS, 328, "DosPostEventSem", api_DosPostEventSem },
-    { L_DOS, 329, "DosWaitEventSem", api_DosWaitEventSem },
-    { L_DOS, 330, "DosQueryEventSem", api_DosQueryEventSem },
-    { L_DOS, 331, "DosCreateMutexSem", api_DosCreateMutexSem },
-    { L_DOS, 332, "DosOpenMutexSem", api_DosOpenSem },
-    { L_DOS, 333, "DosCloseMutexSem", api_DosCloseSem },
-    { L_DOS, 334, "DosRequestMutexSem", api_DosRequestMutexSem },
-    { L_DOS, 335, "DosReleaseMutexSem", api_DosReleaseMutexSem },
-    { L_DOS, 336, "DosQueryMutexSem", api_DosQueryMutexSem },
-    { L_DOS, 337, "DosCreateMuxWaitSem", api_DosCreateMuxWaitSem },
-    { L_DOS, 338, "DosOpenMuxWaitSem", api_DosOpenSem },
-    { L_DOS, 339, "DosCloseMuxWaitSem", api_DosCloseSem },
-    { L_DOS, 340, "DosWaitMuxWaitSem", api_DosWaitMuxWaitSem },
-    { L_DOS, 348, "DosQuerySysInfo", api_DosQuerySysInfo },
-    { L_DOS, 349, "DosWaitThread", api_DosWaitThread },
-    { L_DOS, 354, "DosSetExceptionHandler", api_DosSetExceptionHandler },
-    { L_DOS, 355, "DosUnsetExceptionHandler", api_DosUnsetExceptionHandler },
-    { L_DOS, 356, "DosRaiseException", api_DosRaiseException },
-    { L_DOS, 357, "DosUnwindException", api_DosUnwindException },
-    { L_DOS, 378, "DosSetSignalExceptionFocus", api_DosSetSignalExceptionFocus },
-    { L_DOS, 379, "DosSendSignalException", api_ok },
-    { L_DOS, 380, "DosEnterMustComplete", api_DosEnterMustComplete },
-    { L_DOS, 381, "DosExitMustComplete", api_DosEnterMustComplete },
-    { L_DOS, 382, "DosSetRelMaxFH", api_DosSetRelMaxFH },
-    { L_DOS, 418, "DosAcknowledgeSignalException", api_ok },
-    { L_DOS, 425, "DosFlatToSel", api_DosFlatToSel },
-    { L_DOS, 426, "DosSelToFlat", api_DosSelToFlat },
-    { L_DOS, 428, "DosSetFileLocks", api_ok },
-    { L_DOS, 586, "DosQueryProcType", api_DosQueryProcType },
-    { L_DOS, 873, "DosSetExtLIBPATH", api_ok },
-    { L_DOS, 874, "DosQueryExtLIBPATH", api_DosQueryExtLIBPATH },
-    { L_DOS, 981, "DosOpenL", api_DosOpenL },
-    { L_DOS, 986, "DosSetFileLocksL", api_ok },
-    { L_DOS, 988, "DosSetFilePtrL", api_DosSetFilePtrL },
-    { L_DOS, 989, "DosSetFileSizeL", api_DosSetFileSizeL },
-    { L_NLS, 5, "DosQueryCtryInfo", api_DosQueryCtryInfo },
-    { L_NLS, 6, "DosQueryDBCSEnv", api_DosQueryDBCSEnv },
-    { L_NLS, 7, "DosMapCase", api_DosMapCase },
-    { L_MSG, 5, "DosPutMessage", api_DosPutMessage },
-    { 0, 0, 0, 0 },
+    { L_DOS, 110, "DosForceDelete", api_DosDelete, 0 },
+    { L_DOS, 111, "DosKillThread", api_DosKillThread, 0 },
+    { L_DOS, 209, "DosSetMaxFH", api_ok, 0 },
+    { L_DOS, 210, "DosSetVerify", api_ok, 0 },
+    { L_DOS, 212, "DosError", api_ok, 0 },
+    { L_DOS, 218, "DosSetFileInfo", api_DosSetFileInfo, 0 },
+    { L_DOS, 219, "DosSetPathInfo", api_DosSetPathInfo, 0 },
+    { L_DOS, 220, "DosSetDefaultDisk", api_DosSetDefaultDisk, 0 },
+    { L_DOS, 221, "DosSetFHState", api_DosSetFHState, 0 },
+    { L_DOS, 223, "DosQueryPathInfo", api_DosQueryPathInfo, 0 },
+    { L_DOS, 224, "DosQueryHType", api_DosQueryHType, 0 },
+    { L_DOS, 225, "DosQueryVerify", api_DosQueryVerify, 0 },
+    { L_DOS, 226, "DosDeleteDir", api_DosDeleteDir, 0 },
+    { L_DOS, 227, "DosScanEnv", api_DosScanEnv, 0 },
+    { L_DOS, 229, "DosSleep", api_DosSleep, 0 },
+    { L_DOS, 230, "DosGetDateTime", api_DosGetDateTime, 0 },
+    { L_DOS, 231, "DosDevConfig", api_DosDevConfig, 0 },
+    { L_DOS, 232, "DosEnterCritSec", api_DosEnterCritSec, 0 },
+    { L_DOS, 233, "DosExitCritSec", api_DosExitCritSec, 0 },
+    { L_DOS, 234, "DosExit", api_DosExit, 0 },
+    { L_DOS, 235, "DosKillProcess", api_DosKillProcess, 0 },
+    { L_DOS, 236, "DosSetPriority", api_ok, 0 },
+    { L_DOS, 237, "DosResumeThread", api_DosResumeThread, 0 },
+    { L_DOS, 238, "DosSuspendThread", api_DosSuspendThread, 0 },
+    { L_DOS, 239, "DosCreatePipe", api_DosCreatePipe, 0 },
+    { L_DOS, 254, "DosResetBuffer", api_DosResetBuffer, 0 },
+    { L_DOS, 255, "DosSetCurrentDir", api_DosSetCurrentDir, 0 },
+    { L_DOS, 256, "DosSetFilePtr", api_DosSetFilePtr, 0 },
+    { L_DOS, 257, "DosClose", api_DosClose, 0 },
+    { L_DOS, 258, "DosCopy", api_DosCopy, 0 },
+    { L_DOS, 259, "DosDelete", api_DosDelete, 0 },
+    { L_DOS, 260, "DosDupHandle", api_DosDupHandle, 0 },
+    { L_DOS, 263, "DosFindClose", api_DosFindClose, 0 },
+    { L_DOS, 264, "DosFindFirst", api_DosFindFirst, 0 },
+    { L_DOS, 265, "DosFindNext", api_DosFindNext, 0 },
+    { L_DOS, 270, "DosCreateDir", api_DosCreateDir, 0 },
+    { L_DOS, 271, "DosMove", api_DosMove, 0 },
+    { L_DOS, 272, "DosSetFileSize", api_DosSetFileSize, 0 },
+    { L_DOS, 273, "DosOpen", api_DosOpen, 0 },
+    { L_DOS, 274, "DosQueryCurrentDir", api_DosQueryCurrentDir, 0 },
+    { L_DOS, 275, "DosQueryCurrentDisk", api_DosQueryCurrentDisk, 0 },
+    { L_DOS, 276, "DosQueryFHState", api_DosQueryFHState, 0 },
+    { L_DOS, 278, "DosQueryFSInfo", api_DosQueryFSInfo, 0 },
+    { L_DOS, 279, "DosQueryFileInfo", api_DosQueryFileInfo, 0 },
+    { L_DOS, 280, "DosWaitChild", api_DosWaitChild, 0 },
+    { L_DOS, 281, "DosRead", api_DosRead, 0 },
+    { L_DOS, 282, "DosWrite", api_DosWrite, 0 },
+    { L_DOS, 283, "DosExecPgm", api_DosExecPgm, 0 },
+    { L_DOS, 286, "DosBeep", api_DosBeep, 0 },
+    { L_DOS, 291, "DosQueryCp", api_DosQueryCp, 0 },
+    { L_DOS, 292, "DosSetDateTime", api_ok, 0 },
+    { L_DOS, 296, "DosExitList", api_DosExitList, 0 },
+    { L_DOS, 299, "DosAllocMem", api_DosAllocMem, 0 },
+    { L_DOS, 300, "DosAllocSharedMem", api_DosAllocSharedMem, 0 },
+    { L_DOS, 302, "DosGetSharedMem", api_ok, 0 },
+    { L_DOS, 304, "DosFreeMem", api_DosFreeMem, 0 },
+    { L_DOS, 305, "DosSetMem", api_ok, 0 },
+    { L_DOS, 306, "DosQueryMem", api_DosQueryMem, 0 },
+    { L_DOS, 311, "DosCreateThread", api_DosCreateThread, 0 },
+    { L_DOS, 312, "DosGetInfoBlocks", api_DosGetInfoBlocks, 0 },
+    { L_DOS, 318, "DosLoadModule", api_DosLoadModule, 0 },
+    { L_DOS, 319, "DosQueryModuleHandle", api_DosQueryModuleHandle, 0 },
+    { L_DOS, 320, "DosQueryModuleName", api_DosQueryModuleName, 0 },
+    { L_DOS, 321, "DosQueryProcAddr", api_DosQueryProcAddr, 0 },
+    { L_DOS, 322, "DosFreeModule", api_ok, 0 },
+    { L_DOS, 323, "DosQueryAppType", api_DosQueryAppType, 0 },
+    { L_DOS, 324, "DosCreateEventSem", api_DosCreateEventSem, 0 },
+    { L_DOS, 325, "DosOpenEventSem", api_DosOpenSem, 0 },
+    { L_DOS, 326, "DosCloseEventSem", api_DosCloseSem, 0 },
+    { L_DOS, 327, "DosResetEventSem", api_DosResetEventSem, 0 },
+    { L_DOS, 328, "DosPostEventSem", api_DosPostEventSem, 0 },
+    { L_DOS, 329, "DosWaitEventSem", api_DosWaitEventSem, 0 },
+    { L_DOS, 330, "DosQueryEventSem", api_DosQueryEventSem, 0 },
+    { L_DOS, 331, "DosCreateMutexSem", api_DosCreateMutexSem, 0 },
+    { L_DOS, 332, "DosOpenMutexSem", api_DosOpenSem, 0 },
+    { L_DOS, 333, "DosCloseMutexSem", api_DosCloseSem, 0 },
+    { L_DOS, 334, "DosRequestMutexSem", api_DosRequestMutexSem, 0 },
+    { L_DOS, 335, "DosReleaseMutexSem", api_DosReleaseMutexSem, 0 },
+    { L_DOS, 336, "DosQueryMutexSem", api_DosQueryMutexSem, 0 },
+    { L_DOS, 337, "DosCreateMuxWaitSem", api_DosCreateMuxWaitSem, 0 },
+    { L_DOS, 338, "DosOpenMuxWaitSem", api_DosOpenSem, 0 },
+    { L_DOS, 339, "DosCloseMuxWaitSem", api_DosCloseSem, 0 },
+    { L_DOS, 340, "DosWaitMuxWaitSem", api_DosWaitMuxWaitSem, 0 },
+    { L_DOS, 348, "DosQuerySysInfo", api_DosQuerySysInfo, 0 },
+    { L_DOS, 349, "DosWaitThread", api_DosWaitThread, 0 },
+    { L_DOS, 354, "DosSetExceptionHandler", api_DosSetExceptionHandler, 0 },
+    { L_DOS, 355, "DosUnsetExceptionHandler", api_DosUnsetExceptionHandler, 0 },
+    { L_DOS, 356, "DosRaiseException", api_DosRaiseException, 0 },
+    { L_DOS, 357, "DosUnwindException", api_DosUnwindException, 0 },
+    { L_DOS, 378, "DosSetSignalExceptionFocus", api_DosSetSignalExceptionFocus, 0 },
+    { L_DOS, 379, "DosSendSignalException", api_ok, 0 },
+    { L_DOS, 380, "DosEnterMustComplete", api_DosEnterMustComplete, 0 },
+    { L_DOS, 381, "DosExitMustComplete", api_DosEnterMustComplete, 0 },
+    { L_DOS, 382, "DosSetRelMaxFH", api_DosSetRelMaxFH, 0 },
+    { L_DOS, 418, "DosAcknowledgeSignalException", api_ok, 0 },
+    { L_DOS, 425, "DosFlatToSel", api_DosFlatToSel, 0 },
+    { L_DOS, 426, "DosSelToFlat", api_DosSelToFlat, 0 },
+    { L_DOS, 428, "DosSetFileLocks", api_ok, 0 },
+    { L_DOS, 586, "DosQueryProcType", api_DosQueryProcType, 0 },
+    { L_DOS, 873, "DosSetExtLIBPATH", api_ok, 0 },
+    { L_DOS, 874, "DosQueryExtLIBPATH", api_DosQueryExtLIBPATH, 0 },
+    { L_DOS, 981, "DosOpenL", api_DosOpenL, 0 },
+    { L_DOS, 986, "DosSetFileLocksL", api_ok, 0 },
+    { L_DOS, 988, "DosSetFilePtrL", api_DosSetFilePtrL, 0 },
+    { L_DOS, 989, "DosSetFileSizeL", api_DosSetFileSizeL, 0 },
+    { L_NLS, 5, "DosQueryCtryInfo", api_DosQueryCtryInfo, 0 },
+    { L_NLS, 6, "DosQueryDBCSEnv", api_DosQueryDBCSEnv, 0 },
+    { L_NLS, 7, "DosMapCase", api_DosMapCase, 0 },
+    { L_MSG, 5, "DosPutMessage", api_DosPutMessage, 0 },
+    { L_KBD, 4, "KbdCharIn", api_KbdCharIn, 8 },
+    { L_KBD, 9, "KbdStringIn", api_KbdStringIn, 12 },
+    { L_KBD, 10, "KbdGetStatus", api_KbdGetStatus, 6 },
+    { L_KBD, 11, "KbdSetStatus", api_ok16, 6 },
+    { L_KBD, 13, "KbdFlushBuffer", api_KbdFlushBuffer, 2 },
+    { L_KBD, 22, "KbdPeek", api_KbdPeek, 6 },
+    { L_VIO, 7, "VioScrollUp", api_VioScrollUp, 16 },
+    { L_VIO, 9, "VioGetCurPos", api_VioGetCurPos, 10 },
+    { L_VIO, 10, "VioWrtCellStr", api_VioWrtCellStr, 12 },
+    { L_VIO, 13, "VioWrtCharStr", api_VioWrtCharStr, 12 },
+    { L_VIO, 15, "VioSetCurPos", api_VioSetCurPos, 6 },
+    { L_VIO, 19, "VioWrtTTY", api_VioWrtTTY, 8 },
+    { L_VIO, 21, "VioGetMode", api_VioGetMode, 6 },
+    { L_VIO, 22, "VioSetMode", api_ok16, 6 },
+    { L_VIO, 24, "VioReadCellStr", api_VioReadCellStr, 14 },
+    { L_VIO, 26, "VioWrtNAttr", api_ok16, 12 },
+    { L_VIO, 27, "VioGetCurType", api_VioGetCurType, 6 },
+    { L_VIO, 30, "VioReadCharStr", api_VioReadCharStr, 14 },
+    { L_VIO, 32, "VioSetCurType", api_VioSetCurType, 6 },
+    { L_VIO, 40, "VioGetCp", api_VioGetCp, 8 },
+    { L_VIO, 42, "VioSetCp", api_ok16, 6 },
+    { L_VIO, 47, "VioScrollDn", api_VioScrollDn, 16 },
+    { L_VIO, 48, "VioWrtCharStrAtt", api_VioWrtCharStrAtt, 16 },
+    { L_VIO, 52, "VioWrtNCell", api_VioWrtNCell, 12 },
+    { L_VIO, 53, "VioWrtNChar", api_VioWrtNChar, 12 },
+    { 0, 0, 0, 0, 0 },
 };
 
 static const api_t *api_find(int lib, uint32_t ord, const char *name)
@@ -2560,12 +2895,13 @@ int main(int argc, char **argv)
     cpu_reset(&C);
     C.size = (uint32_t)size;
     C.lo = UNIT;
-    C.thunk_lo = C.size - UNIT;
-    C.thunk_hi = C.size;
+    /* the thunks: below 512 MB, where 16:16 pointers (tiles) reach */
+    C.thunk_lo = (C.size < 0x20000000u ? C.size : 0x20000000u) - UNIT;
+    C.thunk_hi = C.thunk_lo + UNIT;
     nunits = C.size / UNIT;
     uused = calloc(nunits, 1);
     ulen = calloc(nunits, sizeof *ulen);
-    uused[0] = uused[nunits - 1] = 1;
+    uused[0] = uused[nunits - 1] = uused[C.thunk_lo / UNIT] = 1;
     memset(C.mem + C.thunk_lo, 0xCC, UNIT);
     drives_init();
 

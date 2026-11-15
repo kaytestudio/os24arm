@@ -2,7 +2,9 @@
  *
  * Flat memory model as OS/2 2.x+ gives its programs: CS, DS, ES, SS all
  * cover the whole 4 GB from 0, FS points at the thread's information
- * block. The guest's memory is one block of the host's (mem, size bytes:
+ * block. And, for the 16-bit calls (VIO, KBD: the C runtimes go through
+ * a 16-bit stack and code segment to reach them), OS/2's tiled LDT:
+ * selector n*8+7 is the 64 KB at n*64K, as 16-bit code or stack. The guest's memory is one block of the host's (mem, size bytes:
  * guest address 0 is mem[0]); an access outside it, or below lo, is a
  * trap. Integer
  * instructions of the 386/486 (and CMOV, BSWAP, CPUID, RDTSC) and the
@@ -37,8 +39,11 @@ enum {
 typedef struct cpu {
     uint32_t r[8];
     uint32_t eip, eflags;
-    uint32_t fs_base, gs_base;      /* (the other segments start at 0) */
-    uint16_t sreg[6];               /* ES CS SS DS FS GS: the selectors, as read */
+    uint32_t fs_base, gs_base;
+    uint32_t es_base, cs_base, ss_base, ds_base;   /* 0, unless a tiled selector's in */
+    int code16, stack16;            /* CS, SS: a tiled (16-bit) segment */
+    uint32_t tib;                   /* FS's base for a GDT selector (0x150b) */
+    uint16_t sreg[6];               /* ES CS SS DS FS GS: the selectors */
     uint8_t *mem;
     uint32_t size;                  /* bytes of guest memory */
     uint32_t lo;                    /* below this: no memory (the NULL page's 64 KB) */
@@ -54,6 +59,7 @@ typedef struct cpu {
 } cpu_t;
 
 void cpu_reset(cpu_t *c);
+void cpu_load_seg(cpu_t *c, int seg, uint16_t sel);   /* seg: 0 ES 1 CS 2 SS 3 DS 4 FS 5 GS */
 int  cpu_run(cpu_t *c, long steps);
 
 /* the guest's memory, checked */
