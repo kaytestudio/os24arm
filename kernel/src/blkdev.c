@@ -128,73 +128,140 @@ void ramdisk_create(const char *name, void *base, size_t size)
     kprintf("[RAMDISK] Created: %s (%u KB)\n", name, (unsigned)(size / 1024));
 }
 
-/* ── VirtIO Block Device (stub for now) ──────────────────────────────────── */
+/* ── VirtIO Block Device: QEMU's virtio-blk on virtio-mmio ─────────────── */
+/* (-drive if=none,file=disk.img,format=raw,id=c -device virtio-blk-device,drive=c)
+ * version 2 (modern), polled like the kernel's other virtio drivers
+ * (net/virtio_net.c): each request a chain of three - the header (type,
+ * sector), the data (through a bounce buffer, 64 KB at a time), the status
+ * the device writes. The first such disk is disk0, which the GPT and MBR
+ * probes and the file systems use as before; the RAM window below is only
+ * the fallback. */
+#ifndef uint64_t
+typedef unsigned long long vb_u64;
+#else
+typedef uint64_t vb_u64;
+#endif
+#define VB_SLOT_BASE   0x0A000000UL
+#define VB_SLOT_STRIDE 0x200UL
+#define VB_SLOTS       32
+#define VB_QN          16
+#define VB_CHUNK       128                      /* sectors a request: 64 KB */
+#pragma pack(push, 1)
+typedef struct { vb_u64 addr; uint32_t len; uint16_t flags, next; } vb_desc_t;
+typedef struct { uint16_t flags, idx, ring[VB_QN]; } vb_avail_t;
+typedef struct { uint32_t id, len; } vb_used_elem_t;
+typedef struct { uint16_t flags, idx; vb_used_elem_t ring[VB_QN]; } vb_used_t;
+typedef struct { uint32_t type, reserved; vb_u64 sector; } vb_req_t;
+#pragma pack(pop)
+static struct {
+    vb_desc_t desc[VB_QN] __attribute__((aligned(4096)));
+    vb_avail_t avail __attribute__((aligned(4096)));
+    vb_used_t used __attribute__((aligned(4096)));
+    vb_req_t req __attribute__((aligned(64)));
+    volatile uint8_t status __attribute__((aligned(64)));
+    uint8_t bounce[VB_CHUNK * 512] __attribute__((aligned(4096)));
+    uint16_t last_used;
+    uintptr_t base;
+} vb;
+static blkdev_t vb_dev;
+static inline uint32_t vb_rd(uint32_t o) { return *(volatile uint32_t *)(vb.base + o); }
+static inline void vb_wr(uint32_t o, uint32_t v) { *(volatile uint32_t *)(vb.base + o) = v; }
+static inline void vb_barrier(void) { __asm__ volatile("dsb sy" ::: "memory"); }
 
-/*
- * VirtIO implementation would go here.
- * For now, this is a placeholder.
- */
-
-typedef struct {
-    uint32_t device_id;
-    uint32_t num_sectors;
-    void     *mmio_base;
-} virtio_blk_priv_t;
-
-static virtio_blk_priv_t virtio_priv;
-static blkdev_t          virtio_dev;
-static uint8_t           vio_sector_buf[SECTOR_SIZE] __attribute__((aligned(512)));
-
+/* one request: type 0 IN (read), 1 OUT (write); n sectors through the bounce buffer */
+static int vb_request(uint32_t type, int64_t lba, uint32_t n)
+{
+    vb.req.type = type; vb.req.reserved = 0; vb.req.sector = (vb_u64)lba;
+    vb.status = 0xFF;
+    vb.desc[0] = (vb_desc_t){ (vb_u64)(uintptr_t)&vb.req, sizeof vb.req, 1, 1 };                         /* NEXT */
+    vb.desc[1] = (vb_desc_t){ (vb_u64)(uintptr_t)vb.bounce, n * 512, (uint16_t)(1 | (type == 0 ? 2 : 0)), 2 };   /* NEXT, WRITE (the device's) for a read */
+    vb.desc[2] = (vb_desc_t){ (vb_u64)(uintptr_t)&vb.status, 1, 2, 0 };                                  /* WRITE */
+    vb.avail.ring[vb.avail.idx % VB_QN] = 0;
+    vb_barrier();
+    vb.avail.idx++;
+    vb_barrier();
+    vb_wr(0x050, 0);                                                     /* QUEUE_NOTIFY */
+    for (unsigned long spin = 0; vb.last_used == *(volatile uint16_t *)&vb.used.idx; spin++)
+        if (spin > 4000000000UL) { kprintf("[VIRTIO-BLK] no answer\n"); return -1; }
+    vb_barrier();
+    vb.last_used++;
+    return vb.status == 0 ? 0 : -1;
+}
 static int virtio_blk_read(blkdev_t *dev, int64_t lba, uint32_t count, void *buf)
 {
-    /* TODO: Implement VirtIO block read */
-    /* This would use virtqueues to communicate with QEMU */
-    (void)dev;
-    (void)lba;
-    (void)count;
-    (void)buf;
-    return -1;  /* Not implemented */
+    if (lba < 0 || (vb_u64)lba + count > (vb_u64)dev->num_sectors) return -1;
+    uint8_t *b = buf;
+    while (count) {
+        uint32_t n = count < VB_CHUNK ? count : VB_CHUNK;
+        if (vb_request(0, lba, n)) return -1;
+        kmemcpy(b, vb.bounce, n * 512);
+        b += n * 512; lba += n; count -= n;
+    }
+    return 0;
 }
-
 static int virtio_blk_write(blkdev_t *dev, int64_t lba, uint32_t count, const void *buf)
 {
-    /* TODO: Implement VirtIO block write */
-    (void)dev;
-    (void)lba;
-    (void)count;
-    (void)buf;
-    return -1;  /* Not implemented */
+    if (dev->flags & BLKDEV_READONLY) return -1;
+    if (lba < 0 || (vb_u64)lba + count > (vb_u64)dev->num_sectors) return -1;
+    const uint8_t *b = buf;
+    while (count) {
+        uint32_t n = count < VB_CHUNK ? count : VB_CHUNK;
+        kmemcpy(vb.bounce, b, n * 512);
+        if (vb_request(1, lba, n)) return -1;
+        b += n * 512; lba += n; count -= n;
+    }
+    return 0;
 }
-
-void virtio_blk_init(void)
+/* the first virtio-blk device: set up, registered as name; 0 if there's none */
+static int virtio_blk_probe(const char *name)
 {
-    /* TODO: Probe VirtIO MMIO region for block devices */
-    /* For now, just print a message */
-    kprintf("[VIRTIO-BLK] Driver initialized (stub)\n");
-    kprintf("[VIRTIO-BLK] TODO: Implement VirtIO block device detection\n");
-
-    /* Example of how to register when implemented:
-     *
-     * kstrcpy(virtio_dev.name, "vda");
-     * virtio_dev.num_sectors  = virtio_priv.num_sectors;
-     * virtio_dev.sector_size  = SECTOR_SIZE;
-     * virtio_dev.driver_data  = &virtio_priv;
-     * virtio_dev.read         = virtio_blk_read;
-     * virtio_dev.write        = virtio_blk_write;
-     * virtio_dev.flags        = 0;
-     * virtio_dev.parent       = NULL;
-     * virtio_dev.start_sector = 0;
-     *
-     * blkdev_register(&virtio_dev);
-     */
+    for (int s = 0; s < VB_SLOTS; s++) {
+        vb.base = VB_SLOT_BASE + (uintptr_t)s * VB_SLOT_STRIDE;
+        if (vb_rd(0x000) != 0x74726976 || vb_rd(0x004) != 2 || vb_rd(0x008) != 2) continue;   /* magic, version 2, a block device */
+        vb_wr(0x070, 0);
+        vb_wr(0x070, 1);                                                 /* ACKNOWLEDGE */
+        vb_wr(0x070, 1 | 2);                                             /* DRIVER */
+        vb_wr(0x014, 0);
+        uint32_t f0 = vb_rd(0x010);
+        vb_wr(0x024, 0); vb_wr(0x020, f0 & (1u << 5));                  /* VIRTIO_BLK_F_RO, if it says so */
+        vb_wr(0x024, 1); vb_wr(0x020, 1);                                /* VIRTIO_F_VERSION_1 */
+        vb_wr(0x070, 1 | 2 | 8);                                         /* FEATURES_OK */
+        if (!(vb_rd(0x070) & 8)) { kprintf("[VIRTIO-BLK] features refused\n"); continue; }
+        vb_wr(0x030, 0);                                                 /* queue 0 */
+        if (vb_rd(0x034) < VB_QN) { kprintf("[VIRTIO-BLK] queue too small\n"); continue; }
+        kmemset(&vb.desc, 0, sizeof vb.desc); kmemset(&vb.avail, 0, sizeof vb.avail); kmemset(&vb.used, 0, sizeof vb.used);
+        vb.last_used = 0;
+        vb_wr(0x038, VB_QN);
+        vb_u64 d = (vb_u64)(uintptr_t)vb.desc, a = (vb_u64)(uintptr_t)&vb.avail, u = (vb_u64)(uintptr_t)&vb.used;
+        vb_wr(0x080, (uint32_t)d); vb_wr(0x084, (uint32_t)(d >> 32));
+        vb_wr(0x090, (uint32_t)a); vb_wr(0x094, (uint32_t)(a >> 32));
+        vb_wr(0x0a0, (uint32_t)u); vb_wr(0x0a4, (uint32_t)(u >> 32));
+        vb_wr(0x044, 1);                                                 /* QUEUE_READY */
+        vb_wr(0x070, 1 | 2 | 8 | 4);                                     /* DRIVER_OK */
+        vb_u64 cap = (vb_u64)vb_rd(0x100) | (vb_u64)vb_rd(0x104) << 32;   /* (config: capacity, in 512-byte sectors) */
+        kstrcpy(vb_dev.name, name);
+        vb_dev.num_sectors = (int64_t)cap;
+        vb_dev.sector_size = SECTOR_SIZE;
+        vb_dev.driver_data = &vb;
+        vb_dev.read = virtio_blk_read;
+        vb_dev.write = virtio_blk_write;
+        vb_dev.flags = (f0 & (1u << 5)) ? BLKDEV_READONLY : 0;
+        vb_dev.parent = NULL;
+        vb_dev.start_sector = 0;
+        blkdev_register(&vb_dev);
+        kprintf("[VIRTIO-BLK] %s: %u MB%s\n", name, (unsigned)(cap / 2048), (f0 & (1u << 5)) ? ", read-only" : "");
+        return 1;
+    }
+    vb.base = 0;
+    return 0;
 }
+void virtio_blk_init(void) { }                          /* (blk_init probes: disk0) */
 
 /* ── Block Device Subsystem Init ───────────────────────────────────────── */
 
-/* No VirtIO block driver exists yet (see virtio_blk_read/write stubs
- * above), so there's no real disk to mount a filesystem against. Register
- * a block device backed by a fixed physical RAM address instead: a real
- * disk image can be tested by injecting it there before boot, e.g.
+/* disk0: the first virtio-blk disk (above); without one, a block device
+ * backed by a fixed physical RAM address: a disk image can be injected
+ * there before boot, e.g.
  *   qemu-system-aarch64 ... -device loader,file=test.img,addr=0x44000000
  * With nothing loaded there, RAM reads as zero and filesystem mounts
  * correctly fail (bad superblock magic) rather than misbehaving. */
@@ -207,7 +274,9 @@ void blk_init(void)
     // Arrays are already zeroed by boot.S BSS clearing
     blkdev_count = 0;
 
-    ramdisk_create("disk0", (void *)PRELOADED_DISK_ADDR, PRELOADED_DISK_SIZE);
+    /* a real disk (virtio-blk) when QEMU has one; else the RAM window */
+    if (!virtio_blk_probe("disk0"))
+        ramdisk_create("disk0", (void *)PRELOADED_DISK_ADDR, PRELOADED_DISK_SIZE);
 
     /* If a GPT-partitioned image (BOOT + C:, or anything else) was loaded
      * into disk0, register its partitions as child devices. No-op if disk0

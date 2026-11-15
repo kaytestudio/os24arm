@@ -1201,7 +1201,7 @@ if(TARGET_PLATFORM STREQUAL "QEMU")
                 -m 2G
                 -smp 4
                 -kernel ${CMAKE_BINARY_DIR}/os2warp.img
-                -device loader,file=${CMAKE_BINARY_DIR}/testdisk.img,addr=0x44000000,force-raw=on
+                -global virtio-mmio.force-legacy=false -drive if=none,id=cdisk,file=${CMAKE_BINARY_DIR}/testdisk.img,format=raw -device virtio-blk-device,drive=cdisk
                 -serial mon:stdio
                 -display none
                 -nographic
@@ -1222,7 +1222,7 @@ if(TARGET_PLATFORM STREQUAL "QEMU")
                 -m 2G
                 -smp 1
                 -kernel ${CMAKE_BINARY_DIR}/os2warp.img
-                -device loader,file=${CMAKE_BINARY_DIR}/testdisk.img,addr=0x44000000,force-raw=on
+                -global virtio-mmio.force-legacy=false -drive if=none,id=cdisk,file=${CMAKE_BINARY_DIR}/testdisk.img,format=raw -device virtio-blk-device,drive=cdisk
                 -serial mon:stdio
                 -display none
                 -nographic
@@ -1253,7 +1253,7 @@ if(TARGET_PLATFORM STREQUAL "QEMU")
                 -smp 4
                 -global virtio-mmio.force-legacy=false
                 -kernel ${CMAKE_BINARY_DIR}/os2warp.img
-                -device loader,file=${CMAKE_BINARY_DIR}/testdisk.img,addr=0x44000000,force-raw=on
+                -global virtio-mmio.force-legacy=false -drive if=none,id=cdisk,file=${CMAKE_BINARY_DIR}/testdisk.img,format=raw -device virtio-blk-device,drive=cdisk
                 -device virtio-gpu-device
                 -device ramfb
                 -device virtio-keyboard-device
@@ -1320,7 +1320,7 @@ if(TARGET_PLATFORM STREQUAL "QEMU")
                 -m 2G
                 -smp 1
                 -kernel ${CMAKE_BINARY_DIR}/os2warp.img
-                -device loader,file=${CMAKE_BINARY_DIR}/testdisk.img,addr=0x44000000,force-raw=on
+                -global virtio-mmio.force-legacy=false -drive if=none,id=cdisk,file=${CMAKE_BINARY_DIR}/testdisk.img,format=raw -device virtio-blk-device,drive=cdisk
                 -serial mon:stdio
                 -display none
                 -nographic

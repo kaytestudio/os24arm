@@ -358,7 +358,7 @@ kernel/src/vfs.c  (mounts, open files, path dispatch, drive letters)
         │
    HPFS · FAT16/32 · ext4 · btrfs · ramfs (/tmp)
         │
-blkdev (GPT, MBR)  ←  USB mass storage (xHCI)  ·  preloaded-RAM disk  ·  SD (boards)
+blkdev (GPT, MBR)  ←  virtio-blk  ·  USB mass storage (xHCI)  ·  SD (boards)
 ```
 
 | driver | where | reads | writes |
@@ -376,8 +376,10 @@ the desktop and its programs in a hidden `\OS2` folder, and is UNIXROOT
 `/etc`, `/bin` and `/var`, so installed packages stay there.
 
 C: in QEMU is a GPT disk image (`scripts/mktestdisk.sh`: a FAT16 BOOT
-partition and an ext4 or btrfs C: partition). QEMU loads it into RAM at
-0x44000000 before boot, because there is no virtio-blk driver yet.
+partition and an ext4 or btrfs C: partition), given to the kernel as a
+virtio-blk disk (`kernel/src/blkdev.c`, polled, on virtio-mmio): what the
+system writes to C: is kept in `build/testdisk.img`. (Without one, the
+kernel falls back to a 24 MB RAM window QEMU can preload.)
 
 ---
 
@@ -583,8 +585,7 @@ QEMU only.
 
 Not there yet:
 
-- **Storage**: a virtio-blk driver (C: comes through a RAM window), the
-  btrfs extent and checksum trees, f2fs mounted at boot.
+- **Storage**: the btrfs extent and checksum trees, f2fs mounted at boot.
 - **The kernel**: SMP (one CPU runs everything), dynamic linking for
   Linux programs, datagram Unix sockets.
 - **Graphics**: GPU acceleration (the desktop renders with pixman).

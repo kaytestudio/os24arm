@@ -93,7 +93,7 @@ KERNEL="$BUILD/os2warp.img"
 [ -f "$KERNEL" ] || { echo "$KERNEL missing - run without --no-build" >&2; exit 1; }
 DISK_OPT=()
 if [ "$USE_DISK" = 1 ] && [ -f "$BUILD/testdisk.img" ]; then
-    DISK_OPT=(-device "loader,file=$BUILD/testdisk.img,addr=0x44000000,force-raw=on")
+    DISK_OPT=(-drive "if=none,id=cdisk,file=$BUILD/testdisk.img,format=raw" -device virtio-blk-device,drive=cdisk)   # (C:: a real disk - its writes kept)
 fi
 
 DISPLAY_OPT=(-display none -nographic)

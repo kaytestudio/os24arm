@@ -2,10 +2,11 @@
 # scripts/mktestdisk.sh — build a real GPT test disk with BOOT (FAT16) +
 # C: (btrfs or ext4) partitions for QEMU
 #
-# blkdev.c has no real VirtIO block driver yet (virtio_blk_read/write are
-# unused stubs) — it only reads a "disk" from a fixed physical RAM address
-# (PRELOADED_DISK_ADDR = 0x44000000, 24MB window), meant to be populated by
-# injecting a real disk image there before boot via QEMU's -device loader.
+# QEMU gives it to the kernel as a virtio-blk disk (kernel/src/blkdev.c:
+# disk0; scripts/run-vm.sh and the CMake run targets do so), and what the
+# system writes to C: stays in the image. (Without a virtio-blk disk the
+# kernel falls back to a 24 MB RAM window at 0x44000000 that QEMU's
+# -device loader can fill - a copy only, its writes lost.)
 #
 # The disk has two GPT partitions, matching this project's "safe BOOT
 # partition" design (see fat32_init() in kernel/src/fat32.c and
@@ -141,5 +142,5 @@ echo
 echo "Boot with:"
 echo "  qemu-system-aarch64 -machine virt,gic-version=3 -cpu max -accel hvf -m 2G -smp 1 \\"
 echo "    -kernel build/os2warp.img \\"
-echo "    -device loader,file=$DISK,addr=0x44000000,force-raw=on \\"
+echo "    -global virtio-mmio.force-legacy=false -drive if=none,id=c,file=$DISK,format=raw -device virtio-blk-device,drive=c \\"
 echo "    -serial mon:stdio -display none -nographic"
