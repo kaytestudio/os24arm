@@ -26,6 +26,7 @@
 #include <limits.h>
 #include <pthread.h>
 #include <sched.h>
+#include <setjmp.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -94,6 +95,7 @@ typedef struct thr {
     int state;                          /* 1 running, 2 ended, 3 collected (DosWaitThread) */
     int suspended, kill;
     int api_noret, xcpt_depth;
+    jmp_buf *unwind_jb;                 /* the exception dispatch whose handler runs (DosUnwindException) */
 } thr_t;
 #define MAXTHR 128
 static thr_t thr0 = { .tid = 1, .state = 1 };
@@ -390,6 +392,7 @@ typedef struct mod {
 static mod_t *mods[64];
 static int nmods;
 static mod_t *exe;
+static char exe_dir[PATH_MAX];          /* the program's directory: its DLLs first */
 static mod_t *pending_init[64];
 static int npending;
 static int process_ready;
@@ -784,7 +787,9 @@ static mod_t *load_module(const char *path, int dll, char *err, size_t errn)
     if (!m->nobj) { snprintf(err, errn, "%s: no objects", path); return 0; }
     uint32_t span = hi_a - lo_a;
     if (!mem_reserve(lo_a, span)) {
-        if (H(m, LX_MFLAGS) & 0x10) { snprintf(err, errn, "SYS0192: %s can't go where it's linked (0x%x).", path, lo_a); return 0; }
+        /* (an EXE without its internal fixups stays where it's linked;
+         * DLLs move - OS/2 puts them in its shared area - and keep theirs) */
+        if (!dll && (H(m, LX_MFLAGS) & 0x10)) { snprintf(err, errn, "SYS0192: %s can't go where it's linked (0x%x).", path, lo_a); return 0; }
         uint32_t at = mem_alloc(span + (lo_a % UNIT));
         if (!at) { snprintf(err, errn, "SYS0008: no memory for %s", path); return 0; }
         ulen[at / UNIT] = 0;                           /* (not DosFreeMem's) */
@@ -863,11 +868,7 @@ static mod_t *load_dll(const char *name, char *err, size_t errn)
     if (b != name) found = !os2_to_host(name, h, sizeof h, 0) && access(h, R_OK) == 0;
     /* the program's directory, the current one, then LIBPATH */
     char dirs[8192] = "";
-    if (exe) {
-        snprintf(dirs, sizeof dirs, "%s", exe->path);
-        char *sl = strrchr(dirs, '/');
-        if (sl) *sl = 0;
-    }
+    snprintf(dirs, sizeof dirs, "%s", exe_dir);
     size_t l = strlen(dirs);
     const char *lp[] = { getenv("BEGINLIBPATH"), getenv("LIBPATH"), getenv("OS2X86_LIBPATH"), getenv("ENDLIBPATH") };
     snprintf(dirs + l, sizeof dirs - l, ";.");
@@ -1151,18 +1152,27 @@ static void dispatch(uint32_t num, uint32_t np, uint32_t p0, uint32_t p1, uint32
     p32(ctx + 128, C.r[EDI]); p32(ctx + 132, C.r[ESI]); p32(ctx + 136, C.r[EAX]); p32(ctx + 140, C.r[EBX]);
     p32(ctx + 144, C.r[EDX]); p32(ctx + 148, C.r[ECX]); p32(ctx + 152, C.r[EBP]); p32(ctx + 156, C.eip);
     p32(ctx + 160, SEL_CODE); p32(ctx + 164, C.eflags); p32(ctx + 168, C.r[ESP]); p32(ctx + 172, SEL_DATA);
+    /* a handler that leaves by DosUnwindException (longjmp out of a
+     * signal handler) comes back here, its nested calls abandoned */
+    jmp_buf jb, *prev = me->unwind_jb;
+    int d0 = xcpt_depth;
+    me->unwind_jb = &jb;
+    if (setjmp(jb)) { me->unwind_jb = prev; xcpt_depth = d0; return; }
     xcpt_depth++;
     for (uint32_t rec = g32(C.fs_base); rec && rec != 0xFFFFFFFF && ok(rec, 8); rec = g32(rec)) {
         uint32_t args[4] = { rep, rec, ctx, 0 }, sp = C.r[ESP];
         C.r[ESP] = rep - 16;
         uint32_t r = guest_call(g32(rec + 4), 4, args);
         C.r[ESP] = sp;
+        if (trace) fprintf(stderr, "[os2x86] exception %08x at %08x: handler %08x (record %08x) says %08x\n",
+                           num, addr, g32(rec + 4), rec, r);
         if (r == 0xFFFFFFFF) {              /* XCPT_CONTINUE_EXECUTION: as the context says */
             C.r[EDI] = g32(ctx + 128); C.r[ESI] = g32(ctx + 132); C.r[EAX] = g32(ctx + 136);
             C.r[EBX] = g32(ctx + 140); C.r[EDX] = g32(ctx + 144); C.r[ECX] = g32(ctx + 148);
             C.r[EBP] = g32(ctx + 152); C.eip = g32(ctx + 156); C.eflags = (g32(ctx + 164) & 0x00254FD5) | 0x202;
             C.r[ESP] = g32(ctx + 168);
             xcpt_depth--;
+            me->unwind_jb = prev;
             return;
         }
     }
@@ -1883,7 +1893,18 @@ static uint32_t api_DosQueryExtLIBPATH(void) { p8(A(0), 0); return 0; }
 static uint32_t api_DosFlatToSel(void) { uint32_t a = C.r[EAX]; return ((a >> 16) << 19 | 7 << 16) | (a & 0xFFFF); }
 static uint32_t api_DosSelToFlat(void) { uint32_t v = C.r[EAX]; return ((v >> 19) << 16) | (v & 0xFFFF); }
 static uint32_t api_DosEnterMustComplete(void) { if (A(0)) p32(A(0), 1); return 0; }
-static uint32_t api_DosSetSignalExceptionFocus(void) { if (A(1)) p32(A(1), 1); return 0; }
+/* the times a program has asked for Ctrl+C/Break as exceptions: OS/2 counts
+ * them (spawn() takes the focus away, then gives it back as often) */
+static uint32_t sig_focus;
+static uint32_t api_DosSetSignalExceptionFocus(void)
+{
+    uint32_t r = 0;
+    if (A(0)) sig_focus++;
+    else if (sig_focus) sig_focus--;
+    else r = ERROR_ALREADY_RESET;
+    if (A(1)) p32(A(1), sig_focus);
+    return r;
+}
 
 static uint32_t api_DosSetExceptionHandler(void)
 {
@@ -1912,6 +1933,7 @@ static uint32_t api_DosUnwindException(void)
         C.r[ESP] += 4;
         C.eip = target;
         api_noret = 1;
+        if (me->unwind_jb) longjmp(*me->unwind_jb, 1);   /* (out of the handler's nested calls too) */
     }
     return 0;
 }
@@ -3107,6 +3129,7 @@ int main(int argc, char **argv)
     else if (!find_program(argv[1], h, sizeof h)) die(2, "SYS1041: The name %s is not recognized as a program.", argv[1]);
     const char *b = strrchr(h, '/');
     prog_name = b ? b + 1 : h;
+    snprintf(exe_dir, sizeof exe_dir, "%.*s", b ? (int)(b - h) : 1, b ? h : ".");
     exe = load_module(h, 0, err, sizeof err);
     if (!exe) die(err[0] == 'S' && !strncmp(err, "SYS0002", 7) ? 2 : 193, "%s", err);
     uint32_t eo = H(exe, LX_EIPOBJ);

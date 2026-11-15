@@ -372,7 +372,13 @@ platform-specific are new code.
    one line on stderr and return error 1; `OS2X86_TRACE=1` lists every
    call. `userland/os2x86/test/run-tests.sh` runs its test program
    (freestanding C, `os2test.c`, made an LX .EXE by `elf2lx.py`) on the
-   build machine; the same .EXE passes on the system.
+   build machine, and, when OpenWatcom is there (`WATCOM`, or its snapshot
+   unpacked in `build/os2x86-test/ow`), real OpenWatcom programs from
+   `test/ow`: the C runtime (files, directories, maths, signals through
+   OS/2 exceptions and longjmp, _beginthread, spawnl), C++ (static
+   constructors, iostreams, the STL, exceptions), conio (getch and putch
+   through its 16-bit thunks) and a DLL of its own (moved, initialised,
+   DosLoadModule). They pass on the system too.
 
    `userland/apps/os2cmd.c` relays a terminal to `/dev/os2cmd`, which runs
    each line in the shell of `kernel/src/main.c` - DIR, COPY, MOUNT, USB,

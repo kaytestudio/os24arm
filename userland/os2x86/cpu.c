@@ -96,6 +96,12 @@ static uint32_t segbase(cpu_t *c, int s)
     default: return c->ds_base;
     }
 }
+/* the selectors a program has: flat code and data, the TIB's, the tiles */
+static int sel_valid(cpu_t *c, uint16_t sel)
+{
+    if (sel & 4) return ((uint32_t)(sel >> 3) << 16) < c->size;
+    return (sel | 3) == 0x5B || (sel | 3) == 0x53 || (sel | 3) == 0x150B;
+}
 static uint32_t dseg(cpu_t *c, ins_t *in) { return segbase(c, in->ovr >= 0 ? in->ovr : 3); }
 
 static uint8_t fetch8(cpu_t *c) { return rd8(c, c->cs_base + c->eip++); }
@@ -1061,6 +1067,24 @@ static void step(cpu_t *c)
     op = fetch8(c);
     switch (op) {
     case 0x05: case 0x0B: trap(c, CPU_ILLEGAL); return;
+    case 0x00: {                                 /* SLDT STR VERR VERW (OpenWatcom's longjmp checks FS so) */
+        modrm(c, &in);
+        if (in.reg < 2) { setE(c, &in, in.mod == 3 ? os : 16, in.reg == 0 ? 0x28 : 0x30); return; }
+        if (in.reg != 4 && in.reg != 5) trap(c, CPU_ILLEGAL);
+        uint16_t sel = (uint16_t)getE(c, &in, 16);
+        int okk = sel_valid(c, sel) && !(in.reg == 5 && sel == 0x5B);
+        c->eflags = okk ? c->eflags | F_ZF : c->eflags & ~F_ZF;
+        return;
+    }
+    case 0x02: case 0x03: {                      /* LAR LSL */
+        modrm(c, &in);
+        uint16_t sel = (uint16_t)getE(c, &in, 16);
+        if (!sel_valid(c, sel)) { c->eflags &= ~F_ZF; return; }
+        c->eflags |= F_ZF;
+        if (op == 0x02) setr(c, in.reg, os, (sel & 4) ? 0x0000F300 : sel == 0x5B ? 0x00CFFB00 : 0x00CFF300);
+        else setr(c, in.reg, os, (sel & 4) ? 0xFFFF : sel == 0x150B ? 0xFFF : 0xFFFFFFFF);
+        return;
+    }
     case 0x18: case 0x19: case 0x1A: case 0x1B: case 0x1C: case 0x1D: case 0x1E: case 0x1F:
         modrm(c, &in); return;                   /* NOP Ev, PREFETCH */
     case 0x31: c->tsc += 1000; c->r[EAX] = (uint32_t)c->tsc; c->r[EDX] = (uint32_t)(c->tsc >> 32); return;

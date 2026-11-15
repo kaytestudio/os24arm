@@ -2,7 +2,7 @@
 # userland/os2x86/test/run-tests.sh - builds os2x86 for this machine and
 # runs os2test.c (made an x86 LX .EXE by elf2lx.py) through it.
 # Output in build/os2x86-test/. Exit status: the test's.
-set -euo pipefail
+set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 T="$ROOT/userland/os2x86"
 OUT="$ROOT/build/os2x86-test"
@@ -13,4 +13,29 @@ cc -std=c11 -O2 -Wall -Wextra -pthread -o "$OUT/os2x86" "$T/os2x86.c" "$T/cpu.c"
     -ffreestanding -fno-pic -fno-builtin -O1 -c "$T/test/os2test.c" -o "$OUT/os2test.o"
 python3 "$T/test/elf2lx.py" "$OUT/os2test.o" "$OUT/OS2TEST.EXE"
 cd "$OUT"
-OS2TEST=yes ./os2x86 OS2TEST.EXE one "two three"
+OS2TEST=yes ./os2x86 OS2TEST.EXE one "two three" | grep -E "^FAIL|passed|failed"
+st=$?
+# real OpenWatcom programs, when OpenWatcom is there (WATCOM, or build/os2x86-test/ow)
+W="${WATCOM:-$ROOT/build/os2x86-test/ow}"
+if [ -x "$W/armo64/wcl386" ] || [ -x "$W/binl64/wcl386" ]; then
+    B="$W/armo64"; [ -x "$B/wcl386" ] || B="$W/binl64"
+    mkdir -p "$OUT/ow" && cd "$OUT/ow"
+    export WATCOM="$W" PATH="$B:$PATH" INCLUDE="$W/h:$W/h/os2"
+    S="$T/test/ow"
+    wcl386 -q -za99 -bt=os2 -l=os2v2 -bm "$S/owtest.c" >/dev/null
+    wcl386 -q -xs -bt=os2 -l=os2v2 "$S/cpptest.cpp" >/dev/null
+    wcl386 -q -za99 -bt=os2 -l=os2v2 "$S/conio.c" >/dev/null
+    wcl386 -q -bt=os2 -bd -l=os2v2_dll "$S/mydll.c" -fe=mydll.dll >/dev/null
+    wlib -q -n mydll.lib +mydll.dll >/dev/null
+    wcl386 -q -za99 -bt=os2 -l=os2v2 "$S/usedll.c" mydll.lib >/dev/null
+    owfail=0
+    echo "== OpenWatcom programs"
+    ../os2x86 owtest.exe </dev/null | grep -E "^FAIL|passed|failed" || owfail=1
+    ../os2x86 cpptest.exe </dev/null | grep -E "^FAIL|passed|failed" || owfail=1
+    printf 'xy' | ../os2x86 conio.exe >/dev/null && echo "conio: ok" || { echo "conio: FAIL"; owfail=1; }
+    ../os2x86 usedll.exe | grep -q "through the pointer: 1060" && echo "DLL: ok" || { echo "DLL: FAIL"; owfail=1; }
+    [ "$owfail" = 0 ] || st=1
+else
+    echo "(no OpenWatcom: its programs not tried)"
+fi
+exit $st
