@@ -28,12 +28,14 @@ if [ -x "$W/armo64/wcl386" ] || [ -x "$W/binl64/wcl386" ]; then
     wcl386 -q -bt=os2 -bd -l=os2v2_dll "$S/mydll.c" -fe=mydll.dll >/dev/null
     wlib -q -n mydll.lib +mydll.dll >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2 "$S/usedll.c" mydll.lib >/dev/null
+    wcl386 -q -za99 -bt=os2 -l=os2v2 "$S/mouse.c" >/dev/null
     owfail=0
     echo "== OpenWatcom programs"
     ../os2x86 owtest.exe </dev/null | grep -E "^FAIL|passed|failed" || owfail=1
     ../os2x86 cpptest.exe </dev/null | grep -E "^FAIL|passed|failed" || owfail=1
     printf 'xy' | ../os2x86 conio.exe >/dev/null && echo "conio: ok" || { echo "conio: FAIL"; owfail=1; }
     ../os2x86 usedll.exe | grep -q "through the pointer: 1060" && echo "DLL: ok" || { echo "DLL: FAIL"; owfail=1; }
+    printf '\033[<0;10;5Mk\033[<32;12;6M\033[<0;12;6m\033[<2;3;3M' | ../os2x86 mouse.exe | grep "mouse:" || owfail=1
     [ "$owfail" = 0 ] || st=1
 else
     echo "(no OpenWatcom: its programs not tried)"

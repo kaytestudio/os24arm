@@ -129,6 +129,14 @@ static int gpush(uint32_t v) { if (!p32(C.r[ESP] - 4, v)) return 0; C.r[ESP] -= 
 static uint32_t A(int n) { return g32(C.r[ESP] + 4 + 4 * n); }
 
 static void die(int code, const char *fmt, ...) __attribute__((noreturn, format(printf, 2, 3)));
+/* the terminal as it was: no mouse reports (MouOpen), the cursor shown */
+static volatile int tty_mouse, tty_nocursor;
+static void tty_restore(void)
+{
+    if (tty_mouse && isatty(1) && write(1, "\033[?1003l\033[?1006l", 16) < 0) { }
+    if (tty_nocursor && isatty(1) && write(1, "\033[?25h", 6) < 0) { }
+    tty_mouse = tty_nocursor = 0;
+}
 #include <stdarg.h>
 static void die(int code, const char *fmt, ...)
 {
@@ -137,6 +145,7 @@ static void die(int code, const char *fmt, ...)
     vfprintf(stderr, fmt, ap);
     va_end(ap);
     fputc('\n', stderr);
+    tty_restore();
     _exit(code);
 }
 
@@ -1037,6 +1046,7 @@ static void do_exit(uint32_t code)
             guest_call(fn, 1, &arg);
         }
     }
+    tty_restore();
     _exit((int)(code & 0xFF));
 }
 
@@ -1137,6 +1147,7 @@ static void fatal_trap(uint32_t num, uint32_t p0, uint32_t p1, uint32_t addr)
     fprintf(stderr, "EAX=%08x  EBX=%08x  ECX=%08x  EDX=%08x\n", C.r[EAX], C.r[EBX], C.r[ECX], C.r[EDX]);
     fprintf(stderr, "ESI=%08x  EDI=%08x  EBP=%08x  ESP=%08x\n", C.r[ESI], C.r[EDI], C.r[EBP], C.r[ESP]);
     fprintf(stderr, "CS:EIP=%04x:%08x  EFLAGS=%08x\n", SEL_CODE, addr, C.eflags);
+    tty_restore();
     _exit(255);
 }
 
@@ -2660,20 +2671,81 @@ static int rd1(int ms)                          /* a byte from stdin, waiting ms
     UNLOCKED(n = read(0, &ch, 1));
     return n == 1 ? ch : -2;
 }
+
+/* stdin carries the keys and, while MouOpen has it on, the terminal's
+ * mouse reports (SGR: ESC [ < b ; col ; row M/m): pump() sorts them */
+typedef struct { uint16_t fs; uint32_t time; int16_t row, col; } mouev_t;
+static mouev_t mouq[64];
+static int moun, mou_on, mou_buttons;           /* (buttons: 1 left, 2 right, 4 middle, as OS/2 numbers them) */
+static uint16_t mou_mask = 0x7F;
+static int mou_row, mou_col;
+static unsigned char kbuf[64];
+static int kn;
+static void kpush(int b) { if (b >= 0 && kn < (int)sizeof kbuf) kbuf[kn++] = (unsigned char)b; }
+static void mou_event(int b, int col, int row, int press)
+{
+    if (b & 64) return;                          /* (the wheel: OS/2's mice haven't one) */
+    static const int map[3] = { 1, 4, 2 };       /* SGR left, middle, right */
+    int motion = (b & 32) != 0, btn = b & 3;
+    if (!motion && btn < 3) {
+        if (press) mou_buttons |= map[btn]; else mou_buttons &= ~map[btn];
+    }
+    uint16_t fs = 0;
+    if (mou_buttons & 1) fs |= motion ? 0x02 : 0x04;
+    if (mou_buttons & 2) fs |= motion ? 0x08 : 0x10;
+    if (mou_buttons & 4) fs |= motion ? 0x20 : 0x40;
+    if (!mou_buttons && motion) fs = 0x01;
+    mou_row = row - 1; mou_col = col - 1;
+    if (fs && !(fs & mou_mask)) return;
+    if (moun == 64) memmove(mouq, mouq + 1, 63 * sizeof *mouq), moun--;
+    mouq[moun++] = (mouev_t){ fs, (uint32_t)ms_now(), (int16_t)(row - 1), (int16_t)(col - 1) };
+}
+static int pump(int ms)                         /* 1: a byte or a mouse event came */
+{
+    int b = rd1(ms);
+    if (b < 0) return 0;
+    if (b != 27) { kpush(b); return 1; }
+    int b2 = rd1(40);
+    if (b2 != '[') { kpush(27); kpush(b2); return 1; }
+    int b3 = rd1(40);
+    if (b3 != '<') { kpush(27); kpush('['); kpush(b3); return 1; }
+    int v[3] = { 0, 0, 0 }, k = 0, c;
+    while ((c = rd1(40)) >= 0 && c != 'M' && c != 'm') {
+        if (c == ';') { if (k < 2) k++; }
+        else if (c >= '0' && c <= '9') v[k] = v[k] * 10 + c - '0';
+    }
+    if (c == 'M' || c == 'm') mou_event(v[0], v[1], v[2], c == 'M');
+    return 1;
+}
+static int kbyte(int ms)                        /* the next byte that's a key's */
+{
+    for (;;) {
+        if (kn) { int b = kbuf[0]; memmove(kbuf, kbuf + 1, (size_t)--kn); return b; }
+        if (!pump(ms)) return -1;
+    }
+}
+static int tty_raw(struct termios *old)
+{
+    if (tcgetattr(0, old)) return 0;
+    struct termios raw = *old;
+    raw.c_lflag &= ~(tcflag_t)(ICANON | ECHO);
+    raw.c_cc[VMIN] = 1; raw.c_cc[VTIME] = 0;
+    tcsetattr(0, TCSANOW, &raw);
+    return 1;
+}
 /* a key: its character (0xE0 for the extended ones) and scan code */
 static int kbd_key(int wait, int *scan)
 {
     if (kbd_pend_ch >= 0) { int ch = kbd_pend_ch; *scan = kbd_pend_scan; kbd_pend_ch = -1; return ch; }
-    struct termios old, raw;
-    int tty = tcgetattr(0, &old) == 0;
-    if (tty) { raw = old; raw.c_lflag &= ~(tcflag_t)(ICANON | ECHO); raw.c_cc[VMIN] = 1; raw.c_cc[VTIME] = 0; tcsetattr(0, TCSANOW, &raw); }
-    int ch = rd1(wait ? -1 : 0);
+    struct termios old;
+    int tty = tty_raw(&old);
+    int ch = kbyte(wait ? -1 : 0);
     *scan = 0;
     if (ch == 27) {                             /* ESC [ A ...: the cursor keys */
-        int c2 = rd1(40);
+        int c2 = kbyte(40);
         if (c2 == '[' || c2 == 'O') {
-            int c3 = rd1(40), n = 0;
-            while (c3 >= '0' && c3 <= '9') { n = n * 10 + c3 - '0'; c3 = rd1(40); }
+            int c3 = kbyte(40), n = 0;
+            while (c3 >= '0' && c3 <= '9') { n = n * 10 + c3 - '0'; c3 = kbyte(40); }
             static const char k[] = "ABCDHF";
             static const int sc[] = { 0x48, 0x50, 0x4D, 0x4B, 0x47, 0x4F };
             const char *f = c3 > 0 ? strchr(k, c3) : 0;
@@ -2721,7 +2793,7 @@ static uint32_t api_KbdStringIn(void)         /* (pch, pchIn {cb, cchIn}, fsWait
     if (kbd_pend_ch > 0 && cb) { p8(buf, (uint8_t)kbd_pend_ch); n = 1; }
     kbd_pend_ch = -1;
     while (n < cb) {
-        int ch = rd1(-1);
+        int ch = kbyte(-1);
         if (ch < 0 || ch == '\n') break;
         if (ch == '\r') continue;
         p8(buf + n++, (uint8_t)ch);
@@ -2730,7 +2802,50 @@ static uint32_t api_KbdStringIn(void)         /* (pch, pchIn {cb, cchIn}, fsWait
     p16(in + 2, (uint16_t)n);
     return 0;
 }
-static uint32_t api_KbdFlushBuffer(void) { tcflush(0, TCIFLUSH); kbd_pend_ch = -1; return 0; }
+static uint32_t api_KbdFlushBuffer(void) { tcflush(0, TCIFLUSH); kbd_pend_ch = -1; kn = 0; return 0; }
+
+/* MOUCALLS */
+static void tty_out(const char *s, size_t n);
+static void mou_report(int on)
+{
+    if (on == mou_on) return;
+    mou_on = tty_mouse = on;
+    if (isatty(1)) tty_out(on ? "\033[?1003h\033[?1006h" : "\033[?1003l\033[?1006l", 16);
+}
+static uint32_t api_MouOpen(void) { mou_report(1); return p16(FP(0), 1) ? 0 : ERROR_INVALID_PARAMETER; }   /* (pszdriver, phmou) */
+static uint32_t api_MouClose(void) { mou_report(0); moun = 0; return 0; }
+static uint32_t api_MouReadEventQue(void)     /* (pevent, pfwait, hmou) */
+{
+    uint32_t pe = FP(6);
+    int wait = g16(FP(2)) == 1;                  /* MOU_WAIT */
+    struct termios old;
+    int tty = tty_raw(&old);
+    while (!moun && pump(wait ? -1 : 0)) { }
+    if (tty) tcsetattr(0, TCSANOW, &old);
+    if (!ok(pe, 10)) return ERROR_INVALID_PARAMETER;
+    mouev_t e = { 0, 0, 0, 0 };
+    if (moun) { e = mouq[0]; memmove(mouq, mouq + 1, (size_t)--moun * sizeof *mouq); }
+    p16(pe, e.fs); p32(pe + 2, e.time); p16(pe + 6, (uint16_t)e.row); p16(pe + 8, (uint16_t)e.col);
+    return 0;
+}
+static uint32_t api_MouGetNumQueEl(void)      /* (pqueinfo, hmou) */
+{
+    struct termios old;
+    int tty = tty_raw(&old);
+    while (pump(0)) { }
+    if (tty) tcsetattr(0, TCSANOW, &old);
+    uint32_t p = FP(2);
+    return p16(p, (uint16_t)moun) && p16(p + 2, 64) ? 0 : ERROR_INVALID_PARAMETER;
+}
+static uint32_t api_MouFlushQue(void) { moun = 0; return 0; }
+static uint32_t api_MouGetNumButtons(void) { return p16(FP(2), 3) ? 0 : ERROR_INVALID_PARAMETER; }
+static uint32_t api_MouGetNumMickeys(void) { return p16(FP(2), 8) ? 0 : ERROR_INVALID_PARAMETER; }
+static uint32_t api_MouGetEventMask(void) { return p16(FP(2), mou_mask) ? 0 : ERROR_INVALID_PARAMETER; }
+static uint32_t api_MouSetEventMask(void) { mou_mask = g16(FP(2)); return 0; }
+static uint32_t api_MouGetDevStatus(void) { return p16(FP(2), 0) ? 0 : ERROR_INVALID_PARAMETER; }
+static uint32_t api_MouGetPtrPos(void) { uint32_t p = FP(2); return p16(p, (uint16_t)mou_row) && p16(p + 2, (uint16_t)mou_col) ? 0 : ERROR_INVALID_PARAMETER; }
+static uint32_t api_MouSetPtrPos(void) { uint32_t p = FP(2); mou_row = g16(p); mou_col = g16(p + 2); return 0; }
+static uint32_t api_MouGetScaleFact(void) { uint32_t p = FP(2); return p16(p, 1) && p16(p + 2, 1) ? 0 : ERROR_INVALID_PARAMETER; }
 static uint32_t api_KbdGetStatus(void)        /* (pkbdinfo, hkbd) */
 {
     uint32_t p = FP(2);
@@ -2924,6 +3039,7 @@ static uint32_t api_VioSetCurType(void)       /* (pci, hvio) */
     uint32_t p = FP(2);
     for (int i = 0; i < 4; i++) cur_type[i] = g16(p + 2 * (uint32_t)i);
     tty_out(cur_type[3] == 0xFFFF ? "\033[?25l" : "\033[?25h", 6);
+    tty_nocursor = cur_type[3] == 0xFFFF;
     return 0;
 }
 static uint32_t api_VioGetCp(void) { p16(FP(2), 437); return 0; }   /* (reserved, pcp, hvio) */
@@ -3054,6 +3170,25 @@ static const api_t apis[] = {
     { L_KBD, 11, "KbdSetStatus", api_ok16, 6 },
     { L_KBD, 13, "KbdFlushBuffer", api_KbdFlushBuffer, 2 },
     { L_KBD, 22, "KbdPeek", api_KbdPeek, 6 },
+    { L_MOU, 2, "MouSetPtrShape", api_ok16, 10 },
+    { L_MOU, 3, "MouGetNumMickeys", api_MouGetNumMickeys, 6 },
+    { L_MOU, 6, "MouGetScaleFact", api_MouGetScaleFact, 6 },
+    { L_MOU, 7, "MouFlushQue", api_MouFlushQue, 2 },
+    { L_MOU, 8, "MouGetNumButtons", api_MouGetNumButtons, 6 },
+    { L_MOU, 9, "MouClose", api_MouClose, 2 },
+    { L_MOU, 11, "MouSetScaleFact", api_ok16, 6 },
+    { L_MOU, 13, "MouGetNumQueEl", api_MouGetNumQueEl, 6 },
+    { L_MOU, 15, "MouGetEventMask", api_MouGetEventMask, 6 },
+    { L_MOU, 16, "MouSetEventMask", api_MouSetEventMask, 6 },
+    { L_MOU, 17, "MouOpen", api_MouOpen, 8 },
+    { L_MOU, 18, "MouRemovePtr", api_ok16, 6 },
+    { L_MOU, 19, "MouGetPtrPos", api_MouGetPtrPos, 6 },
+    { L_MOU, 20, "MouReadEventQue", api_MouReadEventQue, 10 },
+    { L_MOU, 21, "MouSetPtrPos", api_MouSetPtrPos, 6 },
+    { L_MOU, 22, "MouGetDevStatus", api_MouGetDevStatus, 6 },
+    { L_MOU, 23, "MouSynch", api_ok16, 2 },
+    { L_MOU, 25, "MouSetDevStatus", api_ok16, 6 },
+    { L_MOU, 26, "MouDrawPtr", api_ok16, 2 },
     { L_VIO, 7, "VioScrollUp", api_VioScrollUp, 16 },
     { L_VIO, 9, "VioGetCurPos", api_VioGetCurPos, 10 },
     { L_VIO, 10, "VioWrtCellStr", api_VioWrtCellStr, 12 },

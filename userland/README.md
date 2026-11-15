@@ -364,7 +364,10 @@ platform-specific are new code.
    have stops the program, naming it. Queues (QUECALLS: FIFO, LIFO,
    priority) and DosStartSession (a child on the same terminal; a
    related one's end goes to its termination queue, as spawn() in the C
-   runtimes waits for it). Not there yet: MOU, Presentation Manager:
+   runtimes waits for it). The mouse (MOUCALLS: MouOpen, MouReadEventQue,
+   MouGetNumQueEl, event masks, ...) from the terminal's own mouse reports
+   (SGR, asked for while a program has the mouse open; the keys that come
+   in between still reach KbdCharIn). Not there yet: Presentation Manager:
    OS/2's own DLLs that aren't here (PMWIN, PMGPI, HELPMGR, TCP32DLL, ...)
    load as stubs, so a program that only links them in (the C runtimes'
    error reports do) runs; a call into one says so and returns 0
@@ -377,8 +380,8 @@ platform-specific are new code.
    `test/ow`: the C runtime (files, directories, maths, signals through
    OS/2 exceptions and longjmp, _beginthread, spawnl), C++ (static
    constructors, iostreams, the STL, exceptions), conio (getch and putch
-   through its 16-bit thunks) and a DLL of its own (moved, initialised,
-   DosLoadModule). They pass on the system too.
+   through its 16-bit thunks), the mouse (fed terminal mouse reports) and
+   a DLL of its own (moved, initialised, DosLoadModule). They pass on the system too.
 
    `userland/apps/os2cmd.c` relays a terminal to `/dev/os2cmd`, which runs
    each line in the shell of `kernel/src/main.c` - DIR, COPY, MOUNT, USB,
