@@ -426,9 +426,15 @@ platform-specific are new code.
    titles, separators), selection (CN_EMPHASIS), opening (CN_ENTER: a
    double-click or Enter), CM_SORTRECORD with the program's compare
    function, CM_SEARCHSTRING, a scroll bar. Double-clicks
-   (WM_BUTTONnDBLCLK) for every window. Not there yet: the tree view,
-   editing in a container, drag and drop, value sets, circular sliders,
-   the pointer's shape on the desktop. OS/2's DLLs that aren't
+   (WM_BUTTONnDBLCLK) for every window. The clipboard (WinOpenClipbrd,
+   WinSetClipbrdData, WinQueryClipbrdData & co.; CF_TEXT, CF_BITMAP):
+   on the desktop the Wayland selection, so text goes between PM
+   programs and the others (Latin-1 one side, UTF-8 the other); entry
+   fields and MLEs cut, copy and paste through it (Ctrl+X/C/V, Shift+Del,
+   Ctrl+Ins, Shift+Ins). WinSetPointer: the desktop's pointer over the
+   program's windows takes that shape (its hot spot from the file), PM's
+   arrow by default. Not there yet: the tree view, editing in a
+   container, drag and drop, value sets, circular sliders. OS/2's DLLs that aren't
    here (PMSHAPI, HELPMGR, TCP32DLL, ...) load as stubs, so a program
    that only links them in runs; a call into one says so and returns 0. Calls it doesn't have yet print
    one line on stderr and return error 1; `OS2X86_TRACE=1` lists every

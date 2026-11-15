@@ -333,7 +333,7 @@ static uint32_t api_GpiWCBitBlt(void) { return bitblt(ps_get(A(0)), bmp_get(A(1)
  * white by XOR for a monochrome one), AND 1 XOR 0 transparent, AND 1 XOR 1
  * the screen inverted. A pointer here: a hidden window, its pixels the
  * image, the masks beside. */
-typedef struct { uint8_t *andm, *xorm; int mono; } ptr_t;
+typedef struct { uint8_t *andm, *xorm; int mono, hotx, hoty; } ptr_t;   /* (hot: from the top left) */
 static pmwin_t *ptr_get(uint32_t h) { pmwin_t *p = win(h); return p && !strcmp(p->cls, "#pointer") ? p : 0; }
 static pmwin_t *ptr_new(int w, int h, int mono)
 {
@@ -347,6 +347,17 @@ static pmwin_t *ptr_new(int w, int h, int mono)
     t->mono = mono;
     p->ctl = t;
     return p;
+}
+/* as ARGB pixels (the desktop's pointer): what's inverted on the screen, a shadow */
+static __attribute__((unused)) void ptr_argb(pmwin_t *p, uint32_t *out, int *hx, int *hy)
+{
+    ptr_t *m = p->ctl;
+    int n = p->pw * p->ph;
+    for (int i = 0; i < n && i < p->cx * p->cy; i++) {
+        int a = m->andm[i], xo = m->xorm[i];
+        out[i] = a && !xo ? 0 : a && xo ? 0x80000000u : 0xFF000000u | (m->mono ? (xo ? 0xFFFFFF : 0) : p->px[i] & 0xFFFFFF);
+    }
+    *hx = m->hotx; *hy = m->hoty;
 }
 static void ptr_free(pmwin_t *p)
 {
@@ -382,6 +393,8 @@ static pmwin_t *ptr_from_file(const uint8_t *d, size_t n)
     pmwin_t *p = ptr_new(w, ih, !color);
     if (!p) return 0;
     ptr_t *t = p->ctl;
+    t->hotx = (int16_t)(d[h + 6] | d[h + 7] << 8);
+    t->hoty = ih - 1 - (int16_t)(d[h + 8] | d[h + 9] << 8);   /* (the file's: from the bottom) */
     for (int r = 0; r < ih; r++)                              /* (r: from the bottom) */
         for (int x = 0; x < w; x++) {
             int ty = ih - 1 - r;
@@ -463,9 +476,15 @@ static uint32_t sys_pointer(uint32_t id)
         for (int y = 2; y < 30; y++) for (int x = 16 - (y - 2) / 2 - 1; x <= 16 + (y - 2) / 2; x++)
             if (x >= 0 && x < 32) { p->px[y * 32 + x] = 0xFFF0C800u; m->andm[y * 32 + x] = 0; }
         mark = "!"; fg = 0; break;
-    default:                                                   /* the arrow, the others: an arrow */
-        for (int y = 0; y < 20; y++) for (int x = 0; x <= y / 2 + 1 && x < 32; x++) { p->px[y * 32 + x] = x == 0 || x == y / 2 + 1 || y == 19 ? 0xFF000000u : 0xFFFFFFFFu; m->andm[y * 32 + x] = 0; }
+    default: {                                                 /* the arrow (the others too, for now) */
+        static const char *const arrow[] = {
+            "X", "XX", "X.X", "X..X", "X...X", "X....X", "X.....X", "X......X", "X.......X", "X........X",
+            "X.....XXXXX", "X..X..X", "X.X X..X", "XX  X..X", "X    X..X", "     X..X", "      X..X", "      XXX" };
+        for (int y = 0; y < 18; y++)
+            for (int x = 0; arrow[y][x]; x++)
+                if (arrow[y][x] != ' ') { p->px[y * 32 + x] = arrow[y][x] == 'X' ? 0xFF000000u : 0xFFFFFFFFu; m->andm[y * 32 + x] = 0; }
         break;
+    }
     }
     if (bg) disc(p, 16, 16, 15, bg, m);
     if (mark) {                                                /* (its pixels: the mask stays as the shape made it) */
@@ -500,8 +519,10 @@ static uint32_t api_WinDrawPointer(void)          /* (hps, x, y, hptr, fs) */
     return 1;
 }
 static uint32_t api_WinQuerySysPointer(void) { return sys_pointer(A(1)); }   /* (hwndDesktop, iptr, fCopy) */
-static uint32_t api_WinQueryPointer(void) { return sys_pointer(1); }
-static uint32_t api_WinSetPointer(void) { return 1; }                        /* (the compositor's pointer stays) */
+static void pm_set_pointer(uint32_t hptr);
+static uint32_t pm_pointer;
+static uint32_t api_WinQueryPointer(void) { return pm_pointer ? pm_pointer : sys_pointer(1); }
+static uint32_t api_WinSetPointer(void) { if (!ptr_get(A(1))) return 0; pm_set_pointer(A(1)); return 1; }   /* (hwndDesktop, hptr) */
 static uint32_t api_WinQueryPointerInfo(void)     /* (hptr, pptriPointerInfo) */
 {
     pmwin_t *p = ptr_get(A(0));

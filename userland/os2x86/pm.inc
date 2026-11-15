@@ -201,6 +201,9 @@ typedef struct {
     void (*present)(pmwin_t *f);
     void (*title)(pmwin_t *f);
     int  (*idle)(struct timespec *dl);   /* nothing to do: wait (0: nothing will ever come) */
+    void (*clip_set)(const char *text);  /* the desktop's clipboard: ours now (text, LF lines, Latin-1) */
+    char *(*clip_get)(void);             /* ... its text, when it's another program's (malloc'd, or 0) */
+    void (*cursor)(pmwin_t *ptr);        /* the pointer's shape, over our windows */
 } pmback_t;
 static const pmback_t *pmb;
 
@@ -568,7 +571,7 @@ static int hl_idle(struct timespec *dl)
     pthread_cond_timedwait(&gcv, &gil, dl);
     return 1;
 }
-static const pmback_t pm_headless = { 0, 0, 0, hl_idle };
+static const pmback_t pm_headless = { 0, 0, 0, hl_idle, 0, 0, 0 };
 
 #ifdef OS2X86_WAYLAND
 static uint32_t mb_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2);
@@ -812,6 +815,8 @@ static uint32_t api_WinPostQueueMsg(void)     /* (hmq, msg, mp1, mp2) */
 }
 static uint32_t api_WinSendMsg(void) { return pm_send(win(A(0)), A(1), A(2), A(3)); }
 
+static void pm_set_pointer(uint32_t hptr);
+static uint32_t sys_pointer(uint32_t id);
 static uint32_t def_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
 {
     (void)mp1; (void)mp2;
@@ -819,6 +824,7 @@ static uint32_t def_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
     case WM_CLOSE: post(w, 0, WM_QUIT, 0, 0); return 0;
     case WM_PAINT: w->invalid = 0; return 0;
     case WM_CHAR: return !w->top && w->owner ? pm_send(w->owner, msg, mp1, mp2) : 0;   /* (a key nobody took: up to the owner) */
+    case WM_MOUSEMOVE: pm_set_pointer(sys_pointer(1)); return 1;                        /* (the arrow, as PM's) */
     case WM_ERASEBACKGROUND: return 0;
     }
     return 0;
@@ -1499,3 +1505,83 @@ static uint32_t api_WinRemovePresParam(void)
 }
 static pmwin_t *ptr_get(uint32_t h);
 #include "pm_cnr.inc"
+
+/* ── the clipboard (WinOpenClipbrd & co.): CF_TEXT, CF_BITMAP; on the
+ * desktop the Wayland one (pm_wl.inc), so text goes between programs ── */
+static char *clip_text;                    /* (the program's form: CR LF lines, 8-bit characters) */
+static int clip_ours;
+static uint32_t clip_bitmap;
+static void clip_put(const char *s)        /* (s: as programs have it) */
+{
+    free(clip_text);
+    clip_text = strdup(s);
+    clip_ours = 1;
+    if (pmb && pmb->clip_set) {
+        size_t n = strlen(s);
+        char *lf = malloc(n + 1), *o = lf;
+        for (size_t i = 0; i < n; i++) if (!(s[i] == '\r' && s[i + 1] == '\n')) *o++ = s[i];
+        *o = 0;
+        pmb->clip_set(lf);
+        free(lf);
+    }
+}
+static const char *clip_take(void)         /* the clipboard's text, the program's form, or 0 */
+{
+    if (!clip_ours && pmb && pmb->clip_get) {
+        char *t = pmb->clip_get();
+        if (t) {                                 /* (LF lines: CR LF, as OS/2's) */
+            size_t n = strlen(t), k = 0;
+            char *c = malloc(2 * n + 1);
+            for (size_t i = 0; i < n; i++) { if (t[i] == '\n' && (i == 0 || t[i - 1] != '\r')) c[k++] = '\r'; c[k++] = t[i]; }
+            c[k] = 0;
+            free(t);
+            free(clip_text);
+            clip_text = c;
+        }
+    }
+    return clip_text;
+}
+static __attribute__((unused)) void clip_lost(void) { clip_ours = 0; }   /* (the backend: another program has it now) */
+static uint32_t api_WinOpenClipbrd(void) { return 1; }
+static uint32_t api_WinCloseClipbrd(void) { return 1; }
+static uint32_t api_WinEmptyClipbrd(void) { free(clip_text); clip_text = 0; clip_bitmap = 0; clip_ours = 1; return 1; }
+static uint32_t api_WinSetClipbrdData(void)       /* (hab, ulData, fmt, rgfFmtInfo) */
+{
+    if (A(2) == 1) { char *s = gs(A(1)); if (!s) return 0; clip_put(s); return 1; }   /* CF_TEXT: a pointer to the text */
+    if (A(2) == 2) { clip_bitmap = A(1); return 1; }                                  /* CF_BITMAP: a bitmap's handle */
+    return 0;
+}
+static uint32_t api_WinQueryClipbrdData(void)     /* (hab, fmt): CF_TEXT's in our memory, for the program */
+{
+    if (A(1) == 2) return clip_bitmap;
+    if (A(1) != 1) return 0;
+    const char *t = clip_take();
+    if (!t) return 0;
+    uint32_t n = (uint32_t)strlen(t) + 1, a = galloc(n);
+    if (!a) return 0;
+    memcpy(C.mem + a, t, n);
+    return a;
+}
+static uint32_t api_WinQueryClipbrdFmtInfo(void)  /* (hab, fmt, prgfFmtInfo) */
+{
+    int have = A(1) == 1 ? clip_take() != 0 : A(1) == 2 ? clip_bitmap != 0 : 0;
+    if (have && A(2)) p32(A(2), A(1) == 1 ? 0x0400 : 0x0200);   /* CFI_POINTER, CFI_HANDLE */
+    return (uint32_t)have;
+}
+static uint32_t api_WinEnumClipbrdFmts(void)      /* (hab, fmt): the next one there */
+{
+    if (A(1) < 1 && clip_take()) return 1;
+    if (A(1) < 2 && clip_bitmap) return 2;
+    return 0;
+}
+static uint32_t api_WinSetClipbrdOwner(void) { return 1; }
+static uint32_t api_WinQueryClipbrdOwner(void) { return 0; }
+
+/* the pointer over our windows (WinSetPointer) */
+static void pm_set_pointer(uint32_t hptr)
+{
+    pmwin_t *p = ptr_get(hptr);
+    if (!p || pm_pointer == hptr) return;
+    pm_pointer = hptr;
+    if (pmb && pmb->cursor) pmb->cursor(p);
+}

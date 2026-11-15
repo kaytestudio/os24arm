@@ -21,6 +21,11 @@ static struct xkb_keymap *xkb_map;
 static struct xkb_state *xkb_st;
 static pmwin_t *wl_ptr_frame, *wl_kbd_frame;
 static int wl_px, wl_py;
+static uint32_t wl_serial, wl_enter_serial;   /* (the last input's: for the selection; the pointer's enter: its shape) */
+static struct wl_data_device_manager *wl_ddm;
+static struct wl_data_device *wl_dd;
+static void clip_lost(void);
+static void ptr_argb(pmwin_t *p, uint32_t *out, int *hx, int *hy);
 
 typedef struct {
     struct wl_surface *s;
@@ -137,15 +142,166 @@ static int wl_idle(struct timespec *dl)
     else pthread_cond_wait(&gcv, &gil);
     return 1;
 }
-static const pmback_t pm_wayland = { wl_show, wl_present, wl_title, wl_idle };
+
+/* ── the clipboard: the Wayland selection. Ours: a data source with the
+ * text (UTF-8 for the others; the program's is Latin-1); another's: its
+ * offer, read through a pipe when the program asks ── */
+static pthread_mutex_t wl_clip_mx = PTHREAD_MUTEX_INITIALIZER;   /* (not the gil: the source's sends come on the event thread) */
+static char *wl_clip_utf8;
+static struct wl_data_source *wl_src;
+static struct wl_data_offer *wl_sel;           /* the selection, another program's */
+static int wl_sel_text;                         /* ... it has text: 2 UTF-8, 1 plain */
+static void src_target(void *d, struct wl_data_source *s, const char *m) { (void)d; (void)s; (void)m; }
+static void src_send(void *d, struct wl_data_source *s, const char *m, int32_t fd)
+{
+    (void)d; (void)s; (void)m;
+    pthread_mutex_lock(&wl_clip_mx);
+    const char *t = wl_clip_utf8 ? wl_clip_utf8 : "";
+    size_t n = strlen(t), o = 0;
+    signal(SIGPIPE, SIG_IGN);
+    while (o < n) { ssize_t k = write(fd, t + o, n - o); if (k <= 0) break; o += (size_t)k; }
+    pthread_mutex_unlock(&wl_clip_mx);
+    close(fd);
+}
+static void src_cancelled(void *d, struct wl_data_source *s)
+{
+    (void)d;
+    pthread_mutex_lock(&gil);
+    if (s == wl_src) { wl_src = 0; clip_lost(); }
+    pthread_mutex_unlock(&gil);
+    wl_data_source_destroy(s);
+}
+static void src_dnd_drop(void *d, struct wl_data_source *s) { (void)d; (void)s; }
+static void src_dnd_finished(void *d, struct wl_data_source *s) { (void)d; (void)s; }
+static void src_action(void *d, struct wl_data_source *s, uint32_t a) { (void)d; (void)s; (void)a; }
+static const struct wl_data_source_listener src_l = { src_target, src_send, src_cancelled, src_dnd_drop, src_dnd_finished, src_action };
+static void wl_clip_set(const char *text)       /* (gil held) */
+{
+    if (!wl_ddm || !wl_dd) return;
+    size_t n = strlen(text);
+    char *u = malloc(2 * n + 1), *o = u;
+    for (size_t i = 0; i < n; i++) {
+        uint8_t c = (uint8_t)text[i];
+        if (c < 0x80) *o++ = (char)c; else { *o++ = (char)(0xC0 | c >> 6); *o++ = (char)(0x80 | (c & 0x3F)); }
+    }
+    *o = 0;
+    pthread_mutex_lock(&wl_clip_mx);
+    free(wl_clip_utf8);
+    wl_clip_utf8 = u;
+    pthread_mutex_unlock(&wl_clip_mx);
+    struct wl_data_source *s = wl_data_device_manager_create_data_source(wl_ddm);
+    wl_data_source_add_listener(s, &src_l, 0);
+    wl_data_source_offer(s, "text/plain;charset=utf-8");
+    wl_data_source_offer(s, "UTF8_STRING");
+    wl_data_source_offer(s, "text/plain");
+    wl_data_device_set_selection(wl_dd, s, wl_serial);
+    wl_src = s;                                  /* (the old one: cancelled, by the compositor) */
+    wl_display_flush(wld);
+}
+static char *wl_clip_get(void)                  /* (gil held: the offer stays) */
+{
+    if (!wl_sel || !wl_sel_text) return 0;
+    int fd[2];
+    if (pipe(fd)) return 0;
+    wl_data_offer_receive(wl_sel, wl_sel_text == 2 ? "text/plain;charset=utf-8" : "text/plain", fd[1]);
+    close(fd[1]);
+    wl_display_flush(wld);
+    size_t n = 0, cap = 4096;
+    char *b = malloc(cap);
+    for (;;) {                                   /* (a program that doesn't answer: two seconds) */
+        struct pollfd pf = { fd[0], POLLIN, 0 };
+        if (poll(&pf, 1, 2000) <= 0) break;
+        if (n + 1024 > cap) b = realloc(b, cap *= 2);
+        ssize_t k = read(fd[0], b + n, cap - n - 1);
+        if (k <= 0) break;
+        n += (size_t)k;
+    }
+    close(fd[0]);
+    b[n] = 0;
+    if (wl_sel_text == 2) {                      /* UTF-8: Latin-1 (the rest: '?') */
+        size_t i = 0, k = 0;
+        while (i < n) {
+            uint8_t c = (uint8_t)b[i];
+            if (c < 0x80) { b[k++] = (char)c; i++; continue; }
+            int len = c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : 2;
+            uint32_t cp = c & (0x3F >> (len - 1));
+            for (int j = 1; j < len && i + (size_t)j < n; j++) cp = cp << 6 | ((uint8_t)b[i + (size_t)j] & 0x3F);
+            b[k++] = cp < 0x100 ? (char)cp : '?';
+            i += (size_t)len;
+        }
+        b[k] = 0;
+    }
+    return b;
+}
+static void off_offer(void *d, struct wl_data_offer *o, const char *m)
+{
+    (void)d;
+    intptr_t f = (intptr_t)wl_data_offer_get_user_data(o);
+    if (!strcmp(m, "text/plain;charset=utf-8") || !strcmp(m, "UTF8_STRING")) f = 2;
+    else if (!strcmp(m, "text/plain") && f < 1) f = 1;
+    wl_data_offer_set_user_data(o, (void *)f);
+}
+static void off_source_actions(void *d, struct wl_data_offer *o, uint32_t a) { (void)d; (void)o; (void)a; }
+static void off_action(void *d, struct wl_data_offer *o, uint32_t a) { (void)d; (void)o; (void)a; }
+static const struct wl_data_offer_listener off_l = { off_offer, off_source_actions, off_action };
+static void dd_data_offer(void *d, struct wl_data_device *dd, struct wl_data_offer *o) { (void)d; (void)dd; wl_data_offer_add_listener(o, &off_l, 0); }
+static void dd_enter(void *d, struct wl_data_device *dd, uint32_t s, struct wl_surface *f, wl_fixed_t x, wl_fixed_t y, struct wl_data_offer *o)
+{ (void)d; (void)dd; (void)s; (void)f; (void)x; (void)y; if (o) wl_data_offer_destroy(o); }   /* (drag and drop: not yet) */
+static void dd_leave(void *d, struct wl_data_device *dd) { (void)d; (void)dd; }
+static void dd_motion(void *d, struct wl_data_device *dd, uint32_t t, wl_fixed_t x, wl_fixed_t y) { (void)d; (void)dd; (void)t; (void)x; (void)y; }
+static void dd_drop(void *d, struct wl_data_device *dd) { (void)d; (void)dd; }
+static void dd_selection(void *d, struct wl_data_device *dd, struct wl_data_offer *o)
+{
+    (void)d; (void)dd;
+    pthread_mutex_lock(&gil);
+    if (wl_sel) wl_data_offer_destroy(wl_sel);
+    wl_sel = o;
+    wl_sel_text = o ? (int)(intptr_t)wl_data_offer_get_user_data(o) : 0;
+    pthread_mutex_unlock(&gil);
+}
+static const struct wl_data_device_listener dd_l = { dd_data_offer, dd_enter, dd_leave, dd_motion, dd_drop, dd_selection };
+
+/* ── the pointer's shape: a cursor surface ── */
+static struct wl_surface *wl_cur;
+static pmwin_t *wl_cur_ptr;
+static void wl_cursor_apply(void)               /* (gil held) */
+{
+    pmwin_t *p = wl_cur_ptr;
+    if (!wl_ptr || !wl_enter_serial || !p || !p->used || !p->px) return;
+    if (!wl_cur) wl_cur = wl_compositor_create_surface(wl_comp);
+    int w = p->pw, h = p->ph, hx = 0, hy = 0;
+    size_t n = (size_t)w * h * 4;
+    int fd = memfd_create("os2x86-ptr", MFD_CLOEXEC);
+    if (fd < 0) return;
+    if (ftruncate(fd, (off_t)n)) { close(fd); return; }
+    uint32_t *m = mmap(0, n, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (m == MAP_FAILED) { close(fd); return; }
+    ptr_argb(p, m, &hx, &hy);
+    munmap(m, n);
+    struct wl_shm_pool *pool = wl_shm_create_pool(wl_shm_, fd, (int32_t)n);
+    struct wl_buffer *b = wl_shm_pool_create_buffer(pool, 0, w, h, w * 4, WL_SHM_FORMAT_ARGB8888);
+    wl_shm_pool_destroy(pool);
+    close(fd);
+    wl_buffer_add_listener(b, &wl_buf_l, 0);
+    wl_surface_attach(wl_cur, b, 0, 0);
+    wl_surface_damage_buffer(wl_cur, 0, 0, w, h);
+    wl_surface_commit(wl_cur);
+    wl_pointer_set_cursor(wl_ptr, wl_enter_serial, wl_cur, hx, hy);
+    wl_display_flush(wld);
+}
+static void wl_cursor(pmwin_t *p) { wl_cur_ptr = p; if (wl_ptr_frame) wl_cursor_apply(); }
+
+static const pmback_t pm_wayland = { wl_show, wl_present, wl_title, wl_idle, wl_clip_set, wl_clip_get, wl_cursor };
 
 /* the pointer */
 static void p_enter(void *d, struct wl_pointer *p, uint32_t serial, struct wl_surface *s, wl_fixed_t x, wl_fixed_t y)
 {
-    (void)d; (void)p; (void)serial;
+    (void)d; (void)p;
     pthread_mutex_lock(&gil);
     wl_ptr_frame = wl_frame_of(s);
     wl_px = wl_fixed_to_int(x); wl_py = wl_fixed_to_int(y);
+    wl_enter_serial = serial;
+    if (wl_ptr_frame) wl_cursor_apply();         /* (the shape: set again, each time it comes in) */
     pthread_mutex_unlock(&gil);
 }
 static void p_leave(void *d, struct wl_pointer *p, uint32_t serial, struct wl_surface *s)
@@ -165,7 +321,8 @@ static void p_motion(void *d, struct wl_pointer *p, uint32_t t, wl_fixed_t x, wl
 }
 static void p_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t t, uint32_t button, uint32_t state)
 {
-    (void)d; (void)p; (void)serial; (void)t;
+    (void)d; (void)p; (void)t;
+    wl_serial = serial;
     int b = button == 0x110 ? 1 : button == 0x111 ? 2 : button == 0x112 ? 3 : 0;     /* BTN_LEFT RIGHT MIDDLE */
     pthread_mutex_lock(&gil);
     if (b && wl_ptr_frame && wl_ptr_frame->used) {
@@ -217,7 +374,8 @@ static void k_leave(void *d, struct wl_keyboard *k, uint32_t serial, struct wl_s
 }
 static void k_key(void *d, struct wl_keyboard *k, uint32_t serial, uint32_t t, uint32_t key, uint32_t state)
 {
-    (void)d; (void)k; (void)serial; (void)t;
+    (void)d; (void)k; (void)t;
+    wl_serial = serial;
     if (state != WL_KEYBOARD_KEY_STATE_PRESSED) return;
     pthread_mutex_lock(&gil);
     pmwin_t *f = wl_kbd_frame;
@@ -279,6 +437,7 @@ static void reg_global(void *d, struct wl_registry *r, uint32_t name, const char
     if (!strcmp(iface, wl_compositor_interface.name)) wl_comp = wl_registry_bind(r, name, &wl_compositor_interface, 4);
     else if (!strcmp(iface, wl_shm_interface.name)) wl_shm_ = wl_registry_bind(r, name, &wl_shm_interface, 1);
     else if (!strcmp(iface, xdg_wm_base_interface.name)) { wl_wm = wl_registry_bind(r, name, &xdg_wm_base_interface, 1); xdg_wm_base_add_listener(wl_wm, &wm_l, 0); }
+    else if (!strcmp(iface, wl_data_device_manager_interface.name)) wl_ddm = wl_registry_bind(r, name, &wl_data_device_manager_interface, ver < 3 ? ver : 3);
     else if (!strcmp(iface, wl_seat_interface.name)) { wl_seat_ = wl_registry_bind(r, name, &wl_seat_interface, ver < 5 ? ver : 5); wl_seat_add_listener(wl_seat_, &seat_l, 0); }
 }
 static void reg_remove(void *d, struct wl_registry *r, uint32_t name) { (void)d; (void)r; (void)name; }
@@ -309,6 +468,7 @@ static int wl_start(void)
         fprintf(stderr, "%s: the Wayland compositor lacks %s\n", prog_name, !wl_comp ? "wl_compositor" : !wl_shm_ ? "wl_shm" : "xdg_wm_base");
         wl_display_disconnect(wld); wld = 0; return 0;
     }
+    if (wl_ddm && wl_seat_) { wl_dd = wl_data_device_manager_get_data_device(wl_ddm, wl_seat_); wl_data_device_add_listener(wl_dd, &dd_l, 0); }
     pthread_t t;
     pthread_attr_t at;
     pthread_attr_init(&at);

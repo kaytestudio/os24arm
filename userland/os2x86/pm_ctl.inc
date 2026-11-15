@@ -214,6 +214,17 @@ static uint32_t static_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2
 /* ── WC_ENTRYFIELD ───────────────────────────────────────────────────── */
 typedef struct { int cur, limit, changed, ro, first; } ef_t;
 static ef_t *ef(pmwin_t *w) { if (!w->ctl) { w->ctl = calloc(1, sizeof(ef_t)); ((ef_t *)w->ctl)->limit = 32; ((ef_t *)w->ctl)->cur = -1; } return w->ctl; }
+static void clip_put(const char *s);
+static const char *clip_take(void);
+/* the clipboard's keys: 1 cut, 2 copy, 3 paste (Ctrl+X/C/V; PM's Shift+Del, Ctrl+Ins, Shift+Ins) */
+static int clip_key(uint32_t mp1, uint32_t mp2)
+{
+    int ch = (mp1 & KC_CHAR) ? (int)(mp2 & 0xFFFF) : 0, vk = (mp1 & KC_VIRTUALKEY) ? (int)(mp2 >> 16) : 0;
+    if (mp1 & KC_CTRL) { if (ch == 'x' || ch == 'X') return 1; if (ch == 'c' || ch == 'C') return 2; if (ch == 'v' || ch == 'V') return 3; if (vk == 0x1a) return 2; }
+    if ((mp1 & KC_SHIFT) && vk == 0x1b) return 1;
+    if ((mp1 & KC_SHIFT) && vk == 0x1a) return 3;
+    return 0;
+}
 static uint32_t entry_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
 {
     ef_t *e = ef(w);
@@ -251,6 +262,8 @@ static uint32_t entry_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
     }
     case WM_CHAR: {
         if (mp1 & KC_KEYUP) return 1;
+        int ck = clip_key(mp1, mp2);
+        if (ck) return entry_proc(w, ck == 1 ? 0x0144 : ck == 2 ? 0x0145 : 0x0147, 0, 0);   /* EM_CUT, EM_COPY, EM_PASTE */
         int ch = (int)(mp2 & 0xFFFF), vk = (int)(mp2 >> 16), done = 1, changed = 0;
         if ((mp1 & KC_VIRTUALKEY) && vk) {
             switch (vk) {
@@ -285,6 +298,22 @@ static uint32_t entry_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
     case 0x0148: return (uint32_t)e->first;                                                      /* EM_QUERYFIRSTCHAR */
     case 0x0149: e->first = (int)(mp1 & 0xFFFF); repaint(w); return 1;
     case 0x0146: if (!e->ro) { w->text[0] = 0; e->cur = 0; repaint(w); } return 1;               /* EM_CLEAR */
+    case 0x0144: case 0x0145:                                                                    /* EM_CUT, EM_COPY: (no selection here: all of it) */
+        if (w->text[0] && !(w->style & 0x80)) clip_put(w->text);
+        if (msg == 0x0144 && !e->ro) { w->text[0] = 0; e->cur = 0; repaint(w); e->changed = 1; notify(w, 4, 0); }
+        return 1;
+    case 0x0147: {                                                                               /* EM_PASTE: at the cursor, one line */
+        const char *t = clip_take();
+        if (!t || e->ro) return 1;
+        for (; *t && *t != '\r' && *t != '\n'; t++) {
+            n = (int)strlen(w->text);
+            if (n >= e->limit || n + 1 >= (int)sizeof w->text) break;
+            memmove(w->text + e->cur + 1, w->text + e->cur, (size_t)(n - e->cur + 1));
+            w->text[e->cur++] = *t;
+        }
+        repaint(w); e->changed = 1; notify(w, 4, 0);
+        return 1;
+    }
     }
     return 0;
 }
@@ -779,6 +808,8 @@ static uint32_t def_dlg_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp
     return 0;
 }
 static void cb_settext(pmwin_t *w);
+static void clip_put(const char *s);
+static const char *clip_take(void);
 static int ctl_get_text(pmwin_t *w, char *out, int max);
 static int ctl_set_text(pmwin_t *w, const char *s);
 static uint32_t api_WinDefDlgProc(void) { pmwin_t *w = win(A(0)); return w ? def_dlg_proc(w, A(1), A(2), A(3)) : 0; }
@@ -1364,7 +1395,6 @@ static int key_hook(pmwin_t *f, int ch, int vk, int scan, int kc)
 
 /* ── WC_MLE: text of many lines (LF inside; CR LF out, as MLFIE_CFTEXT) ─ */
 typedef struct { char *t; int len, cap, cur, anchor, top, limit, ro, changed, fmt; uint32_t iebuf, iecb; uint32_t vsb; } mle_t;
-static char *mle_clip;                                       /* (cut, copy, paste: here, for now) */
 static mle_t *mle(pmwin_t *w)
 {
     if (!w->ctl) {
@@ -1509,6 +1539,8 @@ static uint32_t mle_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
     }
     case WM_CHAR: {
         if (mp1 & KC_KEYUP) return 1;
+        int ck = clip_key(mp1, mp2);
+        if (ck) { mle_proc(w, ck == 1 ? 0x01d8 : ck == 2 ? 0x01d9 : 0x01da, 0, 0); return 1; }   /* MLM_CUT, COPY, PASTE */
         int ch = (mp1 & KC_CHAR) ? (int)(mp2 & 0xFFFF) : 0, vk = (mp1 & KC_VIRTUALKEY) ? (int)(mp2 >> 16) : 0;
         int shift = (mp1 & KC_SHIFT) != 0, ctrl = (mp1 & KC_CTRL) != 0, moved = 0;
         int l = mle_line_of(m, m->cur), col = m->cur - mle_line_start(m, l);
@@ -1629,16 +1661,23 @@ static uint32_t mle_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
     case 0x01d6: return (uint32_t)mle_line_start(m, m->top);                         /* MLM_QUERYFIRSTCHAR */
     case 0x01d7: m->top = mle_line_of(m, (int)mp1); repaint(w); return 1;            /* MLM_SETFIRSTCHAR */
     case 0x01db: if (!m->ro) { mle_del_sel(w); repaint(w); } return 1;               /* MLM_CLEAR */
-    case 0x01d8: case 0x01d9: {                                                      /* MLM_CUT, MLM_COPY */
+    case 0x01d8: case 0x01d9: {                                                      /* MLM_CUT, MLM_COPY: the selection, to the clipboard */
         int lo = m->anchor < m->cur ? m->anchor : m->cur, hi = m->anchor < m->cur ? m->cur : m->anchor;
-        free(mle_clip);
-        mle_clip = strndup(m->t + lo, (size_t)(hi - lo));
+        if (hi > lo) {
+            char *b = malloc((size_t)(2 * (hi - lo) + 1));
+            int k = mle_export(m, lo, hi - lo, b, 2 * (hi - lo));
+            b[k] = 0;
+            clip_put(b);
+            free(b);
+        }
         if (msg == 0x01d8 && !m->ro) { mle_del_sel(w); repaint(w); }
         return 1;
     }
-    case 0x01da:                                                                     /* MLM_PASTE */
-        if (mle_clip && !m->ro) { mle_del_sel(w); m->cur += mle_insert(w, m->cur, mle_clip, (int)strlen(mle_clip)); m->anchor = m->cur; repaint(w); }
+    case 0x01da: {                                                                   /* MLM_PASTE */
+        const char *t = clip_take();
+        if (t && !m->ro) { mle_del_sel(w); m->cur += mle_insert(w, m->cur, t, (int)strlen(t)); m->anchor = m->cur; mle_scroll_to_cursor(w, m); repaint(w); }
         return 1;
+    }
     case 0x01dc: case 0x01dd: case 0x01cf: case 0x01b4: case 0x01b6: case 0x01d2: case 0x01d4: return 1;
     case 0x01cd: case 0x01ce: return 0;                                              /* (no undo yet) */
     case 0x01b5: return (w->style & 1) != 0;                                         /* MLM_QUERYWRAP */

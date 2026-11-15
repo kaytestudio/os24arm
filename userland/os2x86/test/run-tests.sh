@@ -49,6 +49,7 @@ if [ -x "$W/armo64/wcl386" ] || [ -x "$W/binl64/wcl386" ]; then
     wrc -q -r -bt=os2 -i="$S" "$S/pmbook.rc" -fo=pmbook.res >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm -i="$S" "$S/pmbook.c" >/dev/null && wrc -q -bt=os2 pmbook.res pmbook.exe >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmcnr.c" >/dev/null
+    wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmclip.c" >/dev/null
     owfail=0
     echo "== OpenWatcom programs"
     ../os2x86 owtest.exe </dev/null | grep -E "^FAIL|passed|failed" || owfail=1
@@ -158,6 +159,11 @@ PY
        grep -q "CN_ENTER config.sys" <<< "$cnrout" && grep -q "sorted: autoexec.bat config.sys os2.ini readme.txt startup.cmd" <<< "$cnrout" &&
        grep -q "now: autoexec.bat os2.ini readme.txt startup.cmd" <<< "$cnrout" && grep -q "done: 4 records, view icon" <<< "$cnrout"
     then echo "PM container: ok"; else echo "PM container: FAIL"; echo "$cnrout"; owfail=1; fi
+    # the clipboard: CF_TEXT set and read back; an entry field's Ctrl+V, Ctrl+C, an MLE's Ctrl+V; WinSetPointer
+    clipout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf OS2X86_PM_SCRIPT="click 100 60; ctrl v; key !; ctrl c; click 100 150; ctrl v; enter; ctrl v; close" ../os2x86 pmclip.exe 2>&1 | tr -d '\r')"
+    if grep -q 'put: "Hello, clipboard" (have 1, info 400, first format 1)' <<< "$clipout" && grep -q "pointer: set 1, same 1" <<< "$clipout" &&
+       grep -q 'entry "Hello, clipboard!", mle "Hello, clipboard!||Hello, clipboard!"' <<< "$clipout" && grep -q 'done: "Hello, clipboard!"' <<< "$clipout"
+    then echo "PM clipboard: ok"; else echo "PM clipboard: FAIL"; echo "$clipout"; owfail=1; fi
     [ "$owfail" = 0 ] || st=1
 else
     echo "(no OpenWatcom: its programs not tried)"
