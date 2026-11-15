@@ -37,6 +37,14 @@ APIRET DosWaitEventSem(ULONG h, ULONG timeout);
 APIRET DosCreateMuxWaitSem(const char *name, ULONG *h, ULONG n, ULONG *recs, ULONG flags);
 APIRET DosWaitMuxWaitSem(ULONG h, ULONG timeout, ULONG *user);
 APIRET DosSleep(ULONG ms);
+APIRET DosCreateQueue(ULONG *hq, ULONG prio, const char *name);
+APIRET DosWriteQueue(ULONG hq, ULONG req, ULONG cb, void *buf, ULONG prio);
+APIRET DosReadQueue(ULONG hq, ULONG *reqdata, ULONG *cb, void **buf, ULONG elem, ULONG nowait, unsigned char *prio, ULONG hev);
+APIRET DosQueryQueue(ULONG hq, ULONG *count);
+APIRET DosCloseQueue(ULONG hq);
+APIRET DosStartSession(void *sd, ULONG *session, ULONG *pid);
+APIRET DosQueryModuleName(ULONG hmod, ULONG cb, char *buf);
+ULONG WinInitialize(ULONG flags);
 
 static int fails;
 
@@ -145,6 +153,7 @@ ULONG start(void)
     while (*cmd) cmd++;
     cmd++;
     out("arguments: \""); out(cmd); out("\"\n");
+    if (seq(cmd, "child")) DosExit(1, 5);          /* (the DosStartSession test's child) */
     check(seq(cmd, "one \"two three\""), "command line");
 
     const char *v;
@@ -252,14 +261,52 @@ ULONG start(void)
     static unsigned short cp;
     ULONG pc = flat_to_16(&cp);
     unsigned short a3[4] = { 0, (unsigned short)pc, (unsigned short)(pc >> 16), 0 };
-    check(far16_call(flat_to_16(VIO16GETCP), a3, 8) == 0 && cp == 437, "VioGetCp");
+    check((far16_call(flat_to_16(VIO16GETCP), a3, 8) & 0xFFFF) == 0 && cp == 437, "VioGetCp");
     static unsigned char ki[10] = { 0xAA, 0xAA, 0xAA };
     ULONG pk = flat_to_16(ki);
     unsigned short a4[3] = { 0, (unsigned short)pk, (unsigned short)(pk >> 16) };
-    check(far16_call(flat_to_16(KBD16PEEK), a4, 6) == 0 && ki[2] == 0, "KbdPeek (no key)");
+    check((far16_call(flat_to_16(KBD16PEEK), a4, 6) & 0xFFFF) == 0 && ki[2] == 0, "KbdPeek (no key)");
     unsigned short ds, ss;
     __asm__ volatile("movw %%ds, %0\n\tmovw %%ss, %1" : "=r"(ds), "=r"(ss));
     check(ds == 0x53 && ss == 0x53, "back in the flat segments");
+
+    /* queues */
+    ULONG hq, qn, req[2], qcb;
+    void *qb;
+    unsigned char qp;
+    check(DosCreateQueue(&hq, 2, "\\QUEUES\\OS2TEST") == 0, "DosCreateQueue (priority)");
+    DosWriteQueue(hq, 1, 10, (void *)0x111, 1);
+    DosWriteQueue(hq, 2, 20, (void *)0x222, 9);
+    DosWriteQueue(hq, 3, 30, (void *)0x333, 1);
+    check(DosQueryQueue(hq, &qn) == 0 && qn == 3, "DosWriteQueue, DosQueryQueue");
+    check(DosReadQueue(hq, req, &qcb, &qb, 0, 0, &qp, 0) == 0 && req[1] == 2 && qcb == 20 && qp == 9, "DosReadQueue: highest priority first");
+    check(DosReadQueue(hq, req, &qcb, &qb, 0, 0, &qp, 0) == 0 && req[1] == 1, "  then in order");
+    DosReadQueue(hq, req, &qcb, &qb, 0, 0, &qp, 0);
+    check(DosReadQueue(hq, req, &qcb, &qb, 0, 1, &qp, 0) == 342, "DosReadQueue: empty");
+    DosCloseQueue(hq);
+
+    /* a session: this program again, its end through a termination queue */
+    char me_name[260];
+    check(DosQueryModuleName(((ULONG *)pib)[2], sizeof me_name, me_name) == 0, "DosQueryModuleName");
+    ULONG tq, sess = 0, spid = 0;
+    check(DosCreateQueue(&tq, 0, "\\QUEUES\\OS2TERM") == 0, "a termination queue");
+    ULONG sd[15] = { 0 };
+    ((unsigned short *)sd)[0] = 60;                 /* Length */
+    ((unsigned short *)sd)[1] = 1;                  /* Related */
+    sd[3] = (ULONG)me_name;                         /* PgmName */
+    sd[4] = (ULONG)"child";                         /* PgmInputs */
+    sd[5] = (ULONG)"\\QUEUES\\OS2TERM";             /* TermQ */
+    APIRET sr = DosStartSession(sd, &sess, &spid);
+    check(sr == 0 && sess && spid, "DosStartSession");
+    unsigned short *res = 0;
+    if (sr == 0) {
+        check(DosReadQueue(tq, req, &qcb, (void **)&res, 0, 0, &qp, 0) == 0 && qcb == 4 && res[0] == sess && res[1] == 5,
+              "  its end in the queue (result 5)");
+        DosFreeMem(res);
+    }
+
+    /* Presentation Manager isn't here: the import loads, the call fails */
+    check(WinInitialize(0) == 0, "WinInitialize (PMWIN, not here): 0");
 
     out(fails ? "some tests failed\n" : "all passed\n");
     DosExit(1, (ULONG)fails);

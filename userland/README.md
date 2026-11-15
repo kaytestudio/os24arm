@@ -361,8 +361,14 @@ platform-specific are new code.
    OS/2's tiled LDT (selector n*8+7 is the 64 KB at n*64K), 16-bit code
    and stacks, far jumps, calls and returns, LSS/LDS/LES, and the call is
    Pascal (the callee pops, the result in AX). A 16-bit call it doesn't
-   have stops the program, naming it. Not there yet: MOU, Presentation
-   Manager (PMWIN & co.: such a program stops at once, saying so). Calls it doesn't have yet print
+   have stops the program, naming it. Queues (QUECALLS: FIFO, LIFO,
+   priority) and DosStartSession (a child on the same terminal; a
+   related one's end goes to its termination queue, as spawn() in the C
+   runtimes waits for it). Not there yet: MOU, Presentation Manager:
+   OS/2's own DLLs that aren't here (PMWIN, PMGPI, HELPMGR, TCP32DLL, ...)
+   load as stubs, so a program that only links them in (the C runtimes'
+   error reports do) runs; a call into one says so and returns 0
+   (WinInitialize: no anchor block, as a PM program checks). Calls it doesn't have yet print
    one line on stderr and return error 1; `OS2X86_TRACE=1` lists every
    call. `userland/os2x86/test/run-tests.sh` runs its test program
    (freestanding C, `os2test.c`, made an LX .EXE by `elf2lx.py`) on the

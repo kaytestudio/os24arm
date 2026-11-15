@@ -505,8 +505,15 @@ static int unpack2(uint8_t *dst, uint32_t dsz, const uint8_t *s, uint32_t n)
 }
 
 /* ── thunks: the imports from the system ────────────────────────────── */
-static const char *const libs[] = { "DOSCALLS", "NLS", "MSG", "QUECALLS", "SESMGR", "KBDCALLS", "VIOCALLS", "MOUCALLS", 0 };
+static const char *libs[64] = { "DOSCALLS", "NLS", "MSG", "QUECALLS", "SESMGR", "KBDCALLS", "VIOCALLS", "MOUCALLS", 0 };
 enum { L_DOS, L_NLS, L_MSG, L_QUE, L_SES, L_KBD, L_VIO, L_MOU, NLIBS };
+static int nlibs = NLIBS;
+/* OS/2's own DLLs that aren't here (yet): a program that imports from one
+ * still starts (C runtimes link Presentation Manager's message box in for
+ * their error reports); a call into one says so and returns 0 */
+static const char *const sysdlls[] = { "PMWIN", "PMGPI", "PMSHAPI", "PMSPL", "PMDRAG", "PMCTLS", "PMVIOP",
+    "PMWP", "PMMERGE", "PMBIDI", "PMPIC", "PMATM", "PMPRINTF", "PMSEC", "HELPMGR", "BDCALLS", "MONCALLS",
+    "NAMPIPES", "SO32DLL", "TCP32DLL", "SOM", "SOMU", "MMPM", "MDM", "UCONV", "LIBUNI", 0 };
 
 typedef uint32_t (*api_fn)(void);
 typedef struct { int lib; uint16_t ord; const char *name; api_fn fn; uint8_t a16; } api_t;   /* a16: a 16-bit call, its arguments' bytes */
@@ -528,7 +535,21 @@ static int builtin_lib(const char *name)
     char *dot = strrchr(n, '.');
     if (dot && !strcasecmp(dot, ".DLL")) *dot = 0;
     if (!strcasecmp(n, "DOSCALL1")) return L_DOS;
-    for (int i = 0; libs[i]; i++) if (!strcasecmp(n, libs[i])) return i;
+    for (int i = 0; i < nlibs; i++) if (!strcasecmp(n, libs[i])) return i;
+    return -1;
+}
+static int stub_lib(const char *name)
+{
+    char n[64];
+    snprintf(n, sizeof n, "%s", name);
+    char *dot = strrchr(n, '.');
+    if (dot && !strcasecmp(dot, ".DLL")) *dot = 0;
+    for (int i = 0; sysdlls[i]; i++)
+        if (!strcasecmp(n, sysdlls[i]) && nlibs < 64) {
+            for (char *q = n; *q; q++) *q = (char)toupper((unsigned char)*q);
+            libs[nlibs] = strdup(n);
+            return nlibs++;
+        }
     return -1;
 }
 
@@ -596,7 +617,11 @@ static int resolve_import(mod_t *m, uint32_t modord, uint32_t ord, const char *p
     int lib = builtin_lib(mn);
     if (lib >= 0) { *out = thunk_for(lib, pname ? 0 : ord, pname); return 0; }
     mod_t *d = load_dll(mn, err, errn);
-    if (!d) return -1;
+    if (!d) {
+        if ((lib = stub_lib(mn)) < 0) return -1;
+        *out = thunk_for(lib, pname ? 0 : ord, pname);
+        return 0;
+    }
     if (pname) {
         int o = export_ord(d, pname);
         if (o < 0) { snprintf(err, errn, "SYS2070: %s has no %s (that %s needs)", mn, pname, m->name); return -1; }
@@ -1040,6 +1065,7 @@ static void api16(thunk_t *t)
     uint32_t rv = t->api->fn();
     if (trace) fprintf(stderr, "[os2x86] %s.%s (16-bit) = %u\n", libs[t->lib], t->api->name, rv);
     C.r[EAX] = (C.r[EAX] & 0xFFFF0000) | (rv & 0xFFFF);
+    C.r[EDX] &= 0xFFFF0000;                     /* (DX: 0, for a caller that reads DX:AX) */
     sp += 4 + t->api->a16;
     C.r[ESP] = C.stack16 ? (C.r[ESP] & 0xFFFF0000) | (sp & 0xFFFF) : sp;
     cpu_load_seg(&C, 1, (uint16_t)cs);
@@ -1058,11 +1084,11 @@ static void api_call(int idx)
     if (t->api) rv = t->api->fn();
     else {
         if (!t->warned) {
-            fprintf(stderr, "%s: %s.%u%s%s isn't there yet (the program gets error 1)\n", prog_name,
-                    libs[t->lib], t->ord, t->name[0] ? " " : "", t->name);
+            fprintf(stderr, "%s: %s.%u%s%s isn't there yet (the program gets %d)\n", prog_name,
+                    libs[t->lib], t->ord, t->name[0] ? " " : "", t->name, t->lib < NLIBS);
             t->warned = 1;
         }
-        rv = ERROR_INVALID_FUNCTION;
+        rv = t->lib < NLIBS ? ERROR_INVALID_FUNCTION : 0;   /* (Dos*: an error; PM: no handle, FALSE) */
     }
     if (trace)
         fprintf(stderr, "[os2x86] %s.%s(%x, %x, %x, %x) = %u\n", libs[t->lib],
@@ -1910,7 +1936,7 @@ static uint32_t api_DosQueryModuleName(void)
     char o[PATH_MAX];
     mod_t *m = mod_by_handle(h);
     if (m) host_to_os2(m->path, o, sizeof o);
-    else if (h >= 0x1000 && h < 0x1000 + NLIBS) snprintf(o, sizeof o, "C:\\OS2\\DLL\\%s.DLL", libs[h - 0x1000]);
+    else if (h >= 0x1000 && h < 0x1000 + (uint32_t)nlibs) snprintf(o, sizeof o, "C:\\OS2\\DLL\\%s.DLL", libs[h - 0x1000]);
     else return ERROR_INVALID_HANDLE;
     uint32_t n = (uint32_t)strlen(o) + 1;
     if (n > cb || !ok(b, n)) return 24;      /* ERROR_BAD_LENGTH */
@@ -1950,7 +1976,7 @@ static uint32_t api_DosQueryProcAddr(void)
     uint32_t h = A(0), ord = A(1), pn = A(2), pp = A(3);
     char *name = pn ? gs(pn) : 0, err[256];
     if (name && name[0] == '#') { ord = (uint32_t)atoi(name + 1); name = 0; }
-    if (h >= 0x1000 && h < 0x1000 + NLIBS) {
+    if (h >= 0x1000 && h < 0x1000 + (uint32_t)nlibs) {
         int lib = (int)(h - 0x1000);
         if (name && !api_find(lib, 0, name)) return ERROR_PROC_NOT_FOUND;
         return p32(pp, thunk_for(lib, name ? 0 : ord, name)) ? 0 : ERROR_INVALID_PARAMETER;
@@ -1964,7 +1990,8 @@ static uint32_t api_DosQueryProcAddr(void)
 }
 static uint32_t api_DosQueryProcType(void) { return p32(A(3), 1) ? 0 : ERROR_INVALID_PARAMETER; }
 
-/* programs */
+/* programs: runnable here, or an x86 OS/2 one (OS/2 has no x bit) */
+static int runnable(const char *p) { return !is_dir(p) && (access(p, X_OK) == 0 || (access(p, R_OK) == 0 && x86_lx(p, 0))); }
 static int find_program(const char *name, char *out, size_t n)
 {
     char h[PATH_MAX], t[PATH_MAX + 8];
@@ -1974,7 +2001,7 @@ static int find_program(const char *name, char *out, size_t n)
     for (int e = 0; e < 2; e++) {
         if (e && ext) break;
         snprintf(t, sizeof t, "%s%s", name, e ? ".EXE" : "");
-        if (!os2_to_host(t, h, sizeof h, 0) && access(h, X_OK) == 0 && !is_dir(h)) { snprintf(out, n, "%s", h); return 1; }
+        if (!os2_to_host(t, h, sizeof h, 0) && runnable(h)) { snprintf(out, n, "%s", h); return 1; }
     }
     if (b != name) return 0;
     const char *path = getenv("PATH");
@@ -1991,7 +2018,7 @@ static int find_program(const char *name, char *out, size_t n)
                 snprintf(t, sizeof t, "%s\\%s%s", dir, name, e ? ".EXE" : "");
                 if (os2_to_host(t, p, sizeof p, 0)) continue;
             }
-            if (access(p, X_OK) == 0 && !is_dir(p)) { snprintf(out, n, "%s", p); return 1; }
+            if (runnable(p)) { snprintf(out, n, "%s", p); return 1; }
         }
     return 0;
 }
@@ -2021,6 +2048,37 @@ static void put_result(uint32_t pres, int status)
     else { p32(pres, WTERMSIG(status) == SIGSEGV || WTERMSIG(status) == SIGILL ? 2 : 3); p32(pres + 4, (uint32_t)WTERMSIG(status)); }
 }
 
+/* a program (this system's path h) with an argument string and an
+ * environment block (guest, 0: ours); x86 OS/2 ones through os2x86 */
+static pid_t start_child(const char *h, const char *astr, uint32_t penv)
+{
+    char *abuf = malloc(strlen(astr) + 2), *av[256 + 3];
+    char **argv = av + 2;
+    split_args(astr, argv + 1, 256, abuf);
+    char **envv = environ, *ev[1024];
+    if (penv && gs(penv)) {
+        int k = 0;
+        for (uint32_t p = penv; k < 1023 && ok(p, 1) && C.mem[p]; p += (uint32_t)strlen((char *)C.mem + p) + 1)
+            ev[k++] = (char *)C.mem + p;
+        ev[k] = 0;
+        envv = ev;
+    }
+    fflush(0);
+    pid_t pid = fork();
+    if (!pid) {
+        if (x86_lx(h, 0) == 1) {
+            argv[-1] = self_path; argv[0] = (char *)h;
+            execve(self_path, argv - 1, envv);
+        } else {
+            argv[0] = (char *)h;
+            execve(h, argv, envv);
+        }
+        _exit(127);
+    }
+    free(abuf);
+    return pid;
+}
+
 static uint32_t api_DosExecPgm(void)
 {
     uint32_t flags = A(2), pargs = A(3), penv = A(4), pres = A(5);
@@ -2037,33 +2095,8 @@ static uint32_t api_DosExecPgm(void)
         char *a1 = gs(pargs + (uint32_t)strlen(a0) + 1);
         if (a1) astr = a1;
     }
-    size_t al = strlen(astr);
-    char *abuf = malloc(al + 2), *av[256 + 3];
-    char **argv = av + 2;
-    int ac = split_args(astr, argv + 1, 256, abuf);
-    (void)ac;
-    char **envv = environ, *ev[1024];
-    if (penv && gs(penv)) {
-        int k = 0;
-        for (uint32_t p = penv; k < 1023 && ok(p, 1) && C.mem[p]; p += (uint32_t)strlen((char *)C.mem + p) + 1)
-            ev[k++] = (char *)C.mem + p;
-        ev[k] = 0;
-        envv = ev;
-    }
-    fflush(0);
-    pid_t pid = fork();
-    if (pid < 0) { free(abuf); return ERROR_NOT_ENOUGH_MEMORY; }
-    if (!pid) {
-        if (x86_lx(h, 0) == 1) {
-            argv[-1] = self_path; argv[0] = h;
-            execve(self_path, argv - 1, envv);
-        } else {
-            argv[0] = h;
-            execve(h, argv, envv);
-        }
-        _exit(127);
-    }
-    free(abuf);
+    pid_t pid = start_child(h, astr, penv);
+    if (pid < 0) return ERROR_NOT_ENOUGH_MEMORY;
     if ((flags & 7) == 0) {                  /* EXEC_SYNC */
         int st;
         UNLOCKED(while (waitpid(pid, &st, 0) < 0 && errno == EINTR) { });
@@ -2074,6 +2107,160 @@ static uint32_t api_DosExecPgm(void)
     }
     return 0;
 }
+
+/* QUECALLS: queues (in this process; a session's end is written to one) */
+#define ERROR_QUE_EMPTY 342
+typedef struct { uint32_t pid, req, cb, buf, prio; } qel_t;
+typedef struct { int used, order; char name[128]; qel_t *el; int n, cap; } queue_t;
+static queue_t queues[32];
+static queue_t *que_get(uint32_t h) { h -= 0x20000; return h < 32 && queues[h].used ? &queues[h] : 0; }
+static queue_t *que_named(const char *n, uint32_t *h)
+{
+    for (int i = 0; i < 32; i++)
+        if (queues[i].used && !strcasecmp(queues[i].name, n)) { if (h) *h = 0x20000 + (uint32_t)i; return &queues[i]; }
+    return 0;
+}
+static uint32_t api_DosCreateQueue(void)      /* (phq, priority, name) */
+{
+    char *n = gs(A(2));
+    if (!n || !ok(A(0), 4)) return ERROR_INVALID_PARAMETER;
+    if (que_named(n, 0)) return 332;             /* ERROR_QUE_DUPLICATE */
+    for (int i = 0; i < 32; i++)
+        if (!queues[i].used) {
+            memset(&queues[i], 0, sizeof queues[i]);
+            queues[i].used = 1;
+            queues[i].order = (int)(A(1) & 3);
+            snprintf(queues[i].name, sizeof queues[i].name, "%s", n);
+            p32(A(0), 0x20000 + (uint32_t)i);
+            return 0;
+        }
+    return 334;                                  /* ERROR_QUE_NO_MEMORY */
+}
+static uint32_t api_DosOpenQueue(void)        /* (ppid, phq, name) */
+{
+    char *n = gs(A(2));
+    uint32_t h;
+    if (!n) return ERROR_INVALID_PARAMETER;
+    if (!que_named(n, &h)) return 343;           /* ERROR_QUE_NAME_NOT_EXIST */
+    if (A(0)) p32(A(0), (uint32_t)getpid());
+    return p32(A(1), h) ? 0 : ERROR_INVALID_PARAMETER;
+}
+static uint32_t que_put(queue_t *q, uint32_t pid, uint32_t req, uint32_t cb, uint32_t buf, uint32_t prio)
+{
+    if (q->n == q->cap) {
+        int cap = q->cap ? q->cap * 2 : 16;
+        qel_t *e = realloc(q->el, (size_t)cap * sizeof *e);
+        if (!e) return 334;
+        q->el = e; q->cap = cap;
+    }
+    q->el[q->n++] = (qel_t){ pid, req, cb, buf, prio & 15 };
+    pthread_cond_broadcast(&gcv);
+    return 0;
+}
+static uint32_t api_DosWriteQueue(void)       /* (hq, request, cb, pbuf, priority) */
+{
+    queue_t *q = que_get(A(0));
+    if (!q) return 337;                          /* ERROR_QUE_INVALID_HANDLE */
+    return que_put(q, (uint32_t)getpid(), A(1), A(2), A(3), A(4));
+}
+static int que_pick(queue_t *q)
+{
+    if (!q->n) return -1;
+    if (q->order == 1) return q->n - 1;          /* LIFO */
+    int best = 0;
+    if (q->order == 2) for (int i = 1; i < q->n; i++) if (q->el[i].prio > q->el[best].prio) best = i;
+    return best;
+}
+static uint32_t que_read(int peek)
+{
+    /* (hq, preq, pcb, ppbuf, element / pelement, nowait, ppriority, hsem) */
+    uint32_t h = A(0), preq = A(1), pcb = A(2), ppbuf = A(3), elem = A(4), nowait = A(5), pprio = A(6);
+    for (;;) {
+        queue_t *q = que_get(h);
+        if (!q) return 337;
+        uint32_t want = peek ? 0 : elem;
+        int i = want && want <= (uint32_t)q->n ? (int)want - 1 : que_pick(q);
+        if (i >= 0) {
+            qel_t e = q->el[i];
+            p32(preq, e.pid); p32(preq + 4, e.req);
+            p32(pcb, e.cb); p32(ppbuf, e.buf);
+            if (pprio) p8(pprio, (uint8_t)e.prio);
+            if (peek) p32(elem, (uint32_t)i + 1);
+            else { memmove(q->el + i, q->el + i + 1, (size_t)(q->n - i - 1) * sizeof *q->el); q->n--; }
+            return 0;
+        }
+        if (nowait) return ERROR_QUE_EMPTY;
+        pthread_cond_wait(&gcv, &gil);
+    }
+}
+static uint32_t api_DosReadQueue(void) { return que_read(0); }
+static uint32_t api_DosPeekQueue(void) { return que_read(1); }
+static uint32_t api_DosPurgeQueue(void) { queue_t *q = que_get(A(0)); if (!q) return 337; q->n = 0; return 0; }
+static uint32_t api_DosQueryQueue(void) { queue_t *q = que_get(A(0)); if (!q) return 337; return p32(A(1), (uint32_t)q->n) ? 0 : ERROR_INVALID_PARAMETER; }
+static uint32_t api_DosCloseQueue(void)
+{
+    queue_t *q = que_get(A(0));
+    if (!q) return 337;
+    free(q->el);
+    memset(q, 0, sizeof *q);
+    return 0;
+}
+
+/* SESMGR: DosStartSession - a program in a "session" of its own: here a
+ * child on the same terminal; when it ends, a related one's end goes to
+ * its termination queue ({session, result}, as OS/2 writes it) */
+typedef struct { pid_t pid; uint32_t session; char termq[128]; } sess_t;
+static void *sess_watch(void *arg)
+{
+    sess_t *s = arg;
+    int st = 0;
+    while (waitpid(s->pid, &st, 0) < 0 && errno == EINTR) { }
+    pthread_mutex_lock(&gil);
+    queue_t *q = s->termq[0] ? que_named(s->termq, 0) : 0;
+    uint32_t b = q ? mem_alloc(4) : 0;
+    if (q && b) {
+        p16(b, (uint16_t)s->session);
+        p16(b + 2, (uint16_t)(WIFEXITED(st) ? WEXITSTATUS(st) : 0xFF));
+        que_put(q, (uint32_t)s->pid, 0, 4, b, 0);
+    }
+    pthread_mutex_unlock(&gil);
+    free(s);
+    return 0;
+}
+static uint32_t api_DosStartSession(void)     /* (psd, psession, ppid) */
+{
+    static uint32_t nsess;
+    uint32_t sd = A(0);
+    if (!ok(sd, 24)) return ERROR_INVALID_PARAMETER;
+    uint32_t related = g16(sd + 2), len = g16(sd);
+    char *name = g32(sd + 12) ? gs(g32(sd + 12)) : 0, *in = g32(sd + 16) ? gs(g32(sd + 16)) : 0;
+    char *tq = len >= 24 && g32(sd + 20) ? gs(g32(sd + 20)) : 0, h[PATH_MAX];
+    uint32_t env = len >= 28 ? g32(sd + 24) : 0;
+    if (!name || !*name) {                       /* none: a command shell */
+        name = getenv("COMSPEC");
+        if (!name) name = "CMD.EXE";
+    }
+    if (!find_program(name, h, sizeof h)) return ERROR_FILE_NOT_FOUND;
+    pid_t pid = start_child(h, in ? in : "", env);
+    if (pid < 0) return ERROR_NOT_ENOUGH_MEMORY;
+    uint32_t id = ++nsess;
+    if (A(1)) p32(A(1), id);
+    if (A(2)) p32(A(2), (uint32_t)pid);
+    if (related) {
+        sess_t *s = calloc(1, sizeof *s);
+        s->pid = pid;
+        s->session = id;
+        if (tq) snprintf(s->termq, sizeof s->termq, "%s", tq);
+        pthread_t pt;
+        pthread_attr_t at;
+        pthread_attr_init(&at);
+        pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+        if (pthread_create(&pt, &at, sess_watch, s)) free(s);
+        pthread_attr_destroy(&at);
+    }
+    return 0;
+}
+
 static uint32_t api_DosWaitChild(void)
 {
     uint32_t option = A(1), pres = A(2), ppid = A(3), pid = A(4);
@@ -2830,6 +3017,15 @@ static const api_t apis[] = {
     { L_NLS, 6, "DosQueryDBCSEnv", api_DosQueryDBCSEnv, 0 },
     { L_NLS, 7, "DosMapCase", api_DosMapCase, 0 },
     { L_MSG, 5, "DosPutMessage", api_DosPutMessage, 0 },
+    { L_QUE, 9, "DosReadQueue", api_DosReadQueue, 0 },
+    { L_QUE, 10, "DosPurgeQueue", api_DosPurgeQueue, 0 },
+    { L_QUE, 11, "DosCloseQueue", api_DosCloseQueue, 0 },
+    { L_QUE, 12, "DosQueryQueue", api_DosQueryQueue, 0 },
+    { L_QUE, 13, "DosPeekQueue", api_DosPeekQueue, 0 },
+    { L_QUE, 14, "DosWriteQueue", api_DosWriteQueue, 0 },
+    { L_QUE, 15, "DosOpenQueue", api_DosOpenQueue, 0 },
+    { L_QUE, 16, "DosCreateQueue", api_DosCreateQueue, 0 },
+    { L_SES, 37, "DosStartSession", api_DosStartSession, 0 },
     { L_KBD, 4, "KbdCharIn", api_KbdCharIn, 8 },
     { L_KBD, 9, "KbdStringIn", api_KbdStringIn, 12 },
     { L_KBD, 10, "KbdGetStatus", api_KbdGetStatus, 6 },

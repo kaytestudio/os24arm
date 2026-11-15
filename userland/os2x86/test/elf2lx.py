@@ -34,6 +34,9 @@ IMPORTS = {   # name: (module, ordinal)
     'DosWaitMuxWaitSem': ('DOSCALLS', 340), 'DosFlatToSel': ('DOSCALLS', 425),
     'VIO16WRTTTY': ('VIOCALLS', 19), 'VIO16GETMODE': ('VIOCALLS', 21), 'VIO16GETCP': ('VIOCALLS', 40),
     'KBD16PEEK': ('KBDCALLS', 22),
+    'DosCreateQueue': ('QUECALLS', 16), 'DosWriteQueue': ('QUECALLS', 14), 'DosReadQueue': ('QUECALLS', 9),
+    'DosCloseQueue': ('QUECALLS', 11), 'DosQueryQueue': ('QUECALLS', 12), 'DosStartSession': ('SESMGR', 37),
+    'WinInitialize': ('PMWIN', 763), 'DosQueryModuleName': ('DOSCALLS', 320),
 }
 
 def main():
