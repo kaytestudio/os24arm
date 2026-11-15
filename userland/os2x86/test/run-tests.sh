@@ -63,7 +63,7 @@ if [ -x "$W/armo64/wcl386" ] || [ -x "$W/binl64/wcl386" ]; then
     pmout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf \
         OS2X86_PM_SCRIPT="sleep 150; sleep 150; sleep 150; sleep 150; click 100 100; key ab; shot pm.ppm; key q; esc; key q; key y" \
         ../os2x86 pmhello.exe 2>/dev/null)"
-    if echo "$pmout" | grep -q "WM_TIMER x3" && echo "$pmout" | grep -q "done: 1 clicks, 4 keys" &&
+    if grep -q "WM_TIMER x3" <<< "$pmout" && grep -q "done: 1 clicks, 4 keys" <<< "$pmout" &&
        python3 -I - pm.ppm <<'PY'
 import sys
 d = open(sys.argv[1], 'rb').read().split(b'\n', 3); w, h = map(int, d[1].split()); px = d[3]
@@ -78,29 +78,29 @@ PY
         OS2X86_PM_SCRIPT="click 10 10; click 30 36; click 150 30; key abc; click 30 65; click 40 140; click 220 127; click 50 230; \
 click 10 10; click 30 36; key xyz; enter; click 10 10; click 30 36; key q; esc; click 55 10; click 60 36; enter; click 10 10; click 30 68" \
         ../os2x86 pmctl.exe 2>&1)"
-    if echo "$ctlout" | grep -q 'WinDlgBox: 1, name "Warpabc", check 1, radio 2, item 2' &&
-       echo "$ctlout" | grep -q 'WinDlgBox: 1, name "Warpxyz", check 0, radio 1, item -1' &&
-       echo "$ctlout" | grep -q 'WinDlgBox: 2, name "Warpxyz"' && echo "$ctlout" | grep -q "string: Hello from a string table" &&
-       echo "$ctlout" | grep -q "IDM_EXIT"
+    if grep -q 'WinDlgBox: 1, name "Warpabc", check 1, radio 2, item 2' <<< "$ctlout" &&
+       grep -q 'WinDlgBox: 1, name "Warpxyz", check 0, radio 1, item -1' <<< "$ctlout" &&
+       grep -q 'WinDlgBox: 2, name "Warpxyz"' <<< "$ctlout" && grep -q "string: Hello from a string table" <<< "$ctlout" &&
+       grep -q "IDM_EXIT" <<< "$ctlout"
     then echo "PM controls: ok"; else echo "PM controls: FAIL"; echo "$ctlout"; owfail=1; fi
     # scroll bars (the frame's: arrow, track, thumb dragged; a dialog's), a combo box, accelerators, the menu by keys
     moreout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf \
         OS2X86_PM_SCRIPT="click 471 28; click 471 312; click 471 200; drag 471 120 471 250; vkey f5; ctrl d; click 236 32; click 120 80; \
 click 250 130; click 220 130; enter; vkey f10; vkey down; vkey enter; alt f; key x" ../os2x86 pmmore.exe 2>&1)"
-    if echo "$moreout" | grep -q "top 11" && echo "$moreout" | grep -q "top 35" && echo "$moreout" | grep -q "IDM_REFRESH (source 3)" &&
-       echo "$moreout" | grep -q 'combo "Cherry", item 2' && echo "$moreout" | grep -q "WM_HSCROLL 4 -> 9" &&
-       echo "$moreout" | grep -q "IDM_REFRESH (source 2)" && echo "$moreout" | grep -q "IDM_EXIT"
+    if grep -q "top 11" <<< "$moreout" && grep -q "top 35" <<< "$moreout" && grep -q "IDM_REFRESH (source 3)" <<< "$moreout" &&
+       grep -q 'combo "Cherry", item 2' <<< "$moreout" && grep -q "WM_HSCROLL 4 -> 9" <<< "$moreout" &&
+       grep -q "IDM_REFRESH (source 2)" <<< "$moreout" && grep -q "IDM_EXIT" <<< "$moreout"
     then echo "PM scroll bars, combo box, keys: ok"; else echo "PM scroll bars, combo box, keys: FAIL"; echo "$moreout"; owfail=1; fi
     # the multi-line edit control and spin buttons
     editout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf \
         OS2X86_PM_SCRIPT="click 200 40; key !; enter; key Line3; click 93 200; click 93 200; click 30 207; vkey down; click 236 200; click 50 250" \
         ../os2x86 pmedit.exe 2>&1)"
-    if echo "$editout" | grep -q 'WinDlgBox 1: text "HelloRNWorld!RNLine3", export "HelloRNWorld!RNLine3", 3 lines, some changes, spin 4, day Tue' &&
-       echo "$editout" | grep -q "line 2 is 6 long"
+    if grep -q 'WinDlgBox 1: text "HelloRNWorld!RNLine3", export "HelloRNWorld!RNLine3", 3 lines, some changes, spin 4, day Tue' <<< "$editout" &&
+       grep -q "line 2 is 6 long" <<< "$editout"
     then echo "PM MLE, spin buttons: ok"; else echo "PM MLE, spin buttons: FAIL"; echo "$editout"; owfail=1; fi
     # bitmaps: three formats from resources, stretched, a memory PS blitted; the pixels checked
     bmpout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf OS2X86_PM_SCRIPT="shot bmp.ppm; close" ../os2x86 pmbmp.exe 2>&1)"
-    if echo "$bmpout" | grep -q "b1 64x48, b2 32x32, b3 16x16" && echo "$bmpout" | grep -q "(5,5) ffff00, (0,0) 000000" &&
+    if grep -q "b1 64x48, b2 32x32, b3 16x16" <<< "$bmpout" && grep -q "(5,5) ffff00, (0,0) 000000" <<< "$bmpout" &&
        python3 -I - bmp.ppm <<'PY'
 import sys
 d = open(sys.argv[1], 'rb').read().split(b'\n', 3); w, h = map(int, d[1].split()); px = d[3]
@@ -113,7 +113,7 @@ PY
     then echo "PM bitmaps: ok"; else echo "PM bitmaps: FAIL"; echo "$bmpout"; owfail=1; fi
     # icons: a real one (array, colour), masks (transparent, inverting), DP_MINI, a system icon, SS_ICON, a message box's
     icoout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf OS2X86_PM_SCRIPT="shot ico.ppm; key m; enter; close" ../os2x86 pmicon.exe 2>&1)"
-    if echo "$icoout" | grep -q "pointers yes yes yes" && echo "$icoout" | grep -q "WinMessageBox 1" &&
+    if grep -q "pointers yes yes yes" <<< "$icoout" && grep -q "WinMessageBox 1" <<< "$icoout" &&
        python3 -I - ico.ppm owobject.ico <<'PY'
 import sys, struct
 d = open(sys.argv[1], 'rb').read().split(b'\n', 3); w, h = map(int, d[1].split()); px = d[3]
@@ -139,17 +139,17 @@ PY
     then echo "PM icons: ok"; else echo "PM icons: FAIL"; echo "$icoout"; owfail=1; fi
     # fonts: GpiQueryFonts, logical fonts (bitmap by lMatch, outline by the char box), metrics, presentation parameters
     fontout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf OS2X86_PM_SCRIPT="close" ../os2x86 pmfont.exe 2>&1)"
-    if echo "$fontout" | grep -q "12 point bitmap at [0-9]" && echo "$fontout" | grep -q "GpiCreateLogFont 2 2" &&
-       echo "$fontout" | awk '/^mono:/ { exit !($3 == "1," && $5 == $8) }' && echo "$fontout" | grep -q "outline bold: baseline extent 40, bold 1" &&
-       echo "$fontout" | grep -q 'static font "14.Helv"' && echo "$fontout" | grep -q 'dialog item font "18.Helv Bold"' &&
-       echo "$fontout" | awk '/^default:/ { exit !($3 > $6) }'
+    if grep -q "12 point bitmap at [0-9]" <<< "$fontout" && grep -q "GpiCreateLogFont 2 2" <<< "$fontout" &&
+       awk '/^mono:/ { exit !($3 == "1," && $5 == $8) }' <<< "$fontout" && grep -q "outline bold: baseline extent 40, bold 1" <<< "$fontout" &&
+       grep -q 'static font "14.Helv"' <<< "$fontout" && grep -q 'dialog item font "18.Helv Bold"' <<< "$fontout" &&
+       awk '/^default:/ { exit !($3 > $6) }' <<< "$fontout"
     then echo "PM fonts: ok"; else echo "PM fonts: FAIL"; echo "$fontout"; owfail=1; fi
     # a notebook (pages from dialog resources, tabs, the page arrows) and a slider (shaft, buttons, keys, the arm dragged)
     bookout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf \
         OS2X86_PM_SCRIPT="click 213 183; click 325 183; vkey right; drag 265 183 82 183; click 100 12; click 150 153; key Warp; click 449 305; close" \
         ../os2x86 pmbook.exe 2>&1)"
-    if [ "$(echo "$bookout" | grep '^SLN_CHANGE' | tr '\n' ' ')" = "SLN_CHANGE 3 SLN_CHANGE 7 SLN_CHANGE 8 SLN_CHANGE 9 SLN_CHANGE 2 " ] &&
-       echo "$bookout" | grep -q "BKN_PAGESELECTED -> page 2" && echo "$bookout" | grep -q 'done: slider 2, name "Warp", on page 1, 2 selections'
+    if [ "$(grep '^SLN_CHANGE' <<< "$bookout" | tr -d '\r' | tr '\n' ' ')" = "SLN_CHANGE 3 SLN_CHANGE 7 SLN_CHANGE 8 SLN_CHANGE 9 SLN_CHANGE 2 " ] &&
+       grep -q "BKN_PAGESELECTED -> page 2" <<< "$bookout" && grep -q 'done: slider 2, name "Warp", on page 1, 2 selections' <<< "$bookout"
     then echo "PM notebook, slider: ok"; else echo "PM notebook, slider: FAIL"; echo "$bookout"; owfail=1; fi
     [ "$owfail" = 0 ] || st=1
 else
