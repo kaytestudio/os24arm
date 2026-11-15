@@ -29,6 +29,7 @@ if [ -x "$W/armo64/wcl386" ] || [ -x "$W/binl64/wcl386" ]; then
     wlib -q -n mydll.lib +mydll.dll >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2 "$S/usedll.c" mydll.lib >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2 "$S/mouse.c" >/dev/null
+    wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmhello.c" >/dev/null
     owfail=0
     echo "== OpenWatcom programs"
     ../os2x86 owtest.exe </dev/null | grep -E "^FAIL|passed|failed" || owfail=1
@@ -36,6 +37,22 @@ if [ -x "$W/armo64/wcl386" ] || [ -x "$W/binl64/wcl386" ]; then
     printf 'xy' | ../os2x86 conio.exe >/dev/null && echo "conio: ok" || { echo "conio: FAIL"; owfail=1; }
     ../os2x86 usedll.exe | grep -q "through the pointer: 1060" && echo "DLL: ok" || { echo "DLL: FAIL"; owfail=1; }
     printf '\033[<0;10;5Mk\033[<32;12;6M\033[<0;12;6m\033[<2;3;3M' | ../os2x86 mouse.exe | grep "mouse:" || owfail=1
+    # Presentation Manager, headless: a script for its input, a picture to check
+    D="$ROOT/build/userland/dl/dejavu-fonts-ttf-2.37.tar.bz2"
+    [ -f fonts/DejaVuSans.ttf ] || { [ -f "$D" ] && mkdir -p fonts && tar xjf "$D" -C fonts --strip-components=2 dejavu-fonts-ttf-2.37/ttf/DejaVuSans.ttf; }
+    pmout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf \
+        OS2X86_PM_SCRIPT="sleep 150; sleep 150; sleep 150; sleep 150; click 100 100; key ab; shot pm.ppm; key q; esc; key q; key y" \
+        ../os2x86 pmhello.exe 2>/dev/null)"
+    if echo "$pmout" | grep -q "WM_TIMER x3" && echo "$pmout" | grep -q "done: 1 clicks, 4 keys" &&
+       python3 -I - pm.ppm <<'PY'
+import sys
+d = open(sys.argv[1], 'rb').read().split(b'\n', 3); w, h = map(int, d[1].split()); px = d[3]
+at = lambda x, y: tuple(px[(y * w + x) * 3:(y * w + x) * 3 + 3])
+red = at(60, h - 1 - 40) == (255, 0, 0)                          # GpiBox, PM's coordinates
+blue = any(at(x, y)[2] > 200 and at(x, y)[0] < 100 for x in range(20, 200) for y in range(25, 45))   # the blue text
+sys.exit(0 if red and blue else 1)
+PY
+    then echo "PM: ok"; else echo "PM: FAIL"; echo "$pmout"; owfail=1; fi
     [ "$owfail" = 0 ] || st=1
 else
     echo "(no OpenWatcom: its programs not tried)"

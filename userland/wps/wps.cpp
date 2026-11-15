@@ -358,7 +358,7 @@ static void draw_icon(pixman_image_t *im, int i, int x, int y, int s)
 }
 
 /* ── objects: what an icon stands for ───────────────────────────────── */
-enum Action { A_NONE, A_HELP, A_EDITOR, A_WEB, A_VIEW, A_NETSTATUS, A_PING, A_TELNET, A_APP, A_FOLDER, A_RUN, A_OS2RUN, A_EDIT, A_SHREDDER, A_SCRIPT, A_PROMPT, A_PROGRAMS, A_WINLIST,
+enum Action { A_NONE, A_HELP, A_EDITOR, A_WEB, A_VIEW, A_NETSTATUS, A_PING, A_TELNET, A_APP, A_FOLDER, A_RUN, A_OS2RUN, A_PMRUN, A_EDIT, A_SHREDDER, A_SCRIPT, A_PROMPT, A_PROGRAMS, A_WINLIST,
               A_SHUTDOWN };
 struct Object {
     std::string label;
@@ -573,6 +573,7 @@ static void run_object(const Object &o)
     case A_WINLIST:  toggle_winlist(); break;
     case A_SHUTDOWN: spawn({ sys("os2cmd"), "SHUTDOWN" }); break;
     case A_RUN:    { auto v = terminal(true); v.push_back(o.path); spawn(v); break; }
+    case A_PMRUN:    spawn({ o.path }); break;                   /* (the kernel runs it through os2x86) */
     case A_OS2RUN: { auto v = terminal(true); v.push_back(sys("os2cmd")); v.push_back("RUN");
                      v.push_back(dos_path(o.path)); spawn(v); break; }   /* an OS/2 program: a process */
     case A_SHREDDER: open_info("Shredder", { "Shredder", "Drag an object here to delete it." }); break;     /* (the LX loader: the console's) */
@@ -594,6 +595,24 @@ static bool hidden_at_root(const std::string &n)
 }
 
 /* what the object at path p is (named label): its icon, what opening it does */
+/* an x86 OS/2 program (LX, after its DOS stub or not, for a 386-586)? 0
+ * no, else its type (LX module flags 0x700: 1 full screen, 2 windowed text,
+ * 3 Presentation Manager) - os2x86 runs those */
+static int x86_os2(const std::string &p)
+{
+    unsigned char h[0x40] = { 0 };
+    int fd = open(p.c_str(), O_RDONLY), r = 0;
+    if (fd < 0) return 0;
+    if (read(fd, h, sizeof h) == (ssize_t)sizeof h) {
+        uint32_t off = (h[0] == 'M' && h[1] == 'Z') ? (uint32_t)(h[0x3C] | h[0x3D] << 8 | h[0x3E] << 16 | (uint32_t)h[0x3F] << 24) : 0;
+        unsigned char lx[0x14];
+        if (pread(fd, lx, sizeof lx, off) == (ssize_t)sizeof lx && lx[0] == 'L' && lx[1] == 'X' && lx[8] >= 1 && lx[8] <= 4 && !lx[9])
+            r = ((lx[0x11] >> 0) & 7) ? (lx[0x11] & 7) : 2;
+    }
+    close(fd);
+    return r;
+}
+
 static bool classify(const std::string &p, const std::string &label, Object *o)
 {
     struct stat st;
@@ -612,7 +631,10 @@ static bool classify(const std::string &p, const std::string &label, Object *o)
         size_t l = strlen(x);
         return n.size() > l && strcasecmp(n.c_str() + n.size() - l, x) == 0;
     };
+    int x86 = (!memcmp(head, "MZ", 2) || !memcmp(head, "LX", 2)) ? x86_os2(p) : 0;
     if (!memcmp(head, "\x7f" "ELF", 4)) *o = { label, I_PROGRAM, A_RUN, p };
+    else if (x86 == 3) *o = { label, I_PROGRAM, A_PMRUN, p };          /* x86, Presentation Manager: os2x86, no terminal */
+    else if (x86) *o = { label, I_PROGRAM, A_RUN, p };                 /* x86, text: os2x86 (the kernel's), in a terminal */
     else if (!memcmp(head, "MZ", 2) || !memcmp(head, "LX", 2))
         *o = { label, I_PROGRAM, A_OS2RUN, p };                    /* an OS/2 program: a process */
     else if ((head[0] == '#' && head[1] == '!') || ends(".sh")) *o = { label, I_PROGRAM, A_SCRIPT, p };
@@ -2027,7 +2049,7 @@ static void properties(Window *w)
         if (w->sel < 0) return;
         const Object &o = w->objects[w->sel];
         name = o.label; path = o.path; size = o.size; mt = o.mtime;
-        type = o.action == A_FOLDER ? "Folder" : o.action == A_RUN ? "Program" : o.action == A_OS2RUN ? "OS/2 program" : o.action == A_SCRIPT ? "Program (script)"
+        type = o.action == A_FOLDER ? "Folder" : o.action == A_RUN ? "Program" : o.action == A_OS2RUN ? "OS/2 program" : o.action == A_PMRUN ? "OS/2 PM program (x86)" : o.action == A_SCRIPT ? "Program (script)"
              : o.icon == I_TEXT ? "Text file" : o.path.empty() ? "Object" : "File";
     }
     std::vector<std::string> l = { name, "Type:  " + type };
@@ -5956,8 +5978,8 @@ int main(int argc, char **argv)
     });
 
     const char *socket = wl_display_add_socket_auto(S.display);
+    if (socket) setenv("WAYLAND_DISPLAY", socket, 1);    /* (before the output comes: the Startup folder's programs need it) */
     if (!socket || !wlr_backend_start(S.backend)) { fprintf(stderr, "wps: can't start\n"); return 1; }
-    setenv("WAYLAND_DISPLAY", socket, 1);
     show_arrow();
 
     /* the clock: the timer finds itself through its data */

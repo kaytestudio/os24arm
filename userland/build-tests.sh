@@ -51,14 +51,28 @@ for src in "$ROOT"/userland/tests/*.c "$ROOT"/userland/apps/*.c; do
 done
 # userland/os2x86: the x86 OS/2 emulator (several files; the kernel runs
 # x86 LX programs through it as \OS2\os2x86)
-objs=()
-for src in "$ROOT"/userland/os2x86/*.c; do
-    o="$OUT/os2x86-$(basename "${src%.c}").o"
-    "$LLVM/clang" "${CFLAGS[@]}" -c "$src" -o "$o"
-    objs+=("$o")
-done
-ld.lld -static --image-base=0x60000000 -o "$OUT/os2x86" \
-    "$SR/lib/crt1.o" "$SR/lib/crti.o" "${objs[@]}" \
-    "$SR/lib/libc.a" "$SR/lib/libclang_rt.builtins-aarch64.a" "$SR/lib/crtn.o"
-rm -f "${objs[@]}"
-echo "  os2x86"
+# x86 LX programs through it as \OS2\os2x86); with Presentation Manager on
+# Wayland when the sysroot has wayland-client and xkbcommon
+PKGS="wayland-client xkbcommon"
+if [ -x "$CC_WRAP" ] && PKG_CONFIG_LIBDIR="$SR/lib/pkgconfig:$SR/share/pkgconfig" pkg-config --exists $PKGS; then
+    gen="$OUT/gen-os2x86"; rm -rf "$gen"; mkdir -p "$gen"
+    xml="$SR/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml"
+    "$ROOT/build/userland/host/bin/wayland-scanner" client-header "$xml" "$gen/xdg-shell-client-protocol.h"
+    "$ROOT/build/userland/host/bin/wayland-scanner" private-code "$xml" "$gen/xdg-shell-protocol.c"
+    # shellcheck disable=SC2046
+    "$CC_WRAP" -O2 -Wall -DOS2X86_WAYLAND -I"$gen" -o "$OUT/os2x86" "$ROOT"/userland/os2x86/*.c "$gen/xdg-shell-protocol.c" \
+        $(PKG_CONFIG_LIBDIR="$SR/lib/pkgconfig:$SR/share/pkgconfig" PKG_CONFIG_SYSROOT_DIR= pkg-config --static --cflags --libs $PKGS) -lpthread
+    echo "  os2x86 (Presentation Manager on Wayland)"
+else
+    objs=()
+    for src in "$ROOT"/userland/os2x86/*.c; do
+        o="$OUT/os2x86-$(basename "${src%.c}").o"
+        "$LLVM/clang" "${CFLAGS[@]}" -c "$src" -o "$o"
+        objs+=("$o")
+    done
+    ld.lld -static --image-base=0x60000000 -o "$OUT/os2x86" \
+        "$SR/lib/crt1.o" "$SR/lib/crti.o" "${objs[@]}" \
+        "$SR/lib/libc.a" "$SR/lib/libclang_rt.builtins-aarch64.a" "$SR/lib/crtn.o"
+    rm -f "${objs[@]}"
+    echo "  os2x86"
+fi

@@ -517,13 +517,13 @@ static int unpack2(uint8_t *dst, uint32_t dsz, const uint8_t *s, uint32_t n)
 }
 
 /* ── thunks: the imports from the system ────────────────────────────── */
-static const char *libs[64] = { "DOSCALLS", "NLS", "MSG", "QUECALLS", "SESMGR", "KBDCALLS", "VIOCALLS", "MOUCALLS", 0 };
-enum { L_DOS, L_NLS, L_MSG, L_QUE, L_SES, L_KBD, L_VIO, L_MOU, NLIBS };
+static const char *libs[64] = { "DOSCALLS", "NLS", "MSG", "QUECALLS", "SESMGR", "KBDCALLS", "VIOCALLS", "MOUCALLS", "PMWIN", "PMGPI", 0 };
+enum { L_DOS, L_NLS, L_MSG, L_QUE, L_SES, L_KBD, L_VIO, L_MOU, L_PMWIN, L_PMGPI, NLIBS };
 static int nlibs = NLIBS;
 /* OS/2's own DLLs that aren't here (yet): a program that imports from one
  * still starts (C runtimes link Presentation Manager's message box in for
  * their error reports); a call into one says so and returns 0 */
-static const char *const sysdlls[] = { "PMWIN", "PMGPI", "PMSHAPI", "PMSPL", "PMDRAG", "PMCTLS", "PMVIOP",
+static const char *const sysdlls[] = { "PMSHAPI", "PMSPL", "PMDRAG", "PMCTLS", "PMVIOP",
     "PMWP", "PMMERGE", "PMBIDI", "PMPIC", "PMATM", "PMPRINTF", "PMSEC", "HELPMGR", "BDCALLS", "MONCALLS",
     "NAMPIPES", "SO32DLL", "TCP32DLL", "SOM", "SOMU", "MMPM", "MDM", "UCONV", "LIBUNI", 0 };
 
@@ -1096,10 +1096,10 @@ static void api_call(int idx)
     else {
         if (!t->warned) {
             fprintf(stderr, "%s: %s.%u%s%s isn't there yet (the program gets %d)\n", prog_name,
-                    libs[t->lib], t->ord, t->name[0] ? " " : "", t->name, t->lib < NLIBS);
+                    libs[t->lib], t->ord, t->name[0] ? " " : "", t->name, t->lib <= L_MOU);
             t->warned = 1;
         }
-        rv = t->lib < NLIBS ? ERROR_INVALID_FUNCTION : 0;   /* (Dos*: an error; PM: no handle, FALSE) */
+        rv = t->lib <= L_MOU ? ERROR_INVALID_FUNCTION : 0;   /* (Dos*: an error; PM: no handle, FALSE) */
     }
     if (trace)
         fprintf(stderr, "[os2x86] %s.%s(%x, %x, %x, %x) = %u\n", libs[t->lib],
@@ -3045,6 +3045,8 @@ static uint32_t api_VioSetCurType(void)       /* (pci, hvio) */
 static uint32_t api_VioGetCp(void) { p16(FP(2), 437); return 0; }   /* (reserved, pcp, hvio) */
 static uint32_t api_ok16(void) { return 0; }
 
+#include "pm.inc"
+
 static const api_t apis[] = {
     { L_DOS, 110, "DosForceDelete", api_DosDelete, 0 },
     { L_DOS, 111, "DosKillThread", api_DosKillThread, 0 },
@@ -3155,6 +3157,72 @@ static const api_t apis[] = {
     { L_NLS, 6, "DosQueryDBCSEnv", api_DosQueryDBCSEnv, 0 },
     { L_NLS, 7, "DosMapCase", api_DosMapCase, 0 },
     { L_MSG, 5, "DosPutMessage", api_DosPutMessage, 0 },
+    { L_PMWIN, 763, "WinInitialize", api_WinInitialize, 0 },
+    { L_PMWIN, 842, "WinQueryWindowTextLength", api_WinQueryWindowTextLength, 0 },
+    { L_PMWIN, 813, "WinQueryDesktopWindow", api_WinQueryDesktopWindow, 0 },
+    { L_PMWIN, 888, "WinTerminate", api_WinTerminate, 0 },
+    { L_PMWIN, 716, "WinCreateMsgQueue", api_WinCreateMsgQueue, 0 },
+    { L_PMWIN, 726, "WinDestroyMsgQueue", api_WinDestroyMsgQueue, 0 },
+    { L_PMWIN, 926, "WinRegisterClass", api_WinRegisterClass, 0 },
+    { L_PMWIN, 908, "WinCreateStdWindow", api_WinCreateStdWindow, 0 },
+    { L_PMWIN, 909, "WinCreateWindow", api_WinCreateWindow, 0 },
+    { L_PMWIN, 915, "WinGetMsg", api_WinGetMsg, 0 },
+    { L_PMWIN, 918, "WinPeekMsg", api_WinPeekMsg, 0 },
+    { L_PMWIN, 912, "WinDispatchMsg", api_WinDispatchMsg, 0 },
+    { L_PMWIN, 919, "WinPostMsg", api_WinPostMsg, 0 },
+    { L_PMWIN, 920, "WinSendMsg", api_WinSendMsg, 0 },
+    { L_PMWIN, 902, "WinPostQueueMsg", api_WinPostQueueMsg, 0 },
+    { L_PMWIN, 911, "WinDefWindowProc", api_WinDefWindowProc, 0 },
+    { L_PMWIN, 910, "WinDefDlgProc", api_WinDefDlgProc, 0 },
+    { L_PMWIN, 703, "WinBeginPaint", api_WinBeginPaint, 0 },
+    { L_PMWIN, 738, "WinEndPaint", api_WinEndPaint, 0 },
+    { L_PMWIN, 840, "WinQueryWindowRect", api_WinQueryWindowRect, 0 },
+    { L_PMWIN, 765, "WinInvalidateRect", api_WinInvalidateRect, 0 },
+    { L_PMWIN, 743, "WinFillRect", api_WinFillRect, 0 },
+    { L_PMWIN, 913, "WinDrawText", api_WinDrawText, 0 },
+    { L_PMWIN, 877, "WinSetWindowText", api_WinSetWindowText, 0 },
+    { L_PMWIN, 841, "WinQueryWindowText", api_WinQueryWindowText, 0 },
+    { L_PMWIN, 728, "WinDestroyWindow", api_WinDestroyWindow, 0 },
+    { L_PMWIN, 789, "WinMessageBox", api_WinMessageBox, 0 },
+    { L_PMWIN, 883, "WinShowWindow", api_WinShowWindow, 0 },
+    { L_PMWIN, 875, "WinSetWindowPos", api_WinSetWindowPos, 0 },
+    { L_PMWIN, 843, "WinQueryWindowULong", api_WinQueryWindowULong, 0 },
+    { L_PMWIN, 878, "WinSetWindowULong", api_WinSetWindowULong, 0 },
+    { L_PMWIN, 839, "WinQueryWindowPtr", api_WinQueryWindowPtr, 0 },
+    { L_PMWIN, 876, "WinSetWindowPtr", api_WinSetWindowPtr, 0 },
+    { L_PMWIN, 884, "WinStartTimer", api_WinStartTimer, 0 },
+    { L_PMWIN, 885, "WinStopTimer", api_WinStopTimer, 0 },
+    { L_PMWIN, 829, "WinQuerySysValue", api_WinQuerySysValue, 0 },
+    { L_PMWIN, 753, "WinGetLastError", api_WinGetLastError, 0 },
+    { L_PMWIN, 701, "WinAlarm", api_WinAlarm, 0 },
+    { L_PMWIN, 800, "WinQueryAnchorBlock", api_WinQueryAnchorBlock, 0 },
+    { L_PMWIN, 899, "WinWindowFromID", api_WinWindowFromID, 0 },
+    { L_PMWIN, 834, "WinQueryWindow", api_WinQueryWindow, 0 },
+    { L_PMWIN, 860, "WinSetFocus", api_WinSetFocus, 0 },
+    { L_PMWIN, 817, "WinQueryFocus", api_WinQueryFocus, 0 },
+    { L_PMWIN, 757, "WinGetPS", api_WinGetPS, 0 },
+    { L_PMWIN, 848, "WinReleasePS", api_WinReleasePS, 0 },
+    { L_PMWIN, 892, "WinUpdateWindow", api_WinUpdateWindow, 0 },
+    { L_PMWIN, 772, "WinIsWindow", api_WinIsWindow, 0 },
+    { L_PMWIN, 837, "WinQueryWindowPos", api_WinQueryWindowPos, 0 },
+    { L_PMWIN, 879, "WinSetWindowUShort", api_WinSetWindowUShort, 0 },
+    { L_PMWIN, 844, "WinQueryWindowUShort", api_WinQueryWindowUShort, 0 },
+    { L_PMGPI, 359, "GpiCharStringAt", api_GpiCharStringAt, 0 },
+    { L_PMGPI, 358, "GpiCharString", api_GpiCharString, 0 },
+    { L_PMGPI, 517, "GpiSetColor", api_GpiSetColor, 0 },
+    { L_PMGPI, 504, "GpiSetBackColor", api_GpiSetBackColor, 0 },
+    { L_PMGPI, 404, "GpiMove", api_GpiMove, 0 },
+    { L_PMGPI, 398, "GpiLine", api_GpiLine, 0 },
+    { L_PMGPI, 356, "GpiBox", api_GpiBox, 0 },
+    { L_PMGPI, 453, "GpiQueryFontMetrics", api_GpiQueryFontMetrics, 0 },
+    { L_PMGPI, 505, "GpiSetBackMix", api_GpiSetMix, 0 },
+    { L_PMGPI, 537, "GpiSetMix", api_GpiSetMix, 0 },
+    { L_PMGPI, 389, "GpiErase", api_GpiErase, 0 },
+    { L_PMGPI, 441, "GpiQueryCurrentPosition", api_GpiQueryCurrentPosition, 0 },
+    { L_PMGPI, 437, "GpiQueryColor", api_GpiQueryColor, 0 },
+    { L_PMGPI, 592, "GpiCreateLogColorTable", api_GpiCreateLogColorTable, 0 },
+    { L_PMGPI, 544, "GpiSetPel", api_GpiSetPel, 0 },
+    { L_PMGPI, 489, "GpiQueryTextBox", api_GpiQueryTextBox, 0 },
     { L_QUE, 9, "DosReadQueue", api_DosReadQueue, 0 },
     { L_QUE, 10, "DosPurgeQueue", api_DosPurgeQueue, 0 },
     { L_QUE, 11, "DosCloseQueue", api_DosCloseQueue, 0 },
