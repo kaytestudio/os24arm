@@ -437,8 +437,12 @@ platform-specific are new code.
    icons or bitmaps; VM_SETITEM, VM_SETITEMATTR, VM_SELECTITEM,
    VN_SELECT, VN_ENTER) and circular sliders (a dial turned by dragging,
    its buttons or the keys; CSM_SETRANGE, CSM_SETVALUE, CSN_CHANGED,
-   CSN_TRACKING). Not there yet: the tree view, editing in a container,
-   drag and drop, owner-drawn value set items. OS/2's DLLs that aren't
+   CSN_TRACKING). The container's tree view: records under records
+   (RECORDINSERT's parent), the + and - buttons, tree lines, the keys
+   (Right and + open, Left and - close), CM_EXPANDTREE/COLLAPSETREE,
+   CN_EXPANDTREE/COLLAPSETREE, CM_QUERYRECORD by parent and child,
+   sorting and removing whole branches. Not there yet: editing in a
+   container, drag and drop, owner-drawn value set items. OS/2's DLLs that aren't
    here (PMSHAPI, HELPMGR, TCP32DLL, ...) load as stubs, so a program
    that only links them in runs; a call into one says so and returns 0. Calls it doesn't have yet print
    one line on stderr and return error 1; `OS2X86_TRACE=1` lists every

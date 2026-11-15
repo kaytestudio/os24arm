@@ -2,7 +2,8 @@
  * included at the end of pm.inc): records and field descriptions in the
  * program's memory (CM_ALLOCRECORD, CM_ALLOCDETAILFIELDINFO: a sub-
  * allocator of guest memory), the icon, name, text and details views
- * (string, number, date, time and icon columns), the title, selection
+ * (string, number, date, time and icon columns), the tree view (records
+ * under records, kept in the tree's order), the title, selection
  * (CN_EMPHASIS), opening (CN_ENTER: a double-click, Enter), sorting with
  * the program's compare function, a scroll bar. */
 
@@ -25,7 +26,8 @@ static uint32_t galloc(uint32_t n)
 enum { RC_ATTR = 4, RC_PTL = 8, RC_NEXT = 16, RC_PSZICON = 20, RC_HPTR = 24, RC_HPTRMINI = 28, RC_PSZTEXT = 44, RC_PSZNAME = 48, RC_PSZTREE = 52 };
 enum { FI_FLDATA = 4, FI_FLTITLE = 8, FI_TITLE = 12, FI_OFF = 16, FI_NEXT = 24, FI_CX = 28 };
 typedef struct {
-    uint32_t *rec; int n, cap;
+    uint32_t *rec, *par; int n, cap;          /* (records in the tree's order: each one's children right after it; par: its parent) */
+    int *vis, nv;                             /* (those shown: tree view, the expanded ones' children; else the top level) */
     uint32_t fld[32]; int nf;
     uint32_t attr, title;                     /* flWindowAttr, pszCnrTitle (the program's) */
     int top, cursor;                          /* (first row shown; the cursored record's index) */
@@ -35,17 +37,54 @@ static cnr_t *cnr(pmwin_t *w) { if (!w->ctl) { w->ctl = calloc(1, sizeof(cnr_t))
 static int cnr_mini(pmwin_t *w) { return (w->style & 0x40) != 0; }   /* CCS_MINIRECORDCORE */
 static int cnr_index(cnr_t *c, uint32_t r) { for (int i = 0; i < c->n; i++) if (c->rec[i] == r) return i; return -1; }
 static const char *gstr(uint32_t a) { char *s = a ? gs(a) : 0; return s ? s : ""; }
-static int cnr_view(cnr_t *c) { return (c->attr & 8) ? 8 : (c->attr & 1) ? 1 : (c->attr & 2) ? 2 : (c->attr & 0x40) ? 2 : 4; }
+static int cnr_view(cnr_t *c) { return (c->attr & 0x40) ? 0x40 : (c->attr & 8) ? 8 : (c->attr & 1) ? 1 : (c->attr & 2) ? 2 : 4; }
+/* the tree: k in i's subtree? where i's subtree ends; i has children? */
+static int cnr_under(cnr_t *c, int k, uint32_t r)
+{
+    for (uint32_t p = c->par[k]; p; ) { if (p == r) return 1; int j = cnr_index(c, p); if (j < 0) break; p = c->par[j]; }
+    return 0;
+}
+static int cnr_sub_end(cnr_t *c, int i) { int k = i + 1; while (k < c->n && cnr_under(c, k, c->rec[i])) k++; return k; }
+static int cnr_kids(cnr_t *c, int i) { return i + 1 < c->n && c->par[i + 1] == c->rec[i]; }
+static int cnr_depth(cnr_t *c, int i) { int d = 0; for (uint32_t p = c->par[i]; p; d++) { int j = cnr_index(c, p); if (j < 0) break; p = c->par[j]; } return d; }
+static int cnr_next_sib(cnr_t *c, int i) { int e = cnr_sub_end(c, i); return e < c->n && c->par[e] == c->par[i] ? e : -1; }
+static void cnr_revis(cnr_t *c)
+{
+    c->vis = realloc(c->vis, (size_t)(c->n + 1) * sizeof *c->vis);
+    c->nv = 0;
+    for (int i = 0; i < c->n; i++) {
+        int shown = 1;
+        if (!(c->attr & 0x40)) shown = c->par[i] == 0;
+        else for (uint32_t p = c->par[i]; p; ) {
+            int j = cnr_index(c, p);
+            if (j < 0) break;
+            if (!(g32(p + RC_ATTR) & 0x80)) { shown = 0; break; }   /* CRA_EXPANDED */
+            p = c->par[j];
+        }
+        if (shown) c->vis[c->nv++] = i;
+    }
+}
+static int cnr_pos(cnr_t *c, int i) { for (int k = 0; k < c->nv; k++) if (c->vis[k] == i) return k; return -1; }
+static void cnr_relink(cnr_t *c)              /* preccNextRecord: the next sibling */
+{
+    for (int i = 0; i < c->n; i++) { int s = cnr_next_sib(c, i); p32(c->rec[i] + RC_NEXT, s >= 0 ? c->rec[s] : 0); }
+}
+static int cnr_tree_icons(cnr_t *c) { return !(c->attr & 3); }   /* (the tree: CV_ICON's icons, or CV_NAME's small ones, or CV_TEXT's none) */
+static int cnr_indent(void) { return 18; }
 static int cnr_title_h(pmwin_t *w, cnr_t *c) { (void)w; return (c->attr & 0x200) ? pm_lineh + 6 : 0; }
 static int cnr_head_h(cnr_t *c) { return cnr_view(c) == 8 && (c->attr & 0x8000) ? pm_lineh + 6 : 0; }
-static int cnr_row_h(cnr_t *c) { return cnr_view(c) == 8 ? (pm_lineh > 20 ? pm_lineh : 20) + 2 : pm_lineh + 4; }
+static int cnr_row_h(cnr_t *c)
+{
+    if (cnr_view(c) == 0x40) { int ih = cnr_tree_icons(c) ? 34 : (c->attr & 2) ? 18 : 0; return ih > pm_lineh + 4 ? ih : pm_lineh + 4; }
+    return cnr_view(c) == 8 ? (pm_lineh > 20 ? pm_lineh : 20) + 2 : pm_lineh + 4;
+}
 static int cnr_cell_w(void) { return 96; }
 static int cnr_cell_h(void) { return 40 + pm_lineh + 4; }
 static int cnr_cols(pmwin_t *w) { int k = (w->cx - 18) / cnr_cell_w(); return k < 1 ? 1 : k; }
 /* rows shown, rows there are (icon view: rows of cells) */
 static int cnr_area_h(pmwin_t *w, cnr_t *c) { return w->cy - cnr_title_h(w, c) - cnr_head_h(c); }
 static int cnr_rows_shown(pmwin_t *w, cnr_t *c) { int h = cnr_view(c) == 4 ? cnr_cell_h() : cnr_row_h(c), r = cnr_area_h(w, c) / h; return r < 1 ? 1 : r; }
-static int cnr_rows(pmwin_t *w, cnr_t *c) { return cnr_view(c) == 4 ? (c->n + cnr_cols(w) - 1) / cnr_cols(w) : c->n; }
+static int cnr_rows(pmwin_t *w, cnr_t *c) { return cnr_view(c) == 4 ? (c->nv + cnr_cols(w) - 1) / cnr_cols(w) : c->nv; }
 
 /* a detail column's text for record r */
 static void cell_text(uint32_t r, uint32_t fi, char *out, size_t n)
@@ -63,7 +102,8 @@ static int col_w(pmwin_t *w, cnr_t *c, int k)
     (void)w;
     if (cx) return (int)cx;
     int best = (g32(fi + FI_FLTITLE) & 0x100) ? 24 : plain_w(gstr(g32(fi + FI_TITLE)));   /* (a title: its width) */
-    for (int i = 0; i < c->n; i++) {
+    for (int v = 0; v < c->nv; v++) {
+        int i = c->vis[v];
         char b[128];
         int tw = (g32(fi + FI_FLDATA) & 0x100) ? 20 : (cell_text(c->rec[i], fi, b, sizeof b), text_w(b, (int)strlen(b)));
         if (tw > best) best = tw;
@@ -104,9 +144,9 @@ static void cnr_select(pmwin_t *w, cnr_t *c, int i)
         if (a != was) { p32(c->rec[k] + RC_ATTR, a); if ((a ^ was) & 1) cnr_notify_emph(w, c->rec[k], 1); }
     }
     c->cursor = i;
-    int shown = cnr_rows_shown(w, c), row = cnr_view(c) == 4 ? i / cnr_cols(w) : i;
-    if (row < c->top) c->top = row;
-    if (row >= c->top + shown) c->top = row - shown + 1;
+    int p = cnr_pos(c, i), shown = cnr_rows_shown(w, c), row = cnr_view(c) == 4 ? p / cnr_cols(w) : p;
+    if (p >= 0 && row < c->top) c->top = row;
+    if (p >= 0 && row >= c->top + shown) c->top = row - shown + 1;
     repaint(w);
 }
 static void cnr_enter(pmwin_t *w, uint32_t r, int key)
@@ -125,10 +165,10 @@ static int cnr_hit(pmwin_t *w, cnr_t *c, int x, int y)
         int col = (x - 4) / cnr_cell_w(), row = from / cnr_cell_h() + c->top;
         if (col < 0 || col >= cnr_cols(w)) return -1;
         int i = row * cnr_cols(w) + col;
-        return i < c->n ? i : -1;
+        return i < c->nv ? c->vis[i] : -1;
     }
     int i = from / cnr_row_h(c) + c->top;
-    return i < c->n ? i : -1;
+    return i < c->nv ? c->vis[i] : -1;
 }
 static void cnr_paint(pmwin_t *w, cnr_t *c)
 {
@@ -156,8 +196,8 @@ static void cnr_paint(pmwin_t *w, cnr_t *c)
                 text_mid(w, tx, y - hh, y, t, tc);
                 if (fl & 0x400) line(w, x, y - hh, x + cw - 1, y - hh, C_DARK);   /* CFA_HORZSEPARATOR */
             }
-            for (int r = 0; r + c->top < c->n; r++) {
-                int ry1 = y - hh - r * rh, ry0 = ry1 - rh, i = r + c->top;
+            for (int r = 0; r + c->top < c->nv; r++) {
+                int ry1 = y - hh - r * rh, ry0 = ry1 - rh, i = c->vis[r + c->top];
                 if (ry1 <= 0) break;
                 uint32_t rec = c->rec[i], a = g32(rec + RC_ATTR);
                 uint32_t fg = (a & 1) ? C_LIGHT : tc;
@@ -178,10 +218,10 @@ static void cnr_paint(pmwin_t *w, cnr_t *c)
         }
     } else if (view == 4) {                                  /* icons: a grid of them */
         int cols = cnr_cols(w), ch = cnr_cell_h(), cwid = cnr_cell_w(), mini = (c->attr & 0x20) != 0;
-        for (int i = c->top * cols; i < c->n; i++) {
-            int row = i / cols - c->top, col = i % cols, x0 = 4 + col * cwid, y1 = y - row * ch;
+        for (int v = c->top * cols; v < c->nv; v++) {
+            int row = v / cols - c->top, col = v % cols, x0 = 4 + col * cwid, y1 = y - row * ch;
             if (y1 <= 0) break;
-            uint32_t rec = c->rec[i], a = g32(rec + RC_ATTR);
+            uint32_t rec = c->rec[c->vis[v]], a = g32(rec + RC_ATTR);
             pmwin_t *p = ptr_get(g32(rec + (mini && !cnr_mini(w) ? RC_HPTRMINI : RC_HPTR)));
             if (!p && mini) p = ptr_get(g32(rec + RC_HPTR));
             int isz = mini ? 16 : 32;
@@ -192,10 +232,52 @@ static void cnr_paint(pmwin_t *w, cnr_t *c)
             if (a & 1) fill(w, tx - 2, ty - pm_descent - 1, tx + (tw < cwid - 4 ? tw : cwid - 4) + 2, ty + pm_ascent + 1, C_HILITE);
             text_at(w, tx, ty, t, (int)strlen(t), (a & 1) ? C_LIGHT : tc);
         }
+    } else if (view == 0x40) {                               /* the tree: indented, the + and - buttons, the lines */
+        int rh = cnr_row_h(c), ind = cnr_indent(), lines = (c->attr & 0x400000) != 0;   /* CA_TREELINE */
+        for (int r = 0; r + c->top < c->nv; r++) {
+            int ry1 = y - r * rh, ry0 = ry1 - rh, i = c->vis[r + c->top], d = cnr_depth(c, i), my = (ry0 + ry1) / 2;
+            if (ry1 <= 0) break;
+            uint32_t rec = c->rec[i], a = g32(rec + RC_ATTR);
+            int bx = 4 + d * ind;                            /* (the button's left; its middle bx + 4) */
+            if (lines) {
+                #define DOTS_V(x, y0, y1) for (int q = (y0); q < (y1); q += 2) pel(w, x, q, C_DARK)
+                #define DOTS_H(x0, x1, yy) for (int q = (x0); q < (x1); q += 2) pel(w, q, yy, C_DARK)
+                if (d > 0) {
+                    int px = bx - ind + 4;
+                    DOTS_H(px, bx + (cnr_kids(c, i) ? 0 : 8), my);
+                    DOTS_V(px, cnr_next_sib(c, i) >= 0 ? ry0 : my, ry1);
+                    /* the ancestors' lines, going on past this row to their next siblings */
+                    int k = cnr_index(c, c->par[i]);
+                    for (int dd = d - 1; dd > 0 && k >= 0; dd--) {
+                        if (cnr_next_sib(c, k) >= 0) DOTS_V(4 + (dd - 1) * ind + 4, ry0, ry1);
+                        k = cnr_index(c, c->par[k]);
+                    }
+                }
+                if (cnr_kids(c, i) && (a & 0x80)) DOTS_V(bx + 4, ry0, my - 4);   /* (down to the first child) */
+                #undef DOTS_V
+                #undef DOTS_H
+            }
+            if (cnr_kids(c, i)) {                            /* the button: + collapsed, - expanded */
+                fill(w, bx, my - 4, bx + 9, my + 5, C_LIGHT);
+                line(w, bx, my - 4, bx + 8, my - 4, C_DARK); line(w, bx, my + 4, bx + 8, my + 4, C_DARK);
+                line(w, bx, my - 4, bx, my + 4, C_DARK); line(w, bx + 8, my - 4, bx + 8, my + 4, C_DARK);
+                line(w, bx + 2, my, bx + 6, my, tc);
+                if (!(a & 0x80)) line(w, bx + 4, my - 2, bx + 4, my + 2, tc);
+            }
+            int x = bx + 14;
+            const char *t;
+            if (c->attr & 1) t = gstr(g32(rec + RC_PSZTEXT));
+            else if (c->attr & 2) { pmwin_t *p = ptr_get(g32(rec + RC_HPTR)); if (p) ptr_draw(w, x, ry0 + (rh - 16) / 2, p, 4); x += 20; t = gstr(g32(rec + RC_PSZNAME)); }
+            else { pmwin_t *p = ptr_get(g32(rec + RC_HPTR)); if (p) ptr_draw(w, x, ry0 + (rh - 32) / 2, p, 0); x += 36; t = gstr(g32(rec + RC_PSZICON)); }
+            int tw = plain_w(t);
+            if (a & 1) fill(w, x - 2, ry0 + 1, x + tw + 2, ry1 - 1, C_HILITE);
+            text_mid(w, x, ry0, ry1, t, (a & 1) ? C_LIGHT : tc);
+            if ((a & 4) && pm_focus == w->hwnd) for (int px = x - 2; px < x + tw + 2; px += 2) { pel(w, px, ry0 + 1, tc); pel(w, px, ry1 - 2, tc); }
+        }
     } else {                                                 /* name, text: rows */
         int rh = cnr_row_h(c), mini = view == 2;
-        for (int r = 0; r + c->top < c->n; r++) {
-            int ry1 = y - r * rh, ry0 = ry1 - rh, i = r + c->top;
+        for (int r = 0; r + c->top < c->nv; r++) {
+            int ry1 = y - r * rh, ry0 = ry1 - rh, i = c->vis[r + c->top];
             if (ry1 <= 0) break;
             uint32_t rec = c->rec[i], a = g32(rec + RC_ATTR);
             int x = 4;
@@ -209,31 +291,63 @@ static void cnr_paint(pmwin_t *w, cnr_t *c)
     (void)right;
     present(w);
 }
-static void cnr_sort(pmwin_t *w, cnr_t *c, uint32_t fn, uint32_t storage)
+/* the children of parent (0: the top level), sorted, each followed by its own, into out */
+static int cnr_sort_into(cnr_t *c, uint32_t parent, uint32_t *out, uint32_t *opar, int k, uint32_t fn, uint32_t storage)
 {
-    for (int i = 1; i < c->n; i++) {                         /* (insertion: few records, a callback each) */
-        uint32_t r = c->rec[i];
+    int m = 0;
+    uint32_t *g = malloc((size_t)(c->n + 1) * sizeof *g);
+    for (int i = 0; i < c->n; i++) if (c->par[i] == parent) g[m++] = c->rec[i];
+    for (int i = 1; i < m; i++) {                            /* (insertion: few records, a callback each) */
+        uint32_t r = g[i];
         int j = i - 1;
         while (j >= 0) {
-            uint32_t args[3] = { c->rec[j], r, storage };
+            uint32_t args[3] = { g[j], r, storage };
             if ((int16_t)guest_call(fn, 3, args) <= 0) break;
-            c->rec[j + 1] = c->rec[j];
+            g[j + 1] = g[j];
             j--;
         }
-        c->rec[j + 1] = r;
+        g[j + 1] = r;
     }
-    for (int i = 0; i < c->n; i++) p32(c->rec[i] + RC_NEXT, i + 1 < c->n ? c->rec[i + 1] : 0);
+    for (int i = 0; i < m; i++) { out[k] = g[i]; opar[k] = parent; k++; k = cnr_sort_into(c, g[i], out, opar, k, fn, storage); }
+    free(g);
+    return k;
+}
+static void cnr_sort(pmwin_t *w, cnr_t *c, uint32_t fn, uint32_t storage)
+{
+    uint32_t *out = malloc((size_t)(c->n + 1) * sizeof *out), *opar = malloc((size_t)(c->n + 1) * sizeof *opar);
+    int k = cnr_sort_into(c, 0, out, opar, 0, fn, storage);
+    if (k == c->n) { memcpy(c->rec, out, (size_t)k * sizeof *out); memcpy(c->par, opar, (size_t)k * sizeof *opar); }
+    free(out); free(opar);
+    cnr_relink(c);
+    cnr_revis(c);
     repaint(w);
+}
+/* expand (on) or collapse record i: CN_EXPANDTREE, CN_COLLAPSETREE */
+static void cnr_expand(pmwin_t *w, cnr_t *c, int i, int on)
+{
+    uint32_t r = c->rec[i], a = g32(r + RC_ATTR);
+    if (!!(a & 0x80) == on) return;
+    p32(r + RC_ATTR, on ? (a | 0x80) & ~0x100u : (a | 0x100) & ~0x80u);
+    cnr_revis(c);
+    if (!on && c->cursor >= 0 && cnr_pos(c, c->cursor) < 0) cnr_select(w, c, i);   /* (the cursor was in what's hidden now) */
+    repaint(w);
+    notify(w, on ? 117 : 116, r);
 }
 static uint32_t container_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
 {
     cnr_t *c = cnr(w);
+    cnr_revis(c);
     switch (msg) {
-    case WM_DESTROY: free(c->rec); return 0;
+    case WM_DESTROY: free(c->rec); free(c->par); free(c->vis); return 0;
     case WM_SIZE: cnr_scrollbar(w, c); repaint(w); return 0;
     case WM_PAINT: w->invalid = 0; cnr_scrollbar(w, c); cnr_paint(w, c); return 0;
     case WM_BUTTON1DOWN: case WM_BUTTON2DOWN: {
-        int i = cnr_hit(w, c, (int16_t)(mp1 & 0xFFFF), (int16_t)(mp1 >> 16));
+        int x = (int16_t)(mp1 & 0xFFFF), i = cnr_hit(w, c, x, (int16_t)(mp1 >> 16));
+        set_focus(w->hwnd);
+        if (i >= 0 && msg == WM_BUTTON1DOWN && cnr_view(c) == 0x40 && cnr_kids(c, i)) {   /* the + or - button */
+            int bx = 4 + cnr_depth(c, i) * cnr_indent();
+            if (x >= bx - 2 && x <= bx + 10) { cnr_expand(w, c, i, !(g32(c->rec[i] + RC_ATTR) & 0x80)); return 1; }
+        }
         if (i >= 0) cnr_select(w, c, i);
         if (msg == WM_BUTTON2DOWN) notify(w, 119, i >= 0 ? c->rec[i] : 0);   /* CN_CONTEXTMENU */
         return 1;
@@ -254,16 +368,22 @@ static uint32_t container_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t 
     }
     case WM_CHAR: {
         if (mp1 & KC_KEYUP) return 1;
-        int vk = (mp1 & KC_VIRTUALKEY) ? (int)(mp2 >> 16) : 0, step = cnr_view(c) == 4 ? cnr_cols(w) : 1, i = c->cursor;
+        int vk = (mp1 & KC_VIRTUALKEY) ? (int)(mp2 >> 16) : 0, ch = (mp1 & KC_CHAR) ? (int)(mp2 & 0xFFFF) : 0;
+        int step = cnr_view(c) == 4 ? cnr_cols(w) : 1, i = c->cursor >= 0 ? cnr_pos(c, c->cursor) : -1;
+        if (cnr_view(c) == 0x40 && c->cursor >= 0) {          /* the tree: Right, +: open (then down into it); Left, -: close (then up to the parent) */
+            int k = c->cursor, open = (g32(c->rec[k] + RC_ATTR) & 0x80) != 0;
+            if (vk == 0x17 || ch == '+') { if (cnr_kids(c, k) && !open) cnr_expand(w, c, k, 1); else if (vk == 0x17 && cnr_kids(c, k)) cnr_select(w, c, k + 1); return 1; }
+            if (vk == 0x15 || ch == '-') { if (cnr_kids(c, k) && open) cnr_expand(w, c, k, 0); else if (vk == 0x15 && c->par[k]) cnr_select(w, c, cnr_index(c, c->par[k])); return 1; }
+        }
         if (vk == 0x18) i += step; else if (vk == 0x16) i -= step;
         else if (vk == 0x17 && cnr_view(c) == 4) i++; else if (vk == 0x15 && cnr_view(c) == 4) i--;
-        else if (vk == 0x14) i = 0; else if (vk == 0x13) i = c->n - 1;
+        else if (vk == 0x14) i = 0; else if (vk == 0x13) i = c->nv - 1;
         else if (vk == 0x12) i += cnr_rows_shown(w, c) * step; else if (vk == 0x11) i -= cnr_rows_shown(w, c) * step;
         else if ((vk == 0x08 || vk == 0x1e) && c->cursor >= 0) { cnr_enter(w, c->rec[c->cursor], 1); return 1; }
         else return pm_send(w->owner ? w->owner : w->parent, msg, mp1, mp2);
         if (i < 0) i = 0;
-        if (i >= c->n) i = c->n - 1;
-        cnr_select(w, c, i);
+        if (i >= c->nv) i = c->nv - 1;
+        if (i >= 0) cnr_select(w, c, c->vis[i]);
         return 1;
     }
     case 0x0331: {                                           /* CM_ALLOCRECORD: cbRecordData (extra), count */
@@ -279,17 +399,30 @@ static uint32_t container_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t 
     }
     case 0x0336: return 1;                                   /* CM_FREERECORD (the memory's ours: kept) */
     case 0x0339: {                                           /* CM_INSERTRECORD: the records (chained), RECORDINSERT */
-        uint32_t ri = mp2, order = g32(ri + 4), cnt = g32(ri + 20), r = mp1;
-        int at = order == 0x10 ? 0 : order == 0x40 || order == 0 ? c->n : cnr_index(c, order) + 1;   /* CMA_FIRST, CMA_END, after a record */
+        uint32_t ri = mp2, order = g32(ri + 4), parent = g32(ri + 8), cnt = g32(ri + 20), r = mp1;
+        int pi = parent ? cnr_index(c, parent) : -1;
+        if (pi < 0) parent = 0;
+        int at;                                              /* CMA_FIRST: first of the parent's; CMA_END: last; else after a record (and its own) */
+        if (order == 0x10) at = pi + 1;
+        else if (order == 0x40 || order == 0) at = pi >= 0 ? cnr_sub_end(c, pi) : c->n;
+        else { int k = cnr_index(c, order); at = k >= 0 ? cnr_sub_end(c, k) : (pi >= 0 ? cnr_sub_end(c, pi) : c->n); }
         if (at < 0 || at > c->n) at = c->n;
         for (uint32_t k = 0; k < (cnt ? cnt : 1) && r; k++) {
-            if (c->n == c->cap) { c->cap = c->cap ? c->cap * 2 : 32; c->rec = realloc(c->rec, (size_t)c->cap * sizeof *c->rec); }
+            if (c->n == c->cap) {
+                c->cap = c->cap ? c->cap * 2 : 32;
+                c->rec = realloc(c->rec, (size_t)c->cap * sizeof *c->rec);
+                c->par = realloc(c->par, (size_t)c->cap * sizeof *c->par);
+            }
             memmove(c->rec + at + 1, c->rec + at, (size_t)(c->n - at) * sizeof *c->rec);
+            memmove(c->par + at + 1, c->par + at, (size_t)(c->n - at) * sizeof *c->par);
+            uint32_t next = g32(r + RC_NEXT);
+            c->par[at] = parent;
             c->rec[at++] = r;
             c->n++;
-            r = g32(r + RC_NEXT);
+            r = next;
         }
-        for (int i = 0; i < c->n; i++) p32(c->rec[i] + RC_NEXT, i + 1 < c->n ? c->rec[i + 1] : 0);
+        cnr_relink(c);
+        cnr_revis(c);
         repaint(w);
         return (uint32_t)c->n;
     }
@@ -301,22 +434,33 @@ static uint32_t container_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t 
     case 0x0346: {                                           /* CM_REMOVERECORD: array, (count, flags): the count left */
         int cnt = (int)(mp2 & 0xFFFF);
         if (!cnt) { c->n = 0; c->cursor = -1; c->top = 0; }
-        for (int k = 0; k < cnt; k++) {
+        for (int k = 0; k < cnt; k++) {                      /* (a record: its children too) */
             int i = cnr_index(c, g32(mp1 + 4u * (uint32_t)k));
             if (i < 0) continue;
-            memmove(c->rec + i, c->rec + i + 1, (size_t)(c->n - i - 1) * sizeof *c->rec);
-            c->n--;
-            if (c->cursor >= c->n) c->cursor = c->n - 1;
+            int e = cnr_sub_end(c, i), gone = e - i;
+            uint32_t cur = c->cursor >= 0 && c->cursor < c->n ? c->rec[c->cursor] : 0;
+            memmove(c->rec + i, c->rec + e, (size_t)(c->n - e) * sizeof *c->rec);
+            memmove(c->par + i, c->par + e, (size_t)(c->n - e) * sizeof *c->par);
+            c->n -= gone;
+            c->cursor = cur ? cnr_index(c, cur) : -1;
+            if (c->cursor < 0 && c->n) c->cursor = i < c->n ? i : c->n - 1;
         }
-        for (int i = 0; i < c->n; i++) p32(c->rec[i] + RC_NEXT, i + 1 < c->n ? c->rec[i + 1] : 0);
+        cnr_relink(c);
+        cnr_revis(c);
         repaint(w);
         return (uint32_t)c->n;
     }
     case 0x0340: {                                           /* CM_QUERYRECORD: a record, (CMA_FIRST/LAST/NEXT/PREV, CMA_ITEMORDER) */
         uint32_t how = mp2 & 0xFFFF;
         int i = cnr_index(c, mp1), r = -1;
-        if (how & 0x10) r = 0; else if (how & 0x20) r = c->n - 1;
-        else if ((how & 0x100) && i >= 0) r = i + 1; else if ((how & 0x80) && i >= 0) r = i - 1;
+        if (how == 0x10) r = c->n ? 0 : -1;                                  /* CMA_FIRST: the top level's */
+        else if (how == 0x20) { for (int k = 0; k < c->n; k++) if (!c->par[k]) r = k; }   /* CMA_LAST */
+        else if (i < 0) return 0;
+        else if (how == 0x100) r = cnr_next_sib(c, i);                       /* CMA_NEXT, CMA_PREV: siblings */
+        else if (how == 0x80) { for (int k = 0; k < i; k++) if (c->par[k] == c->par[i]) r = k; }
+        else if (how == 1) r = c->par[i] ? cnr_index(c, c->par[i]) : -1;    /* CMA_PARENT */
+        else if (how == 2) r = cnr_kids(c, i) ? i + 1 : -1;                 /* CMA_FIRSTCHILD */
+        else if (how == 4) { for (int k = i + 1; k < c->n && cnr_under(c, k, c->rec[i]); k++) if (c->par[k] == c->rec[i]) r = k; }   /* CMA_LASTCHILD */
         return r >= 0 && r < c->n ? c->rec[r] : 0;
     }
     case 0x0341: {                                           /* CM_QUERYRECORDEMPHASIS: after (CMA_FIRST), the emphasis */
@@ -352,7 +496,8 @@ static uint32_t container_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t 
         uint8_t b[100] = { 0 };
         uint32_t v[4] = { 100, c->attr, (uint32_t)c->n, (uint32_t)c->nf };
         memcpy(b, &v[0], 4); memcpy(b + 16, &c->title, 4); memcpy(b + 20, &v[1], 4);
-        memcpy(b + 36, &v[2], 4); memcpy(b + 88, &v[3], 4);
+        int32_t ind = cnr_indent();
+        memcpy(b + 36, &v[2], 4); memcpy(b + 76, &ind, 4); memcpy(b + 84, &v[3], 4);
         memcpy(C.mem + ci, b, n);
         return n;
     }
@@ -397,6 +542,14 @@ static uint32_t container_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t 
         return (uint32_t)c->nf;
     }
     case 0x034b: cnr_sort(w, c, mp1, mp2); return 1;         /* CM_SORTRECORD: compare function, its storage */
+    case 0x034f: case 0x034e: {                              /* CM_EXPANDTREE, CM_COLLAPSETREE: a record (collapse, 0: all of them) */
+        int on = msg == 0x034f;
+        if (!mp1 && !on) { for (int i = 0; i < c->n; i++) if (cnr_kids(c, i)) cnr_expand(w, c, i, 0); return 1; }
+        int i = cnr_index(c, mp1);
+        if (i < 0) return 0;
+        cnr_expand(w, c, i, on);
+        return 1;
+    }
     case 0x0348: {                                           /* CM_SEARCHSTRING: SEARCHSTRING, after (CMA_FIRST) */
         const char *s = gstr(g32(mp1 + 4));
         int prefix = g32(mp1 + 8) != 0, cs = g32(mp1 + 12) != 0, from = mp2 == 0x10 ? 0 : cnr_index(c, mp2) + 1;
