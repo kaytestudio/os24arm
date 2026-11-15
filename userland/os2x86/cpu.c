@@ -12,23 +12,25 @@
 
 static _Thread_local jmp_buf *trap_jb;    /* (each OS/2 thread: a host thread) */
 static uint8_t parity[256];
+static const uint8_t is_prefix[256] = { [0x66] = 1, [0x67] = 1, [0x26] = 1, [0x2E] = 1, [0x36] = 1, [0x3E] = 1, [0x64] = 1, [0x65] = 1, [0xF0] = 1, [0xF2] = 1, [0xF3] = 1 };
 
-static void trap(cpu_t *c, int why) { (void)c; longjmp(*trap_jb, why); }
+static __attribute__((noreturn, cold)) void trap(cpu_t *c, int why) { (void)c; longjmp(*trap_jb, why); }
 
 int mem_ok(const cpu_t *c, uint32_t a, uint32_t n)
 {
     return a >= c->lo && a < c->size && n <= c->size - a;
 }
 
-static void fault(cpu_t *c, uint32_t a) { c->fault_addr = a; trap(c, CPU_FAULT); }
+static __attribute__((noreturn, cold, noinline)) void fault(cpu_t *c, uint32_t a) { c->fault_addr = a; trap(c, CPU_FAULT); }
+#define LIKELY(x) __builtin_expect(!!(x), 1)
 
-uint8_t rd8(cpu_t *c, uint32_t a) { if (a >= c->size || a < c->lo) fault(c, a); return c->mem[a]; }
-uint16_t rd16(cpu_t *c, uint32_t a) { if (!mem_ok(c, a, 2)) fault(c, a); uint16_t v; memcpy(&v, c->mem + a, 2); return v; }
-uint32_t rd32(cpu_t *c, uint32_t a) { if (!mem_ok(c, a, 4)) fault(c, a); uint32_t v; memcpy(&v, c->mem + a, 4); return v; }
+uint8_t rd8(cpu_t *c, uint32_t a) { if (!LIKELY(a < c->size && a >= c->lo)) fault(c, a); return c->mem[a]; }
+uint16_t rd16(cpu_t *c, uint32_t a) { if (!LIKELY(mem_ok(c, a, 2))) fault(c, a); uint16_t v; memcpy(&v, c->mem + a, 2); return v; }
+uint32_t rd32(cpu_t *c, uint32_t a) { if (!LIKELY(mem_ok(c, a, 4))) fault(c, a); uint32_t v; memcpy(&v, c->mem + a, 4); return v; }
 static uint64_t rd64(cpu_t *c, uint32_t a) { if (!mem_ok(c, a, 8)) fault(c, a); uint64_t v; memcpy(&v, c->mem + a, 8); return v; }
-void wr8(cpu_t *c, uint32_t a, uint8_t v) { if (a >= c->size || a < c->lo) fault(c, a); c->mem[a] = v; }
-void wr16(cpu_t *c, uint32_t a, uint16_t v) { if (!mem_ok(c, a, 2)) fault(c, a); memcpy(c->mem + a, &v, 2); }
-void wr32(cpu_t *c, uint32_t a, uint32_t v) { if (!mem_ok(c, a, 4)) fault(c, a); memcpy(c->mem + a, &v, 4); }
+void wr8(cpu_t *c, uint32_t a, uint8_t v) { if (!LIKELY(a < c->size && a >= c->lo)) fault(c, a); c->mem[a] = v; }
+void wr16(cpu_t *c, uint32_t a, uint16_t v) { if (!LIKELY(mem_ok(c, a, 2))) fault(c, a); memcpy(c->mem + a, &v, 2); }
+void wr32(cpu_t *c, uint32_t a, uint32_t v) { if (!LIKELY(mem_ok(c, a, 4))) fault(c, a); memcpy(c->mem + a, &v, 4); }
 static void wr64(cpu_t *c, uint32_t a, uint64_t v) { if (!mem_ok(c, a, 8)) fault(c, a); memcpy(c->mem + a, &v, 8); }
 
 /* the stack: SS:ESP, or SS:SP in a 16-bit stack segment */
@@ -766,6 +768,7 @@ static void step(cpu_t *c)
     uint8_t op;
     for (;;) {                                   /* prefixes */
         op = fetch8(c);
+        if (LIKELY(!is_prefix[op])) break;
         if (op == 0x66) in.os = 48 - dsz;
         else if (op == 0x67) in.as = 48 - dsz;
         else if (op == 0x26) in.ovr = 0;
