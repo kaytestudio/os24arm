@@ -225,6 +225,7 @@ static void post(pmwin_t *w, uint32_t hwnd, uint32_t msg, uint32_t mp1, uint32_t
 
 static pmfont_t *win_font(pmwin_t *w) { for (; w; w = w->parent) if (w->font) return w->font; return pm_deffont; }   /* (a parent's goes to its children) */
 static uint32_t guest_call16(uint32_t fp, uint32_t hwnd, uint32_t msg, uint32_t mp1, uint32_t mp2);
+static int pm_dlg16;                        /* (a dialog being made for a 16-bit program: its procedure 16-bit) */
 static uint32_t pm_send(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
 {
     if (!w) return 0;

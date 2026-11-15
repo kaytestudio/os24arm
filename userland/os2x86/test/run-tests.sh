@@ -259,6 +259,12 @@ at = lambda x, y: tuple(px[((h - 1 - y) * w + x) * 3:((h - 1 - y) * w + x) * 3 +
 sys.exit(0 if at(60, 40) == (255, 0, 0) and at(200, 40) == (255, 255, 255) else 1)
 PY
         then echo "16-bit Presentation Manager: ok"; else echo "16-bit Presentation Manager: FAIL"; echo "$pm16out"; owfail=1; fi
+        # its resources, in the NE: a menu, a string table, a dialog (its 16-bit procedure, a list box filled with 16:16 pointers)
+        wrc -q -r -bt=os2 -i="$T/test/ow16" "$T/test/ow16/pm16r.rc" -fo=pm16r.res >/dev/null
+        INCLUDE="$W/h:$W/h/os21x" wcl -q -s -bt=os2 -l=os2_pm "$T/test/ow16/pm16r.c" >/dev/null && wrc -q -bt=os2 pm16r.res pm16r.exe >/dev/null
+        pm16rout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf OS2X86_PM_SCRIPT="click 20 10; click 40 32; sleep 200; enter; click 20 10; click 40 54" ../os2x86 pm16r.exe 2>&1 | tr -d '\r')"
+        if [ "$(tr '\n' '|' <<< "$pm16rout")" = 'string: "Hello from a 16-bit string table"|DosGetResource: a selector|menu: there|WM_INITDLG "create params"|list: 2 items, the second "second"|WinDlgBox 1, typed "Warp"|done|' ]
+        then echo "16-bit PM resources: ok"; else echo "16-bit PM resources: FAIL"; echo "$pm16rout"; owfail=1; fi
     fi
     [ "$owfail" = 0 ] || st=1
 else

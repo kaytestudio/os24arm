@@ -653,6 +653,30 @@ static void ne_main(const char *path, uint8_t *f0, size_t n0, uint32_t ne0, int 
     run(0);
     do_exit(0);
 }
+/* resources: the last segments (NE 0x34 of them), the resource table (0x24) giving each one's type and id */
+static int ne_find_resource(uint32_t hmod, uint32_t type, uint32_t id, uint32_t *addr, uint32_t *size)
+{
+    nemod_t *m = hmod ? ne_mod_of(hmod) : (nnemods && !nemods[0]->dll ? nemods[0] : 0);
+    if (!m) return -1;
+    uint32_t cres = MNE16(m, 0x34), rt = m->ne + MNE16(m, 0x24);
+    if (cres > m->nseg) return 0;
+    for (uint32_t k = 0; k < cres && rt + 4 * k + 4 <= m->n; k++) {
+        uint32_t t = (uint32_t)(m->f[rt + 4 * k] | m->f[rt + 4 * k + 1] << 8), i = (uint32_t)(m->f[rt + 4 * k + 2] | m->f[rt + 4 * k + 3] << 8);
+        if (t != type || i != id) continue;
+        uint32_t sg = m->nseg - cres + k;
+        *addr = m->base[sg]; *size = m->len[sg];
+        return 1;
+    }
+    return 0;
+}
+static uint32_t d16_DosGetResource(void)                   /* (HMODULE, USHORT type, USHORT id, PSEL): the resource's segment */
+{
+    uint32_t a, n;
+    if (find_resource(W(8), W(6), W(4), &a, &n) != 1) return 87;
+    p16(FP(0), sel16(a));
+    return 0;
+}
+
 /* DosLoadModule (failname, cb, modname, phmod), DosGetProcAddr (hmod, procname or 0:ordinal, ppfn), DosFreeModule,
  * DosGetModHandle (modname, phmod), DosGetModName (hmod, cb, buf): the 16-bit DLLs (and the system's: their thunks) */
 static uint32_t d16_DosLoadModule(void)

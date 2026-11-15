@@ -1,0 +1,22 @@
+#include <os2.h>
+MENU 1
+BEGIN
+    SUBMENU "~File", 100
+    BEGIN
+        MENUITEM "~Dialog...", 101
+        MENUITEM "E~xit", 102
+    END
+END
+STRINGTABLE
+BEGIN
+    201 "Hello from a 16-bit string table"
+END
+DLGTEMPLATE 2
+BEGIN
+    DIALOG "16-bit dialog", 2, 10, 10, 160, 80, WS_VISIBLE, FCF_TITLEBAR | FCF_DLGBORDER
+    BEGIN
+        ENTRYFIELD "", 10, 10, 50, 140, 12, ES_MARGIN
+        LISTBOX 11, 10, 22, 80, 24
+        DEFPUSHBUTTON "OK", DID_OK, 100, 6, 50, 14
+    END
+END

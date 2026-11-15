@@ -2406,8 +2406,11 @@ static void *thr_main(void *arg)
 }
 /* resources: the LX resource table (type, name, size, object, offset) */
 static mod_t *mod_by_handle(uint32_t h);
+static int ne_find_resource(uint32_t hmod, uint32_t type, uint32_t id, uint32_t *addr, uint32_t *size);
 static int find_resource(uint32_t hmod, uint32_t type, uint32_t id, uint32_t *addr, uint32_t *size)
 {
+    int nr = ne_find_resource(hmod, type, id, addr, size);   /* (a 16-bit module's: ne16.inc; -1 not one) */
+    if (nr >= 0) return nr;
     mod_t *m = hmod ? mod_by_handle(hmod) : exe;
     if (!m) return 0;
     uint32_t rt = m->lx + H(m, 0x50), n = H(m, 0x54);
@@ -3448,7 +3451,6 @@ static const api_t apis[] = {
     { L_PMWIN, 46, "WinEndPaint", d16_gen, 4 },
     { L_PMWIN, 47, "WinInvalidateRect", d16_gen, 10 },
     { L_PMWIN, 69, "WinPostMsg", d16_gen, 14 },
-    { L_PMWIN, 61, "WinSendMsg", d16_gen, 14 },
     { L_PMWIN, 173, "WinFillRect", d16_gen, 12 },
     { L_PMWIN, 139, "WinMessageBox", d16_gen, 20 },
     { L_PMWIN, 84, "WinStartTimer", d16_gen, 12 },
@@ -3485,7 +3487,6 @@ static const api_t apis[] = {
     { L_PMWIN, 134, "WinSetDlgItemText", d16_gen, 10 },
     { L_PMWIN, 126, "WinDismissDlg", d16_gen, 6 },
     { L_PMWIN, 179, "WinDefDlgProc", d16_gen, 14 },
-    { L_PMWIN, 127, "WinSendDlgItemMsg", d16_gen, 16 },
     { L_PMGPI, 108, "GpiSetColor", d16_gen, 8 },
     { L_PMGPI, 128, "GpiMove", d16_gen, 8 },
     { L_PMGPI, 131, "GpiBox", d16_gen, 20 },
@@ -3509,6 +3510,17 @@ static const api_t apis[] = {
     { L_PMGPI, 164, "GpiQueryTextBox", d16_gen, 20 },
     { L_PMWIN, 3, "WinRegisterClass", d16_WinRegisterClass, 18 },
     { L_PMWIN, 65, "WinGetMsg", d16_WinGetMsg, 16 },
+    { L_PMWIN, 61, "WinSendMsg", d16_WinSendMsg, 14 },
+    { L_PMWIN, 127, "WinSendDlgItemMsg", d16_WinSendDlgItemMsg, 16 },
+    { L_PMWIN, 125, "WinDlgBox", d16_WinDlgBox, 20 },
+    { L_PMWIN, 122, "WinLoadDlg", d16_WinLoadDlg, 20 },
+    { L_PMWIN, 123, "WinCreateDlg", d16_WinCreateDlg, 20 },
+    { L_PMWIN, 124, "WinProcessDlg", d16_gen, 4 },
+    { L_PMWIN, 136, "WinLoadMenu", d16_gen, 8 },
+    { L_PMWIN, 157, "WinLoadString", d16_gen, 14 },
+    { L_PMWIN, 87, "WinLoadPointer", d16_gen, 8 },
+    { L_PMWIN, 102, "WinLoadAccelTable", d16_gen, 8 },
+    { L_DOS, 155, "DosGetResource", d16_DosGetResource, 10 },
     { L_PMWIN, 66, "WinPeekMsg", d16_WinPeekMsg, 18 },
     { L_PMWIN, 68, "WinDispatchMsg", d16_WinDispatchMsg, 8 },
     { L_DOS, 145, "DosCreateThread", d16_DosCreateThread, 12 },

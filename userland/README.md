@@ -361,8 +361,14 @@ platform-specific are new code.
    program registers keeps its 16-bit window procedure, which PM calls
    far, Pascal, on the program's stack (nesting: a procedure's own calls,
    their callbacks). The Workplace Shell starts 16-bit PM programs
-   without a terminal. Not yet: resources from an NE (menus, dialogs,
-   strings, icons), the controls' pointer messages in 16:16. (A 16-bit DLL built with OpenWatcom wants -zu -zdp: SS isn't
+   without a terminal. Their resources come from the NE (its last
+   segments, the resource table giving their types and ids): menus
+   (FCF_MENU, WinLoadMenu), dialogs (WinDlgBox, WinLoadDlg, WinCreateDlg:
+   their procedures 16-bit too, WM_INITDLG's create parameters 16:16),
+   strings, pointers, accelerators, DosGetResource (the segment's
+   selector); the messages a 16-bit program sends the list boxes and
+   menus with pointers (LM_INSERTITEM, LM_QUERYITEMTEXT, MM_INSERTITEM
+   ...) have them made flat. (A 16-bit DLL built with OpenWatcom wants -zu -zdp: SS isn't
    its data, and its exports put the caller's DS back.)
    `OS2X86_ITRACE=1` traces every instruction (CS:IP, its bytes, the
    registers); `OS2X86_WATCH=address` (hex, flat) names each instruction

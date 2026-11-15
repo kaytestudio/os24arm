@@ -65,6 +65,11 @@ static const pm16spec_t pm16specs[] = {
     { L_PMWIN, 126, "LW", api_WinDismissDlg },
     { L_PMWIN, 179, "LWLL", api_WinDefDlgProc },
     { L_PMWIN, 127, "LWWLL", api_WinSendDlgItemMsg },
+    { L_PMWIN, 124, "L", api_WinProcessDlg },
+    { L_PMWIN, 136, "LWW", api_WinLoadMenu },
+    { L_PMWIN, 157, "LWWSP", api_WinLoadString },
+    { L_PMWIN, 87, "LWW", api_WinLoadPointer },
+    { L_PMWIN, 102, "LWW", api_WinLoadAccelTable },
     { L_PMGPI, 108, "LL", api_GpiSetColor },
     { L_PMGPI, 128, "LP", api_GpiMove },
     { L_PMGPI, 131, "LLPLL", api_GpiBox },
@@ -110,6 +115,7 @@ static uint32_t d16_gen(void)
 static uint32_t guest_call16(uint32_t fp, uint32_t hwnd, uint32_t msg, uint32_t mp1, uint32_t mp2)
 {
     if (msg == WM_CREATE) { mp1 = to_far16(mp1); mp2 = to_far16(mp2); }
+    if (msg == 0x003b) mp2 = to_far16(mp2);                  /* WM_INITDLG: its create parameters */
     uint32_t r[8], eip = C.eip, fl = C.eflags;
     uint16_t sr[6];
     for (int i = 0; i < 6; i++) sr[i] = C.sreg[i];
@@ -170,4 +176,49 @@ static uint32_t d16_WinDispatchMsg(void)                  /* (HAB, PQMSG) */
     q32_from16(t, FP(0));
     uint32_t a[] = { L(4), t };
     return call32(api_WinDispatchMsg, 2, a);
+}
+
+/* dialogs: their procedures 16-bit */
+static uint32_t d16_dlg(api_fn fn, const char *fmt)
+{
+    uint32_t a[8], total = 0;
+    int n = (int)strlen(fmt);
+    for (int i = 0; i < n; i++) total += fmt[i] == 'W' ? 2 : 4;
+    uint32_t off = total;
+    for (int i = 0; i < n; i++) { off -= fmt[i] == 'W' ? 2 : 4; a[i] = fmt[i] == 'W' ? g16(a16 + off) : fmt[i] == 'P' ? to_flat16(g32(a16 + off)) : g32(a16 + off); }
+    int save = pm_dlg16;
+    pm_dlg16 = 1;
+    uint32_t r = call32(fn, n, a);
+    pm_dlg16 = save;
+    return r;
+}
+static uint32_t d16_WinDlgBox(void) { return d16_dlg(api_WinDlgBox, "LLLWWP"); }     /* (parent, owner, proc, hmod, id, create params) */
+static uint32_t d16_WinLoadDlg(void) { return d16_dlg(api_WinLoadDlg, "LLLWWP"); }
+static uint32_t d16_WinCreateDlg(void) { return d16_dlg(api_WinCreateDlg, "LLLPP"); }  /* (parent, owner, proc, template, create params) */
+/* messages to the built-in controls whose parameters are pointers: 16:16 made flat (list boxes' and menus' text, items) */
+static void ptr_params16(uint32_t hwnd, uint32_t msg, uint32_t *mp1, uint32_t *mp2)
+{
+    pmwin_t *w = win(hwnd);
+    if (!w || !w->iproc) return;
+    switch (msg) {
+    case 0x0161: case 0x0168: case 0x0166: case 0x016b:      /* LM_INSERTITEM, QUERYITEMTEXT, SETITEMTEXT, SEARCHSTRING */
+    case 0x018e: case 0x018b: case 0x0182: case 0x0183:      /* MM_SETITEMTEXT, QUERYITEMTEXT, QUERYITEM, SETITEM (MENUITEM: the same both ways) */
+        *mp2 = to_flat16(*mp2); break;
+    case 0x0180: *mp1 = to_flat16(*mp1); *mp2 = to_flat16(*mp2); break;   /* MM_INSERTITEM: the MENUITEM, the text */
+    }
+}
+static uint32_t d16_WinSendMsg(void)                       /* (hwnd, USHORT msg, mp1, mp2) */
+{
+    uint32_t h = L(10), m = W(8), p1 = L(4), p2 = L(0);
+    ptr_params16(h, m, &p1, &p2);
+    uint32_t a[] = { h, m, p1, p2 };
+    return call32(api_WinSendMsg, 4, a);
+}
+static uint32_t d16_WinSendDlgItemMsg(void)                /* (hwndDlg, USHORT id, USHORT msg, mp1, mp2) */
+{
+    uint32_t d = L(12), id = W(10), m = W(8), p1 = L(4), p2 = L(0);
+    pmwin_t *c = dlg_item(d, id);
+    ptr_params16(c ? c->hwnd : 0, m, &p1, &p2);
+    uint32_t a[] = { d, id, m, p1, p2 };
+    return call32(api_WinSendDlgItemMsg, 5, a);
 }

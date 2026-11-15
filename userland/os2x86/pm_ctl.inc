@@ -972,6 +972,7 @@ static int dlg_items(uint32_t t, int i, pmwin_t *parent, pmwin_t *dlg, uint32_t 
         if (!w) return -1;
         w->x = x; w->y = y; w->cx = cx; w->cy = cy;
         w->proc = proc;
+        w->p16 = pm_dlg16 && proc;
         if (!proc) w->iproc = def_dlg_proc;
         w->visible = (style & WS_VISIBLE_) != 0;
         snprintf(w->text, sizeof w->text, "%s", text);
@@ -984,6 +985,7 @@ static int dlg_items(uint32_t t, int i, pmwin_t *parent, pmwin_t *dlg, uint32_t 
         w->top = 1;
         w->fixed = 1;
         w->proc = proc;
+        w->p16 = pm_dlg16 && proc;
         if (!proc) w->iproc = def_dlg_proc;
         frame_pixels(w, cx > 0 ? cx : 200, cy > 0 ? cy : 100);
         snprintf(w->text, sizeof w->text, "%s", text);
