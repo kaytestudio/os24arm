@@ -270,7 +270,7 @@ static uint32_t pm_rgb(int32_t c, int rgbmode, int back)
 
 typedef struct { int face, px, outline, used; } lfont_t;
 typedef struct { int used; uint32_t hwnd; int32_t color, back; int rgb, x, y, painting;
-                 pmfont_t *font; int lcid, boxpx; lfont_t *lf; } pmps_t;   /* (font: GpiSetCharSet's; lf: its logical fonts, 255) */
+                 pmfont_t *font; int lcid, boxpx; lfont_t *lf; void *geo; } pmps_t;   /* (geo: pm_geo.inc's) */   /* (font: GpiSetCharSet's; lf: its logical fonts, 255) */
 static pmps_t pmpss[64];
 static pmps_t *ps_get(uint32_t h) { h -= 0xA000; return h < 64 && pmpss[h].used ? &pmpss[h] : 0; }
 
@@ -857,11 +857,13 @@ static uint32_t api_WinDefWindowProc(void) { pmwin_t *w = win(A(0)); return w ? 
 
 
 /* presentation spaces */
+static void geo_free(pmps_t *ps);
 static uint32_t ps_new(pmwin_t *w, int painting)
 {
     for (int i = 0; i < 64; i++)
         if (!pmpss[i].used) {
-            pmpss[i] = (pmps_t){ 1, w->hwnd, -3, -3, 0, 0, 0, painting, 0, 0, 0, 0 };
+            geo_free(&pmpss[i]);
+            pmpss[i] = (pmps_t){ 1, w->hwnd, -3, -3, 0, 0, 0, painting, 0, 0, 0, 0, 0 };
             return 0xA000 + (uint32_t)i;
         }
     return 0;
@@ -1234,44 +1236,11 @@ static uint32_t api_WinMessageBox(void)       /* (hwndParent, hwndOwner, pszText
 static uint32_t api_GpiSetColor(void) { pmps_t *ps = ps_get(A(0)); if (!ps) return 0; ps->color = (int32_t)A(1); return 1; }
 static uint32_t api_GpiQueryColor(void) { pmps_t *ps = ps_get(A(0)); return ps ? (uint32_t)ps->color : 0xFFFFFF01u; }
 static uint32_t api_GpiSetBackColor(void) { pmps_t *ps = ps_get(A(0)); if (!ps) return 0; ps->back = (int32_t)A(1); return 1; }
-static uint32_t api_GpiMove(void)
-{
-    pmps_t *ps = ps_get(A(0));
-    if (!ps || !ok(A(1), 8)) return 0;
-    ps->x = (int32_t)g32(A(1)); ps->y = (int32_t)g32(A(1) + 4);
-    return 1;
-}
 static uint32_t api_GpiQueryCurrentPosition(void)
 {
     pmps_t *ps = ps_get(A(0));
     if (!ps) return 0;
     p32(A(1), (uint32_t)ps->x); p32(A(1) + 4, (uint32_t)ps->y);
-    return 1;
-}
-static uint32_t api_GpiLine(void)
-{
-    pmps_t *ps = ps_get(A(0));
-    pmwin_t *w = ps_win(ps);
-    if (!w || !ok(A(1), 8)) return 0;
-    int x = (int32_t)g32(A(1)), y = (int32_t)g32(A(1) + 4);
-    line(w, ps->x, ps->y, x, y, pm_rgb(ps->color, ps->rgb, 0));
-    ps->x = x; ps->y = y;
-    return 1;                                /* GPI_OK */
-}
-static uint32_t api_GpiBox(void)              /* (hps, lControl, pptlPoint, lHRound, lVRound) */
-{
-    pmps_t *ps = ps_get(A(0));
-    pmwin_t *w = ps_win(ps);
-    if (!w || !ok(A(2), 8)) return 0;
-    int x0 = ps->x, y0 = ps->y, x1 = (int32_t)g32(A(2)), y1 = (int32_t)g32(A(2) + 4);
-    if (x0 > x1) { int t = x0; x0 = x1; x1 = t; }
-    if (y0 > y1) { int t = y0; y0 = y1; y1 = t; }
-    uint32_t c = pm_rgb(ps->color, ps->rgb, 0);
-    if (A(1) & 1) fill(w, x0, y0, x1 + 1, y1 + 1, c);                 /* DRO_FILL */
-    if (A(1) & 2) {                                                  /* DRO_OUTLINE */
-        line(w, x0, y0, x1, y0, c); line(w, x1, y0, x1, y1, c);
-        line(w, x1, y1, x0, y1, c); line(w, x0, y1, x0, y0, c);
-    }
     return 1;
 }
 static uint32_t api_GpiSetPel(void)
@@ -1309,7 +1278,6 @@ static uint32_t api_GpiErase(void)
     fill(w, 0, 0, w->cx, w->cy, 0xFFFFFF);
     return 1;
 }
-static uint32_t api_GpiSetMix(void) { return 1; }
 static uint32_t api_GpiCreateLogColorTable(void)   /* (hps, flOptions, lFormat, lStart, lCount, alTable) */
 {
     pmps_t *ps = ps_get(A(0));
@@ -1531,6 +1499,7 @@ static pmwin_t *ptr_get(uint32_t h);
 #include "pm_cnr.inc"
 #include "pm_vs.inc"
 #include "pm_drag.inc"
+#include "pm_geo.inc"
 
 /* ── the clipboard (WinOpenClipbrd & co.): CF_TEXT, CF_BITMAP; on the
  * desktop the Wayland one (pm_wl.inc), so text goes between programs ── */

@@ -53,6 +53,7 @@ if [ -x "$W/armo64/wcl386" ] || [ -x "$W/binl64/wcl386" ]; then
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmvs.c" >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmtree.c" >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmdrag.c" >/dev/null
+    wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmgeo.c" >/dev/null
     wrc -q -r -bt=os2 -i="$S" "$S/pmowner.rc" -fo=pmowner.res >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmowner.c" >/dev/null && wrc -q -bt=os2 pmowner.res pmowner.exe >/dev/null
     owfail=0
@@ -197,6 +198,22 @@ PY
     dragout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf OS2X86_PM_SCRIPT="rdrag 40 30 220 60; rdrag 40 10 60 60; close" ../os2x86 pmdrag.exe 2>&1 | tr -d '\r')"
     if [ "$(tr '\n' '|' <<< "$dragout")" = "CN_INITDRAG beta.txt from 1|CN_DROP beta.txt on 2, move, 1 items|DrgDrag: the right one|CN_INITDRAG alpha.txt from 1|DrgDrag: nowhere|drag-overs yes|left: alpha.txt gamma.txt|right: beta.txt|" ]
     then echo "PM drag and drop: ok"; else echo "PM drag and drop: FAIL"; echo "$dragout"; owfail=1; fi
+    # GPI's geometry: arcs, an area, a path with a pattern, XOR, polygons, a dotted line, a spline, a marker, a rounded box, clipping
+    geoout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf OS2X86_PM_SCRIPT="shot geo.ppm; close" ../os2x86 pmgeo.exe 2>&1 | tr -d '\r')"
+    if grep -q "spline ends at 270 200" <<< "$geoout" && python3 - geo.ppm <<'PY'
+import sys
+d = open(sys.argv[1], 'rb').read().split(b'\n', 3); w, h = map(int, d[1].split()); px = d[3]
+at = lambda x, y: tuple(px[((h - 1 - y) * w + x) * 3:((h - 1 - y) * w + x) * 3 + 3])   # (PM's way up)
+R, W, K = (255, 0, 0), (255, 255, 255), (0, 0, 0)
+want = { (60, 60): R, (98, 60): R, (102, 60): W, (160, 40): (0, 0, 255), (250, 50): (0, 255, 0), (251, 50): W,
+         (305, 22): (0, 255, 255), (342, 72): W, (392, 79): (0, 128, 0), (20, 150): K, (21, 150): K, (22, 150): W,
+         (90, 200): (255, 0, 255), (60, 230): (255, 0, 255), (350, 200): (0, 0, 128), (21, 279): W, (70, 260): (0, 128, 128),
+         (170, 260): (255, 255, 0), (140, 260): W, (270, 200): (128, 128, 0) }
+bad = [(p, at(*p), c) for p, c in want.items() if at(*p) != c]
+if bad: print(*bad, sep='\n')
+sys.exit(1 if bad else 0)
+PY
+    then echo "PM geometry: ok"; else echo "PM geometry: FAIL"; echo "$geoout"; owfail=1; fi
     [ "$owfail" = 0 ] || st=1
 else
     echo "(no OpenWatcom: its programs not tried)"

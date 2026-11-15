@@ -330,8 +330,9 @@ were a `#!/h/OS2/os2x86` script. It contains:
     bars, the MLE, spin buttons, sliders, circular sliders, value sets,
     notebooks and containers (icon, name, text, details and tree views,
     editing in place), owner-drawn items;
-  - GPI text in any size (DejaVu fonts), lines, boxes, bitmaps, BitBlt,
-    memory presentation spaces, icons and pointers;
+  - GPI text in any size (DejaVu fonts); lines, arcs, polygons, areas
+    and paths with line types, patterns and mixes; markers; bitmaps,
+    BitBlt, memory presentation spaces, icons and pointers;
   - the clipboard, shared with the desktop's, and drag and drop between
     a program's windows.
 

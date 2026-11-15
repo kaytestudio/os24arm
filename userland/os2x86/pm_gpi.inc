@@ -214,7 +214,8 @@ static uint32_t api_GpiCreatePS(void)             /* (hab, hdc, psizlSize, flOpt
     pmdc_t *d = dc_get(A(1));
     for (int i = 0; i < 64; i++)
         if (!pmpss[i].used) {
-            pmpss[i] = (pmps_t){ 1, d && !d->memory ? d->hwnd : 0, -3, -3, 0, 0, 0, 3, 0, 0, 0, 0 };
+            geo_free(&pmpss[i]);
+            pmpss[i] = (pmps_t){ 1, d && !d->memory ? d->hwnd : 0, -3, -3, 0, 0, 0, 3, 0, 0, 0, 0, 0 };
             return 0xA000 + (uint32_t)i;
         }
     return 0;
@@ -237,10 +238,10 @@ static uint32_t api_GpiSetBitmap(void)            /* (hps, hbm): the one before 
     return old;
 }
 static uint32_t api_GpiQueryPS(void) { if (A(1)) { p32(A(1), 0); p32(A(1) + 4, 0); } return 8; }   /* PU_PELS */
-static uint32_t api_GpiResetPS(void) { pmps_t *ps = ps_get(A(0)); if (ps) { ps->color = ps->back = -3; ps->x = ps->y = 0; } return 1; }
+static uint32_t api_GpiResetPS(void) { pmps_t *ps = ps_get(A(0)); if (ps) { ps->color = ps->back = -3; ps->x = ps->y = 0; geo_free(ps); } return 1; }
 static uint32_t api_WinGetScreenPS(void)
 {
-    for (int i = 0; i < 64; i++) if (!pmpss[i].used) { pmpss[i] = (pmps_t){ 1, 0, -3, -3, 0, 0, 0, 2, 0, 0, 0, 0 }; return 0xA000 + (uint32_t)i; }
+    for (int i = 0; i < 64; i++) if (!pmpss[i].used) { geo_free(&pmpss[i]); pmpss[i] = (pmps_t){ 1, 0, -3, -3, 0, 0, 0, 2, 0, 0, 0, 0, 0 }; return 0xA000 + (uint32_t)i; }
     return 0;
 }
 static uint32_t api_GpiSetBitmapBits(void)        /* (hps, lScanStart, lScans, pbBuffer, pbmiInfoTable) */

@@ -459,7 +459,14 @@ platform-specific are new code.
    the pointer showing whether it may drop (OS/2's no-entry sign when
    not), Ctrl to copy, Shift to move, Esc to give up - and ends with
    DM_DROP (CN_DROP) or DM_DRAGLEAVE. Between one program's windows; not
-   yet to and from other programs or the Workplace Shell. OS/2's DLLs that aren't
+   yet to and from other programs or the Workplace Shell. GPI's geometry
+   (`pm_geo.inc`): lines with types (dotted, dashed, ...), widths and
+   mixes (XOR, invert, OR, AND, ...); arcs - GpiFullArc, GpiPartialArc,
+   GpiPointArc, with GpiSetArcParams' transform -, boxes with rounded
+   corners, polylines, fillets, splines, polygons (alternate or winding);
+   areas (GpiBeginArea/EndArea) and paths (GpiBeginPath ... GpiFillPath,
+   GpiStrokePath) filled with the patterns (dense, hatched, halftone,
+   ...); markers; a clip rectangle (GpiIntersectClipRectangle). OS/2's DLLs that aren't
    here (PMSHAPI, HELPMGR, TCP32DLL, ...) load as stubs, so a program
    that only links them in runs; a call into one says so and returns 0. Calls it doesn't have yet print
    one line on stderr and return error 1; `OS2X86_TRACE=1` lists every
