@@ -461,6 +461,7 @@ static pmwin_t *win_at(pmwin_t *f, int x, int y)
 
 static void menu_close(pmwin_t *f);
 static int pm_kc;                                            /* the Shift, Ctrl and Alt keys held now (KC_*) */
+static uint32_t pm_mouse_frame;             /* the frame the pointer was last over */
 static uint32_t pm_b2_hwnd;                                  /* button 2 down in it, at (pm_b2_x, pm_b2_y) of its frame: a drag, when it moves */
 static int pm_b2_x, pm_b2_y, pm_b2_began;
 /* the backends' input, frame pixels top left: as PM messages */
@@ -468,6 +469,7 @@ static void pm_mouse(pmwin_t *f, int px, int py, int button, int down)
 {
     int x = px, y = f->ph - 1 - py;
     mouse_x = x; mouse_y = y;
+    pm_mouse_frame = f->hwnd;
     pmwin_t *w = win(pm_capture) && frame_of(win(pm_capture)) == f ? win(pm_capture) : win_at(f, x, y);
     int ax, ay;
     win_abs(w, &ax, &ay);
@@ -627,7 +629,7 @@ static int pm_start(void)
 
 static uint32_t frame_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2);
 /* ── messages: get, peek, dispatch ───────────────────────────────────── */
-static int pm_take(pmq_t *q, uint32_t filt, uint32_t first, uint32_t last, int remove, pmmsg_t *out)
+static int pm_take_raw(pmq_t *q, uint32_t filt, uint32_t first, uint32_t last, int remove, pmmsg_t *out)
 {
     for (int i = 0; i < q->n; i++) {
         pmmsg_t *m = &q->m[i];
@@ -667,6 +669,24 @@ static void put_qmsg(uint32_t p, const pmmsg_t *m)
     p32(p + 16, m->time); p32(p + 20, (uint32_t)m->x); p32(p + 24, (uint32_t)m->y); p32(p + 28, 0);
 }
 /* the next message, waiting for one */
+/* the keys' and buttons' state as of the message the program has taken (PM's WinGetKeyState is synchronous with its queue) */
+static int pm_sync_kc, pm_sync_buttons;
+static int pm_take(pmq_t *q, uint32_t filt, uint32_t first, uint32_t last, int remove, pmmsg_t *out)
+{
+    int r = pm_take_raw(q, filt, first, last, remove, out);
+    if (r && remove) {
+        uint32_t m = out->msg;
+        if (m >= WM_MOUSEMOVE && m <= 0x0079) pm_sync_kc = (int)(out->mp2 >> 16) & (KC_SHIFT | KC_CTRL | KC_ALT);
+        if (m == WM_CHAR) pm_sync_kc = (int)out->mp1 & (KC_SHIFT | KC_CTRL | KC_ALT);
+        if (m == WM_BUTTON1DOWN || m == WM_BUTTON1DBLCLK) pm_sync_buttons |= 1;
+        else if (m == WM_BUTTON1UP) pm_sync_buttons &= ~1;
+        else if (m == WM_BUTTON2DOWN || m == 0x0076) pm_sync_buttons |= 2;
+        else if (m == WM_BUTTON2UP) pm_sync_buttons &= ~2;
+        else if (m == WM_BUTTON3DOWN || m == 0x0079) pm_sync_buttons |= 4;
+        else if (m == 0x0078) pm_sync_buttons &= ~4;
+    }
+    return r;
+}
 static void pm_wait_msg(pmq_t *q, uint32_t filt, uint32_t first, uint32_t last, pmmsg_t *out)
 {
     for (;;) {
@@ -1589,3 +1609,95 @@ static void pm_set_pointer(uint32_t hptr)
     pm_pointer = hptr;
     if (pmb && pmb->cursor) pmb->cursor(p);
 }
+
+/* ── the pointer, the keys' state, points between windows ── */
+static void desk_xy(pmwin_t *w, int *x, int *y)            /* w's bottom left on the desktop */
+{
+    int ax = 0, ay = 0;
+    pmwin_t *f = w ? frame_of(w) : 0;
+    if (w) win_abs(w, &ax, &ay);
+    *x = ax + (f ? f->x : 0); *y = ay + (f ? f->y : 0);
+}
+static uint32_t api_WinGetKeyState(void)          /* (hwndDesktop, vk): 0x8000 down, as of the message being handled */
+{
+    switch (A(1)) {
+    case 0x01: case 0x02: case 0x03: return pm_sync_buttons & (1 << (A(1) - 1)) ? 0x8000 : 0;   /* VK_BUTTON1..3 */
+    case 0x09: return pm_sync_kc & KC_SHIFT ? 0x8000 : 0;   /* VK_SHIFT */
+    case 0x0A: return pm_sync_kc & KC_CTRL ? 0x8000 : 0;    /* VK_CTRL */
+    case 0x0B: return pm_sync_kc & KC_ALT ? 0x8000 : 0;     /* VK_ALT */
+    }
+    return 0;
+}
+static uint32_t api_WinGetPhysKeyState(void) { return 0; }
+static uint32_t api_WinQueryPointerPos(void)      /* (hwndDesktop, pptl): on the desktop */
+{
+    int fx, fy;
+    desk_xy(win(pm_mouse_frame), &fx, &fy);
+    p32(A(1), (uint32_t)(fx + mouse_x)); p32(A(1) + 4, (uint32_t)(fy + mouse_y));
+    return 1;
+}
+static uint32_t api_WinSetPointerPos(void) { return 1; }  /* (the desktop's pointer: the compositor's to move) */
+static uint32_t api_WinShowPointer(void) { return 1; }
+/* WinMapWindowPoints (from, to, aptl, count): from one window's coordinates to another's (HWND_DESKTOP: the desktop's) */
+static uint32_t api_WinMapWindowPoints(void)
+{
+    int fx = 0, fy = 0, tx = 0, ty = 0;
+    if (A(0) != HWND_DESKTOP_) desk_xy(win(A(0)), &fx, &fy);
+    if (A(1) != HWND_DESKTOP_) desk_xy(win(A(1)), &tx, &ty);
+    int32_t n = (int32_t)A(3);
+    if (n < 0 || !ok(A(2), 8u * (uint32_t)n)) return 0;
+    for (int32_t i = 0; i < n; i++) {
+        uint32_t p = A(2) + 8u * (uint32_t)i;
+        p32(p, (uint32_t)((int32_t)g32(p) + fx - tx)); p32(p + 4, (uint32_t)((int32_t)g32(p + 4) + fy - ty));
+    }
+    return 1;
+}
+/* WinWindowFromPoint (parent, pptl in its coordinates, fChildren): the child there (and its children's, when asked) */
+static uint32_t api_WinWindowFromPoint(void)
+{
+    if (!ok(A(1), 8)) return 0;
+    int x = (int32_t)g32(A(1)), y = (int32_t)g32(A(1) + 4);
+    if (A(0) == HWND_DESKTOP_) {                                 /* (a frame of ours there; the topmost-ish: the last made) */
+        for (int i = MAXWIN - 1; i >= 0; i--) {
+            pmwin_t *f = &pmwins[i];
+            if (f->used && f->top && f->visible && x >= f->x && y >= f->y && x < f->x + f->cx && y < f->y + f->cy) {
+                if (!A(2)) return f->hwnd;
+                pmwin_t *c = win_at(f, x - f->x, y - f->y);
+                return c ? c->hwnd : f->hwnd;
+            }
+        }
+        return HWND_DESKTOP_;
+    }
+    pmwin_t *p = win(A(0));
+    if (!p || x < 0 || y < 0 || x >= p->cx || y >= p->cy) return 0;
+    for (pmwin_t *cur = p;;) {
+        pmwin_t *hit = 0;
+        for (int i = MAXWIN - 1; i >= 0; i--) {
+            pmwin_t *c = &pmwins[i];
+            if (c->used && c->parent == cur && c->visible && x >= c->x && y >= c->y && x < c->x + c->cx && y < c->y + c->cy) { hit = c; break; }
+        }
+        if (!hit) return cur->hwnd;
+        if (!A(2)) return hit->hwnd;
+        x -= hit->x; y -= hit->y; cur = hit;
+    }
+}
+static uint32_t api_WinQueryClassName(void)        /* (hwnd, cchMax, pch): its length */
+{
+    pmwin_t *w = win(A(0));
+    if (!w || !A(1) || !ok(A(2), A(1))) return 0;
+    snprintf((char *)C.mem + A(2), A(1), "%s", w->cls);
+    return (uint32_t)strlen((char *)C.mem + A(2));
+}
+static uint32_t api_WinQueryCapture(void) { return pm_capture; }
+static uint32_t api_WinSetCapture(void) { pm_capture = A(1) && win(A(1)) ? A(1) : 0; return 1; }   /* (hwndDesktop, hwnd; 0: none) */
+static uint32_t api_WinIsChild(void) { for (pmwin_t *w = win(A(0)); w; w = w->parent) if (w->hwnd == A(1)) return 1; return 0; }
+static uint32_t api_WinQueryWindowProcess(void)    /* (hwnd, ppid, ptid) */
+{
+    pmwin_t *w = win(A(0));
+    if (!w) return 0;
+    if (A(1)) p32(A(1), (uint32_t)getpid());
+    if (A(2)) p32(A(2), w->tid);
+    return 1;
+}
+static uint32_t api_WinFlashWindow(void) { return 1; }
+static uint32_t api_WinSetSysColors(void) { return 1; }

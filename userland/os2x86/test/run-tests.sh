@@ -56,6 +56,7 @@ if [ -x "$W/armo64/wcl386" ] || [ -x "$W/binl64/wcl386" ]; then
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmgeo.c" >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmprf.c" >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmfdlg.c" >/dev/null
+    wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmquery.c" >/dev/null
     wrc -q -r -bt=os2 -i="$S" "$S/pmowner.rc" -fo=pmowner.res >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmowner.c" >/dev/null && wrc -q -bt=os2 pmowner.res pmowner.exe >/dev/null
     owfail=0
@@ -228,6 +229,10 @@ PY
     if grep -q 'open: shown, OK, "C:.*\\fdtest\\B.TXT", 1$' <<< "$fdout" && grep -q 'save: OK, "C:.*\\fdtest\\sub\\new.txt"$' <<< "$fdout" &&
        grep -q 'font: OK, Courier 14 pt, weight 7, face "Courier Bold", selection 20, use c' <<< "$fdout"
     then echo "PM file and font dialogs: ok"; else echo "PM file and font dialogs: FAIL"; echo "$fdout"; owfail=1; fi
+    # the pointer and points between windows: key state (synchronous), pointer position, mapping, window from point, class, capture
+    qout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf OS2X86_PM_SCRIPT="shift click 30 40; close" ../os2x86 pmquery.exe 2>&1 | tr -d '\r')"
+    if [ "$(tr '\n' '|' <<< "$qout")" = "down 1, shift 1; at 30 79, mapped back 30 79|from point: the button, the client; class #3; child 1|capture ours|thread 1|" ]
+    then echo "PM pointer, points, key state: ok"; else echo "PM pointer, points, key state: FAIL"; echo "$qout"; owfail=1; fi
     # a 16-bit OS/2 1.x program (NE), OpenWatcom's 16-bit C runtime (its libraries unpacked from the snapshot, when needed)
     if [ ! -d "$W/lib286/os2" ] && [ -f "$OUT/dl/ow.tar.xz" ]; then (cd "$W" && tar xJf "$OUT/dl/ow.tar.xz" ./lib286) 2>/dev/null; fi
     if [ -x "$B/wcl" ] && [ -d "$W/lib286/os2" ]; then
