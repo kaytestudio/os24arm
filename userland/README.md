@@ -442,8 +442,11 @@ platform-specific are new code.
    (RECORDINSERT's parent), the + and - buttons, tree lines, the keys
    (Right and + open, Left and - close), CM_EXPANDTREE/COLLAPSETREE,
    CN_EXPANDTREE/COLLAPSETREE, CM_QUERYRECORD by parent and child,
-   sorting and removing whole branches. Not there yet: editing in a
-   container, drag and drop, owner-drawn value set items. OS/2's DLLs that aren't
+   sorting and removing whole branches. Editing a record's text in place
+   (Alt+click, CM_OPENEDIT: an entry field over it; Enter or a click
+   elsewhere keeps it - CN_REALLOCPSZ for the program to make room, then
+   the text into its string, CN_ENDEDIT - Esc drops it; CN_BEGINEDIT
+   first). Not there yet: drag and drop, owner-drawn value set items. OS/2's DLLs that aren't
    here (PMSHAPI, HELPMGR, TCP32DLL, ...) load as stubs, so a program
    that only links them in runs; a call into one says so and returns 0. Calls it doesn't have yet print
    one line on stderr and return error 1; `OS2X86_TRACE=1` lists every

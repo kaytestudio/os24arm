@@ -172,11 +172,12 @@ PY
        grep -q "VN_ENTER 2,2" <<< "$vsout" && grep -q "VN_SELECT 2,3" <<< "$vsout" && grep -q "CSN_CHANGED 55" <<< "$vsout" &&
        grep -q "CSN_TRACKING 80" <<< "$vsout" && grep -q "done: dial 80, selected 2,3" <<< "$vsout"
     then echo "PM value set, circular slider: ok"; else echo "PM value set, circular slider: FAIL"; echo "$vsout"; owfail=1; fi
-    # a container's tree view: children, CMA_FIRSTCHILD/NEXT/PARENT, the + button, double-click, Right/Left/-, removing a subtree
-    treeout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf OS2X86_PM_SCRIPT="click 26 52; dblclick 80 73; vkey down; vkey right; vkey right; vkey left; vkey left; vkey left; key -; close" ../os2x86 pmtree.exe 2>&1 | tr -d '\r')"
+    # a container's tree view: children, CMA_FIRSTCHILD/NEXT/PARENT, the + button, editing a name (Alt+click; Enter keeps, Esc drops), double-click, Right/Left/-, removing a subtree
+    treeout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf OS2X86_PM_SCRIPT="click 26 52; altclick 90 73; key Notes; enter; altclick 110 73; key xx; esc; dblclick 80 73; vkey down; vkey right; vkey right; vkey left; vkey left; vkey left; key -; close" ../os2x86 pmtree.exe 2>&1 | tr -d '\r')"
     if grep -q "first child Drives, next Programs, parent of Games Programs, after Desktop Printer" <<< "$treeout" &&
-       [ "$(grep '^CN_' <<< "$treeout" | tr '\n' ' ')" = "CN_EXPANDTREE Desktop CN_EXPANDTREE Programs CN_ENTER Editor CN_EXPANDTREE Games CN_COLLAPSETREE Games CN_COLLAPSETREE Programs " ] &&
-       grep -q "selected Programs; removing Programs: 5 left" <<< "$treeout"
+       [ "$(grep '^CN_' <<< "$treeout" | tr '\n' ' ')" = "CN_EXPANDTREE Desktop CN_EXPANDTREE Programs CN_ENTER Notes CN_EXPANDTREE Games CN_COLLAPSETREE Games CN_COLLAPSETREE Programs " ] &&
+       grep -q "selected Programs; removing Programs: 5 left" <<< "$treeout" &&
+       [ "$(grep '^EDIT' <<< "$treeout" | tr '\n' ' ')" = "EDIT begin Editor EDIT realloc 6 EDIT end Notes EDIT begin Notes EDIT end Notes " ]
     then echo "PM container tree: ok"; else echo "PM container tree: FAIL"; echo "$treeout"; owfail=1; fi
     [ "$owfail" = 0 ] || st=1
 else

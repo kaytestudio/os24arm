@@ -580,7 +580,7 @@ Not there yet:
 - **The kernel**: SMP (one CPU runs everything), dynamic linking for
   Linux programs, datagram Unix sockets.
 - **Graphics**: GPU acceleration (the desktop renders with pixman).
-- **os2x86**: drag and drop and in-place editing in PM containers, and
+- **os2x86**: drag and drop in PM, owner-drawn controls, and
   the rest of OS/2's API (the help manager, multimedia, ...).
 - **Other**: REXX as a command; DEBUG's assembler, disassembler and
   breakpoints.

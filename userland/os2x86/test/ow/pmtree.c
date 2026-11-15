@@ -1,12 +1,14 @@
 /* userland/os2x86/test/ow/pmtree.c - PM's container in the tree view:
  * records under records (RECORDINSERT's pRecordParent), CM_QUERYRECORD
  * by CMA_FIRSTCHILD/NEXT/PARENT, CM_EXPANDTREE, the + and - buttons,
- * the keys, CN_EXPANDTREE/CN_COLLAPSETREE/CN_ENTER, removing a record
- * with its children. It prints what it gets, for run-tests.sh. */
+ * the keys, CN_EXPANDTREE/CN_COLLAPSETREE/CN_ENTER, editing a record's
+ * name in place (CN_BEGINEDIT, CN_REALLOCPSZ, CN_ENDEDIT), removing a
+ * record with its children. It prints what it gets, for run-tests.sh. */
 #define INCL_WIN
 #include <os2.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 static HWND cnr;
 
@@ -57,6 +59,16 @@ static MRESULT EXPENTRY ClientProc(HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2)
             if (code == CN_EXPANDTREE) printf("CN_EXPANDTREE %s\n", nm((PRECORDCORE)mp2));
             else if (code == CN_COLLAPSETREE) printf("CN_COLLAPSETREE %s\n", nm((PRECORDCORE)mp2));
             else if (code == CN_ENTER) printf("CN_ENTER %s\n", nm(((PNOTIFYRECORDENTER)mp2)->pRecord));
+            else if (code == CN_BEGINEDIT) printf("EDIT begin %s\n", nm(((PCNREDITDATA)mp2)->pRecord));
+            else if (code == CN_REALLOCPSZ) {                   /* room for the new text: the program's own memory */
+                PCNREDITDATA ed = (PCNREDITDATA)mp2;
+                PSZ p = (PSZ)malloc(ed->cbText);
+                printf("EDIT realloc %lu\n", ed->cbText);
+                if (!p) return (MRESULT)FALSE;
+                *ed->ppszText = p;
+                ((PRECORDCORE)ed->pRecord)->pszIcon = ((PRECORDCORE)ed->pRecord)->pszName = ((PRECORDCORE)ed->pRecord)->pszText = p;
+                return (MRESULT)TRUE;
+            } else if (code == CN_ENDEDIT) printf("EDIT end %s\n", nm(((PCNREDITDATA)mp2)->pRecord));
         }
         return 0;
     case WM_CLOSE: {

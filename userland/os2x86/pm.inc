@@ -545,6 +545,7 @@ static int hl_idle(struct timespec *dl)
         if (sscanf(s, "shot %255s", a) == 1) { hl_shot(a); continue; }
         if (!f) { fprintf(stderr, "[pm] %s: no window\n", s); continue; }
         if (sscanf(s, "click %d %d", &x, &y) == 2) { pm_mouse(f, x, y, 1, 1); pm_mouse(f, x, y, 1, 0); return 1; }
+        if (sscanf(s, "altclick %d %d", &x, &y) == 2) { pm_kc = KC_ALT; pm_mouse(f, x, y, 1, 1); pm_mouse(f, x, y, 1, 0); return 1; }
         if (sscanf(s, "rclick %d %d", &x, &y) == 2) { pm_mouse(f, x, y, 2, 1); pm_mouse(f, x, y, 2, 0); return 1; }
         if (sscanf(s, "move %d %d", &x, &y) == 2) { pm_mouse(f, x, y, 0, 0); return 1; }
         if (sscanf(s, "size %d %d", &x, &y) == 2) { pm_resize(f, x, y); return 1; }

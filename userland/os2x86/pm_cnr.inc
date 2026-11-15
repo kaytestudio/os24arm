@@ -32,6 +32,7 @@ typedef struct {
     uint32_t attr, title;                     /* flWindowAttr, pszCnrTitle (the program's) */
     int top, cursor;                          /* (first row shown; the cursored record's index) */
     uint32_t vsb;
+    uint32_t ed, ed_data;                     /* (direct editing: the entry field over the text, its CNREDITDATA) */
 } cnr_t;
 static cnr_t *cnr(pmwin_t *w) { if (!w->ctl) { w->ctl = calloc(1, sizeof(cnr_t)); ((cnr_t *)w->ctl)->attr = 4; ((cnr_t *)w->ctl)->cursor = -1; } return w->ctl; }
 static int cnr_mini(pmwin_t *w) { return (w->style & 0x40) != 0; }   /* CCS_MINIRECORDCORE */
@@ -333,17 +334,126 @@ static void cnr_expand(pmwin_t *w, cnr_t *c, int i, int on)
     repaint(w);
     notify(w, on ? 117 : 116, r);
 }
+/* ── direct editing: an entry field over a record's text (Alt+click,
+ * CM_OPENEDIT); Enter or a click elsewhere keeps it - CN_REALLOCPSZ, so
+ * the program makes room, the text into its string, CN_ENDEDIT - and Esc
+ * drops it ── */
+static int cnr_top_y(pmwin_t *w, cnr_t *c) { return w->cy - cnr_title_h(w, c) - cnr_head_h(c); }
+/* where record i's text is (field fi, details view), and the address of its PSZ */
+static int cnr_text_at(pmwin_t *w, cnr_t *c, int i, uint32_t fi, int *x0, int *y0, int *x1, int *y1, uint32_t *ppsz)
+{
+    int view = cnr_view(c), p = cnr_pos(c, i), rh = cnr_row_h(c), y = cnr_top_y(w, c);
+    uint32_t rec = c->rec[i];
+    if (p < 0) return 0;
+    if (view == 4) {
+        int cols = cnr_cols(w), ch = cnr_cell_h(), cw = cnr_cell_w(), row = p / cols - c->top, col = p % cols;
+        int isz = (c->attr & 0x20) ? 16 : 32, cx0 = 4 + col * cw, ty = y - row * ch - 8 - isz - pm_ascent;
+        *x0 = cx0; *x1 = cx0 + cw; *y0 = ty - pm_descent - 3; *y1 = ty + pm_ascent + 3;
+        *ppsz = rec + RC_PSZICON;
+        return 1;
+    }
+    int ry1 = y - (p - c->top) * rh, ry0 = ry1 - rh;
+    *y0 = ry0; *y1 = ry1;
+    if (view == 8) {
+        int x = 0;
+        for (int k = 0; k < c->nf; k++) {
+            uint32_t f = c->fld[k], fl = g32(f + FI_FLDATA);
+            if (fl & 0x40) continue;
+            int cw = col_w(w, c, k);
+            if (f == fi) {
+                if (!(fl & 0x800)) return 0;                 /* (strings only: CFA_STRING) */
+                *x0 = x; *x1 = x + cw; *ppsz = rec + g32(f + FI_OFF);
+                return 1;
+            }
+            x += cw;
+        }
+        return 0;
+    }
+    int x = 4;
+    if (view == 0x40) { x = 4 + cnr_depth(c, i) * cnr_indent() + 14 + (c->attr & 1 ? 0 : c->attr & 2 ? 20 : 36); *ppsz = rec + (c->attr & 1 ? RC_PSZTEXT : c->attr & 2 ? RC_PSZNAME : RC_PSZICON); }
+    else if (view == 2) { x = 24; *ppsz = rec + (cnr_mini(w) ? RC_PSZICON : RC_PSZNAME); }
+    else *ppsz = rec + RC_PSZTEXT;
+    *x0 = x - 3; *x1 = x + plain_w(gstr(g32(*ppsz))) + 40;
+    return 1;
+}
+static void cnr_end_edit(pmwin_t *w, cnr_t *c, int keep)
+{
+    pmwin_t *e = win(c->ed);
+    uint32_t d = c->ed_data;
+    if (!e) { c->ed = 0; return; }
+    char t[256];
+    snprintf(t, sizeof t, "%s", e->text);
+    win_destroy(e);
+    c->ed = 0;
+    set_focus(w->hwnd);
+    if (keep && d) {
+        pmwin_t *o = w->owner ? w->owner : w->parent;
+        p32(d + 20, (uint32_t)strlen(t) + 1);                /* cbText: what it needs */
+        uint32_t pp = g32(d + 16);
+        uint32_t r = o ? pm_send(o, WM_CONTROL, (w->id & 0xFFFF) | 113u << 16, d) : 0;   /* CN_REALLOCPSZ */
+        uint32_t s = g32(pp);
+        if (r && s && ok(s, (uint32_t)strlen(t) + 1)) memcpy(C.mem + s, t, strlen(t) + 1);
+    }
+    if (d) notify(w, 115, d);                                /* CN_ENDEDIT */
+    repaint(w);
+}
+static int cnr_open_edit(pmwin_t *w, cnr_t *c, int i, uint32_t fi)
+{
+    int x0, y0, x1, y1;
+    uint32_t pp;
+    if (c->ed) cnr_end_edit(w, c, 1);
+    if (i < 0 || i >= c->n || (g32(c->rec[i] + RC_ATTR) & 0x40)) return 0;   /* CRA_RECORDREADONLY */
+    if (cnr_view(c) == 8 && !fi) for (int k = 0; k < c->nf && !fi; k++) if (g32(c->fld[k] + FI_FLDATA) & 0x800) fi = c->fld[k];
+    if (!cnr_text_at(w, c, i, fi, &x0, &y0, &x1, &y1, &pp)) return 0;
+    int sbw = win(c->vsb) && win(c->vsb)->visible ? 16 : 0;
+    if (x1 > w->cx - sbw) x1 = w->cx - sbw;
+    if (x0 < 0) x0 = 0;
+    uint32_t d = galloc(28);                                 /* CNREDITDATA: cb, hwndCnr, pRecord, pFieldInfo, ppszText, cbText, id */
+    if (!d) return 0;
+    p32(d, 28); p32(d + 4, w->hwnd); p32(d + 8, c->rec[i]); p32(d + 12, cnr_view(c) == 8 ? fi : 0);
+    p32(d + 16, pp); p32(d + 20, (uint32_t)strlen(gstr(g32(pp))) + 1); p32(d + 24, w->id);
+    pmwin_t *e = win_new(w, "#6", 0x80000000u | 8, w->id);  /* WS_VISIBLE, ES_MARGIN */
+    if (!e) return 0;
+    e->owner = w;
+    e->x = x0; e->y = y0; e->cx = x1 - x0; e->cy = y1 - y0;
+    e->visible = 1;
+    snprintf(e->text, sizeof e->text, "%s", gstr(g32(pp)));
+    entry_proc(e, 0x0143, 255, 0);                            /* (EM_SETTEXTLIMIT) */
+    entry_proc(e, 0x0142, (uint32_t)strlen(e->text) << 16, 0);   /* (all of it selected) */
+    c->ed = e->hwnd; c->ed_data = d;
+    cnr_select(w, c, i);
+    set_focus(e->hwnd);
+    notify(w, 114, d);                                       /* CN_BEGINEDIT */
+    repaint(w);
+    return 1;
+}
 static uint32_t container_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
 {
     cnr_t *c = cnr(w);
     cnr_revis(c);
     switch (msg) {
-    case WM_DESTROY: free(c->rec); free(c->par); free(c->vis); return 0;
+    case WM_DESTROY: c->ed = 0; free(c->rec); free(c->par); free(c->vis); return 0;
     case WM_SIZE: cnr_scrollbar(w, c); repaint(w); return 0;
     case WM_PAINT: w->invalid = 0; cnr_scrollbar(w, c); cnr_paint(w, c); return 0;
     case WM_BUTTON1DOWN: case WM_BUTTON2DOWN: {
         int x = (int16_t)(mp1 & 0xFFFF), i = cnr_hit(w, c, x, (int16_t)(mp1 >> 16));
+        if (c->ed) cnr_end_edit(w, c, 1);                    /* (a click elsewhere: the edit's kept) */
         set_focus(w->hwnd);
+        if (i >= 0 && msg == WM_BUTTON1DOWN && ((mp2 >> 16) & KC_ALT)) {   /* Alt+click: edit the text */
+            uint32_t fi = 0;
+            if (cnr_view(c) == 8) {                           /* (the column clicked) */
+                int cx = 0;
+                for (int k = 0; k < c->nf; k++) {
+                    if (g32(c->fld[k] + FI_FLDATA) & 0x40) continue;
+                    int cw = col_w(w, c, k);
+                    if (x >= cx && x < cx + cw) fi = c->fld[k];
+                    cx += cw;
+                }
+                if (!fi) return 1;
+            }
+            cnr_open_edit(w, c, i, fi);
+            return 1;
+        }
         if (i >= 0 && msg == WM_BUTTON1DOWN && cnr_view(c) == 0x40 && cnr_kids(c, i)) {   /* the + or - button */
             int bx = 4 + cnr_depth(c, i) * cnr_indent();
             if (x >= bx - 2 && x <= bx + 10) { cnr_expand(w, c, i, !(g32(c->rec[i] + RC_ATTR) & 0x80)); return 1; }
@@ -369,6 +479,11 @@ static uint32_t container_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t 
     case WM_CHAR: {
         if (mp1 & KC_KEYUP) return 1;
         int vk = (mp1 & KC_VIRTUALKEY) ? (int)(mp2 >> 16) : 0, ch = (mp1 & KC_CHAR) ? (int)(mp2 & 0xFFFF) : 0;
+        if (c->ed) {                                         /* (the edit's entry field passes Enter and Esc up) */
+            if (vk == 0x08 || vk == 0x1e) { cnr_end_edit(w, c, 1); return 1; }
+            if (vk == 0x0f) { cnr_end_edit(w, c, 0); return 1; }
+            return 1;
+        }
         int step = cnr_view(c) == 4 ? cnr_cols(w) : 1, i = c->cursor >= 0 ? cnr_pos(c, c->cursor) : -1;
         if (cnr_view(c) == 0x40 && c->cursor >= 0) {          /* the tree: Right, +: open (then down into it); Left, -: close (then up to the parent) */
             int k = c->cursor, open = (g32(c->rec[k] + RC_ATTR) & 0x80) != 0;
@@ -560,7 +675,11 @@ static uint32_t container_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t 
         }
         return 0;
     }
-    case 0x033b: case 0x033a: case 0x0332: case 0x034c: case 0x034d: case 0x0353: repaint(w); return 1;   /* invalidate, arrange, edit, ... */
+    case 0x034c:                                             /* CM_OPENEDIT: a CNREDITDATA (its record, field) */
+        if (!mp1 || !ok(mp1, 28) || !g32(mp1 + 8)) return 0;    /* (the container's title: not editable here) */
+        return (uint32_t)cnr_open_edit(w, c, cnr_index(c, g32(mp1 + 8)), g32(mp1 + 12));
+    case 0x034d: if (c->ed) cnr_end_edit(w, c, 1); return 1; /* CM_CLOSEEDIT */
+    case 0x033b: case 0x033a: case 0x0332: case 0x0353: repaint(w); return 1;   /* invalidate, arrange, ... */
     case 0x0347: {                                           /* CM_SCROLLWINDOW: CMA_VERTICAL, pixels */
         if (mp1 == 0x400) { c->top += (int32_t)mp2 / cnr_row_h(c); if (c->top < 0) c->top = 0; repaint(w); }
         return 1;
