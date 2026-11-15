@@ -242,6 +242,11 @@ PY
         if grep -q "^imported: 42, 1001 1002, inited 1$" <<< "$dll16out" && grep -q "^by name: 1003$" <<< "$dll16out" &&
            grep -q "^module: DLL16.DLL$" <<< "$dll16out" && grep -q "^NOSUCH: not found (NOSUCH)$" <<< "$dll16out" && grep -q "^child: 0 42$" <<< "$dll16out"
         then echo "16-bit DLL, DosExecPgm: ok"; else echo "16-bit DLL, DosExecPgm: FAIL"; echo "$dll16out"; owfail=1; fi
+        # 16-bit threads: two workers sharing a counter under a RAM semaphore, a system semaphore for their end, DosMuxSemWait
+        INCLUDE="$W/h:$W/h/os21x" wcl -q -s -bt=os2 -l=os2 "$T/test/ow16/thread16.c" >/dev/null
+        thr16out="$(../os2x86 thread16.exe 2>&1 | tr -d '\r')"
+        if [ "$(tr '\n' '|' <<< "$thr16out")" = "threads 2 3 4|counter 2000, finished 2, mux 0|lock free|" ]
+        then echo "16-bit threads, semaphores: ok"; else echo "16-bit threads, semaphores: FAIL"; echo "$thr16out"; owfail=1; fi
     fi
     [ "$owfail" = 0 ] || st=1
 else

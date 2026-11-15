@@ -347,9 +347,13 @@ platform-specific are new code.
    called with OS/2's registers - DS its data, DI its handle - before the
    program starts), and DosLoadModule, DosGetProcAddr, DosGetModHandle,
    DosGetModName; DosExecPgm and DosCWait (a 16-bit child runs through
-   os2x86 again); RAM semaphores (one thread: a request is granted).
-   Not yet: 16-bit threads, system semaphores, 16-bit Presentation
-   Manager. (A 16-bit DLL built with OpenWatcom wants -zu -zdp: SS isn't
+   os2x86 again). Threads (DosCreateThread: the program's function on its
+   stack, a far return or DosExit(EXIT_THREAD) ending it; suspend,
+   resume, critical sections) and semaphores - RAM ones (a far pointer
+   to the program's doubleword) and system ones (DosCreateSem,
+   DosOpenSem) - that really wait: DosSemRequest (an owner may request
+   again), DosSemClear, DosSemSet, DosSemWait, DosSemSetWait,
+   DosMuxSemWait, with timeouts. Not yet: 16-bit Presentation Manager. (A 16-bit DLL built with OpenWatcom wants -zu -zdp: SS isn't
    its data, and its exports put the caller's DS back.)
    `OS2X86_ITRACE=1` traces every instruction (CS:IP, its bytes, the
    registers); `OS2X86_WATCH=address` (hex, flat) names each instruction

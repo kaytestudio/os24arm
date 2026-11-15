@@ -17,7 +17,7 @@
  * the program's 16-bit ones. Not yet: the program's own 16-bit DLLs,
  * DosExecPgm, threads, semaphores, Presentation Manager's 16-bit calls. */
 
-static uint32_t ne_scr;                       /* (the 32-bit calls' arguments and results) */
+static _Thread_local uint32_t ne_scr;         /* (the 32-bit calls' arguments and results: each thread its own) */
 static uint32_t ne_env, ne_cmd;               /* (the environment segment: flat; the command line's offset) */
 static uint32_t ne_ginfo, ne_linfo;           /* (the information segments) */
 static uint16_t sel16(uint32_t flat) { return (uint16_t)(((flat >> 16) << 3) | 7); }
@@ -38,7 +38,7 @@ static uint32_t call32(api_fn fn, int n, const uint32_t *a)
 static uint32_t T(int i) { if (!ne_scr) ne_scr = mem_alloc(UNIT); return ne_scr + 0x100 + 0x200 * (uint32_t)i; }   /* (results' room) */
 #define L(o) g32(a16 + (o))
 
-static uint32_t d16_DosExit(void) { do_exit(W(0)); }
+static uint32_t d16_DosExit(void) { if (W(2) == 0) thread_end(W(0)); do_exit(W(0)); }   /* (EXIT_THREAD 0, EXIT_PROCESS 1) */
 static uint32_t d16_DosGetInfoSeg(void)       /* (PSEL global, PSEL local) */
 {
     time_t now = time(0);
@@ -216,14 +216,146 @@ static uint32_t d16_DosScanEnv(void)          /* (name, PSZ far *ppValue) */
         }
     return 203;                                              /* ERROR_ENVVAR_NOT_FOUND */
 }
-/* RAM semaphores (an HSEM: a far pointer to a word of the program's): one thread here, so a request is granted at once;
- * waiting on one that's set times out (a 0 timeout: at once), as no other thread could clear it */
-static uint32_t ne_sem(uint32_t h) { return h ? fp16((uint16_t)(h >> 16), (uint16_t)h) : 0; }
-static uint32_t d16_DosSemRequest(void) { uint32_t s = ne_sem(L(4)); if (s) p32(s, 1); return 0; }   /* (HSEM, LONG timeout) */
-static uint32_t d16_DosSemClear(void) { uint32_t s = ne_sem(L(0)); if (s) p32(s, 0); return 0; }     /* (HSEM) */
-static uint32_t d16_DosSemSet(void) { uint32_t s = ne_sem(L(0)); if (s) p32(s, 1); return 0; }
-static uint32_t d16_DosSemWait(void) { uint32_t s = ne_sem(L(4)); return s && g32(s) ? 121 : 0; }    /* ERROR_SEM_TIMEOUT */
-static uint32_t d16_DosSemSetWait(void) { return d16_DosSemWait(); }
+/* semaphores: RAM ones (an HSEM: a far pointer to a doubleword of the program's) and system ones (DosCreateSem,
+ * DosOpenSem: a handle, kept here); both as owner thread (high word) and count (low word) - a request waits until
+ * it's clear or its own; a clear releases one level (and wakes the waiters); a wait waits until it's clear */
+typedef struct { int used, refs; char name[128]; uint32_t v; } sysem_t;
+static sysem_t sysems[64];
+static uint32_t *sem_ptr(uint32_t h)
+{
+    if (h >> 16) { uint32_t s = fp16((uint16_t)(h >> 16), (uint16_t)h); return ok(s, 4) ? (uint32_t *)(C.mem + s) : 0; }
+    h -= 1;
+    return h < 64 && sysems[h].used ? &sysems[h].v : 0;
+}
+/* until it's free (or ours), up to timeout ms (-1: for ever; 0: not at all); then take it, when asked */
+static uint32_t sem_wait16(uint32_t h, int32_t timeout, int take)
+{
+    struct timespec dl;
+    clock_gettime(CLOCK_REALTIME, &dl);
+    if (timeout > 0) { dl.tv_sec += timeout / 1000; dl.tv_nsec += (long)(timeout % 1000) * 1000000L; if (dl.tv_nsec >= 1000000000L) { dl.tv_sec++; dl.tv_nsec -= 1000000000L; } }
+    uint32_t *v = sem_ptr(h);
+    if (!v) return 187;                                      /* ERROR_INVALID_SEMAPHORE... (ERROR_SEM_NOT_FOUND) */
+    for (;;) {
+        v = sem_ptr(h);
+        uint32_t cur = v ? *v : 0;
+        if (!cur || (take && (cur >> 16) == me->tid)) break;
+        if (!timeout) return 121;                            /* ERROR_SEM_TIMEOUT */
+        if (timeout < 0) pthread_cond_wait(&gcv, &gil);
+        else if (pthread_cond_timedwait(&gcv, &gil, &dl) == ETIMEDOUT) return 121;
+        if (me->kill) thread_end(0);
+    }
+    if (take && v) *v = (me->tid << 16) | ((*v & 0xFFFF) + 1);
+    return 0;
+}
+static uint32_t d16_DosSemRequest(void) { return sem_wait16(L(4), (int32_t)L(0), 1); }   /* (HSEM, LONG timeout) */
+static uint32_t d16_DosSemClear(void)                       /* (HSEM) */
+{
+    uint32_t *v = sem_ptr(L(0));
+    if (!v) return 187;
+    *v = (*v & 0xFFFF) > 1 ? *v - 1 : 0;
+    pthread_cond_broadcast(&gcv);
+    return 0;
+}
+static uint32_t d16_DosSemSet(void) { uint32_t *v = sem_ptr(L(0)); if (!v) return 187; if (!*v) *v = (me->tid << 16) | 1; return 0; }
+static uint32_t d16_DosSemWait(void) { return sem_wait16(L(4), (int32_t)L(0), 0); }
+static uint32_t d16_DosSemSetWait(void)                     /* (HSEM, LONG timeout): set it, then wait for its clear */
+{
+    uint32_t *v = sem_ptr(L(4));
+    if (!v) return 187;
+    *v = 0xFFFF0001u;                                        /* (an owner that's no thread: only a clear frees it) */
+    return sem_wait16(L(4), (int32_t)L(0), 0);
+}
+static uint32_t d16_DosCreateSem(void)                      /* (USHORT fExclusive, PHSYSSEM phsem, PSZ name) */
+{
+    char *n = gs(FP(0));
+    if (!n) return 87;
+    for (int i = 0; i < 64; i++) if (sysems[i].used && !strcasecmp(sysems[i].name, n)) return 183;   /* ERROR_ALREADY_EXISTS */
+    for (int i = 0; i < 64; i++)
+        if (!sysems[i].used) {
+            memset(&sysems[i], 0, sizeof sysems[i]);
+            sysems[i].used = 1; sysems[i].refs = 1;
+            snprintf(sysems[i].name, sizeof sysems[i].name, "%s", n);
+            p32(FP(4), (uint32_t)i + 1);
+            return 0;
+        }
+    return 100;                                              /* ERROR_TOO_MANY_SEMAPHORES */
+}
+static uint32_t d16_DosOpenSem(void)                        /* (PHSEM phsem, PSZ name) */
+{
+    char *n = gs(FP(0));
+    if (!n) return 87;
+    for (int i = 0; i < 64; i++) if (sysems[i].used && !strcasecmp(sysems[i].name, n)) { sysems[i].refs++; p32(FP(4), (uint32_t)i + 1); return 0; }
+    return 187;                                              /* ERROR_SEM_NOT_FOUND */
+}
+static uint32_t d16_DosCloseSem(void)                       /* (HSEM) */
+{
+    uint32_t h = L(0) - 1;
+    if (L(0) >> 16 || h >= 64 || !sysems[h].used) return 187;
+    if (--sysems[h].refs <= 0) sysems[h].used = 0;
+    return 0;
+}
+/* DosMuxSemWait (PUSHORT pisemCleared, PVOID pmsxl: { USHORT count, { USHORT reserved, HSEM }[] }, LONG timeout): the first that's clear */
+static uint32_t d16_DosMuxSemWait(void)
+{
+    uint32_t list = FP(4), n = g16(list);
+    int32_t timeout = (int32_t)L(0);
+    struct timespec dl;
+    clock_gettime(CLOCK_REALTIME, &dl);
+    if (timeout > 0) { dl.tv_sec += timeout / 1000; dl.tv_nsec += (long)(timeout % 1000) * 1000000L; if (dl.tv_nsec >= 1000000000L) { dl.tv_sec++; dl.tv_nsec -= 1000000000L; } }
+    for (;;) {
+        for (uint32_t i = 0; i < n && i < 16; i++) {
+            uint32_t *v = sem_ptr(g32(list + 2 + 6 * i + 2));
+            if (v && !*v) { p16(FP(8), (uint16_t)i); return 0; }
+        }
+        if (!timeout) return 121;
+        if (timeout < 0) pthread_cond_wait(&gcv, &gil);
+        else if (pthread_cond_timedwait(&gcv, &gil, &dl) == ETIMEDOUT) return 121;
+    }
+}
+/* threads: DosCreateThread (PFNTHREAD pfn - far, PTID ptid, PBYTE pstack - its stack's top, far): the caller's DS; a far
+ * return from the function ends the thread (as DosExit(EXIT_THREAD) does) */
+static void *thr_main(void *arg);
+static uint32_t d16_DosCreateThread(void)
+{
+    uint32_t pfn = L(8), stk = L(0);
+    int i;
+    for (i = 1; i < MAXTHR && thrs[i] && thrs[i]->state != 3; i++) { }
+    if (i == MAXTHR) return 164;                             /* ERROR_MAX_THRDS_REACHED */
+    if (!(pfn >> 16) || !(stk >> 16)) return 87;
+    thr_t *t = thrs[i] ? thrs[i] : calloc(1, sizeof *t);
+    if (!t) return 8;
+    memset(t, 0, sizeof *t);
+    cpu_reset(&t->cpu);
+    t->cpu.mem = C.mem; t->cpu.size = C.size; t->cpu.lo = C.lo;
+    t->cpu.thunk_lo = C.thunk_lo; t->cpu.thunk_hi = C.thunk_hi;
+    t->cpu.fs_base = t->cpu.tib = C.tib;
+    t->tid = (uint32_t)i + 1;
+    t->state = 1;
+    cpu_load_seg(&t->cpu, 2, (uint16_t)(stk >> 16));
+    cpu_load_seg(&t->cpu, 3, C.sreg[3]);
+    cpu_load_seg(&t->cpu, 0, C.sreg[0]);
+    uint32_t sp = (stk & 0xFFFF) - 4, back = thunk_addr(T_THREXIT);   /* (a far return: to the thread's end) */
+    p16(t->cpu.ss_base + (sp & 0xFFFF), (uint16_t)(back & 0xFFFF)); p16(t->cpu.ss_base + ((sp + 2) & 0xFFFF), sel16(back));
+    t->cpu.r[ESP] = sp & 0xFFFF;
+    cpu_load_seg(&t->cpu, 1, (uint16_t)(pfn >> 16));
+    t->cpu.eip = pfn & 0xFFFF;
+    thrs[i] = t;
+    nlive++;
+    pthread_attr_t at;
+    pthread_attr_init(&at);
+    pthread_attr_setstacksize(&at, 1 << 20);
+    pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
+    pthread_t pt;
+    int r = pthread_create(&pt, &at, thr_main, t);
+    pthread_attr_destroy(&at);
+    if (r) { nlive--; t->state = 3; return 8; }
+    p16(FP(4), (uint16_t)t->tid);
+    return 0;
+}
+static uint32_t d16_DosEnterCritSec(void) { return call32(api_DosEnterCritSec, 0, 0); }
+static uint32_t d16_DosExitCritSec(void) { return call32(api_DosExitCritSec, 0, 0); }
+static uint32_t d16_DosSuspendThread(void) { uint32_t a[] = { W(0) }; return call32(api_DosSuspendThread, 1, a); }
+static uint32_t d16_DosResumeThread(void) { uint32_t a[] = { W(0) }; return call32(api_DosResumeThread, 1, a); }
 static uint32_t d16_DosSizeSeg(void) { p32(FP(0), 0x10000); return 0; }                             /* (SEL, PULONG): a tile */
 static uint32_t d16_DosMemAvail(void) { p32(FP(0), 64u << 20); return 0; }
 /* DosExecPgm (failname, cbFail, flags, args, env, RESULTCODES (16-bit: two USHORTs), program), DosCWait (scope, wait,

@@ -533,7 +533,7 @@ static const char *const sysdlls[] = { "PMSPL", "PMVIOP",
     "NAMPIPES", "SO32DLL", "TCP32DLL", "SOM", "SOMU", "MMPM", "MDM", "UCONV", "LIBUNI", 0 };
 
 typedef uint32_t (*api_fn)(void);
-typedef struct { int lib; uint16_t ord; const char *name; api_fn fn; uint8_t a16; } api_t;   /* a16: a 16-bit call, its arguments' bytes */
+typedef struct { int lib; uint16_t ord; const char *name; api_fn fn; uint8_t a16; } api_t;   /* a16: a 16-bit call, its arguments' bytes (0xFF: none) */
 static const api_t apis[];
 
 enum { T_EXIT, T_CBRET, T_THREXIT, T_FIRST };
@@ -1148,7 +1148,7 @@ static void api16(thunk_t *t)
     if (trace) fprintf(stderr, "[os2x86] %s.%s (16-bit) = %u\n", libs[t->lib], t->api->name, rv);
     C.r[EAX] = (C.r[EAX] & 0xFFFF0000) | (rv & 0xFFFF);
     C.r[EDX] &= 0xFFFF0000;                     /* (DX: 0, for a caller that reads DX:AX) */
-    sp += 4 + t->api->a16;
+    sp += 4 + (t->api->a16 == 0xFF ? 0 : t->api->a16);   /* (0xFF: a 16-bit call without arguments) */
     C.r[ESP] = C.stack16 ? (C.r[ESP] & 0xFFFF0000) | (sp & 0xFFFF) : sp;
     cpu_load_seg(&C, 1, (uint16_t)cs);
     C.eip = ip;
@@ -3432,6 +3432,15 @@ static const api_t apis[] = {
     { L_PMGPI, 404, "GpiMove", api_GpiMove, 0 },
     { L_PMGPI, 398, "GpiLine", api_GpiLine, 0 },
     { L_DOS, 5, "DosExit", d16_DosExit, 4 },
+    { L_DOS, 145, "DosCreateThread", d16_DosCreateThread, 12 },
+    { L_DOS, 24, "DosCreateSem", d16_DosCreateSem, 10 },
+    { L_DOS, 25, "DosOpenSem", d16_DosOpenSem, 8 },
+    { L_DOS, 23, "DosCloseSem", d16_DosCloseSem, 4 },
+    { L_DOS, 22, "DosMuxSemWait", d16_DosMuxSemWait, 12 },
+    { L_DOS, 3, "DosEnterCritSec", d16_DosEnterCritSec, 0xFF },
+    { L_DOS, 6, "DosExitCritSec", d16_DosExitCritSec, 0xFF },
+    { L_DOS, 27, "DosSuspendThread", d16_DosSuspendThread, 2 },
+    { L_DOS, 26, "DosResumeThread", d16_DosResumeThread, 2 },
     { L_DOS, 144, "DosExecPgm", d16_DosExecPgm, 24 },
     { L_DOS, 2, "DosCWait", d16_DosCWait, 14 },
     { L_DOS, 140, "DosSemRequest", d16_DosSemRequest, 8 },
