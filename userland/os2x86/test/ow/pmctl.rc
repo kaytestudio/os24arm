@@ -1,0 +1,38 @@
+/* userland/os2x86/test/ow/pmctl.rc - pmctl's menu, dialog and string */
+#include <os2.h>
+#include "pmctl.h"
+
+MENU ID_MAIN
+BEGIN
+    SUBMENU "~File", IDM_FILE
+    BEGIN
+        MENUITEM "~Dialog...", IDM_DIALOG
+        MENUITEM SEPARATOR
+        MENUITEM "E~xit", IDM_EXIT
+    END
+    SUBMENU "~Help", IDM_HELP
+    BEGIN
+        MENUITEM "~About", IDM_ABOUT
+    END
+END
+
+DLGTEMPLATE ID_DLG
+BEGIN
+    DIALOG "Settings", ID_DLG, 20, 20, 200, 130, WS_VISIBLE, FCF_TITLEBAR | FCF_SYSMENU | FCF_DLGBORDER
+    BEGIN
+        LTEXT "Name:", -1, 8, 110, 40, 8
+        ENTRYFIELD "", IDC_NAME, 50, 110, 140, 8, ES_MARGIN
+        AUTOCHECKBOX "Check me", IDC_CHECK, 8, 92, 80, 10
+        GROUPBOX "Choice", -1, 8, 50, 90, 38
+        AUTORADIOBUTTON "One", IDC_RADIO1, 14, 66, 60, 10, WS_GROUP | WS_TABSTOP
+        AUTORADIOBUTTON "Two", IDC_RADIO2, 14, 54, 60, 10
+        LISTBOX IDC_LIST, 110, 34, 82, 58
+        DEFPUSHBUTTON "OK", DID_OK, 8, 8, 50, 14
+        PUSHBUTTON "Cancel", DID_CANCEL, 64, 8, 50, 14
+    END
+END
+
+STRINGTABLE
+BEGIN
+    IDS_HELLO "Hello from a string table"
+END

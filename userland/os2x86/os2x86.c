@@ -790,10 +790,11 @@ static mod_t *load_module(const char *path, int dll, char *err, size_t errn)
         m->obase[i] = fu32(m, ot + 24 * i + 4);
         m->oflags[i] = fu32(m, ot + 24 * i + 8);
         uint32_t sz = m->osize[i] ? m->osize[i] : 1;
+        if (m->oflags[i] & 8) continue;                /* (resources: on their own, below) */
         if (m->obase[i] < lo_a) lo_a = m->obase[i];
         if ((uint64_t)m->obase[i] + sz > hi_a) hi_a = m->obase[i] + sz;
     }
-    if (!m->nobj) { snprintf(err, errn, "%s: no objects", path); return 0; }
+    if (!m->nobj || !hi_a) { snprintf(err, errn, "%s: no objects", path); return 0; }
     uint32_t span = hi_a - lo_a;
     if (!mem_reserve(lo_a, span)) {
         /* (an EXE without its internal fixups stays where it's linked;
@@ -803,8 +804,16 @@ static mod_t *load_module(const char *path, int dll, char *err, size_t errn)
         if (!at) { snprintf(err, errn, "SYS0008: no memory for %s", path); return 0; }
         ulen[at / UNIT] = 0;                           /* (not DosFreeMem's) */
         int32_t delta = (int32_t)(at + lo_a % UNIT - lo_a);
-        for (int i = 0; i < m->nobj; i++) m->obase[i] += (uint32_t)delta;
+        for (int i = 0; i < m->nobj; i++) if (!(m->oflags[i] & 8)) m->obase[i] += (uint32_t)delta;
     }
+    /* the resource objects (linked at 0, often): wherever there's room */
+    for (int i = 0; i < m->nobj; i++)
+        if (m->oflags[i] & 8) {
+            uint32_t at = mem_alloc(m->osize[i] ? m->osize[i] : 1);
+            if (!at) { snprintf(err, errn, "SYS0008: no memory for %s", path); return 0; }
+            ulen[at / UNIT] = 0;
+            m->obase[i] = at;
+        }
     /* pages */
     uint32_t psz = H(m, LX_PAGESIZE), shift = H(m, LX_PAGESHIFT), opt = m->lx + H(m, LX_OBJPAGE);
     uint32_t data = H(m, LX_DATAPAGE);
@@ -2331,6 +2340,37 @@ static void *thr_main(void *arg)
     run(0);
     return 0;
 }
+/* resources: the LX resource table (type, name, size, object, offset) */
+static mod_t *mod_by_handle(uint32_t h);
+static int find_resource(uint32_t hmod, uint32_t type, uint32_t id, uint32_t *addr, uint32_t *size)
+{
+    mod_t *m = hmod ? mod_by_handle(hmod) : exe;
+    if (!m) return 0;
+    uint32_t rt = m->lx + H(m, 0x50), n = H(m, 0x54);
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t e = rt + 14 * i;
+        if (fu16(m, e) != type || fu16(m, e + 2) != id) continue;
+        uint32_t obj = fu16(m, e + 8);
+        if (!obj || (int)obj > m->nobj) return 0;
+        *addr = m->obase[obj - 1] + fu32(m, e + 10);
+        *size = fu32(m, e + 4);
+        return 1;
+    }
+    return 0;
+}
+static uint32_t api_DosGetResource(void)      /* (hmod, idType, idName, ppb) */
+{
+    uint32_t a, n;
+    if (!find_resource(A(0), A(1), A(2), &a, &n)) return ERROR_INVALID_PARAMETER;   /* (no such resource) */
+    return p32(A(3), a) ? 0 : ERROR_INVALID_PARAMETER;
+}
+static uint32_t api_DosQueryResourceSize(void) /* (hmod, idType, idName, pcb) */
+{
+    uint32_t a, n;
+    if (!find_resource(A(0), A(1), A(2), &a, &n)) return ERROR_INVALID_PARAMETER;
+    return p32(A(3), n) ? 0 : ERROR_INVALID_PARAMETER;
+}
+
 static uint32_t api_DosCreateThread(void)
 {
     uint32_t ptid = A(0), fn = A(1), param = A(2), flags = A(3), cb = A(4);
@@ -3132,6 +3172,9 @@ static const api_t apis[] = {
     { L_DOS, 339, "DosCloseMuxWaitSem", api_DosCloseSem, 0 },
     { L_DOS, 340, "DosWaitMuxWaitSem", api_DosWaitMuxWaitSem, 0 },
     { L_DOS, 348, "DosQuerySysInfo", api_DosQuerySysInfo, 0 },
+    { L_DOS, 352, "DosGetResource", api_DosGetResource, 0 },
+    { L_DOS, 353, "DosFreeResource", api_ok, 0 },
+    { L_DOS, 572, "DosQueryResourceSize", api_DosQueryResourceSize, 0 },
     { L_DOS, 349, "DosWaitThread", api_DosWaitThread, 0 },
     { L_DOS, 354, "DosSetExceptionHandler", api_DosSetExceptionHandler, 0 },
     { L_DOS, 355, "DosUnsetExceptionHandler", api_DosUnsetExceptionHandler, 0 },
@@ -3158,6 +3201,31 @@ static const api_t apis[] = {
     { L_NLS, 7, "DosMapCase", api_DosMapCase, 0 },
     { L_MSG, 5, "DosPutMessage", api_DosPutMessage, 0 },
     { L_PMWIN, 763, "WinInitialize", api_WinInitialize, 0 },
+    { L_PMWIN, 781, "WinLoadString", api_WinLoadString, 0 },
+    { L_PMWIN, 779, "WinLoadMessage", api_WinLoadMessage, 0 },
+    { L_PMWIN, 924, "WinLoadDlg", api_WinLoadDlg, 0 },
+    { L_PMWIN, 923, "WinDlgBox", api_WinDlgBox, 0 },
+    { L_PMWIN, 796, "WinProcessDlg", api_WinProcessDlg, 0 },
+    { L_PMWIN, 729, "WinDismissDlg", api_WinDismissDlg, 0 },
+    { L_PMWIN, 922, "WinCreateDlg", api_WinCreateDlg, 0 },
+    { L_PMWIN, 903, "WinSendDlgItemMsg", api_WinSendDlgItemMsg, 0 },
+    { L_PMWIN, 859, "WinSetDlgItemText", api_WinSetDlgItemText, 0 },
+    { L_PMWIN, 815, "WinQueryDlgItemText", api_WinQueryDlgItemText, 0 },
+    { L_PMWIN, 816, "WinQueryDlgItemTextLength", api_WinQueryDlgItemTextLength, 0 },
+    { L_PMWIN, 814, "WinQueryDlgItemShort", api_WinQueryDlgItemShort, 0 },
+    { L_PMWIN, 858, "WinSetDlgItemShort", api_WinSetDlgItemShort, 0 },
+    { L_PMWIN, 735, "WinEnableWindow", api_WinEnableWindow, 0 },
+    { L_PMWIN, 773, "WinIsWindowEnabled", api_WinIsWindowEnabled, 0 },
+    { L_PMWIN, 775, "WinIsWindowVisible", api_WinIsWindowVisible, 0 },
+    { L_PMWIN, 778, "WinLoadMenu", api_WinLoadMenu, 0 },
+    { L_PMWIN, 736, "WinEnableWindowUpdate", api_WinEnableWindowUpdate, 0 },
+    { L_PMWIN, 826, "WinQuerySysColor", api_WinQuerySysColor, 0 },
+    { L_PMWIN, 851, "WinSetActiveWindow", api_WinSetActiveWindow, 0 },
+    { L_PMWIN, 799, "WinQueryActiveWindow", api_WinQueryActiveWindow, 0 },
+    { L_PMWIN, 787, "WinMapDlgPoints", api_WinMapDlgPoints, 0 },
+    { L_PMWIN, 740, "WinEnumDlgItem", api_WinEnumDlgItem, 0 },
+    { L_PMWIN, 864, "WinSetOwner", api_WinSetOwner, 0 },
+    { L_PMWIN, 865, "WinSetParent", api_WinSetParent, 0 },
     { L_PMWIN, 842, "WinQueryWindowTextLength", api_WinQueryWindowTextLength, 0 },
     { L_PMWIN, 813, "WinQueryDesktopWindow", api_WinQueryDesktopWindow, 0 },
     { L_PMWIN, 888, "WinTerminate", api_WinTerminate, 0 },

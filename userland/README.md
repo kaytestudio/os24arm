@@ -379,9 +379,18 @@ platform-specific are new code.
    (an xdg-shell toplevel; the pointer and keys become PM's messages);
    the desktop starts an x86 PM program without a terminal. With
    OS2X86_PM=headless it runs without one, OS2X86_PM_SCRIPT giving it
-   input ("click X Y; key abc; esc; close; shot F.ppm"). Not there yet:
-   menus, dialogs and controls (buttons, entry fields, list boxes),
-   resources, bitmaps, fonts beyond the one. OS/2's DLLs that aren't
+   input ("click X Y; key abc; esc; close; shot F.ppm"). Then
+   (`pm_ctl.inc`) resources (the LX resource table: DosGetResource,
+   WinLoadString), menus from their templates (FCF_MENU, WinLoadMenu: a
+   bar at the top of the frame, drop-downs, WM_COMMAND, MM_SETITEMATTR
+   & co.), dialogs from theirs (WinDlgBox, WinLoadDlg, WinCreateDlg,
+   WinProcessDlg, WinDismissDlg, WinDefDlgProc: Enter for the default
+   button, Esc, Tab between the controls; WinSendDlgItemMsg & co.) and
+   the controls in them: push buttons, check boxes, radio buttons (by
+   group), static text and group boxes, entry fields, list boxes, with
+   their BM_/EM_/LM_ messages and WM_CONTROL notifications. Not there
+   yet: combo boxes, spin buttons, MLEs, scroll bars, notebooks and the
+   like, accelerators, icons and bitmaps, fonts beyond the one. OS/2's DLLs that aren't
    here (PMSHAPI, HELPMGR, TCP32DLL, ...) load as stubs, so a program
    that only links them in runs; a call into one says so and returns 0. Calls it doesn't have yet print
    one line on stderr and return error 1; `OS2X86_TRACE=1` lists every
@@ -393,8 +402,9 @@ platform-specific are new code.
    OS/2 exceptions and longjmp, _beginthread, spawnl), C++ (static
    constructors, iostreams, the STL, exceptions), conio (getch and putch
    through its 16-bit thunks), the mouse (fed terminal mouse reports), a
-   DLL of its own (moved, initialised, DosLoadModule) and a PM program
-   (headless, scripted, its picture checked). They pass on the system too.
+   DLL of its own (moved, initialised, DosLoadModule) and two PM
+   programs (headless, scripted: a window, its painting checked; a menu,
+   a dialog from a resource with its controls, by mouse and by keys). They pass on the system too.
 
    `userland/apps/os2cmd.c` relays a terminal to `/dev/os2cmd`, which runs
    each line in the shell of `kernel/src/main.c` - DIR, COPY, MOUNT, USB,

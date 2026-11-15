@@ -122,6 +122,13 @@ struct pmwin {
     int mb_result;                      /* a message box's answer */
     uint32_t mb_style;
     char mb_caption[128];
+    void *ctl;                          /* a control's, a menu's state (pm_ctl.inc) */
+    int fixed;                          /* a top window that keeps its size (dialogs, message boxes) */
+    int overlay;                        /* a menu's drop-down: painted last, clicked first */
+    pmwin_t *drop;                      /* a frame: its open drop-down */
+    int dlg_done;                       /* a dialog: WinDismissDlg'd, with dlg_result */
+    pmwin_t *prev_shown;                /* a top window: the one shown before it (the script's, the focus's) */
+    uint32_t dlg_result;
 };
 #define MAXWIN 256
 static pmwin_t pmwins[MAXWIN];
@@ -277,10 +284,14 @@ static void line(pmwin_t *w, int x0, int y0, int x1, int y1, uint32_t rgb)
 static void present(pmwin_t *w)
 {
     pmwin_t *f = frame_of(w);
+    if (f && f->drop && w != f->drop) f->drop->invalid = 1;      /* (the drop-down again, over it) */
     if (f && f->visible && pmb && pmb->present) pmb->present(f);
 }
 
 /* ── window lifecycle ────────────────────────────────────────────────── */
+static pmproc_t builtin_proc(const char *cls);           /* pm_ctl.inc */
+static void frame_layout(pmwin_t *f);
+static void set_focus(uint32_t hwnd);
 static pmclass_t *class_find(const char *n)
 {
     for (int i = 0; i < npmclasses; i++) if (!strcmp(pmclasses[i].name, n)) return &pmclasses[i];
@@ -314,6 +325,7 @@ static pmwin_t *win_new(pmwin_t *parent, const char *cls, uint32_t style, uint32
             w->nwords = (c ? c->cb : 0) + 16;
             w->words = calloc(w->nwords, 1);
             if (c) w->proc = c->proc;
+            else w->iproc = builtin_proc(cls);     /* WC_BUTTON, WC_STATIC, ... */
             return w;
         }
     return 0;
@@ -333,9 +345,10 @@ static void win_show(pmwin_t *w, int on)
     w->visible = on;
     pmwin_t *f = frame_of(w);
     if (w->top && pmb && pmb->show) pmb->show(w, on);
+    if (!on && pm_last_shown == w) pm_last_shown = w->prev_shown && w->prev_shown->used && w->prev_shown->visible ? w->prev_shown : 0;
     if (on) {
-        if (w->top) pm_last_shown = w;
-        if (w->top && w->client) { pm_send(w->client, WM_SIZE, 0, (uint32_t)(w->cx & 0xFFFF) | (uint32_t)w->cy << 16); w->client->visible = 1; }
+        if (w->top) { if (pm_last_shown != w) w->prev_shown = pm_last_shown; pm_last_shown = w; }
+        if (w->top && w->client) { pm_send(w->client, WM_SIZE, 0, (uint32_t)(w->client->cx & 0xFFFF) | (uint32_t)w->client->cy << 16); w->client->visible = 1; }
         invalidate(w);
         if (f && !pm_focus) pm_focus = f->client ? f->client->hwnd : f->hwnd;
     }
@@ -349,27 +362,41 @@ static void win_destroy(pmwin_t *w)
     if (w->top) { if (pmb && pmb->show && w->visible) pmb->show(w, 0); free(w->px); }
     for (int i = 0; i < 64; i++) if (pmtimers[i].used && pmtimers[i].hwnd == w->hwnd) pmtimers[i].used = 0;
     if (pm_focus == w->hwnd) pm_focus = 0;
-    if (pm_last_shown == w) pm_last_shown = 0;
+    if (pm_last_shown == w) pm_last_shown = w->prev_shown && w->prev_shown->used ? w->prev_shown : 0;
+    for (int i = 0; i < MAXWIN; i++) if (pmwins[i].used && pmwins[i].prev_shown == w) pmwins[i].prev_shown = w->prev_shown;
+    if (w->parent && w->parent->drop == w) w->parent->drop = 0;
     free(w->words);
+    free(w->ctl);
+    w->ctl = 0;
     w->used = 0;
 }
 /* the deepest visible window under (x, y) of frame f (its pixels, PM's way up) */
 static pmwin_t *win_at(pmwin_t *f, int x, int y)
 {
+    if (f->drop && f->drop->visible && x >= f->drop->x && y >= f->drop->y && x < f->drop->x + f->drop->cx && y < f->drop->y + f->drop->cy)
+        return f->drop;
     pmwin_t *best = f->client ? f->client : f;
+    for (int i = 0; i < MAXWIN; i++) {                 /* (the menu bar's above the client) */
+        pmwin_t *c = &pmwins[i];
+        if (c->used && c->parent == f && c->visible && c->id == 0x8005 && !c->overlay &&
+            x >= c->x && y >= c->y && x < c->x + c->cx && y < c->y + c->cy) { best = c; break; }
+    }
     for (int again = 1; again; ) {
         again = 0;
-        for (int i = 0; i < MAXWIN; i++) {
+        pmwin_t *hit = 0;
+        for (int i = 0; i < MAXWIN; i++) {               /* (the last created is on top: a group box's under its buttons) */
             pmwin_t *c = &pmwins[i];
-            if (!c->used || c->parent != best || !c->visible) continue;
+            if (!c->used || c->parent != best || !c->visible || c->overlay) continue;
             int ax, ay;
             win_abs(c, &ax, &ay);
-            if (x >= ax && y >= ay && x < ax + c->cx && y < ay + c->cy) { best = c; again = 1; break; }
+            if (x >= ax && y >= ay && x < ax + c->cx && y < ay + c->cy) hit = c;
         }
+        if (hit) { best = hit; again = 1; }
     }
     return best;
 }
 
+static void menu_close(pmwin_t *f);
 /* the backends' input, frame pixels top left: as PM messages */
 static void pm_mouse(pmwin_t *f, int px, int py, int button, int down)
 {
@@ -382,7 +409,9 @@ static void pm_mouse(pmwin_t *f, int px, int py, int button, int down)
     if (!button) { post(w, w->hwnd, WM_MOUSEMOVE, mp1, 0); return; }
     static const uint32_t dn[3] = { WM_BUTTON1DOWN, WM_BUTTON2DOWN, WM_BUTTON3DOWN }, up[3] = { WM_BUTTON1UP, WM_BUTTON2UP, WM_BUTTON3UP };
     if (button < 1 || button > 3) return;
-    if (down) pm_focus = (f->client && w == f) ? f->client->hwnd : w->hwnd;
+    if (down && f->drop && w != f->drop && w->id != 0x8005) { menu_close(f); return; }   /* (FID_MENU: it decides) */
+    if (down && !(w->style & 0x40000000u)) set_focus((f->client && w == f) ? f->client->hwnd : w->hwnd);
+    if (w->style & 0x40000000u) return;                 /* WS_DISABLED */
     post(w, w->hwnd, down ? dn[button - 1] : up[button - 1], mp1, 0);
 }
 static void pm_key(pmwin_t *f, int ch, int vk, int scan, int kc)
@@ -402,12 +431,11 @@ static void pm_close(pmwin_t *f)
 static void pm_resize(pmwin_t *f, int cx, int cy)
 {
     if (cx == f->cx && cy == f->cy) return;
-    uint32_t old = (uint32_t)(f->cx & 0xFFFF) | (uint32_t)f->cy << 16;
+    uint32_t old = f->client ? ((uint32_t)(f->client->cx & 0xFFFF) | (uint32_t)f->client->cy << 16) : 0;
     frame_pixels(f, cx, cy);
-    if (f->client) {
-        f->client->cx = cx; f->client->cy = cy;
-        post(f->client, f->client->hwnd, WM_SIZE, old, (uint32_t)(cx & 0xFFFF) | (uint32_t)cy << 16);
-    }
+    frame_layout(f);
+    if (f->client)
+        post(f->client, f->client->hwnd, WM_SIZE, old, (uint32_t)(f->client->cx & 0xFFFF) | (uint32_t)f->client->cy << 16);
     invalidate(f);
 }
 
@@ -495,9 +523,11 @@ static int pm_take(pmq_t *q, uint32_t filt, uint32_t first, uint32_t last, int r
         return 1;
     }
     /* then the windows to paint, then the timers that are due */
+    for (int pass = 0; pass < 2; pass++)
     for (int i = 0; i < MAXWIN; i++) {
         pmwin_t *w = &pmwins[i];
         if (!w->used || !w->invalid || w->tid != me->tid || !w->visible || (filt && w->hwnd != filt)) continue;
+        if (w->overlay != pass) continue;
         if (!frame_of(w) || !frame_of(w)->visible) continue;
         if (w->iproc == frame_proc) { w->invalid = 0; continue; }       /* (a frame: its client paints) */
         if (remove) w->invalid = 0;
@@ -570,16 +600,18 @@ static uint32_t api_WinRegisterClass(void)    /* (hab, pszClass, pfnWndProc, flS
     c->proc = A(2); c->style = A(3); c->cb = A(4);
     return 1;
 }
+static pmwin_t *menu_load(pmwin_t *f, uint32_t hmod, uint32_t id);
 static uint32_t frame_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
 {
-    (void)mp1; (void)mp2;
+    if (msg == WM_COMMAND && w->client) { post(w->client, w->client->hwnd, msg, mp1, mp2); return 0; }
     if (msg == WM_CLOSE) { if (w->client) post(w->client, w->client->hwnd, WM_CLOSE, 0, 0); else post(w, 0, WM_QUIT, 0, 0); }
     return 0;
 }
 static uint32_t api_WinCreateStdWindow(void)
 {
     /* (hwndParent, flStyle, pflCreate, pszClass, pszTitle, flClientStyle, hmod, idResources, phwndClient) */
-    uint32_t style = A(1), pcls = A(3), ptitle = A(4), cstyle = A(5), pclient = A(8);
+    uint32_t style = A(1), pfl = A(2), pcls = A(3), ptitle = A(4), cstyle = A(5), hmod = A(6), idres = A(7), pclient = A(8);
+    uint32_t fcf = pfl ? g32(pfl) : 0;
     if (!pm_start()) return 0;
     pmwin_t *f = win_new(0, "#1", style & ~WS_VISIBLE_, 0);
     if (!f) return 0;
@@ -588,14 +620,15 @@ static uint32_t api_WinCreateStdWindow(void)
     char *t = ptitle ? gs(ptitle) : 0;
     snprintf(f->text, sizeof f->text, "%s", t ? t : "");
     frame_pixels(f, 480, 320);
+    if (fcf & 4) menu_load(f, hmod, idres);              /* FCF_MENU */
     if (pcls) {
         char b[64];
         const char *n = class_name(pcls, b);
         pmwin_t *c = win_new(f, n, cstyle, FID_CLIENT);
         if (!c) { win_destroy(f); return 0; }
         f->client = c;
-        c->cx = f->cx; c->cy = f->cy;
         c->owner = f;
+        frame_layout(f);
         pm_send(c, WM_CREATE, 0, 0);
         if (!c->used) { win_destroy(f); return 0; }
         if (pclient) p32(pclient, c->hwnd);
@@ -691,12 +724,13 @@ static uint32_t def_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
     switch (msg) {
     case WM_CLOSE: post(w, 0, WM_QUIT, 0, 0); return 0;
     case WM_PAINT: w->invalid = 0; return 0;
+    case WM_CHAR: return !w->top && w->owner ? pm_send(w->owner, msg, mp1, mp2) : 0;   /* (a key nobody took: up to the owner) */
     case WM_ERASEBACKGROUND: return 0;
     }
     return 0;
 }
 static uint32_t api_WinDefWindowProc(void) { pmwin_t *w = win(A(0)); return w ? def_proc(w, A(1), A(2), A(3)) : 0; }
-static uint32_t api_WinDefDlgProc(void) { return api_WinDefWindowProc(); }
+
 
 /* presentation spaces */
 static uint32_t ps_new(pmwin_t *w, int painting)
@@ -898,7 +932,7 @@ static uint32_t api_WinQuerySysValue(void)    /* (hwndDesktop, iSysValue) */
     }
     return 0;
 }
-static uint32_t api_WinSetFocus(void) { if (win(A(1))) pm_focus = A(1); return 1; }
+static uint32_t api_WinSetFocus(void) { if (win(A(1))) set_focus(A(1)); return 1; }
 static uint32_t api_WinQueryFocus(void) { return pm_focus; }
 static uint32_t api_WinQueryDesktopWindow(void) { return HWND_DESKTOP_; }
 static uint32_t api_WinAlarm(void) { return 1; }
@@ -1007,6 +1041,7 @@ static uint32_t api_WinMessageBox(void)       /* (hwndParent, hwndOwner, pszText
     pmwin_t *w = win_new(0, "#msgbox", 0, 0);
     if (!w) return 0xFFFF;
     w->top = 1;
+    w->fixed = 1;
     w->iproc = mb_proc;
     w->mb_style = style;
     snprintf(w->text, sizeof w->text, "%s", text ? text : "");
@@ -1025,7 +1060,6 @@ static uint32_t api_WinMessageBox(void)       /* (hwndParent, hwndOwner, pszText
     frame_pixels(w, cx, cy);
     snprintf(w->mb_caption, sizeof w->mb_caption, "%s", cap && *cap ? cap : "Message");
     if (pmb->title) pmb->title(w);
-    pmwin_t *prev = pm_last_shown;
     uint32_t pfocus = pm_focus;
     win_show(w, 1);
     pm_focus = w->hwnd;
@@ -1042,7 +1076,6 @@ static uint32_t api_WinMessageBox(void)       /* (hwndParent, hwndOwner, pszText
     }
     int r = w->mb_result ? w->mb_result : 0xFFFF;
     win_destroy(w);
-    pm_last_shown = prev && prev->used ? prev : 0;
     pm_focus = pfocus;
     if (trace) fprintf(stderr, "[pm] WinMessageBox \"%s\": %d\n", text ? text : "", r);
     return (uint32_t)r;
@@ -1155,3 +1188,5 @@ static uint32_t api_GpiQueryTextBox(void)     /* (hps, lCount1, pchString, lCoun
     for (uint32_t i = 0; i < n && i < 5; i++) { p32(p + 8 * i, (uint32_t)pts[i][0]); p32(p + 8 * i + 4, (uint32_t)pts[i][1]); }
     return 1;
 }
+
+#include "pm_ctl.inc"

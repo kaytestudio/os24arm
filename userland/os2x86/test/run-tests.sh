@@ -30,6 +30,8 @@ if [ -x "$W/armo64/wcl386" ] || [ -x "$W/binl64/wcl386" ]; then
     wcl386 -q -za99 -bt=os2 -l=os2v2 "$S/usedll.c" mydll.lib >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2 "$S/mouse.c" >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmhello.c" >/dev/null
+    wrc -q -r -bt=os2 -i="$S" "$S/pmctl.rc" -fo=pmctl.res >/dev/null
+    wcl386 -q -za99 -bt=os2 -l=os2v2_pm -i="$S" "$S/pmctl.c" >/dev/null && wrc -q -bt=os2 pmctl.res pmctl.exe >/dev/null
     owfail=0
     echo "== OpenWatcom programs"
     ../os2x86 owtest.exe </dev/null | grep -E "^FAIL|passed|failed" || owfail=1
@@ -53,6 +55,16 @@ blue = any(at(x, y)[2] > 200 and at(x, y)[0] < 100 for x in range(20, 200) for y
 sys.exit(0 if red and blue else 1)
 PY
     then echo "PM: ok"; else echo "PM: FAIL"; echo "$pmout"; owfail=1; fi
+    # menus, a dialog from its template, its controls (by the mouse, then the keys), a string table
+    ctlout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf \
+        OS2X86_PM_SCRIPT="click 10 10; click 30 36; click 150 30; key abc; click 30 65; click 40 140; click 220 127; click 50 230; \
+click 10 10; click 30 36; key xyz; enter; click 10 10; click 30 36; key q; esc; click 55 10; click 60 36; enter; click 10 10; click 30 68" \
+        ../os2x86 pmctl.exe 2>&1)"
+    if echo "$ctlout" | grep -q 'WinDlgBox: 1, name "Warpabc", check 1, radio 2, item 2' &&
+       echo "$ctlout" | grep -q 'WinDlgBox: 1, name "Warpxyz", check 0, radio 1, item -1' &&
+       echo "$ctlout" | grep -q 'WinDlgBox: 2, name "Warpxyz"' && echo "$ctlout" | grep -q "string: Hello from a string table" &&
+       echo "$ctlout" | grep -q "IDM_EXIT"
+    then echo "PM controls: ok"; else echo "PM controls: FAIL"; echo "$ctlout"; owfail=1; fi
     [ "$owfail" = 0 ] || st=1
 else
     echo "(no OpenWatcom: its programs not tried)"

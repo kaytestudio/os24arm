@@ -84,7 +84,7 @@ static void tl_configure(void *d, struct xdg_toplevel *t, int32_t w, int32_t h, 
     pmwin_t *f = d;
     if (w <= 0 || h <= 0) return;
     pthread_mutex_lock(&gil);
-    if (f->used && f->iproc != mb_proc) pm_resize(f, w, h);     /* (message boxes keep their size) */
+    if (f->used && !f->fixed) pm_resize(f, w, h);     /* (dialogs, message boxes keep their size) */
     pthread_mutex_unlock(&gil);
 }
 static void tl_close(void *d, struct xdg_toplevel *t)
@@ -112,7 +112,7 @@ static void wl_show(pmwin_t *f, int on)
         xdg_toplevel_add_listener(k->tl, &tl_l, f);
         xdg_toplevel_set_title(k->tl, win_title(f));
         xdg_toplevel_set_app_id(k->tl, "os2x86");
-        if (f->iproc == mb_proc) { xdg_toplevel_set_min_size(k->tl, f->pw, f->ph); xdg_toplevel_set_max_size(k->tl, f->pw, f->ph); }
+        if (f->fixed) { xdg_toplevel_set_min_size(k->tl, f->pw, f->ph); xdg_toplevel_set_max_size(k->tl, f->pw, f->ph); }
         wl_surface_commit(k->s);
         wl_display_flush(wld);
     } else if (!on && k) {
