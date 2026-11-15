@@ -1505,6 +1505,7 @@ static uint32_t api_WinRemovePresParam(void)
 }
 static pmwin_t *ptr_get(uint32_t h);
 #include "pm_cnr.inc"
+#include "pm_vs.inc"
 
 /* ── the clipboard (WinOpenClipbrd & co.): CF_TEXT, CF_BITMAP; on the
  * desktop the Wayland one (pm_wl.inc), so text goes between programs ── */

@@ -433,8 +433,12 @@ platform-specific are new code.
    fields and MLEs cut, copy and paste through it (Ctrl+X/C/V, Shift+Del,
    Ctrl+Ins, Shift+Ins). WinSetPointer: the desktop's pointer over the
    program's windows takes that shape (its hot spot from the file), PM's
-   arrow by default. Not there yet: the tree view, editing in a
-   container, drag and drop, value sets, circular sliders. OS/2's DLLs that aren't
+   arrow by default. Value sets (`pm_vs.inc`: a grid of colours, text,
+   icons or bitmaps; VM_SETITEM, VM_SETITEMATTR, VM_SELECTITEM,
+   VN_SELECT, VN_ENTER) and circular sliders (a dial turned by dragging,
+   its buttons or the keys; CSM_SETRANGE, CSM_SETVALUE, CSN_CHANGED,
+   CSN_TRACKING). Not there yet: the tree view, editing in a container,
+   drag and drop, owner-drawn value set items. OS/2's DLLs that aren't
    here (PMSHAPI, HELPMGR, TCP32DLL, ...) load as stubs, so a program
    that only links them in runs; a call into one says so and returns 0. Calls it doesn't have yet print
    one line on stderr and return error 1; `OS2X86_TRACE=1` lists every

@@ -744,6 +744,8 @@ static uint32_t spin_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2);
 static uint32_t slider_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2);
 static uint32_t notebook_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2);
 static uint32_t container_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2);
+static uint32_t valueset_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2);
+static uint32_t circslider_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2);
 static pmproc_t builtin_proc(const char *cls)
 {
     if (!strcmp(cls, "#3")) return button_proc;
@@ -757,6 +759,8 @@ static pmproc_t builtin_proc(const char *cls)
     if (!strcmp(cls, "#38")) return slider_proc;
     if (!strcmp(cls, "#40")) return notebook_proc;
     if (!strcmp(cls, "#37")) return container_proc;
+    if (!strcmp(cls, "#39")) return valueset_proc;
+    if (!strcmp(cls, "#65")) return circslider_proc;
     return 0;
 }
 

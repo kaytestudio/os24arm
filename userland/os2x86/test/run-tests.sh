@@ -50,6 +50,7 @@ if [ -x "$W/armo64/wcl386" ] || [ -x "$W/binl64/wcl386" ]; then
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm -i="$S" "$S/pmbook.c" >/dev/null && wrc -q -bt=os2 pmbook.res pmbook.exe >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmcnr.c" >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmclip.c" >/dev/null
+    wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmvs.c" >/dev/null
     owfail=0
     echo "== OpenWatcom programs"
     ../os2x86 owtest.exe </dev/null | grep -E "^FAIL|passed|failed" || owfail=1
@@ -164,6 +165,12 @@ PY
     if grep -q 'put: "Hello, clipboard" (have 1, info 400, first format 1)' <<< "$clipout" && grep -q "pointer: set 1, same 1" <<< "$clipout" &&
        grep -q 'entry "Hello, clipboard!", mle "Hello, clipboard!||Hello, clipboard!"' <<< "$clipout" && grep -q 'done: "Hello, clipboard!"' <<< "$clipout"
     then echo "PM clipboard: ok"; else echo "PM clipboard: FAIL"; echo "$clipout"; owfail=1; fi
+    # a value set (colours, text: click, double-click, a key) and a circular slider (its + button, a drag round the dial)
+    vsout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf OS2X86_PM_SCRIPT="click 190 30; dblclick 120 65; vkey right; click 170 199; drag 120 125 150 148; close" ../os2x86 pmvs.exe 2>&1 | tr -d '\r')"
+    if grep -q 'item 2,2: "Green" (5), 1,3: 0000ff, attr 2,1 4' <<< "$vsout" && grep -q "VN_SELECT 1,3 (selected 1,3)" <<< "$vsout" &&
+       grep -q "VN_ENTER 2,2" <<< "$vsout" && grep -q "VN_SELECT 2,3" <<< "$vsout" && grep -q "CSN_CHANGED 55" <<< "$vsout" &&
+       grep -q "CSN_TRACKING 80" <<< "$vsout" && grep -q "done: dial 80, selected 2,3" <<< "$vsout"
+    then echo "PM value set, circular slider: ok"; else echo "PM value set, circular slider: FAIL"; echo "$vsout"; owfail=1; fi
     [ "$owfail" = 0 ] || st=1
 else
     echo "(no OpenWatcom: its programs not tried)"
