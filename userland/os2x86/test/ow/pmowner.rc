@@ -1,0 +1,11 @@
+#include <os2.h>
+MENU 1
+BEGIN
+    SUBMENU "~Colour", 10
+    BEGIN
+        MENUITEM "Red", 11, MIS_OWNERDRAW
+        MENUITEM "Green", 12, MIS_OWNERDRAW
+        MENUITEM SEPARATOR
+        MENUITEM "~Plain", 13
+    END
+END

@@ -446,7 +446,12 @@ platform-specific are new code.
    (Alt+click, CM_OPENEDIT: an entry field over it; Enter or a click
    elsewhere keeps it - CN_REALLOCPSZ for the program to make room, then
    the text into its string, CN_ENDEDIT - Esc drops it; CN_BEGINEDIT
-   first). Not there yet: drag and drop, owner-drawn value set items. OS/2's DLLs that aren't
+   first). Owner drawing: list boxes with LS_OWNERDRAW (WM_MEASUREITEM
+   for the items' height, LM_SETITEMHEIGHT; WM_DRAWITEM for each, with an
+   OWNERITEM and a presentation space of the list box - a selection the
+   owner leaves to it is inverted), menu items with MIS_OWNERDRAW
+   (measured, drawn, MIA_HILITED for the lit one) and value set items
+   with VIA_OWNERDRAW. Not there yet: drag and drop. OS/2's DLLs that aren't
    here (PMSHAPI, HELPMGR, TCP32DLL, ...) load as stubs, so a program
    that only links them in runs; a call into one says so and returns 0. Calls it doesn't have yet print
    one line on stderr and return error 1; `OS2X86_TRACE=1` lists every

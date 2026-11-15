@@ -49,6 +49,32 @@ static void notify(pmwin_t *w, uint32_t code, uint32_t mp2)   /* WM_CONTROL to t
     pmwin_t *o = w->owner ? w->owner : w->parent;
     if (o) pm_send(o, WM_CONTROL, (w->id & 0xFFFF) | code << 16, mp2 ? mp2 : w->hwnd);
 }
+/* owner drawing: WM_MEASUREITEM, WM_DRAWITEM to the owner, an OWNERITEM
+ * (hwnd, hps, fsState, fsAttribute, fsStateOld, fsAttributeOld, rclItem,
+ * idItem, hItem) in the program's memory and a PS of w for it. 1: the owner
+ * drew it; out: the four states after (what's left for us to show) */
+static uint32_t gscratch(uint32_t n);
+static uint32_t ps_new(pmwin_t *w, int painting);
+static pmps_t *ps_get(uint32_t h);
+static uint32_t getpel(pmwin_t *w, int x, int y);
+static int owner_draw(pmwin_t *w, uint32_t mp1, int x0, int y0, int x1, int y1, uint32_t id, uint32_t h,
+                      uint32_t st, uint32_t stold, uint32_t at, uint32_t atold, uint32_t *out)
+{
+    pmwin_t *o = w->owner ? w->owner : w->parent;
+    uint32_t oi = gscratch(48), ps = ps_new(w, 2);
+    if (!o || !oi || !ps) { if (ps_get(ps)) ps_get(ps)->used = 0; return 0; }
+    p32(oi, w->hwnd); p32(oi + 4, ps); p32(oi + 8, st); p32(oi + 12, at); p32(oi + 16, stold); p32(oi + 20, atold);
+    p32(oi + 24, (uint32_t)x0); p32(oi + 28, (uint32_t)y0); p32(oi + 32, (uint32_t)x1); p32(oi + 36, (uint32_t)y1);
+    p32(oi + 40, id); p32(oi + 44, h);
+    uint32_t r = pm_send(o, 0x0036, mp1, oi);                /* WM_DRAWITEM */
+    if (out) for (int k = 0; k < 4; k++) out[k] = g32(oi + 8 + 4 * (uint32_t)k);   /* (fsState, fsAttribute, fsStateOld, fsAttributeOld, as the owner left them) */
+    if (ps_get(ps)) ps_get(ps)->used = 0;
+    return r != 0;
+}
+static void invert_rect(pmwin_t *w, int x0, int y0, int x1, int y1)
+{
+    for (int y = y0; y < y1; y++) for (int x = x0; x < x1; x++) pel(w, x, y, ~getpel(w, x, y) & 0xFFFFFF);
+}
 static void set_focus(uint32_t hwnd)
 {
     if (pm_focus == hwnd) return;
@@ -386,9 +412,19 @@ static uint32_t entry_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
 
 /* ── WC_LISTBOX ──────────────────────────────────────────────────────── */
 typedef struct { char *text; uint32_t handle; } lbitem_t;
-typedef struct { lbitem_t *it; int n, cap, sel, top; } lb_t;
+typedef struct { lbitem_t *it; int n, cap, sel, top, ih; } lb_t;   /* (ih: an item's height, the owner's for LS_OWNERDRAW) */
 static lb_t *lb(pmwin_t *w) { if (!w->ctl) { w->ctl = calloc(1, sizeof(lb_t)); ((lb_t *)w->ctl)->sel = -1; } return w->ctl; }
-static int lb_rows(pmwin_t *w) { int r = (w->cy - 4) / pm_lineh; return r < 1 ? 1 : r; }
+static int lb_ih(pmwin_t *w, lb_t *l)
+{
+    if (!l->ih && (w->style & 2)) {                           /* LS_OWNERDRAW: WM_MEASUREITEM (id, item): the height */
+        pmwin_t *o = w->owner ? w->owner : w->parent;
+        l->ih = -1;
+        int h = o ? (int)(pm_send(o, 0x0037, w->id & 0xFFFF, 0) & 0xFFFF) : 0;
+        l->ih = h > 0 && h < 400 ? h : pm_lineh;
+    }
+    return l->ih > 0 ? l->ih : pm_lineh;
+}
+static int lb_rows(pmwin_t *w) { lb_t *l = lb(w); int r = (w->cy - 4) / lb_ih(w, l); return r < 1 ? 1 : r; }
 static void lb_show_sel(pmwin_t *w, lb_t *l)
 {
     if (l->sel < 0) return;
@@ -410,10 +446,17 @@ static uint32_t list_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
         bevel(w, 0, 0, w->cx, w->cy, 0);
         int rows = lb_rows(w);
         for (int r = 0; r < rows && l->top + r < l->n; r++) {
-            int k = l->top + r, y1 = w->cy - 2 - r * pm_lineh, y0 = y1 - pm_lineh;
+            int ih = lb_ih(w, l), k = l->top + r, y1 = w->cy - 2 - r * ih, y0 = y1 - ih;
             int on = k == l->sel;
+            if (w->style & 2) {                                 /* LS_OWNERDRAW: the owner's, else ours; selected and left to us: inverted */
+                uint32_t st[4];
+                if (owner_draw(w, w->id & 0xFFFF, 2, y0, w->cx - 2, y1, (uint32_t)k, l->it[k].handle, (uint32_t)on, (uint32_t)on, 0, 0, st)) {
+                    if (st[0]) invert_rect(w, 2, y0, w->cx - 2, y1);
+                    continue;
+                }
+            }
             if (on) fill(w, 2, y0, w->cx - 2, y1, C_HILITE);
-            text_at(w, 5, y0 + (pm_lineh - pm_ascent - pm_descent) / 2 + pm_descent, l->it[k].text, (int)strlen(l->it[k].text), on ? C_LIGHT : C_TEXT);
+            text_at(w, 5, y0 + (ih - pm_ascent - pm_descent) / 2 + pm_descent, l->it[k].text, (int)strlen(l->it[k].text), on ? C_LIGHT : C_TEXT);
         }
         if (l->n > rows) {                                      /* (a scroll mark: there's more) */
             int h = w->cy - 4, bh = h * rows / l->n, by = 2 + (h - bh) * (l->n - rows - l->top) / (l->n - rows);
@@ -424,7 +467,7 @@ static uint32_t list_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
     }
     case WM_BUTTON1DBLCLK: if (l->sel >= 0) notify(w, 5, 0); return 1;   /* LN_ENTER */
     case WM_BUTTON1DOWN: {
-        int y = (int16_t)(mp1 >> 16), k = l->top + (w->cy - 2 - y) / pm_lineh;
+        int y = (int16_t)(mp1 >> 16), k = l->top + (w->cy - 2 - y) / lb_ih(w, l);
         if (k >= 0 && k < l->n && k != l->sel) { l->sel = k; repaint(w); notify(w, 1, 0); }   /* LN_SELECT */
         return 1;
     }
@@ -502,6 +545,7 @@ static uint32_t list_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
     }
     case 0x0169: if (i1 < 0 || i1 >= l->n) return 0; l->it[i1].handle = mp2; return 1;        /* LM_SETITEMHANDLE */
     case 0x016a: return i1 >= 0 && i1 < l->n ? l->it[i1].handle : 0;                          /* LM_QUERYITEMHANDLE */
+    case 0x016c: if ((int)mp1 > 0 && (int)mp1 < 400) { l->ih = (int)mp1; repaint(w); } return 1;   /* LM_SETITEMHEIGHT */
     case 0x016b: {                                                        /* LM_SEARCHSTRING: (flags, start), text */
         char *s = gs(mp2);
         int16_t start = (int16_t)(mp1 >> 16);
@@ -517,15 +561,14 @@ static uint32_t list_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
     }
     case 0x0162: if (i1 >= 0 && i1 < l->n) { l->top = i1; repaint(w); } return 1;              /* LM_SETTOPINDEX */
     case 0x016d: return (uint32_t)l->top;                                                     /* LM_QUERYTOPINDEX */
-    case 0x016c: return 1;                                                                    /* LM_SETITEMHEIGHT */
     }
     return 0;
 }
 
 /* ── menus ───────────────────────────────────────────────────────────── */
 typedef struct menu menu_t;
-typedef struct { char text[64]; uint16_t id, style, attr; menu_t *sub; } mitem_t;
-struct menu { mitem_t *it; int n, open; };
+typedef struct { char text[64]; uint16_t id, style, attr; menu_t *sub; int ow, oh; } mitem_t;   /* (ow, oh: MIS_OWNERDRAW, as the owner measured it) */
+struct menu { mitem_t *it; int n, open; uint32_t id; };   /* (id: a pull-down's, its item's in the bar) */
 
 static menu_t *menu_parse(uint32_t t, uint32_t end)        /* a menu template at t */
 {
@@ -539,7 +582,7 @@ static menu_t *menu_parse(uint32_t t, uint32_t end)        /* a menu template at
         it->style = g16(p); it->attr = g16(p + 2); it->id = g16(p + 4);
         p += 6;
         if (it->style & 0x0004) continue;                   /* MIS_SEPARATOR: no text */
-        if ((it->style & 0x0001) || !(it->style & 0x000A)) {  /* MIS_TEXT (not a bitmap, not owner-drawn) */
+        {                                                   /* the text (bitmaps' "#id", owner-drawn items' too) */
             char *s = gs(p);
             snprintf(it->text, sizeof it->text, "%s", s ? s : "");
             p += (uint32_t)strlen(s ? s : "") + 1;
@@ -569,7 +612,7 @@ static void menu_free(menu_t *m)
 }
 /* the menu bar's items, left to right */
 static int mbar_x(menu_t *m, int i) { int x = 4; for (int k = 0; k < i; k++) x += plain_w(m->it[k].text) + 16; return x; }
-static int drop_item_h(mitem_t *it) { return (it->style & 4) ? 8 : pm_lineh + 4; }
+static int drop_item_h(mitem_t *it) { return (it->style & 4) ? 8 : (it->style & 8) && it->oh > 0 ? it->oh : pm_lineh + 4; }
 static void menu_close(pmwin_t *f)
 {
     if (!f || !f->drop) return;
@@ -611,7 +654,16 @@ static uint32_t drop_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
             mitem_t *it = &m->it[i];
             int h = drop_item_h(it);
             if (it->style & 4) { line(w, 4, y - h / 2, w->cx - 5, y - h / 2, C_DARK); line(w, 4, y - h / 2 - 1, w->cx - 5, y - h / 2 - 1, C_LIGHT); }
-            else {
+            else if (it->style & 8) {                           /* MIS_OWNERDRAW: WM_DRAWITEM (MIA_HILITED in fsAttribute; a newly lit one inverted if the owner leaves it) */
+                pmwin_t *f = frame_of(w);
+                pmwin_t *save = w->owner;
+                w->owner = f && f->client ? f->client : f;
+                uint32_t at = it->attr | (i == m->open ? 0x8000u : 0), st[4];
+                int drawn = owner_draw(w, m->id, 2, y - h, w->cx - 2, y, it->id, 0, 0, 0, at, at & ~0x8000u, st);
+                w->owner = save;
+                if (drawn && (st[1] & 0x8000) && !(st[3] & 0x8000)) invert_rect(w, 2, y - h, w->cx - 2, y);
+                if (!drawn) text_mid(w, 20, y - h, y, it->text, C_TEXT);
+            } else {
                 if (i == m->open) fill(w, 2, y - h, w->cx - 2, y, C_HILITE);
                 if (it->attr & 0x2000) { line(w, 6, y - h / 2, 9, y - h / 2 - 3, C_TEXT); line(w, 9, y - h / 2 - 3, 14, y - h / 2 + 3, C_TEXT); }   /* MIA_CHECKED */
                 char lab[64];
@@ -661,7 +713,25 @@ static void menu_open(pmwin_t *bar, menu_t *m, int i)
     sub->open = -1;
     d->overlay = 1;
     int wmax = 60, h = 4;
-    for (int k = 0; k < sub->n; k++) { int tw = plain_w(sub->it[k].text) + 64; if (tw > wmax) wmax = tw; h += drop_item_h(&sub->it[k]); }
+    sub->id = m->it[i].id;
+    for (int k = 0; k < sub->n; k++) {
+        mitem_t *it = &sub->it[k];
+        if ((it->style & 8) && !it->oh) {                     /* MIS_OWNERDRAW: WM_MEASUREITEM (menu id, OWNERITEM): its rclItem's width and height */
+            pmwin_t *o = f->client ? f->client : f;
+            uint32_t oi = gscratch(48);
+            it->oh = pm_lineh + 4; it->ow = 0;
+            if (oi) {
+                p32(oi, bar->hwnd); p32(oi + 40, it->id);
+                uint32_t r = pm_send(o, 0x0037, sub->id, oi);
+                int rh = (int)(r & 0xFFFF), ow = (int32_t)g32(oi + 32) - (int32_t)g32(oi + 24), oh = (int32_t)g32(oi + 36) - (int32_t)g32(oi + 28);
+                if (oh > 0 && oh < 400) it->oh = oh; else if (rh > 0 && rh < 400) it->oh = rh;
+                if (ow > 0 && ow < 1000) it->ow = ow;
+            }
+        }
+        int tw = (it->style & 8) ? it->ow + 8 : plain_w(it->text) + 64;
+        if (tw > wmax) wmax = tw;
+        h += drop_item_h(it);
+    }
     d->cx = wmax; d->cy = h;
     d->x = mbar_x(m, i) - 4; d->y = bar->y - h;
     if (d->x + d->cx > f->cx) d->x = f->cx - d->cx;

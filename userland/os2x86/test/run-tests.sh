@@ -52,6 +52,8 @@ if [ -x "$W/armo64/wcl386" ] || [ -x "$W/binl64/wcl386" ]; then
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmclip.c" >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmvs.c" >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmtree.c" >/dev/null
+    wrc -q -r -bt=os2 -i="$S" "$S/pmowner.rc" -fo=pmowner.res >/dev/null
+    wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmowner.c" >/dev/null && wrc -q -bt=os2 pmowner.res pmowner.exe >/dev/null
     owfail=0
     echo "== OpenWatcom programs"
     ../os2x86 owtest.exe </dev/null | grep -E "^FAIL|passed|failed" || owfail=1
@@ -179,6 +181,17 @@ PY
        grep -q "selected Programs; removing Programs: 5 left" <<< "$treeout" &&
        [ "$(grep '^EDIT' <<< "$treeout" | tr '\n' ' ')" = "EDIT begin Editor EDIT realloc 6 EDIT end Notes EDIT begin Notes EDIT end Notes " ]
     then echo "PM container tree: ok"; else echo "PM container tree: FAIL"; echo "$treeout"; owfail=1; fi
+    # owner drawing: a list box (measured, each item drawn, the selection inverted), a value set item, menu items (measured, lit)
+    ownout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf OS2X86_PM_SCRIPT="click 40 60; click 20 10; move 40 40; shot owner.ppm; click 40 40; close" ../os2x86 pmowner.exe 2>&1 | tr -d '\r')"
+    if grep -q "LN_SELECT 0" <<< "$ownout" && grep -q "WM_COMMAND 11" <<< "$ownout" &&
+       grep -q "done: measured 3, list drawn yes, value set drawn yes, menu drawn yes, lit yes" <<< "$ownout" &&
+       python3 - owner.ppm <<'PY'
+import sys
+d = open(sys.argv[1], 'rb').read().split(b'\n', 3); w, h = map(int, d[1].split()); px = d[3]
+at = lambda x, y: tuple(px[(y * w + x) * 3:(y * w + x) * 3 + 3])
+sys.exit(0 if at(60, 34) == (0, 128, 0) and at(20, 122) == (0, 0, 255) else 1)   # the lit menu item, the Blue swatch
+PY
+    then echo "PM owner drawing: ok"; else echo "PM owner drawing: FAIL"; echo "$ownout"; owfail=1; fi
     [ "$owfail" = 0 ] || st=1
 else
     echo "(no OpenWatcom: its programs not tried)"

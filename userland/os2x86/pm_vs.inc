@@ -79,7 +79,10 @@ static uint32_t valueset_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t m
                 int x0, y0, x1, y1;
                 vs_cell(w, v, r, c, &x0, &y0, &x1, &y1);
                 int a = it->attr;
-                if (a & 0x08) fill(w, x0 + 2, y0 + 2, x1 - 2, y1 - 2, it->val & 0xFFFFFF);                 /* VIA_RGB */
+                if ((a & 0x20) || (w->style & 0x200))                                                       /* VIA_OWNERDRAW, VS_OWNERDRAW: the owner's */
+                    owner_draw(w, w->id & 0xFFFF, x0 + 1, y0 + 1, x1 - 1, y1 - 1, vs_rc(r, c), it->val,
+                               (uint32_t)(r == v->sr && c == v->sc), (uint32_t)(r == v->sr && c == v->sc), a, a, 0);
+                else if (a & 0x08) fill(w, x0 + 2, y0 + 2, x1 - 2, y1 - 2, it->val & 0xFFFFFF);            /* VIA_RGB */
                 else if (a & 0x10) fill(w, x0 + 2, y0 + 2, x1 - 2, y1 - 2, pm_rgb((int32_t)it->val, 0, 0)); /* VIA_COLORINDEX */
                 else if ((a & 0x04) && it->text) {                                                           /* VIA_TEXT */
                     char p[256];
@@ -96,8 +99,6 @@ static uint32_t valueset_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t m
                         int bx = x0 + (x1 - x0 - b->cx) / 2, by = y0 + (y1 - y0 - b->cy) / 2;
                         blit(w, bx, by, bx + b->cx, by + b->cy, b, 0, 0, b->cx, b->cy, 0xCC, 0);
                     }
-                } else if (a & 0x20) {                                                                       /* VIA_OWNERDRAW: WM_DRAWITEM */
-                    /* (OWNERITEM in the program's memory: hwnd, hps, fsState, fsAttribute, fsStateOld, fsAttributeOld, rclItem, idItem, hItem) */
                 }
                 if ((a & 0x40) && !(a & 0x04)) for (int y = y0; y < y1; y++) for (int x = x0 + (y & 1); x < x1; x += 2) pel(w, x, y, C_FACE);
                 if (w->style & 0x40) bevel(w, x0, y0, x1, y1, 0);                                           /* VS_ITEMBORDER */

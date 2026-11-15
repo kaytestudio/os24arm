@@ -23,6 +23,21 @@ static uint32_t galloc(uint32_t n)
     return r;
 }
 
+/* guest memory for what lives only through one call (notifications,
+ * OWNERITEMs): a ring, reused */
+static uint32_t gscratch_base, gscratch_at;
+static uint32_t gscratch(uint32_t n)
+{
+    n = (n + 7) & ~7u;
+    if (!gscratch_base && !(gscratch_base = mem_alloc(0x10000))) return 0;
+    if (n > 0x1000) return galloc(n);
+    if (gscratch_at + n > 0x10000) gscratch_at = 0;
+    uint32_t r = gscratch_base + gscratch_at;
+    gscratch_at += n;
+    memset(C.mem + r, 0, n);
+    return r;
+}
+
 enum { RC_ATTR = 4, RC_PTL = 8, RC_NEXT = 16, RC_PSZICON = 20, RC_HPTR = 24, RC_HPTRMINI = 28, RC_PSZTEXT = 44, RC_PSZNAME = 48, RC_PSZTREE = 52 };
 enum { FI_FLDATA = 4, FI_FLTITLE = 8, FI_TITLE = 12, FI_OFF = 16, FI_NEXT = 24, FI_CX = 28 };
 typedef struct {
@@ -130,7 +145,7 @@ static void cnr_scrollbar(pmwin_t *w, cnr_t *c)
 }
 static void cnr_notify_emph(pmwin_t *w, uint32_t r, uint32_t mask)
 {
-    uint32_t n = galloc(12);
+    uint32_t n = gscratch(12);
     if (!n) return;
     p32(n, w->hwnd); p32(n + 4, r); p32(n + 8, mask);
     notify(w, 108, n);                                       /* CN_EMPHASIS */
@@ -152,7 +167,7 @@ static void cnr_select(pmwin_t *w, cnr_t *c, int i)
 }
 static void cnr_enter(pmwin_t *w, uint32_t r, int key)
 {
-    uint32_t n = galloc(12);
+    uint32_t n = gscratch(12);
     if (!n) return;
     p32(n, w->hwnd); p32(n + 4, (uint32_t)key); p32(n + 8, r);
     notify(w, 106, n);                                       /* CN_ENTER */
