@@ -1,0 +1,44 @@
+Hello REXX!
+x+y= 7 x*y=12 abut4
+3.5 3 1 1024 0.333333333 -3 -2.66666667
+1 0 1 1 1
+1 0 1 0
+y is bigger
+block: x < 5
+still in it
+to:  1 2 3 4 5
+by:  10 7 4 1
+count: ***
+while: 4
+until: 3
+iterate/leave:  1 3 5 7
+for:  1 2 3
+select one
+select two
+select other
+stem 1 first
+stem 2 second
+b.7: default
+c.q: by name c.x: C.3
+fact(10): 3628800
+total: 105 result: 105
+squares: 1 4 9 16
+John | Smith | 42 | Lisbon
+key value other
+abc def ghij
+MIXED CASE
+one / two three
+5 ell ab..|   ab| --x--
+4 4 b 3 2
+pad| y a b c ababab cba
+HELLO xyz MIXED
+3 9 2 3.78 -1   3.14
+4142 AB FF 255 65 B 1
+NUM CHAR 1 0
+b c a c d abXYcd aXYd aef
+4 3 4 3
+interpret: 42 42 VAR LIT
+signalled
+read: line one
+read: line two
+rc 0

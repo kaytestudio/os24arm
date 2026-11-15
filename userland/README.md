@@ -563,6 +563,12 @@ platform-specific are new code.
    spin buttons; bitmaps and icons - a real OS/2 one from OpenWatcom's
    samples - their pixels checked). They pass on the system too.
 
+   `userland/apps/rexx.c` is REXX: `.CMD` files starting with `/*` run
+   through it (the kernel's execve, as it hands x86 programs to os2x86;
+   os2cmd finds NAME.CMD after NAME.EXE). Commands in them go to
+   `os2cmd /C "line"`; `userland/tests/rexx/run.sh` builds it on the build
+   machine and compares `test.cmd`'s output with `test.out`.
+
    `userland/apps/os2cmd.c` relays a terminal to `/dev/os2cmd`, which runs
    each line in the shell of `kernel/src/main.c` - DIR, COPY, MOUNT, USB,
    MEM, ... on the same mounts as the serial console's; each window starts

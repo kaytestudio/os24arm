@@ -227,6 +227,14 @@ usb0p1 is drive D: (HPFS)
 | `GUI` | the older in-kernel compositor (four switchable workplaces), a fallback |
 | `HELP` | the list |
 
+REXX: `.CMD` files that begin with a `/*` comment are REXX programs, as on
+OS/2 - type their name (`HELLO` finds `HELLO.CMD`) and the kernel runs
+them with `userland/apps/rexx.c`, a classic REXX interpreter (all the
+instructions - DO, SELECT, PARSE templates, PROCEDURE EXPOSE, SIGNAL,
+INTERPRET -, stems, REXX arithmetic, about 60 built-in functions with
+LINEIN/LINEOUT file I/O); other clauses are commands for the OS/2 shell,
+RC their result. `rexx -e 'say 2**10'` runs a line.
+
 In a Command Prompt window, a name the shell doesn't know runs as a
 program in the current directory (`ls -l`, `vi notes.txt`, busybox
 applets, anything on `$PATH`); `START prog` opens it in a new window and
@@ -564,7 +572,7 @@ os24arm/
 │   ├── rpm/               package specs, patches, macros, source checksums
 │   └── tests/             Linux-ABI test programs
 ├── scripts/               desktop.sh, run-vm.sh, disk and stick image builders, checkers
-├── rexx/                  a REXX interpreter (linked, not yet a command)
+├── rexx/                  an early REXX experiment (linked, unused: userland/apps/rexx.c is the REXX)
 ├── tools/kcc/             the Kayte C Compiler (an alternative cross-compiler, -DUSE_KCC=ON)
 ├── kayte/                 the Kayte language toolchain (Free Pascal, separate)
 ├── workplace/, installer/ an earlier Qt Workplace Shell and an installer (not built)
@@ -592,8 +600,8 @@ Not there yet:
 - **os2x86**: PM drag and drop between programs (within one works), IPF
   help files, and
   the rest of OS/2's API (the help manager, multimedia, ...).
-- **Other**: REXX as a command; DEBUG's assembler, disassembler and
-  breakpoints.
+- **Other**: DEBUG's assembler, disassembler and breakpoints; REXX's
+  RexxUtil library (SysFileTree and the like).
 
 ---
 

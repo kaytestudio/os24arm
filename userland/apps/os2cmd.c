@@ -127,18 +127,19 @@ static int find_program(const char *name, char *path, size_t size)
     char p[512];
     int has_dir = strchr(name, '\\') || strchr(name, '/') || (name[0] && name[1] == ':');
     if (os2_resolve(name, p, sizeof p) == 0 && is_file(p)) { snprintf(path, size, "%s", p); return 1; }
-    /* an OS/2 program by its name alone: HELLO is HELLO.EXE */
+    /* an OS/2 program by its name alone: HELLO is HELLO.EXE, else HELLO.CMD */
     const char *leaf = strrchr(name, '\\') ? strrchr(name, '\\') + 1 : name;
     if (strlen(name) < 250) {
         /* ... in any case (the disks keep OS/2's upper-case names): HELLO,
          * hello, hello.exe all find HELLO.EXE */
-        char up[256], exe[256];
+        char up[256], exe[256], cmd[256];
         snprintf(up, sizeof up, "%s", name);
         char *l = up + (leaf - name);
         for (char *c = l; *c; c++) if (*c >= 'a' && *c <= 'z') *c -= 32;
-        const char *tries[3] = { 0, 0, 0 };
+        const char *tries[4] = { 0, 0, 0, 0 };
         int nt = 0;
         if (!strchr(leaf, '.')) { snprintf(exe, sizeof exe, "%s.EXE", up); tries[nt++] = exe; }
+        if (!strchr(leaf, '.')) { snprintf(cmd, sizeof cmd, "%s.CMD", up); tries[nt++] = cmd; }   /* (a REXX program: the kernel runs it with rexx) */
         tries[nt++] = up;
         for (int i = 0; i < nt; i++)
             if (os2_resolve(tries[i], p, sizeof p) == 0 && is_file(p)) { snprintf(path, size, "%s", p); return 1; }
@@ -414,10 +415,12 @@ int main(int argc, char **argv)
     collect(fd);                                      /* the banner and first prompt */
     prompt_at();
 
-    if (argc > 1) {                                   /* os2cmd COMMAND ... */
+    if (argc > 1) {                                   /* os2cmd COMMAND ... (or os2cmd /C "a command line", as CMD.EXE) */
         char line[256];
         size_t n = 0;
-        for (int i = 1; i < argc; i++) {
+        int verbatim = argc > 2 && (!strcmp(argv[1], "/C") || !strcmp(argv[1], "/c"));
+        for (int i = verbatim ? 2 : 1; i < argc; i++) {
+            if (verbatim) { n += (size_t)snprintf(line + n, sizeof line - n, "%s%s", i > 2 ? " " : "", argv[i]); if (n >= sizeof line) { fputs("os2cmd: command too long\n", stderr); return 1; } continue; }
             int quote = strchr(argv[i], ' ') != NULL;
             n += (size_t)snprintf(line + n, sizeof line - n, "%s%s%s%s", i > 1 ? " " : "",
                                   quote ? "\"" : "", argv[i], quote ? "\"" : "");

@@ -2707,6 +2707,7 @@ static int copy_in_argv(lx_u64 uv, uint32_t *used, int *count)
  * x86 OS/2 programs go the same way, to the emulator. */
 #define SYSTEM_BUSYBOX "/h/OS2/busybox"
 #define OS2X86_EMULATOR "/h/OS2/os2x86"             /* userland/os2x86 */
+#define REXX_INTERPRETER "/h/OS2/rexx"              /* userland/apps/rexx.c */
 static int shebang(char *path, uint32_t *used, int *argc, int envc)
 {
     char head[128];
@@ -2725,6 +2726,14 @@ static int shebang(char *path, uint32_t *used, int *argc, int envc)
             kstrncpy(head, "#!" OS2X86_EMULATOR "\n", sizeof head);
             n = (int)kstrlen(head);
         }
+    }
+    /* a REXX program: a .CMD file that starts with a comment, as OS/2's
+     * CMD.EXE tells them from batch files - userland/apps/rexx.c runs it */
+    size_t pl = kstrlen(path);
+    if (n >= 2 && head[0] == '/' && head[1] == '*' && pl > 4 && path[pl - 4] == '.' &&
+        (path[pl - 3] | 0x20) == 'c' && (path[pl - 2] | 0x20) == 'm' && (path[pl - 1] | 0x20) == 'd') {
+        kstrncpy(head, "#!" REXX_INTERPRETER "\n", sizeof head);
+        n = (int)kstrlen(head);
     }
     vfs_close(fd);
     if (n < 3 || head[0] != '#' || head[1] != '!') return 0;
