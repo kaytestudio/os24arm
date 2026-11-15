@@ -32,6 +32,8 @@ if [ -x "$W/armo64/wcl386" ] || [ -x "$W/binl64/wcl386" ]; then
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmhello.c" >/dev/null
     wrc -q -r -bt=os2 -i="$S" "$S/pmctl.rc" -fo=pmctl.res >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm -i="$S" "$S/pmctl.c" >/dev/null && wrc -q -bt=os2 pmctl.res pmctl.exe >/dev/null
+    wrc -q -r -bt=os2 -i="$S" "$S/pmmore.rc" -fo=pmmore.res >/dev/null
+    wcl386 -q -za99 -bt=os2 -l=os2v2_pm -i="$S" "$S/pmmore.c" >/dev/null && wrc -q -bt=os2 pmmore.res pmmore.exe >/dev/null
     owfail=0
     echo "== OpenWatcom programs"
     ../os2x86 owtest.exe </dev/null | grep -E "^FAIL|passed|failed" || owfail=1
@@ -65,6 +67,14 @@ click 10 10; click 30 36; key xyz; enter; click 10 10; click 30 36; key q; esc; 
        echo "$ctlout" | grep -q 'WinDlgBox: 2, name "Warpxyz"' && echo "$ctlout" | grep -q "string: Hello from a string table" &&
        echo "$ctlout" | grep -q "IDM_EXIT"
     then echo "PM controls: ok"; else echo "PM controls: FAIL"; echo "$ctlout"; owfail=1; fi
+    # scroll bars (the frame's: arrow, track, thumb dragged; a dialog's), a combo box, accelerators, the menu by keys
+    moreout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf \
+        OS2X86_PM_SCRIPT="click 471 28; click 471 312; click 471 200; drag 471 120 471 250; vkey f5; ctrl d; click 236 32; click 120 80; \
+click 250 130; click 220 130; enter; vkey f10; vkey down; vkey enter; alt f; key x" ../os2x86 pmmore.exe 2>&1)"
+    if echo "$moreout" | grep -q "top 11" && echo "$moreout" | grep -q "top 35" && echo "$moreout" | grep -q "IDM_REFRESH (source 3)" &&
+       echo "$moreout" | grep -q 'combo "Cherry", item 2' && echo "$moreout" | grep -q "WM_HSCROLL 4 -> 9" &&
+       echo "$moreout" | grep -q "IDM_REFRESH (source 2)" && echo "$moreout" | grep -q "IDM_EXIT"
+    then echo "PM scroll bars, combo box, keys: ok"; else echo "PM scroll bars, combo box, keys: FAIL"; echo "$moreout"; owfail=1; fi
     [ "$owfail" = 0 ] || st=1
 else
     echo "(no OpenWatcom: its programs not tried)"

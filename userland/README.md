@@ -388,9 +388,14 @@ platform-specific are new code.
    button, Esc, Tab between the controls; WinSendDlgItemMsg & co.) and
    the controls in them: push buttons, check boxes, radio buttons (by
    group), static text and group boxes, entry fields, list boxes, with
-   their BM_/EM_/LM_ messages and WM_CONTROL notifications. Not there
-   yet: combo boxes, spin buttons, MLEs, scroll bars, notebooks and the
-   like, accelerators, icons and bitmaps, fonts beyond the one. OS/2's DLLs that aren't
+   their BM_/EM_/LM_ messages and WM_CONTROL notifications; scroll bars
+   (a control, or the frame's: FCF_VERTSCROLL/HORZSCROLL; arrows, track,
+   the thumb dragged; WM_VSCROLL/HSCROLL, SBM_ messages), combo boxes (a
+   drop-down list over the dialog), accelerators (FCF_ACCELTABLE,
+   WinLoadAccelTable & co.) and the menu by the keyboard (Alt+its letter,
+   F10, the arrows, Enter, Esc). Not there yet: spin buttons, MLEs,
+   notebooks, containers and the like, icons and bitmaps, fonts beyond
+   the one. OS/2's DLLs that aren't
    here (PMSHAPI, HELPMGR, TCP32DLL, ...) load as stubs, so a program
    that only links them in runs; a call into one says so and returns 0. Calls it doesn't have yet print
    one line on stderr and return error 1; `OS2X86_TRACE=1` lists every
@@ -404,7 +409,8 @@ platform-specific are new code.
    through its 16-bit thunks), the mouse (fed terminal mouse reports), a
    DLL of its own (moved, initialised, DosLoadModule) and two PM
    programs (headless, scripted: a window, its painting checked; a menu,
-   a dialog from a resource with its controls, by mouse and by keys). They pass on the system too.
+   a dialog from a resource with its controls, by mouse and by keys;
+   scroll bars, a combo box, accelerators, the menu by keys). They pass on the system too.
 
    `userland/apps/os2cmd.c` relays a terminal to `/dev/os2cmd`, which runs
    each line in the shell of `kernel/src/main.c` - DIR, COPY, MOUNT, USB,

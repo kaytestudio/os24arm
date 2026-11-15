@@ -456,6 +456,14 @@ static int drop_item_h(mitem_t *it) { return (it->style & 4) ? 8 : pm_lineh + 4;
 static void menu_close(pmwin_t *f)
 {
     if (!f || !f->drop) return;
+    if (f->drop->iproc == list_proc) {                      /* a combo box's list: hidden, kept */
+        pmwin_t *l = f->drop, *c = l->owner;
+        l->visible = 0;
+        f->drop = 0;
+        invalidate(f);
+        if (c) repaint(c);
+        return;
+    }
     pmwin_t *bar = 0;
     for (int i = 0; i < MAXWIN; i++) if (pmwins[i].used && pmwins[i].parent == f && pmwins[i].id == 0x8005) bar = &pmwins[i];
     if (bar && bar->ctl) ((menu_t *)bar->ctl)->open = -1;
@@ -487,14 +495,26 @@ static uint32_t drop_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
             int h = drop_item_h(it);
             if (it->style & 4) { line(w, 4, y - h / 2, w->cx - 5, y - h / 2, C_DARK); line(w, 4, y - h / 2 - 1, w->cx - 5, y - h / 2 - 1, C_LIGHT); }
             else {
+                if (i == m->open) fill(w, 2, y - h, w->cx - 2, y, C_HILITE);
                 if (it->attr & 0x2000) { line(w, 6, y - h / 2, 9, y - h / 2 - 3, C_TEXT); line(w, 9, y - h / 2 - 3, 14, y - h / 2 + 3, C_TEXT); }   /* MIA_CHECKED */
-                text_mid(w, 20, y - h, y, it->text, (it->attr & 0x4000) ? C_DARK : C_TEXT);
+                char lab[64];
+                snprintf(lab, sizeof lab, "%s", it->text);
+                char *tab = strchr(lab, '\t');
+                if (tab) *tab = 0;
+                text_mid(w, 20, y - h, y, lab, i == m->open ? C_LIGHT : (it->attr & 0x4000) ? C_DARK : C_TEXT);
+                if (tab) text_mid(w, w->cx - 8 - plain_w(tab + 1), y - h, y, tab + 1, i == m->open ? C_LIGHT : C_TEXT);
                 if (it->sub) text_at(w, w->cx - 14, y - h + 6, ">", 1, C_TEXT);
             }
             y -= h;
         }
         present(w);
         return 0;
+    }
+    case WM_MOUSEMOVE: {
+        int y = (int16_t)(mp1 >> 16), top = w->cy - 2, h = -1;
+        for (int i = 0; i < m->n; i++) { int ih = drop_item_h(&m->it[i]); if (y <= top && y > top - ih && !(m->it[i].style & 4)) h = i; top -= ih; }
+        if (h != m->open) { m->open = h; repaint(w); }
+        return 1;
     }
     case WM_BUTTON1UP: {
         int y = (int16_t)(mp1 >> 16), top = w->cy - 2;
@@ -521,9 +541,10 @@ static void menu_open(pmwin_t *bar, menu_t *m, int i)
     if (!d) return;
     d->iproc = drop_proc;
     d->ctl = sub;                                           /* (not d's: the bar's menu frees it) */
+    sub->open = -1;
     d->overlay = 1;
     int wmax = 60, h = 4;
-    for (int k = 0; k < sub->n; k++) { int tw = plain_w(sub->it[k].text) + 44; if (tw > wmax) wmax = tw; h += drop_item_h(&sub->it[k]); }
+    for (int k = 0; k < sub->n; k++) { int tw = plain_w(sub->it[k].text) + 64; if (tw > wmax) wmax = tw; h += drop_item_h(&sub->it[k]); }
     d->cx = wmax; d->cy = h;
     d->x = mbar_x(m, i) - 4; d->y = bar->y - h;
     if (d->x + d->cx > f->cx) d->x = f->cx - d->cx;
@@ -639,9 +660,14 @@ static void frame_layout(pmwin_t *f)
 {
     pmwin_t *bar = 0;
     for (int i = 0; i < MAXWIN; i++) if (pmwins[i].used && pmwins[i].parent == f && pmwins[i].id == 0x8005) bar = &pmwins[i];
-    int mh = bar ? MENU_H : 0;
+    pmwin_t *vs = 0, *hs = 0;
+    for (int i = 0; i < MAXWIN; i++)
+        if (pmwins[i].used && pmwins[i].parent == f) { if (pmwins[i].id == 0x8006) vs = &pmwins[i]; if (pmwins[i].id == 0x8007) hs = &pmwins[i]; }
+    int mh = bar ? MENU_H : 0, sw = 16, vw = vs ? sw : 0, hh = hs ? sw : 0;
     if (bar) { bar->x = 0; bar->y = f->ph - mh; bar->cx = f->pw; bar->cy = mh; bar->visible = 1; }
-    if (f->client) { f->client->x = 0; f->client->y = 0; f->client->cx = f->pw; f->client->cy = f->ph - mh; }
+    if (vs) { vs->x = f->pw - sw; vs->y = hh; vs->cx = sw; vs->cy = f->ph - mh - hh; vs->visible = 1; }
+    if (hs) { hs->x = 0; hs->y = 0; hs->cx = f->pw - vw; hs->cy = sw; hs->visible = 1; }
+    if (f->client) { f->client->x = 0; f->client->y = hh; f->client->cx = f->pw - vw; f->client->cy = f->ph - mh - hh; }
 }
 static pmwin_t *menu_load(pmwin_t *f, uint32_t hmod, uint32_t id)
 {
@@ -660,12 +686,16 @@ static pmwin_t *menu_load(pmwin_t *f, uint32_t hmod, uint32_t id)
     return bar;
 }
 
+static uint32_t scroll_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2);
+static uint32_t combo_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2);
 static pmproc_t builtin_proc(const char *cls)
 {
     if (!strcmp(cls, "#3")) return button_proc;
     if (!strcmp(cls, "#5")) return static_proc;
     if (!strcmp(cls, "#6")) return entry_proc;
     if (!strcmp(cls, "#7")) return list_proc;
+    if (!strcmp(cls, "#8")) return scroll_proc;
+    if (!strcmp(cls, "#2")) return combo_proc;
     return 0;
 }
 
@@ -716,6 +746,7 @@ static uint32_t def_dlg_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp
     }
     return 0;
 }
+static void cb_settext(pmwin_t *w);
 static uint32_t api_WinDefDlgProc(void) { pmwin_t *w = win(A(0)); return w ? def_dlg_proc(w, A(1), A(2), A(3)) : 0; }
 
 /* the template's items, from item i (and its children) under parent */
@@ -837,6 +868,7 @@ static uint32_t api_WinSetDlgItemText(void)
     char *s = gs(A(2));
     if (!w) return 0;
     snprintf(w->text, sizeof w->text, "%s", s ? s : "");
+    if (!strcmp(w->cls, "#2")) cb_settext(w);
     if (w->ctl && !strcmp(w->cls, "#6")) ef(w)->cur = -1;
     repaint(w);
     return 1;
@@ -944,3 +976,324 @@ static uint32_t load_string(uint32_t type, uint32_t hmod, uint32_t id, uint32_t 
 }
 static uint32_t api_WinLoadString(void) { return load_string(5, A(1), A(2), A(3), A(4)); }    /* (hab, hmod, id, cchMax, psz) */
 static uint32_t api_WinLoadMessage(void) { return load_string(10, A(1), A(2), A(3), A(4)); }
+
+/* ── WC_SCROLLBAR ────────────────────────────────────────────────────── */
+typedef struct { int pos, lo, hi, vis, tot, drag, grab; } sb_t;
+static sb_t *sbs(pmwin_t *w) { if (!w->ctl) { w->ctl = calloc(1, sizeof(sb_t)); ((sb_t *)w->ctl)->hi = 100; } return w->ctl; }
+/* (pm_capture: the window that has the mouse - a scroll bar's thumb, dragged) */
+/* along the bar: its length, the arrows' size, the thumb's [t0, t1) from the start (left, or top) */
+static void sb_geom(pmwin_t *w, sb_t *s, int *len, int *arrow, int *t0, int *t1)
+{
+    int vert = w->style & 1;
+    *len = vert ? w->cy : w->cx;
+    *arrow = vert ? w->cx : w->cy;
+    if (*arrow * 2 + 8 > *len) *arrow = (*len - 8) / 2;
+    int track = *len - 2 * *arrow, range = s->hi - s->lo;
+    int th = s->tot > 0 && s->vis > 0 ? track * s->vis / s->tot : track / 8;
+    if (th < 8) th = 8;
+    if (th > track) th = track;
+    int at = range > 0 ? (track - th) * (s->pos - s->lo) / range : 0;
+    *t0 = *arrow + at; *t1 = *t0 + th;
+}
+static void sb_notify(pmwin_t *w, int cmd, int pos)
+{
+    pmwin_t *o = w->owner ? w->owner : w->parent;
+    if (o) pm_send(o, (w->style & 1) ? 0x0031 : 0x0032, w->id & 0xFFFF, (uint32_t)(pos & 0xFFFF) | (uint32_t)cmd << 16);
+}
+static void tri(pmwin_t *w, int cx, int cy, int dir)          /* a small arrow: 0 up, 1 down, 2 left, 3 right */
+{
+    for (int k = 0; k < 4; k++)
+        for (int j = -k; j <= k; j++) {
+            if (dir == 0) pel(w, cx + j, cy + 2 - k, C_TEXT);
+            else if (dir == 1) pel(w, cx + j, cy - 2 + k, C_TEXT);
+            else if (dir == 2) pel(w, cx - 2 + k, cy + j, C_TEXT);
+            else pel(w, cx + 2 - k, cy + j, C_TEXT);
+        }
+}
+static uint32_t scroll_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
+{
+    sb_t *s = sbs(w);
+    int vert = w->style & 1, len, ar, t0, t1;
+    sb_geom(w, s, &len, &ar, &t0, &t1);
+    switch (msg) {
+    case WM_PAINT:
+        w->invalid = 0;
+        fill(w, 0, 0, w->cx, w->cy, 0xE0E0E0);
+        if (vert) {
+            fill(w, 0, w->cy - ar, w->cx, w->cy, C_FACE); bevel(w, 0, w->cy - ar, w->cx, w->cy, 1); tri(w, w->cx / 2, w->cy - ar / 2, 0);
+            fill(w, 0, 0, w->cx, ar, C_FACE); bevel(w, 0, 0, w->cx, ar, 1); tri(w, w->cx / 2, ar / 2, 1);
+            if (s->hi > s->lo) { fill(w, 1, w->cy - t1, w->cx - 1, w->cy - t0, C_FACE); bevel(w, 1, w->cy - t1, w->cx - 1, w->cy - t0, 1); }
+        } else {
+            fill(w, 0, 0, ar, w->cy, C_FACE); bevel(w, 0, 0, ar, w->cy, 1); tri(w, ar / 2, w->cy / 2, 2);
+            fill(w, w->cx - ar, 0, w->cx, w->cy, C_FACE); bevel(w, w->cx - ar, 0, w->cx, w->cy, 1); tri(w, w->cx - ar / 2, w->cy / 2, 3);
+            if (s->hi > s->lo) { fill(w, t0, 1, t1, w->cy - 1, C_FACE); bevel(w, t0, 1, t1, w->cy - 1, 1); }
+        }
+        present(w);
+        return 0;
+    case WM_BUTTON1DOWN: {
+        int x = (int16_t)(mp1 & 0xFFFF), y = (int16_t)(mp1 >> 16), at = vert ? w->cy - 1 - y : x;   /* (from the top, or the left) */
+        if (s->hi <= s->lo) return 1;
+        if (at < ar) sb_notify(w, 1, s->pos);                        /* SB_LINEUP / LEFT */
+        else if (at >= len - ar) sb_notify(w, 2, s->pos);            /* SB_LINEDOWN / RIGHT */
+        else if (at < t0) sb_notify(w, 3, s->pos);                   /* SB_PAGEUP */
+        else if (at >= t1) sb_notify(w, 4, s->pos);                  /* SB_PAGEDOWN */
+        else { s->drag = 1; s->grab = at - t0; pm_capture = w->hwnd; return 1; }
+        sb_notify(w, 7, s->pos);                                     /* SB_ENDSCROLL */
+        return 1;
+    }
+    case WM_MOUSEMOVE: case WM_BUTTON1UP: {
+        if (!s->drag) return 1;
+        int x = (int16_t)(mp1 & 0xFFFF), y = (int16_t)(mp1 >> 16), at = (vert ? w->cy - 1 - y : x) - s->grab;
+        int track = len - 2 * ar - (t1 - t0), range = s->hi - s->lo;
+        int pos = track > 0 ? s->lo + (at - ar) * range / track : s->lo;
+        if (pos < s->lo) pos = s->lo;
+        if (pos > s->hi) pos = s->hi;
+        if (msg == WM_BUTTON1UP) { s->drag = 0; pm_capture = 0; sb_notify(w, 6, pos); sb_notify(w, 7, pos); }   /* SB_SLIDERPOSITION */
+        else sb_notify(w, 5, pos);                                   /* SB_SLIDERTRACK */
+        return 1;
+    }
+    case 0x01a0:                                                     /* SBM_SETSCROLLBAR: pos, (first, last) */
+        s->lo = (int16_t)(mp2 & 0xFFFF); s->hi = (int16_t)(mp2 >> 16); s->pos = (int16_t)(mp1 & 0xFFFF);
+        if (s->pos < s->lo) s->pos = s->lo;
+        if (s->pos > s->hi) s->pos = s->hi;
+        repaint(w);
+        return 1;
+    case 0x01a1:                                                     /* SBM_SETPOS */
+        s->pos = (int16_t)(mp1 & 0xFFFF);
+        if (s->pos < s->lo) s->pos = s->lo;
+        if (s->pos > s->hi) s->pos = s->hi;
+        repaint(w);
+        return 1;
+    case 0x01a2: return (uint32_t)(s->pos & 0xFFFF);                 /* SBM_QUERYPOS */
+    case 0x01a3: return (uint32_t)(s->lo & 0xFFFF) | (uint32_t)(s->hi & 0xFFFF) << 16;   /* SBM_QUERYRANGE */
+    case 0x01a6: s->vis = (int)(mp1 & 0xFFFF); s->tot = (int)(mp1 >> 16); repaint(w); return 1;   /* SBM_SETTHUMBSIZE */
+    case WM_CHAR: {                                                  /* the arrows, the page keys; the rest to the owner */
+        int vk = (mp1 & KC_VIRTUALKEY) ? (int)(mp2 >> 16) : 0, cmd = 0;
+        if (!(mp1 & KC_KEYUP)) {
+            if (vk == (vert ? 0x16 : 0x15)) cmd = 1;
+            else if (vk == (vert ? 0x18 : 0x17)) cmd = 2;
+            else if (vk == 0x11) cmd = 3;
+            else if (vk == 0x12) cmd = 4;
+        }
+        if (cmd) { sb_notify(w, cmd, s->pos); sb_notify(w, 7, s->pos); return 1; }
+        if (mp1 & KC_KEYUP) return 1;
+        return pm_send(w->owner ? w->owner : w->parent, msg, mp1, mp2);
+    }
+    }
+    (void)mp2;
+    return 0;
+}
+
+/* ── WC_COMBOBOX: an entry field, a list box that drops down ─────────── */
+typedef struct { uint32_t ef, lb; int listh, type; } cb_t;
+static cb_t *cbx(pmwin_t *w) { if (!w->ctl) w->ctl = calloc(1, sizeof(cb_t)); return w->ctl; }
+static int cb_open(pmwin_t *w) { cb_t *c = cbx(w); pmwin_t *l = win(c->lb), *f = frame_of(w); return l && f && f->drop == l; }
+static void cb_show(pmwin_t *w, int on)
+{
+    cb_t *c = cbx(w);
+    pmwin_t *l = win(c->lb), *f = frame_of(w);
+    if (!l || !f) return;
+    if (!on) { if (f->drop == l) menu_close(f); return; }
+    if (f->drop) menu_close(f);
+    int ax, ay;
+    win_abs(w, &ax, &ay);
+    l->x = ax; l->cx = w->cx; l->cy = c->listh; l->y = ay - c->listh;
+    if (l->y < 0) l->y = 0;
+    l->visible = 1;
+    f->drop = l;
+    invalidate(l);
+    lb_show_sel(l, lb(l));
+    notify(w, 6, 0);                                                 /* CBN_SHOWLIST */
+}
+static void cb_settext(pmwin_t *w)                                   /* the combo's text into its entry field */
+{
+    pmwin_t *e = win(cbx(w)->ef);
+    if (e) { snprintf(e->text, sizeof e->text, "%s", w->text); ef(e)->cur = -1; repaint(e); }
+}
+static uint32_t combo_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
+{
+    cb_t *c = cbx(w);
+    int bw = 18;
+    switch (msg) {
+    case WM_CREATE: {
+        c->type = (w->style & 4) ? 4 : (w->style & 2) ? 2 : 2;     /* CBS_DROPDOWNLIST, else a drop-down */
+        int eh = pm_lineh + 6;
+        c->listh = w->cy - eh;
+        if (c->listh < 4 * pm_lineh + 4) c->listh = 4 * pm_lineh + 4;
+        w->y += w->cy - eh;
+        w->cy = eh;
+        pmwin_t *e = win_new(w, "#6", 8 | (c->type == 4 ? 0x20 : 0), 0x029B);   /* CBID_EDIT: ES_MARGIN (read-only for a list) */
+        if (e) { e->x = 0; e->y = 0; e->cx = w->cx - bw; e->cy = eh; e->owner = w; e->visible = 1; ef(e)->ro = c->type == 4; c->ef = e->hwnd; }
+        pmwin_t *f = frame_of(w) ? frame_of(w) : w->parent;
+        pmwin_t *l = f ? win_new(f, "#7", 0, 0x029A) : 0;           /* CBID_LIST: over the rest, when it drops down */
+        if (l) { l->overlay = 1; l->visible = 0; l->owner = w; l->cx = w->cx; l->cy = c->listh; c->lb = l->hwnd; }
+        return 0;
+    }
+    case WM_DESTROY: { pmwin_t *l = win(c->lb); if (l) { if (frame_of(w) && frame_of(w)->drop == l) frame_of(w)->drop = 0; win_destroy(l); } return 0; }
+    case WM_PAINT:
+        w->invalid = 0;
+        fill(w, w->cx - bw, 0, w->cx, w->cy, C_FACE);
+        bevel(w, w->cx - bw, 0, w->cx, w->cy, !cb_open(w));
+        tri(w, w->cx - bw / 2, w->cy / 2, 1);
+        present(w);
+        return 0;
+    case WM_BUTTON1DOWN:
+        cb_show(w, !cb_open(w));
+        return 1;
+    case WM_CONTROL: {
+        uint32_t id = mp1 & 0xFFFF, code = mp1 >> 16;
+        if (id == 0x029B && code == 4) { pmwin_t *e = win(c->ef); if (e) snprintf(w->text, sizeof w->text, "%s", e->text); notify(w, 1, 0); }   /* CBN_EFCHANGE */
+        if (id == 0x029A && code == 1) {                             /* the list's LN_SELECT */
+            pmwin_t *l = win(c->lb);
+            lb_t *b = l ? lb(l) : 0;
+            if (b && b->sel >= 0) { snprintf(w->text, sizeof w->text, "%s", b->it[b->sel].text); cb_settext(w); }
+            if (cb_open(w)) cb_show(w, 0);
+            notify(w, 4, 0);                                         /* CBN_LBSELECT */
+        }
+        if (id == 0x029A && code == 5) { cb_show(w, 0); notify(w, 7, 0); }   /* CBN_ENTER */
+        return 0;
+    }
+    case WM_CHAR: {
+        if (mp1 & KC_KEYUP) return 1;
+        int vk = (mp1 & KC_VIRTUALKEY) ? (int)(mp2 >> 16) : 0;
+        pmwin_t *l = win(c->lb);
+        if ((vk == 0x18 || vk == 0x16) && l) {                       /* Down, Up: the next, the previous */
+            if ((mp1 & KC_ALT) && vk == 0x18) { cb_show(w, 1); return 1; }
+            return list_proc(l, msg, mp1, mp2);
+        }
+        if ((vk == 0x08 || vk == 0x1e || (mp2 & 0xFFFF) == '\r') && cb_open(w)) { cb_show(w, 0); return 1; }
+        if ((vk == 0x0f || (mp2 & 0xFFFF) == 27) && cb_open(w)) { cb_show(w, 0); return 1; }
+        return pm_send(w->owner ? w->owner : w->parent, msg, mp1, mp2);
+    }
+    case 0x0170: cb_show(w, (int)(mp1 & 1)); return 1;              /* CBM_SHOWLIST */
+    case 0x0172: return (uint32_t)cb_open(w);                       /* CBM_ISLISTSHOWING */
+    case 0x0171: return 1;                                          /* CBM_HILITE */
+    }
+    if (msg >= 0x0160 && msg <= 0x016f) { pmwin_t *l = win(c->lb); return l ? list_proc(l, msg, mp1, mp2) : 0; }   /* LM_*: the list's */
+    if (msg >= 0x0140 && msg <= 0x014f) { pmwin_t *e = win(c->ef); return e ? entry_proc(e, msg, mp1, mp2) : 0; }  /* EM_*: the entry's */
+    return 0;
+}
+
+/* ── accelerators ────────────────────────────────────────────────────── */
+typedef struct { int used; int n; uint16_t a[64][3]; } accel_t;     /* (fs, key, cmd) */
+static accel_t accels[32];
+static uint32_t q_accel[MAXTHR];                                     /* the queues' (WinSetAccelTable(hab, h, 0)) */
+static uint32_t accel_new(uint32_t t)                                /* from an ACCELTABLE at t */
+{
+    for (int i = 0; i < 32; i++)
+        if (!accels[i].used) {
+            accel_t *a = &accels[i];
+            a->used = 1;
+            a->n = g16(t) > 64 ? 64 : g16(t);
+            for (int k = 0; k < a->n; k++) for (int j = 0; j < 3; j++) a->a[k][j] = g16(t + 4 + 6u * (uint32_t)k + 2u * (uint32_t)j);
+            return 0xB000 + (uint32_t)i;
+        }
+    return 0;
+}
+static accel_t *accel_get(uint32_t h) { h -= 0xB000; return h < 32 && accels[h].used ? &accels[h] : 0; }
+/* a key against a table: its command (0: none; AF_SYSCOMMAND's: | 0x10000) */
+static uint32_t accel_match(accel_t *a, int ch, int vk, int scan, int kc)
+{
+    for (int k = 0; a && k < a->n; k++) {
+        int fs = a->a[k][0], key = a->a[k][1];
+        if (((fs & 0x10) != 0) != ((kc & KC_CTRL) != 0) || ((fs & 0x20) != 0) != ((kc & KC_ALT) != 0)) continue;
+        int hit = 0;
+        if (fs & 2) hit = vk && key == vk && ((fs & 8) != 0) == ((kc & KC_SHIFT) != 0);
+        else if (fs & 4) hit = key == scan;
+        else hit = ch && ((fs & 0x30) ? tolower(key) == tolower(ch) : key == ch);
+        if (hit) return a->a[k][2] | ((fs & 0x100) ? 0x10000u : 0);
+    }
+    return 0;
+}
+static uint32_t api_WinLoadAccelTable(void)       /* (hab, hmod, idAccelTable) */
+{
+    uint32_t a, n;
+    return find_resource(A(1), 8, A(2), &a, &n) ? accel_new(a) : 0;   /* RT_ACCELTABLE */
+}
+static uint32_t api_WinCreateAccelTable(void) { return ok(A(1), 4) ? accel_new(A(1)) : 0; }   /* (hab, pAccelTable) */
+static uint32_t api_WinDestroyAccelTable(void) { accel_t *a = accel_get(A(0)); if (!a) return 0; a->used = 0; return 1; }
+static uint32_t api_WinSetAccelTable(void)        /* (hab, haccel, hwndFrame) */
+{
+    pmwin_t *f = win(A(2));
+    if (f) { f->haccel = A(1); return 1; }
+    q_accel[me->tid - 1] = A(1);
+    return 1;
+}
+static uint32_t api_WinQueryAccelTable(void) { pmwin_t *f = win(A(1)); return f ? f->haccel : q_accel[me->tid - 1]; }
+static uint32_t api_WinTranslateAccel(void)       /* (hab, hwnd, haccel, pqmsg) */
+{
+    uint32_t q = A(3);
+    if (g32(q + 4) != WM_CHAR) return 0;
+    uint32_t mp1 = g32(q + 8), mp2 = g32(q + 12);
+    if (mp1 & KC_KEYUP) return 0;
+    uint32_t cmd = accel_match(accel_get(A(2)), (mp1 & KC_CHAR) ? (int)(mp2 & 0xFFFF) : 0, (mp1 & KC_VIRTUALKEY) ? (int)(mp2 >> 16) : 0, (int)(mp1 >> 24), (int)(mp1 & 0x38));
+    if (!cmd) return 0;
+    p32(q, A(1));
+    p32(q + 4, (cmd & 0x10000) ? WM_SYSCOMMAND : WM_COMMAND);
+    p32(q + 8, cmd & 0xFFFF);
+    p32(q + 12, 3);                                                  /* CMDSRC_ACCELERATOR */
+    return 1;
+}
+
+/* ── the menu by the keyboard: Alt+letter, F10, the arrows, Enter, Esc ── */
+static int mnemonic(const char *s) { const char *t = strchr(s, '~'); return t && t[1] ? tolower((unsigned char)t[1]) : 0; }
+static pmwin_t *menubar_of(pmwin_t *f)
+{
+    for (int i = 0; i < MAXWIN; i++) if (pmwins[i].used && pmwins[i].parent == f && pmwins[i].id == 0x8005 && pmwins[i].iproc == menubar_proc) return &pmwins[i];
+    return 0;
+}
+static void drop_hot(pmwin_t *d, int dir)
+{
+    menu_t *m = d->ctl;
+    if (!m || !m->n) return;
+    int h = m->open;                                                 /* (a drop-down's open: its highlighted item) */
+    for (int k = 0; k < m->n; k++) {
+        h = (h + dir + m->n) % m->n;
+        if (!(m->it[h].style & 4)) break;
+    }
+    m->open = h;
+    repaint(d);
+}
+/* 1: the menu took the key */
+static int menu_key(pmwin_t *f, int ch, int vk, int kc)
+{
+    pmwin_t *bar = menubar_of(f);
+    if (!bar || !bar->ctl) return 0;
+    menu_t *m = bar->ctl;
+    pmwin_t *d = f->drop && f->drop->iproc == drop_proc ? f->drop : 0;
+    if (d) {
+        menu_t *s = d->ctl;
+        if (vk == 0x0f || ch == 27) { menu_close(f); return 1; }
+        if (vk == 0x18) { drop_hot(d, 1); return 1; }
+        if (vk == 0x16) { drop_hot(d, -1); return 1; }
+        if (vk == 0x15 || vk == 0x17) {                              /* Left, Right: the next menu */
+            int i = m->open;
+            for (int k = 0; k < m->n; k++) { i = (i + (vk == 0x17 ? 1 : -1) + m->n) % m->n; if (m->it[i].sub) break; }
+            menu_open(bar, m, i);
+            if (f->drop) { ((menu_t *)f->drop->ctl)->open = -1; drop_hot(f->drop, 1); }
+            return 1;
+        }
+        if ((vk == 0x08 || vk == 0x1e || ch == '\r') && s && s->open >= 0 && s->open < s->n) { menu_command(f, &s->it[s->open]); return 1; }
+        for (int k = 0; s && ch && k < s->n; k++)
+            if (mnemonic(s->it[k].text) == tolower(ch)) { menu_command(f, &s->it[k]); return 1; }
+        return 1;                                                    /* (the menu has the keys while it's open) */
+    }
+    int top = -1;
+    if ((kc & KC_ALT) && ch) for (int k = 0; k < m->n; k++) if (mnemonic(m->it[k].text) == tolower(ch)) top = k;
+    if (vk == 0x29 && !(kc & (KC_ALT | KC_CTRL | KC_SHIFT))) top = 0;   /* F10 */
+    if (top < 0) return 0;
+    if (m->it[top].sub) { menu_open(bar, m, top); if (f->drop) { ((menu_t *)f->drop->ctl)->open = -1; drop_hot(f->drop, 1); } }
+    else menu_command(f, &m->it[top]);
+    return 1;
+}
+/* before a key becomes WM_CHAR: the menu's, an accelerator's (pm_key) */
+static int key_hook(pmwin_t *f, int ch, int vk, int scan, int kc)
+{
+    if (menu_key(f, ch, vk, kc)) return 1;
+    uint32_t cmd = accel_match(accel_get(f->haccel), ch, vk, scan, kc);
+    if (!cmd) cmd = accel_match(accel_get(q_accel[f->tid - 1]), ch, vk, scan, kc);
+    if (!cmd) return 0;
+    pmwin_t *t = f->client ? f->client : f;
+    post(t, t->hwnd, (cmd & 0x10000) ? WM_SYSCOMMAND : WM_COMMAND, cmd & 0xFFFF, 3);   /* CMDSRC_ACCELERATOR */
+    return 1;
+}

@@ -128,6 +128,7 @@ struct pmwin {
     pmwin_t *drop;                      /* a frame: its open drop-down */
     int dlg_done;                       /* a dialog: WinDismissDlg'd, with dlg_result */
     pmwin_t *prev_shown;                /* a top window: the one shown before it (the script's, the focus's) */
+    uint32_t haccel;                    /* a frame's accelerator table */
     uint32_t dlg_result;
 };
 #define MAXWIN 256
@@ -135,6 +136,7 @@ static pmwin_t pmwins[MAXWIN];
 static pmclass_t pmclasses[64];
 static int npmclasses;
 static uint32_t pm_focus;
+static uint32_t pm_capture;             /* the window that has the mouse (a scroll bar's thumb, dragged) */
 static int pm_inited;
 static pmwin_t *pm_last_shown;
 static const char *win_title(pmwin_t *f) { return f->mb_caption[0] ? f->mb_caption : f->text; }
@@ -376,9 +378,9 @@ static pmwin_t *win_at(pmwin_t *f, int x, int y)
     if (f->drop && f->drop->visible && x >= f->drop->x && y >= f->drop->y && x < f->drop->x + f->drop->cx && y < f->drop->y + f->drop->cy)
         return f->drop;
     pmwin_t *best = f->client ? f->client : f;
-    for (int i = 0; i < MAXWIN; i++) {                 /* (the menu bar's above the client) */
+    for (int i = 0; i < MAXWIN; i++) {                 /* (the frame's controls - menu bar, scroll bars - beside the client) */
         pmwin_t *c = &pmwins[i];
-        if (c->used && c->parent == f && c->visible && c->id == 0x8005 && !c->overlay &&
+        if (c->used && c->parent == f && c->visible && c != f->client && f->client && !c->overlay &&
             x >= c->x && y >= c->y && x < c->x + c->cx && y < c->y + c->cy) { best = c; break; }
     }
     for (int again = 1; again; ) {
@@ -402,7 +404,7 @@ static void pm_mouse(pmwin_t *f, int px, int py, int button, int down)
 {
     int x = px, y = f->ph - 1 - py;
     mouse_x = x; mouse_y = y;
-    pmwin_t *w = win_at(f, x, y);
+    pmwin_t *w = win(pm_capture) && frame_of(win(pm_capture)) == f ? win(pm_capture) : win_at(f, x, y);
     int ax, ay;
     win_abs(w, &ax, &ay);
     uint32_t mp1 = (uint32_t)((x - ax) & 0xFFFF) | (uint32_t)((y - ay) & 0xFFFF) << 16;
@@ -414,8 +416,11 @@ static void pm_mouse(pmwin_t *f, int px, int py, int button, int down)
     if (w->style & 0x40000000u) return;                 /* WS_DISABLED */
     post(w, w->hwnd, down ? dn[button - 1] : up[button - 1], mp1, 0);
 }
+static int key_hook(pmwin_t *f, int ch, int vk, int scan, int kc);
 static void pm_key(pmwin_t *f, int ch, int vk, int scan, int kc)
 {
+    if ((kc & KC_CTRL) && ch >= 1 && ch <= 26) ch = 'a' + ch - 1;     /* (Ctrl+D: 'd', with KC_CTRL, as PM says it) */
+    if (key_hook(f, ch, vk, scan, kc)) return;
     pmwin_t *w = win(pm_focus);
     if (!w || frame_of(w) != f) w = f->client ? f->client : f;
     uint32_t fs = (uint32_t)kc | KC_SCANCODE | (ch ? KC_CHAR : 0) | (vk ? KC_VIRTUALKEY : 0);
@@ -475,6 +480,19 @@ static int hl_idle(struct timespec *dl)
             return 1;
         }
         if (!strcmp(s, "enter")) { pm_key(f, '\r', 0x1e, 0x1c, 0); return 1; }
+        if (sscanf(s, "ctrl %255s", a) == 1) { pm_key(f, a[0], 0, 0, KC_CTRL); return 1; }
+        if (sscanf(s, "alt %255s", a) == 1) { pm_key(f, a[0], 0, 0, KC_ALT); return 1; }
+        if (sscanf(s, "vkey %255s", a) == 1) {
+            static const struct { const char *n; int vk, ch; } vks[] = { { "up", 0x16, 0 }, { "down", 0x18, 0 }, { "left", 0x15, 0 },
+                { "right", 0x17, 0 }, { "pgup", 0x11, 0 }, { "pgdn", 0x12, 0 }, { "home", 0x14, 0 }, { "end", 0x13, 0 },
+                { "tab", 0x06, 9 }, { "backspace", 0x05, 8 }, { "delete", 0x1b, 0 }, { "enter", 0x08, '\r' }, { "esc", 0x0f, 27 } };
+            int vk = 0, ch = 0;
+            if (a[0] == 'f' && atoi(a + 1) >= 1 && atoi(a + 1) <= 12) vk = 0x20 + atoi(a + 1) - 1;
+            for (size_t k = 0; k < sizeof vks / sizeof *vks; k++) if (!strcmp(a, vks[k].n)) { vk = vks[k].vk; ch = vks[k].ch; }
+            if (vk) { pm_key(f, ch, vk, 0, 0); return 1; }
+        }
+        int x2, y2;
+        if (sscanf(s, "drag %d %d %d %d", &x, &y, &x2, &y2) == 4) { pm_mouse(f, x, y, 1, 1); pm_mouse(f, x2, y2, 0, 0); pm_mouse(f, x2, y2, 1, 0); return 1; }
         if (!strcmp(s, "esc")) { pm_key(f, 27, 0x0f, 1, 0); return 1; }
         if (!strcmp(s, "close")) { pm_close(f); return 1; }
         if (sscanf(s, "sleep %d", &x) == 1) { struct timespec ts = { x / 1000, (long)(x % 1000) * 1000000L }; UNLOCKED(nanosleep(&ts, 0)); return 1; }
@@ -601,9 +619,11 @@ static uint32_t api_WinRegisterClass(void)    /* (hab, pszClass, pfnWndProc, flS
     return 1;
 }
 static pmwin_t *menu_load(pmwin_t *f, uint32_t hmod, uint32_t id);
+static uint32_t accel_new(uint32_t t);
 static uint32_t frame_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
 {
     if (msg == WM_COMMAND && w->client) { post(w->client, w->client->hwnd, msg, mp1, mp2); return 0; }
+    if ((msg == 0x0031 || msg == 0x0032 || msg == WM_CONTROL) && w->client) return pm_send(w->client, msg, mp1, mp2);   /* WM_VSCROLL, WM_HSCROLL */
     if (msg == WM_CLOSE) { if (w->client) post(w->client, w->client->hwnd, WM_CLOSE, 0, 0); else post(w, 0, WM_QUIT, 0, 0); }
     return 0;
 }
@@ -621,6 +641,12 @@ static uint32_t api_WinCreateStdWindow(void)
     snprintf(f->text, sizeof f->text, "%s", t ? t : "");
     frame_pixels(f, 480, 320);
     if (fcf & 4) menu_load(f, hmod, idres);              /* FCF_MENU */
+    if (fcf & 0x8000) { uint32_t a, n; if (find_resource(hmod, 8, idres, &a, &n)) f->haccel = accel_new(a); }   /* FCF_ACCELTABLE */
+    for (int k = 0; k < 2; k++)                          /* FCF_VERTSCROLL, FCF_HORZSCROLL: the frame's, telling the client */
+        if (fcf & (k ? 0x80u : 0x40u)) {
+            pmwin_t *s = win_new(f, "#8", k ? 0 : 1, k ? 0x8007 : 0x8006);
+            if (s) { s->owner = f; s->visible = 1; }
+        }
     if (pcls) {
         char b[64];
         const char *n = class_name(pcls, b);
@@ -829,12 +855,14 @@ static uint32_t api_WinDrawText(void)
     text_at(w, x, ytop - pm_ascent, s, n, pm_rgb(fg, ps->rgb, 0));
     return (uint32_t)n;
 }
+static void cb_settext(pmwin_t *w);
 static uint32_t api_WinSetWindowText(void)
 {
     pmwin_t *w = win(A(0));
     char *s = gs(A(1));
     if (!w) return 0;
     snprintf(w->text, sizeof w->text, "%s", s ? s : "");
+    if (!strcmp(w->cls, "#2")) cb_settext(w);
     pmwin_t *t = w;
     if (!w->top && w->parent && w->parent->top && w->parent->client == w) t = w->parent;
     if (t->top && pmb && pmb->title) pmb->title(t);

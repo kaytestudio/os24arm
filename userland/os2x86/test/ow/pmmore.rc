@@ -1,0 +1,30 @@
+/* userland/os2x86/test/ow/pmmore.rc - pmmore's menu, keys and dialog */
+#include <os2.h>
+#include "pmmore.h"
+
+MENU ID_MAIN
+BEGIN
+    SUBMENU "~File", IDM_FILE
+    BEGIN
+        MENUITEM "~Dialog\tCtrl+D", IDM_DIALOG
+        MENUITEM "~Refresh\tF5", IDM_REFRESH
+        MENUITEM "E~xit", IDM_EXIT
+    END
+END
+
+ACCELTABLE ID_MAIN
+BEGIN
+    VK_F5, IDM_REFRESH, VIRTUALKEY
+    "d", IDM_DIALOG, CONTROL
+END
+
+DLGTEMPLATE ID_DLG
+BEGIN
+    DIALOG "Pick", ID_DLG, 20, 20, 160, 110, WS_VISIBLE, FCF_TITLEBAR | FCF_SYSMENU | FCF_DLGBORDER
+    BEGIN
+        LTEXT "Fruit:", -1, 8, 90, 30, 8
+        COMBOBOX "", IDC_COMBO, 40, 30, 100, 70, CBS_DROPDOWNLIST
+        CONTROL "", IDC_HSB, 8, 40, 140, 9, WC_SCROLLBAR, SBS_HORZ | WS_VISIBLE
+        DEFPUSHBUTTON "OK", DID_OK, 8, 8, 50, 14
+    END
+END
