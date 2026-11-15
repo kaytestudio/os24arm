@@ -59,6 +59,8 @@ static void set_focus(uint32_t hwnd)
     pthread_cond_broadcast(&gcv);
 }
 static void repaint(pmwin_t *w) { w->invalid = 1; pthread_cond_broadcast(&gcv); }
+static uint32_t pp_fgc(pmwin_t *w, uint32_t d) { for (; w; w = w->parent) if (w->has_fg) return w->pp_fg; return d; }
+static uint32_t pp_bgc(pmwin_t *w, uint32_t d) { for (; w; w = w->parent) if (w->has_bg) return w->pp_bg; return d; }
 
 /* ── WC_BUTTON ───────────────────────────────────────────────────────── */
 typedef struct { int check, hilite, def; } btn_t;
@@ -104,11 +106,11 @@ static uint32_t button_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2
 {
     btn_t *b = btn(w);
     int t = btn_type(w), dis = (w->style & WS_DISABLED_) != 0;
-    uint32_t tc = dis ? C_DARK : C_TEXT;
+    uint32_t tc = dis ? C_DARK : pp_fgc(w, C_TEXT);
     switch (msg) {
     case WM_PAINT:
         w->invalid = 0;
-        fill(w, 0, 0, w->cx, w->cy, C_FACE);
+        fill(w, 0, 0, w->cx, w->cy, pp_bgc(w, C_FACE));
         if (t == 0 || t == 7 || t == 8) {
             bevel(w, 1, 1, w->cx - 1, w->cy - 1, !b->hilite);
             if (b->def || (w->style & 0x400)) bevel(w, 0, 0, w->cx, w->cy, 0), line(w, 0, 0, w->cx - 1, 0, 0), line(w, w->cx - 1, 0, w->cx - 1, w->cy - 1, 0),
@@ -197,13 +199,13 @@ static uint32_t static_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2
         if (t <= 7) fill(w, 0, 0, w->cx, w->cy, c);
         else bevel(w, 0, 0, w->cx, w->cy, 0);
     } else {                                                    /* SS_TEXT (and what isn't here yet) */
-        fill(w, 0, 0, w->cx, w->cy, C_FACE);
+        fill(w, 0, 0, w->cx, w->cy, pp_bgc(w, C_FACE));
         char p[256];
         plain(w->text, p, sizeof p);
         int tw = text_w(p, (int)strlen(p)), th = pm_ascent + pm_descent;
         int x = (w->style & 0x100) ? (w->cx - tw) / 2 : (w->style & 0x200) ? w->cx - tw : 0;
         int y = (w->style & 0x400) ? (w->cy - th) / 2 : (w->style & 0x800) ? 0 : w->cy - th;
-        text_at(w, x, y + pm_descent, p, (int)strlen(p), (w->style & WS_DISABLED_) ? C_DARK : C_TEXT);
+        text_at(w, x, y + pm_descent, p, (int)strlen(p), (w->style & WS_DISABLED_) ? C_DARK : pp_fgc(w, C_TEXT));
     }
     present(w);
     return 0;
@@ -224,7 +226,7 @@ static uint32_t entry_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
     case WM_PAINT: {
         w->invalid = 0;
         int m = (w->style & 8) ? 3 : 1;                         /* ES_MARGIN */
-        fill(w, 0, 0, w->cx, w->cy, (w->style & WS_DISABLED_) ? C_FACE : C_LIGHT);
+        fill(w, 0, 0, w->cx, w->cy, (w->style & WS_DISABLED_) ? C_FACE : w->has_bg ? w->pp_bg : C_LIGHT);
         if (w->style & 8) { bevel(w, 0, 0, w->cx, w->cy, 0); bevel(w, 1, 1, w->cx - 1, w->cy - 1, 0); }
         /* (scrolled so the cursor shows) */
         if (e->first > e->cur) e->first = e->cur;
@@ -232,7 +234,7 @@ static uint32_t entry_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
         int x = m + 2;
         const char *s = w->text + e->first;
         int y = (w->cy - (pm_ascent + pm_descent)) / 2 + pm_descent;
-        text_at(w, x, y, s, (int)strlen(s), (w->style & 0x80) ? C_LIGHT : C_TEXT);   /* (ES_UNREADABLE: not shown) */
+        text_at(w, x, y, s, (int)strlen(s), (w->style & 0x80) ? C_LIGHT : pp_fgc(w, C_TEXT));   /* (ES_UNREADABLE: not shown) */
         if (pm_focus == w->hwnd && !e->ro) {
             int cx = x + text_w(w->text + e->first, e->cur - e->first);
             line(w, cx, y - pm_descent, cx, y + pm_ascent, C_TEXT);
@@ -723,7 +725,7 @@ static pmproc_t builtin_proc(const char *cls)
 }
 
 /* ── dialogs ─────────────────────────────────────────────────────────── */
-static void dlg_paint_bg(pmwin_t *w) { w->invalid = 0; fill(w, 0, 0, w->cx, w->cy, C_FACE); present(w); }
+static void dlg_paint_bg(pmwin_t *w) { w->invalid = 0; fill(w, 0, 0, w->cx, w->cy, pp_bgc(w, C_FACE)); present(w); }
 static pmwin_t *dlg_tab(pmwin_t *dlg, pmwin_t *from, int dir)  /* the next (or previous) control with WS_TABSTOP */
 {
     pmwin_t *list[MAXWIN];
@@ -779,7 +781,7 @@ static int dlg_items(uint32_t t, int i, pmwin_t *parent, pmwin_t *dlg, uint32_t 
 {
     uint32_t it = t + g16(t + 6) + 30u * (uint32_t)i;      /* (a DLGTITEM: 30 bytes) */
     uint32_t nkids = g16(it + 2), cch = g16(it + 4), offc = g16(it + 6), ccht = g16(it + 8), offt = g16(it + 10);
-    uint32_t style = g32(it + 12), id = g16(it + 24), offctl = g16(it + 28);
+    uint32_t style = g32(it + 12), id = g16(it + 24), offpp = g16(it + 26), offctl = g16(it + 28);
     int x = du_x((int16_t)g16(it + 16)), y = du_y((int16_t)g16(it + 18)), cx = du_x((int16_t)g16(it + 20)), cy = du_y((int16_t)g16(it + 22));
     char cls[64], text[256] = "";
     if (cch) { char *s = gp(t + offc, cch); snprintf(cls, sizeof cls, "%.*s", (int)cch, s ? s : ""); }
@@ -795,6 +797,7 @@ static int dlg_items(uint32_t t, int i, pmwin_t *parent, pmwin_t *dlg, uint32_t 
         if (!proc) w->iproc = def_dlg_proc;
         frame_pixels(w, cx > 0 ? cx : 200, cy > 0 ? cy : 100);
         snprintf(w->text, sizeof w->text, "%s", text);
+        if (offpp != 0xFFFF && offpp) pp_apply(w, t + offpp);
         *out = w;
         dlg = w;
     } else {
@@ -804,6 +807,7 @@ static int dlg_items(uint32_t t, int i, pmwin_t *parent, pmwin_t *dlg, uint32_t 
         w->owner = dlg;
         snprintf(w->text, sizeof w->text, "%s", text);
         w->visible = (style & WS_VISIBLE_) != 0;
+        if (offpp != 0xFFFF && offpp) pp_apply(w, t + offpp);
         pm_send(w, WM_CREATE, offctl != 0xFFFF && offctl ? t + offctl : 0, 0);
     }
     int next = i + 1;

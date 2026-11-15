@@ -1,0 +1,11 @@
+/* userland/os2x86/test/ow/pmfont.rc - pmfont's dialog: a font from its PRESPARAMS */
+#include <os2.h>
+DLGTEMPLATE 100
+BEGIN
+    DIALOG "Fonts", 100, 20, 20, 160, 60, 0, FCF_TITLEBAR
+    BEGIN
+        LTEXT "Big text", 101, 8, 30, 140, 20
+            PRESPARAMS PP_FONTNAMESIZE, "18.Helv Bold"
+        LTEXT "Default", 102, 8, 8, 140, 12
+    END
+END

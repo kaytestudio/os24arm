@@ -44,6 +44,8 @@ if [ -x "$W/armo64/wcl386" ] || [ -x "$W/binl64/wcl386" ]; then
         cp ow-src/samples/os2/som/wps/owobject.ico .; } || cp trans.ico owobject.ico
     wrc -q -r -bt=os2 -i="$S" "$S/pmicon.rc" -fo=pmicon.res >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm -i="$S" "$S/pmicon.c" >/dev/null && wrc -q -bt=os2 pmicon.res pmicon.exe >/dev/null
+    wrc -q -r -bt=os2 -i="$S" "$S/pmfont.rc" -fo=pmfont.res >/dev/null
+    wcl386 -q -za99 -bt=os2 -l=os2v2_pm -i="$S" "$S/pmfont.c" >/dev/null && wrc -q -bt=os2 pmfont.res pmfont.exe >/dev/null
     owfail=0
     echo "== OpenWatcom programs"
     ../os2x86 owtest.exe </dev/null | grep -E "^FAIL|passed|failed" || owfail=1
@@ -53,7 +55,9 @@ if [ -x "$W/armo64/wcl386" ] || [ -x "$W/binl64/wcl386" ]; then
     printf '\033[<0;10;5Mk\033[<32;12;6M\033[<0;12;6m\033[<2;3;3M' | ../os2x86 mouse.exe | grep "mouse:" || owfail=1
     # Presentation Manager, headless: a script for its input, a picture to check
     D="$ROOT/build/userland/dl/dejavu-fonts-ttf-2.37.tar.bz2"
-    [ -f fonts/DejaVuSans.ttf ] || { [ -f "$D" ] && mkdir -p fonts && tar xjf "$D" -C fonts --strip-components=2 dejavu-fonts-ttf-2.37/ttf/DejaVuSans.ttf; }
+    for f in DejaVuSans DejaVuSans-Bold DejaVuSansMono DejaVuSansMono-Bold; do
+        [ -f fonts/$f.ttf ] || { [ -f "$D" ] && mkdir -p fonts && tar xjf "$D" -C fonts --strip-components=2 dejavu-fonts-ttf-2.37/ttf/$f.ttf; }
+    done
     pmout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf \
         OS2X86_PM_SCRIPT="sleep 150; sleep 150; sleep 150; sleep 150; click 100 100; key ab; shot pm.ppm; key q; esc; key q; key y" \
         ../os2x86 pmhello.exe 2>/dev/null)"
@@ -131,6 +135,13 @@ for (x, y) in ((5, 5), (16, 16), (20, 26), (10, 28)):
 sys.exit(0 if ok else 1)
 PY
     then echo "PM icons: ok"; else echo "PM icons: FAIL"; echo "$icoout"; owfail=1; fi
+    # fonts: GpiQueryFonts, logical fonts (bitmap by lMatch, outline by the char box), metrics, presentation parameters
+    fontout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf OS2X86_PM_SCRIPT="close" ../os2x86 pmfont.exe 2>&1)"
+    if echo "$fontout" | grep -q "12 point bitmap at [0-9]" && echo "$fontout" | grep -q "GpiCreateLogFont 2 2" &&
+       echo "$fontout" | awk '/^mono:/ { exit !($3 == "1," && $5 == $8) }' && echo "$fontout" | grep -q "outline bold: baseline extent 40, bold 1" &&
+       echo "$fontout" | grep -q 'static font "14.Helv"' && echo "$fontout" | grep -q 'dialog item font "18.Helv Bold"' &&
+       echo "$fontout" | awk '/^default:/ { exit !($3 > $6) }'
+    then echo "PM fonts: ok"; else echo "PM fonts: FAIL"; echo "$fontout"; owfail=1; fi
     [ "$owfail" = 0 ] || st=1
 else
     echo "(no OpenWatcom: its programs not tried)"

@@ -43,57 +43,94 @@ enum { KC_CHAR = 1, KC_VIRTUALKEY = 2, KC_SCANCODE = 4, KC_SHIFT = 8, KC_CTRL = 
 #define FID_CLIENT 0x8008
 #define WS_VISIBLE_ 0x80000000u
 
-/* ── the font ────────────────────────────────────────────────────────── */
-static stbtt_fontinfo pm_font;
-static int pm_font_ok, pm_ascent, pm_descent, pm_lineh;
-static float pm_scale;
+/* ── fonts: DejaVu Sans, Sans Bold, Sans Mono, Sans Mono Bold (\OS2\fonts)
+ * at the sizes asked, OS/2's faces mapped onto them; pmf: the one text is
+ * drawn and measured with now (a PS's, a window's, else the default) */
 typedef struct { uint8_t *bm; int w, h, xo, yo, adv, done; } glyph_t;
-static glyph_t glyphs[256];
+typedef struct { int face, px, ok, ascent, descent, lineh; float scale; glyph_t g[256]; } pmfont_t;
+static stbtt_fontinfo faces[4];
+static int face_ok[4];
+static pmfont_t *fonts[64];
+static int nfonts;
+static pmfont_t font_none = { 0, 15, 0, 11, 3, 16, 0, { { 0 } } };
+static pmfont_t *pmf = &font_none, *pm_deffont = &font_none;
+#define pm_ascent (pmf->ascent)
+#define pm_descent (pmf->descent)
+#define pm_lineh (pmf->lineh)
+#define pm_font_ok (pmf->ok)
 
+static pmfont_t *font_get(int face, int px)              /* (face: 0 sans, 1 bold, 2 mono, 3 mono bold) */
+{
+    if (px < 4) px = 4;
+    if (px > 200) px = 200;
+    if (!face_ok[face]) face = face & 2 ? (face_ok[2] ? 2 : 0) : 0;
+    for (int i = 0; i < nfonts; i++) if (fonts[i]->face == face && fonts[i]->px == px) return fonts[i];
+    pmfont_t *f = calloc(1, sizeof *f);
+    f->face = face; f->px = px; f->ok = face_ok[face];
+    if (f->ok) {
+        int asc, desc, gap;
+        f->scale = stbtt_ScaleForPixelHeight(&faces[face], (float)px);
+        stbtt_GetFontVMetrics(&faces[face], &asc, &desc, &gap);
+        f->ascent = (int)(asc * f->scale + 0.5f);
+        f->descent = (int)(-desc * f->scale + 0.5f);
+    } else {
+        f->ascent = px * 3 / 4; f->descent = px / 4;
+    }
+    f->lineh = f->ascent + f->descent + 2;
+    if (nfonts < 64) fonts[nfonts++] = f;
+    return f;
+}
 static void font_init(void)
 {
     static int tried;
     if (tried) return;
     tried = 1;
-    const char *try[] = { getenv("OS2X86_FONT"), "/h/OS2/fonts/DejaVuSans.ttf", 0, 0 };
-    char a[PATH_MAX + 32], b[PATH_MAX + 32];
-    snprintf(a, sizeof a, "%s/fonts/DejaVuSans.ttf", exe_dir);
-    snprintf(b, sizeof b, "%s/../fonts/DejaVuSans.ttf", exe_dir);
-    try[2] = a; try[3] = b;
-    for (int i = 0; i < 4 && !pm_font_ok; i++) {
-        if (!try[i]) continue;
-        FILE *f = fopen(try[i], "rb");
-        if (!f) continue;
-        fseek(f, 0, SEEK_END);
-        long n = ftell(f);
-        fseek(f, 0, SEEK_SET);
-        unsigned char *d = malloc((size_t)n);
-        if (d && fread(d, 1, (size_t)n, f) == (size_t)n && stbtt_InitFont(&pm_font, d, stbtt_GetFontOffsetForIndex(d, 0)))
-            pm_font_ok = 1;
-        fclose(f);
-    }
-    if (pm_font_ok) {
-        int asc, desc, gap;
-        pm_scale = stbtt_ScaleForPixelHeight(&pm_font, 15);
-        stbtt_GetFontVMetrics(&pm_font, &asc, &desc, &gap);
-        pm_ascent = (int)(asc * pm_scale + 0.5f);
-        pm_descent = (int)(-desc * pm_scale + 0.5f);
-    } else {
-        pm_ascent = 11; pm_descent = 3;
-    }
-    pm_lineh = pm_ascent + pm_descent + 2;
+    static const char *const files[4] = { "DejaVuSans.ttf", "DejaVuSans-Bold.ttf", "DejaVuSansMono.ttf", "DejaVuSansMono-Bold.ttf" };
+    char dirs[4][PATH_MAX + 32];
+    int nd = 0;
+    const char *env = getenv("OS2X86_FONT");                 /* (a file: its directory has the others) */
+    if (env) { snprintf(dirs[nd], sizeof dirs[nd], "%s", env); char *sl = strrchr(dirs[nd], '/'); if (sl) *sl = 0; else strcpy(dirs[nd], "."); nd++; }
+    snprintf(dirs[nd++], sizeof dirs[0], "/h/OS2/fonts");
+    snprintf(dirs[nd++], sizeof dirs[0], "%s/fonts", exe_dir);
+    snprintf(dirs[nd++], sizeof dirs[0], "%s/../fonts", exe_dir);
+    for (int k = 0; k < 4; k++)
+        for (int i = 0; i < nd && !face_ok[k]; i++) {
+            char path[PATH_MAX * 2];
+            snprintf(path, sizeof path, "%s/%s", dirs[i], files[k]);
+            if (k == 0 && env) snprintf(path, sizeof path, "%s", env);
+            FILE *f = fopen(path, "rb");
+            if (!f) continue;
+            fseek(f, 0, SEEK_END);
+            long n = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            unsigned char *d = malloc((size_t)n);
+            if (d && fread(d, 1, (size_t)n, f) == (size_t)n && stbtt_InitFont(&faces[k], d, stbtt_GetFontOffsetForIndex(d, 0))) face_ok[k] = 1;
+            else free(d);
+            fclose(f);
+        }
+    pm_deffont = pmf = font_get(0, 15);
 }
 static glyph_t *glyph(unsigned char ch)
 {
-    glyph_t *g = &glyphs[ch];
+    glyph_t *g = &pmf->g[ch];
     if (g->done) return g;
     g->done = 1;
-    if (!pm_font_ok) { g->adv = 7; return g; }
+    if (!pmf->ok) { g->adv = pmf->px / 2; return g; }
     int adv, lsb;
-    stbtt_GetCodepointHMetrics(&pm_font, ch, &adv, &lsb);
-    g->adv = (int)(adv * pm_scale + 0.5f);
-    g->bm = stbtt_GetCodepointBitmap(&pm_font, 0, pm_scale, ch, &g->w, &g->h, &g->xo, &g->yo);
+    stbtt_GetCodepointHMetrics(&faces[pmf->face], ch, &adv, &lsb);
+    g->adv = (int)(adv * pmf->scale + 0.5f);
+    g->bm = stbtt_GetCodepointBitmap(&faces[pmf->face], 0, pmf->scale, ch, &g->w, &g->h, &g->xo, &g->yo);
     return g;
+}
+/* "10.Helv", "8.Helv Bold", "9.Courier", "10.System VIO": a font (points: pixels at 1.5 a point, as the default) */
+static pmfont_t *font_named(const char *s, int bold)
+{
+    int pt = atoi(s);
+    const char *n = strchr(s, '.');
+    n = n ? n + 1 : s;
+    int mono = strcasestr(n, "courier") || strcasestr(n, "mono") || strcasestr(n, "vio") || strcasestr(n, "fixed") || strcasestr(n, "terminal");
+    if (strcasestr(n, "bold")) bold = 1;
+    return font_get((mono ? 2 : 0) | (bold ? 1 : 0), pt > 0 ? pt * 3 / 2 : 15);
 }
 static int text_w(const char *s, int n)
 {
@@ -129,6 +166,10 @@ struct pmwin {
     int dlg_done;                       /* a dialog: WinDismissDlg'd, with dlg_result */
     pmwin_t *prev_shown;                /* a top window: the one shown before it (the script's, the focus's) */
     uint32_t haccel;                    /* a frame's accelerator table */
+    pmfont_t *font;                     /* presentation parameters: its font (PP_FONTNAMESIZE), */
+    char font_name[48];
+    int has_fg, has_bg;                 /* ... its colours (PP_FOREGROUNDCOLOR, PP_BACKGROUNDCOLOR) */
+    uint32_t pp_fg, pp_bg;
     uint32_t dlg_result;
 };
 #define MAXWIN 1024                     /* (windows, controls, and bitmaps: they're hidden windows) */
@@ -177,10 +218,17 @@ static void post(pmwin_t *w, uint32_t hwnd, uint32_t msg, uint32_t mp1, uint32_t
     pthread_cond_broadcast(&gcv);
 }
 
+static pmfont_t *win_font(pmwin_t *w) { for (; w; w = w->parent) if (w->font) return w->font; return pm_deffont; }   /* (a parent's goes to its children) */
 static uint32_t pm_send(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
 {
     if (!w) return 0;
-    if (w->iproc) return w->iproc(w, msg, mp1, mp2);
+    if (w->iproc) {
+        pmfont_t *save = pmf;
+        pmf = win_font(w);
+        uint32_t r = w->iproc(w, msg, mp1, mp2);
+        pmf = save;
+        return r;
+    }
     if (!w->proc) return 0;
     uint32_t args[4] = { w->hwnd, msg, mp1, mp2 };
     return guest_call(w->proc, 4, args);
@@ -214,7 +262,9 @@ static uint32_t pm_rgb(int32_t c, int rgbmode, int back)
     }
 }
 
-typedef struct { int used; uint32_t hwnd; int32_t color, back; int rgb, x, y, painting; } pmps_t;
+typedef struct { int face, px, outline, used; } lfont_t;
+typedef struct { int used; uint32_t hwnd; int32_t color, back; int rgb, x, y, painting;
+                 pmfont_t *font; int lcid, boxpx; lfont_t *lf; } pmps_t;   /* (font: GpiSetCharSet's; lf: its logical fonts, 255) */
 static pmps_t pmpss[64];
 static pmps_t *ps_get(uint32_t h) { h -= 0xA000; return h < 64 && pmpss[h].used ? &pmpss[h] : 0; }
 
@@ -292,6 +342,7 @@ static void present(pmwin_t *w)
 
 /* ── window lifecycle ────────────────────────────────────────────────── */
 static pmproc_t builtin_proc(const char *cls);           /* pm_ctl.inc */
+static void pp_apply(pmwin_t *w, uint32_t pp);
 static void frame_layout(pmwin_t *f);
 static void set_focus(uint32_t hwnd);
 static pmclass_t *class_find(const char *n)
@@ -682,6 +733,7 @@ static uint32_t api_WinCreateWindow(void)
         frame_pixels(w, w->cx > 0 ? w->cx : 200, w->cy > 0 ? w->cy : 100);
         if (pmb->title) pmb->title(w);
     }
+    pp_apply(w, A(12));                      /* pPresParams */
     pm_send(w, WM_CREATE, A(11), A(12));
     if (!w->used) return 0;
     if (style & WS_VISIBLE_) { w->visible = 1; if (w->top) win_show(w, 1); invalidate(w); }
@@ -763,12 +815,13 @@ static uint32_t ps_new(pmwin_t *w, int painting)
 {
     for (int i = 0; i < 64; i++)
         if (!pmpss[i].used) {
-            pmpss[i] = (pmps_t){ 1, w->hwnd, -3, -3, 0, 0, 0, painting };
+            pmpss[i] = (pmps_t){ 1, w->hwnd, -3, -3, 0, 0, 0, painting, 0, 0, 0, 0 };
             return 0xA000 + (uint32_t)i;
         }
     return 0;
 }
 static pmwin_t *ps_win(pmps_t *ps) { return ps ? win(ps->hwnd) : 0; }
+static pmfont_t *ps_font(pmps_t *ps) { return ps && ps->font ? ps->font : ps ? win_font(ps_win(ps)) : pm_deffont; }
 static void put_rect(uint32_t p, int x0, int y0, int x1, int y1) { p32(p, (uint32_t)x0); p32(p + 4, (uint32_t)y0); p32(p + 8, (uint32_t)x1); p32(p + 12, (uint32_t)y1); }
 static uint32_t api_WinBeginPaint(void)       /* (hwnd, hps, prclPaint) */
 {
@@ -842,6 +895,8 @@ static uint32_t api_WinDrawText(void)
     uint32_t r = A(3), fl = A(6);
     if (!w || !s || !ok(r, 16)) return 0;
     if (n < 0) n = (int32_t)strlen(s);
+    pmfont_t *save = pmf;
+    pmf = ps_font(ps);
     int x0 = (int32_t)g32(r), y0 = (int32_t)g32(r + 4), x1 = (int32_t)g32(r + 8), y1 = (int32_t)g32(r + 12);
     int32_t fg = (fl & 0x40) ? ps->color : (int32_t)A(4), bg = (fl & 0x40) ? ps->back : (int32_t)A(5);
     int tw = text_w(s, n), th = pm_ascent + pm_descent;
@@ -849,10 +904,12 @@ static uint32_t api_WinDrawText(void)
     int ytop = fl & 0x400 ? y0 + (y1 - y0 + th) / 2 : fl & 0x800 ? y0 + th : y1;
     if (fl & 2) {                            /* DT_QUERYEXTENT */
         put_rect(r, x, ytop - th, x + tw, ytop);
+        pmf = save;
         return (uint32_t)n;
     }
     if (fl & 0x8000) fill(w, x0, y0, x1, y1, pm_rgb(bg, ps->rgb, 1));
     text_at(w, x, ytop - pm_ascent, s, n, pm_rgb(fg, ps->rgb, 0));
+    pmf = save;
     return (uint32_t)n;
 }
 static void cb_settext(pmwin_t *w);
@@ -1184,7 +1241,10 @@ static uint32_t char_string(pmps_t *ps, int n, uint32_t ps_str)
     pmwin_t *w = ps_win(ps);
     char *s = gp(ps_str, n > 0 ? (uint32_t)n : 1);
     if (!w || !s) return 0;
+    pmfont_t *save = pmf;
+    pmf = ps_font(ps);
     ps->x = text_at(w, ps->x, ps->y, s, n, pm_rgb(ps->color, ps->rgb, 0));
+    pmf = save;
     return 1;
 }
 static uint32_t api_GpiCharString(void) { pmps_t *ps = ps_get(A(0)); return ps ? char_string(ps, (int32_t)A(1), A(2)) : 0; }
@@ -1211,17 +1271,37 @@ static uint32_t api_GpiCreateLogColorTable(void)   /* (hps, flOptions, lFormat, 
     ps->rgb = A(2) == 3;                     /* LCOLF_RGB: colours are RGB */
     return 1;
 }
+/* a font's FONTMETRICS (n bytes at p) */
+static void put_metrics(uint32_t p, uint32_t n, pmfont_t *f, const char *family, const char *face, int outline, int pt, uint32_t match)
+{
+    uint8_t fm[228] = { 0 };
+    pmfont_t *save = pmf;
+    pmf = f;
+    snprintf((char *)fm, 32, "%s", family);
+    snprintf((char *)fm + 32, 32, "%s", face);
+    int avg = text_w("x", 1), maxw = text_w("W", 1);
+    int32_t v[12] = { f->px, f->ascent * 2 / 3, f->ascent, f->descent, f->ascent * 2 / 3, f->descent,
+                      f->ascent + f->descent - f->px > 0 ? f->ascent + f->descent - f->px : 0, 2, avg, maxw, maxw, f->ascent + f->descent };
+    memcpy(fm + 68, v, sizeof v);           /* lEmHeight ... lMaxBaselineExt */
+    uint16_t sh[16] = { 0, 0, 0, (f->face & 1) ? 700 : 400, 5, 96, 96, 32, 255, '?', ' ', (int16_t)(pt * 10), outline ? 10 : (int16_t)(pt * 10), outline ? 7200 : (int16_t)(pt * 10),
+                        (uint16_t)((f->face & 2) ? 1 : 0), (uint16_t)(outline ? 1 : 0) };   /* ... fsType (FM_TYPE_FIXED), fsDefn (FM_DEFN_OUTLINE) */
+    memcpy(fm + 116, sh, sizeof sh);
+    uint32_t sel = (f->face & 1) ? 0x20 : 0;
+    memcpy(fm + 148, &sel, 2);
+    memcpy(fm + 204, &match, 4);            /* lMatch */
+    memcpy(C.mem + p, fm, n < sizeof fm ? n : sizeof fm);
+    pmf = save;
+}
 static uint32_t api_GpiQueryFontMetrics(void) /* (hps, lMetricsLength, pfmMetrics) */
 {
     uint32_t n = A(1), p = A(2);
+    pmps_t *ps = ps_get(A(0));
     if (!ok(p, n)) return 0;
     memset(C.mem + p, 0, n);
-    uint8_t fm[228] = { 0 };
-    memcpy(fm, "Helv", 4);
-    memcpy(fm + 32, "Helv", 4);
-    int32_t v[] = { pm_ascent + pm_descent, 8, pm_ascent, pm_descent, 8, pm_descent, 2, 0, 7, 12, 12, pm_ascent + pm_descent };
-    memcpy(fm + 68, v, sizeof v);            /* lEmHeight ... lMaxBaselineExt */
-    memcpy(C.mem + p, fm, n < sizeof fm ? n : sizeof fm);
+    pmfont_t *f = ps_font(ps);
+    static const char *const fam[4] = { "Helvetica", "Helvetica", "Courier", "Courier" };
+    static const char *const face[4] = { "Helv", "Helv Bold", "Courier", "Courier Bold" };
+    put_metrics(p, n, f, fam[f->face], face[f->face], ps && ps->lf && ps->lcid && ps->lf[ps->lcid].outline, f->px * 2 / 3, 0);
     return 1;
 }
 static uint32_t api_GpiQueryTextBox(void)     /* (hps, lCount1, pchString, lCount2, aptlPoints) */
@@ -1229,11 +1309,175 @@ static uint32_t api_GpiQueryTextBox(void)     /* (hps, lCount1, pchString, lCoun
     char *s = gp(A(2), A(1) ? A(1) : 1);
     uint32_t n = A(3), p = A(4);
     if (!s || !ok(p, n * 8)) return 0;
+    pmfont_t *save = pmf;
+    pmf = ps_font(ps_get(A(0)));
     int w = text_w(s, (int32_t)A(1));
     int32_t pts[5][2] = { { 0, pm_ascent }, { 0, -pm_descent }, { w, pm_ascent }, { w, -pm_descent }, { w, 0 } };   /* TXTBOX_TOPLEFT ... CONCAT */
     for (uint32_t i = 0; i < n && i < 5; i++) { p32(p + 8 * i, (uint32_t)pts[i][0]); p32(p + 8 * i + 4, (uint32_t)pts[i][1]); }
+    pmf = save;
     return 1;
 }
 
 #include "pm_ctl.inc"
 #include "pm_gpi.inc"
+
+/* ── logical fonts, presentation parameters ─────────────────────────── */
+/* OS/2's faces here: (family, face, ours, outline, points) */
+static const struct { const char *family, *face; int ours, outline, pt; } font_list[] = {
+    { "Helvetica", "Helvetica", 0, 1, 12 }, { "Helvetica", "Helvetica Bold", 1, 1, 12 },
+    { "Courier", "Courier", 2, 1, 12 }, { "Courier", "Courier Bold", 3, 1, 12 },
+    { "Times New Roman", "Times New Roman", 0, 1, 12 }, { "Times New Roman", "Times New Roman Bold", 1, 1, 12 },
+    { "System Proportional", "System Proportional", 0, 0, 10 }, { "System Monospaced", "System Monospaced", 2, 0, 10 },
+    { "System VIO", "System VIO", 2, 0, 10 },
+    { "Helv", "Helv", 0, 0, 8 }, { "Helv", "Helv", 0, 0, 10 }, { "Helv", "Helv", 0, 0, 12 }, { "Helv", "Helv", 0, 0, 14 },
+    { "Helv", "Helv", 0, 0, 18 }, { "Helv", "Helv", 0, 0, 24 },
+    { "Courier", "Courier", 2, 0, 8 }, { "Courier", "Courier", 2, 0, 10 }, { "Courier", "Courier", 2, 0, 12 },
+    { "Tms Rmn", "Tms Rmn", 0, 0, 10 }, { "Tms Rmn", "Tms Rmn", 0, 0, 12 },
+};
+#define NFONTLIST ((int)(sizeof font_list / sizeof *font_list))
+static uint32_t api_GpiQueryFonts(void)       /* (hps, flOptions, pszFacename, plReqFonts, lMetricsLength, afmMetrics): those not returned */
+{
+    char *want = A(2) ? gs(A(2)) : 0;
+    uint32_t pn = A(3), len = A(4), arr = A(5);
+    int req = (int32_t)g32(pn), got = 0, all = 0;
+    for (int i = 0; i < NFONTLIST; i++) {
+        if (want && *want && strcasecmp(want, font_list[i].face) && strcasecmp(want, font_list[i].family)) continue;
+        all++;
+        if (got < req && ok(arr + (uint32_t)got * len, len)) {
+            put_metrics(arr + (uint32_t)got * len, len, font_get(font_list[i].ours, font_list[i].pt * 3 / 2), font_list[i].family,
+                        font_list[i].face, font_list[i].outline, font_list[i].pt, (uint32_t)i + 1);
+            got++;
+        }
+    }
+    p32(pn, (uint32_t)got);
+    return (uint32_t)(all - got);
+}
+static uint32_t api_GpiCreateLogFont(void)    /* (hps, pName, lLcid, pfat): FONT_MATCH */
+{
+    pmps_t *ps = ps_get(A(0));
+    uint32_t id = A(2), fa = A(3);
+    if (!ps || id < 1 || id > 254 || !ok(fa, 56)) return 0;
+    if (!ps->lf) ps->lf = calloc(256, sizeof *ps->lf);
+    char face[33];
+    memcpy(face, C.mem + fa + 8, 32); face[32] = 0;
+    uint32_t sel = g16(fa + 2), use = g16(fa + 54), match = g32(fa + 4);
+    int32_t mbe = (int32_t)g32(fa + 44);
+    int k = -1;
+    if (match >= 1 && (int)match <= NFONTLIST && !strcasecmp(face, font_list[match - 1].face)) k = (int)match - 1;   /* (lMatch: GpiQueryFonts's) */
+    pmfont_t *nf = font_named(face, (sel & 0x20) != 0);
+    lfont_t *l = &ps->lf[id];
+    l->used = 1;
+    l->face = nf->face;
+    l->outline = (use & 4) || mbe <= 0 || (k >= 0 && font_list[k].outline);   /* FATTR_FONTUSE_OUTLINE */
+    l->px = mbe > 0 ? mbe : k >= 0 ? font_list[k].pt * 3 / 2 : 15;
+    return 2;                                       /* FONT_MATCH */
+}
+static void ps_refont(pmps_t *ps)
+{
+    lfont_t *l = ps->lf && ps->lcid ? &ps->lf[ps->lcid] : 0;
+    ps->font = l && l->used ? font_get(l->face, l->outline && ps->boxpx ? ps->boxpx : l->px) : 0;
+}
+static uint32_t api_GpiSetCharSet(void)       /* (hps, llcid) */
+{
+    pmps_t *ps = ps_get(A(0));
+    if (!ps) return 0;
+    ps->lcid = (int)A(1) >= 0 && A(1) < 255 ? (int)A(1) : 0;
+    ps_refont(ps);
+    return 1;
+}
+static uint32_t api_GpiQueryCharSet(void) { pmps_t *ps = ps_get(A(0)); return ps ? (uint32_t)ps->lcid : 0; }
+static uint32_t api_GpiSetCharBox(void)       /* (hps, psizfxBox: FIXED cx, cy) */
+{
+    pmps_t *ps = ps_get(A(0));
+    if (!ps || !ok(A(1), 8)) return 0;
+    int cy = (int)((int32_t)g32(A(1) + 4) >> 16);
+    ps->boxpx = cy > 0 ? cy : 0;
+    ps_refont(ps);
+    return 1;
+}
+static uint32_t api_GpiQueryCharBox(void)
+{
+    pmps_t *ps = ps_get(A(0));
+    if (!ps || !ok(A(1), 8)) return 0;
+    pmfont_t *f = ps_font(ps);
+    p32(A(1), (uint32_t)(f->px * 2 / 3) << 16); p32(A(1) + 4, (uint32_t)f->px << 16);
+    return 1;
+}
+static uint32_t api_GpiDeleteSetId(void)      /* (hps, lLcid: LCID_ALL -1) */
+{
+    pmps_t *ps = ps_get(A(0));
+    if (!ps || !ps->lf) return ps != 0;
+    if ((int32_t)A(1) == -1) memset(ps->lf, 0, 256 * sizeof *ps->lf);
+    else if (A(1) < 255) ps->lf[A(1)].used = 0;
+    if ((int32_t)A(1) == -1 || (int)A(1) == ps->lcid) { ps->lcid = 0; ps->font = 0; }
+    return 1;
+}
+static uint32_t api_GpiQueryNumberSetIds(void) { pmps_t *ps = ps_get(A(0)); int n = 0; for (int i = 1; ps && ps->lf && i < 255; i++) n += ps->lf[i].used; return (uint32_t)n; }
+static uint32_t api_GpiQueryWidthTable(void)  /* (hps, lFirstChar, lCount, alData) */
+{
+    uint32_t first = A(1), n = A(2), p = A(3);
+    if (!ok(p, n * 4)) return 0;
+    pmfont_t *save = pmf;
+    pmf = ps_font(ps_get(A(0)));
+    for (uint32_t i = 0; i < n; i++) p32(p + 4 * i, (uint32_t)glyph((unsigned char)(first + i))->adv);
+    pmf = save;
+    return 1;
+}
+static void pp_set(pmwin_t *w, uint32_t id, uint32_t cb, uint32_t pv)
+{
+    if (id == 15 && cb) {                           /* PP_FONTNAMESIZE: "10.Helv" */
+        char *s = gp(pv, cb);
+        if (!s) return;
+        snprintf(w->font_name, sizeof w->font_name, "%.*s", (int)cb, s);
+        w->font = font_named(w->font_name, 0);
+    } else if ((id == 1 || id == 3) && cb >= 4) {   /* PP_FOREGROUNDCOLOR, PP_BACKGROUNDCOLOR: RGB */
+        if (id == 1) { w->pp_fg = g32(pv) & 0xFFFFFF; w->has_fg = 1; } else { w->pp_bg = g32(pv) & 0xFFFFFF; w->has_bg = 1; }
+    } else if ((id == 2 || id == 4) && cb >= 4) {   /* ... the INDEX ones */
+        uint32_t c = pm_rgb((int32_t)g32(pv), 0, id == 4);
+        if (id == 2) { w->pp_fg = c; w->has_fg = 1; } else { w->pp_bg = c; w->has_bg = 1; }
+    }
+    invalidate(w);
+}
+static void pp_apply(pmwin_t *w, uint32_t pp)       /* a PRESPARAMS: cb, then (id, cb, value)s */
+{
+    if (!pp || !ok(pp, 4)) return;
+    uint32_t cb = g32(pp), p = pp + 4, end = pp + 4 + cb;
+    while (p + 8 <= end) {
+        uint32_t id = g32(p), n = g32(p + 4);
+        pp_set(w, id, n, p + 8);
+        p += 8 + n;
+    }
+}
+static uint32_t api_WinSetPresParam(void) { pmwin_t *w = win(A(0)); if (!w) return 0; pp_set(w, A(1), A(2), A(3)); return 1; }   /* (hwnd, id, cbParam, pbParam) */
+static uint32_t api_WinQueryPresParam(void)   /* (hwnd, id1, id2, pulId, cbBuf, pbBuf, fs): bytes */
+{
+    pmwin_t *w = win(A(0));
+    uint32_t ids[2] = { A(1), A(2) }, cb = A(4), b = A(5);
+    for (int k = 0; w && k < 2; k++) {
+        uint32_t id = ids[k];
+        if (id == 15 && w->font_name[0]) {
+            uint32_t n = (uint32_t)strlen(w->font_name) + 1;
+            if (n > cb || !ok(b, n)) return 0;
+            memcpy(C.mem + b, w->font_name, n);
+            if (A(3)) p32(A(3), id);
+            return n;
+        }
+        if ((id == 1 && w->has_fg) || (id == 3 && w->has_bg)) {
+            if (cb < 4 || !ok(b, 4)) return 0;
+            p32(b, id == 1 ? w->pp_fg : w->pp_bg);
+            if (A(3)) p32(A(3), id);
+            return 4;
+        }
+    }
+    return 0;
+}
+static uint32_t api_WinRemovePresParam(void)
+{
+    pmwin_t *w = win(A(0));
+    if (!w) return 0;
+    if (A(1) == 15) { w->font = 0; w->font_name[0] = 0; }
+    if (A(1) == 1) w->has_fg = 0;
+    if (A(1) == 3) w->has_bg = 0;
+    invalidate(w);
+    return 1;
+}

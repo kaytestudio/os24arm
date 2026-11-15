@@ -408,8 +408,15 @@ platform-specific are new code.
    second), WinDrawPointer (DP_MINI, DP_INVERTED, DP_HALFTONED), system
    icons (WinQuerySysPointer: information, question, warning, error,
    drawn here; message boxes show theirs), SS_ICON, SS_SYSICON and
-   SS_BITMAP statics. Not there yet: notebooks, containers, sliders and
-   the like, the pointer's shape on the desktop, fonts beyond the one. OS/2's DLLs that aren't
+   SS_BITMAP statics. Fonts: DejaVu Sans, Sans Bold, Sans Mono and Sans
+   Mono Bold at any size, OS/2's faces (Helv, Helvetica, Tms Rmn,
+   Courier, System Proportional/VIO/Monospaced) mapped onto them -
+   GpiQueryFonts, GpiCreateLogFont (bitmap ones by lMatch, outline ones
+   sized by GpiSetCharBox), GpiSetCharSet, the metrics; presentation
+   parameters (PP_FONTNAMESIZE, PP_FOREGROUNDCOLOR, PP_BACKGROUNDCOLOR:
+   WinSetPresParam, a dialog template's PRESPARAMS; a parent's go to its
+   children). Not there yet: notebooks, containers, sliders and the like,
+   the pointer's shape on the desktop. OS/2's DLLs that aren't
    here (PMSHAPI, HELPMGR, TCP32DLL, ...) load as stubs, so a program
    that only links them in runs; a call into one says so and returns 0. Calls it doesn't have yet print
    one line on stderr and return error 1; `OS2X86_TRACE=1` lists every
