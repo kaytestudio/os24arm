@@ -938,6 +938,7 @@ add_custom_command(
 set(CMD_EXE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/dos/cmd_main.c
         ${CMAKE_CURRENT_SOURCE_DIR}/dos/dos_commands.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/dos/a64.c
         ${CMAKE_CURRENT_SOURCE_DIR}/os2api/os2_api_import.c
         ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/lx_dll_loader.c
         ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/string.c
@@ -986,6 +987,7 @@ add_dependencies(cmd_exe lx_host_tools DOSCALLS_lxdll)
 set(KAYTEVM_EXE_SOURCES
         ${CMAKE_CURRENT_SOURCE_DIR}/kayte/kaytevm_main.c
         ${CMAKE_CURRENT_SOURCE_DIR}/dos/dos_commands.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/dos/a64.c
         ${CMAKE_CURRENT_SOURCE_DIR}/os2api/os2_api_import.c
         ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/lx_dll_loader.c
         ${CMAKE_CURRENT_SOURCE_DIR}/kernel/src/string.c

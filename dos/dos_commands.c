@@ -27,6 +27,7 @@
 #include "lx_services.h"
 #include "kprintf.h"
 #include "string.h"
+#include "a64.h"
 
 /* The last command's result, as CMD.EXE's: 0 when it worked, else an OS/2 error code (or 1) - for os2cmd's exit
  * code, so a REXX program's RC after a command */
@@ -286,9 +287,9 @@ void dos_echo(int argc, char **argv)
  * I and O (IN/OUT) address x86 port I/O, which doesn't exist on ARM64
  * (devices are memory-mapped, not port-mapped); XA/XD/XM/XS manage EMS
  * (bank-switched memory above real mode's 640KB conventional-memory
- * ceiling) - meaningless with a flat 64-bit address space; A/U
- * (assemble/unassemble) would need a full AArch64 assembler/disassembler;
- * G/P/T (go/proceed/trace) would need breakpoint/single-step support this
+ * ceiling) - meaningless with a flat 64-bit address space. A and U
+ * assemble and disassemble AArch64 (dos/a64.c: the integer instructions
+ * and FP/SIMD loads/stores, LLVM's syntax and aliases); G/P/T (go/proceed/trace) would need breakpoint/single-step support this
  * kernel's exception vectors don't wire up; L/W (load/write sectors) and
  * N (name a program to load) belong to DEBUG.COM's real-mode program
  * loader, which this kernel's own LX loader (RUN, kernel/src/lx_loader.c)
@@ -569,6 +570,61 @@ static void debug_cmd_hex(int argc, char **argv)
 /* Genuinely-current AArch64 processor state - not a stopped debuggee's
  * general-purpose registers (X0-X30/PC), which aren't available without
  * breakpoint/single-step support (see this file's G/P/T comment). */
+/* U [address [end | Llength]]: disassembly - 8 instructions by default, on from the last U */
+static unsigned long debug_u_next;
+static void debug_cmd_unassemble(int argc, char **argv)
+{
+    unsigned long start = debug_u_next, len = 0;
+    int next;
+    if (argc >= 1 && !debug_parse_range(argc, argv, &start, &len, &next)) { uart_puts("^ Error\r\n"); return; }
+    start &= ~3ul;
+    unsigned long count = len ? (len + 3) / 4 : 8;
+    char text[160];
+    for (unsigned long k = 0; k < count; k++) {
+        unsigned long a = start + k * 4;
+        uint32_t w = *(volatile uint32_t *)a;
+        a64_disasm(w, a, text, sizeof text);
+        debug_print_hex(a);
+        uart_puts("  ");
+        for (int s = 28; s >= 0; s -= 4) uart_putc("0123456789abcdef"[(w >> s) & 15]);
+        uart_puts("  ");
+        for (char *c = text; *c; c++) uart_putc(*c == '\t' ? ' ' : *c);
+        uart_puts("\r\n");
+    }
+    debug_u_next = start + count * 4;
+}
+
+/* A [address]: assembly, a line an instruction (the address the prompt) until an empty one */
+static unsigned long debug_a_next;
+static void debug_cmd_assemble(int argc, char **argv)
+{
+    unsigned long a = debug_a_next;
+    if (argc >= 1 && !debug_parse_hex(argv[0], &a)) { uart_puts("^ Error\r\n"); return; }
+    a &= ~3ul;
+    char prompt[24], line[160], err[96];
+    for (;;) {
+        int n = 0;
+        unsigned long v = a;
+        char hex[17]; int h = 16; hex[16] = 0;
+        do { hex[--h] = "0123456789abcdef"[v & 15]; v >>= 4; } while (v && h);
+        for (int k = h; hex[k] && n < 20; k++) prompt[n++] = hex[k];
+        prompt[n++] = ' '; prompt[n] = 0;
+        dos_read_line(prompt, line, sizeof line, NULL);
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+        uint32_t w;
+        if (!a64_asm(p, a, &w, err, sizeof err)) { uart_puts("\r\n^ "); uart_puts(err); uart_puts("\r\n"); continue; }
+        *(volatile uint32_t *)a = w;
+        if (!uart_user_services())                       /* (code changed: the instruction cache too) */
+            __asm__ volatile("dc cvau, %0\n\tdsb ish\n\tic ivau, %0\n\tdsb ish\n\tisb" :: "r"(a) : "memory");
+        uart_puts("\r\n");
+        a += 4;
+    }
+    debug_a_next = a;
+    uart_puts("\r\n");
+}
+
 static void debug_cmd_registers(void)
 {
     unsigned long sp, currentel = 0, daif = 0;
@@ -639,6 +695,8 @@ void dos_debug(int argc, char **argv)
         if (mlen == 1 && strcmp(mnem, "S") == 0) { uart_puts("\r\n"); debug_cmd_search(cargc, cargv); continue; }
         if (mlen == 1 && strcmp(mnem, "H") == 0) { uart_puts("\r\n"); debug_cmd_hex(cargc, cargv); continue; }
         if (mlen == 1 && strcmp(mnem, "R") == 0) { uart_puts("\r\n"); debug_cmd_registers(); continue; }
+        if (mlen == 1 && strcmp(mnem, "U") == 0) { uart_puts("\r\n"); debug_cmd_unassemble(cargc, cargv); continue; }
+        if (mlen == 1 && strcmp(mnem, "A") == 0) { uart_puts("\r\n"); debug_cmd_assemble(cargc, cargv); continue; }
 
         int recognized = 0;
         if (mlen == 1) {

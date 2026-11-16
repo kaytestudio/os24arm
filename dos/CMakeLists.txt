@@ -2,6 +2,7 @@
 
 add_library(dos STATIC
         dos_commands.c
+        a64.c               # AArch64 disassembler/assembler (DEBUG's U and A)
 )
 
 target_include_directories(dos PUBLIC
