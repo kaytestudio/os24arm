@@ -1,0 +1,13 @@
+registered: 0 version 2.45
+mkdir: 0 0 5
+txt files: 1 a.txt
+files and dirs: 3
+dirs: 1 sub
+recursive: 2
+size, attributes: 5 A----
+search: 1 alpha line
+case: 0
+numbered: 2 Beta line
+temp: 8 1
+delete: 0 0 2 0
+rmdir: 0 0

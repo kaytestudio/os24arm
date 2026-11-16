@@ -567,7 +567,9 @@ platform-specific are new code.
    through it (the kernel's execve, as it hands x86 programs to os2x86;
    os2cmd finds NAME.CMD after NAME.EXE). Commands in them go to
    `os2cmd /C "line"`; `userland/tests/rexx/run.sh` builds it on the build
-   machine and compares `test.cmd`'s output with `test.out`.
+   machine and compares `test.cmd`'s output with `test.out` and `util.cmd`'s
+   (RexxUtil) with `util.out`. OS/2 paths in its file functions go through
+   `/dev/os2cmd`'s resolve ioctl (drive letters, the session's directory).
 
    `userland/apps/os2cmd.c` relays a terminal to `/dev/os2cmd`, which runs
    each line in the shell of `kernel/src/main.c` - DIR, COPY, MOUNT, USB,

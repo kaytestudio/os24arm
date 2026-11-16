@@ -232,8 +232,11 @@ OS/2 - type their name (`HELLO` finds `HELLO.CMD`) and the kernel runs
 them with `userland/apps/rexx.c`, a classic REXX interpreter (all the
 instructions - DO, SELECT, PARSE templates, PROCEDURE EXPOSE, SIGNAL,
 INTERPRET -, stems, REXX arithmetic, about 60 built-in functions with
-LINEIN/LINEOUT file I/O); other clauses are commands for the OS/2 shell,
-RC their result. `rexx -e 'say 2**10'` runs a line.
+LINEIN/LINEOUT file I/O) and the common RexxUtil functions (RxFuncAdd and
+SysLoadFuncs, SysFileTree, SysFileSearch, SysMkDir/SysRmDir/SysFileDelete,
+SysTempFileName, SysSearchPath, SysDriveMap, SysSleep, SysGetKey, SysCls,
+...), with OS/2 paths (`D:\NOTES\*.TXT`); other clauses are commands for the
+OS/2 shell, RC their result. `rexx -e 'say 2**10'` runs a line.
 
 In a Command Prompt window, a name the shell doesn't know runs as a
 program in the current directory (`ls -l`, `vi notes.txt`, busybox
@@ -601,7 +604,8 @@ Not there yet:
   help files, and
   the rest of OS/2's API (the help manager, multimedia, ...).
 - **Other**: DEBUG's assembler, disassembler and breakpoints; REXX's
-  RexxUtil library (SysFileTree and the like).
+  condition traps (SIGNAL ON), external routines and RexxUtil's less used
+  functions (extended attributes, WPS objects, INI files).
 
 ---
 

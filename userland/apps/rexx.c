@@ -28,6 +28,12 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#include <dirent.h>
+#include <fnmatch.h>
+#include <sys/ioctl.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <termios.h>
 
 /* ── memory: an arena for each clause's temporaries ── */
 typedef struct chunk { struct chunk *prev; size_t used, cap; char d[]; } chunk_t;
@@ -923,10 +929,66 @@ static int word_bounds(const char *s, long w, size_t *b, size_t *e)   /* the w-t
     }
 }
 static long count_words(const char *s) { long k = 0; size_t b, e; while (word_bounds(s, k + 1, &b, &e)) k++; return k; }
+/* OS/2 paths ("D:\\X", "\\X") to this system's, through the kernel (/dev/os2cmd's resolve ioctl, as os2cmd does); and back,
+ * by the drives' roots. Without the device (another system): backslashes become slashes, names stay as they are */
+#define OS2CMD_RESOLVE 0x4F53
+static int os2dev = -2;
+static char droot[26][256];
+static int os2_resolve(const char *in, char *out, size_t n)
+{
+    if (os2dev == -2) os2dev = open("/dev/os2cmd", O_RDWR);
+    if (os2dev < 0) return -1;
+    char b[256];
+    snprintf(b, sizeof b, "%s", in);
+    if (ioctl(os2dev, OS2CMD_RESOLVE, b) != 0) return -1;
+    snprintf(out, n, "%s", b);
+    return 0;
+}
+static char *to_host(const char *p)
+{
+    char r[1024];
+    if ((p[0] && p[1] == ':') || p[0] == '\\') { if (os2_resolve(p, r, sizeof r) == 0) return adup(r); }
+    snprintf(r, sizeof r, "%s", p);
+    if (p[0] && p[1] == ':' && os2dev < 0) memmove(r, r + 2, strlen(r + 2) + 1);   /* (no drives here: D:\X is \X) */
+    for (char *c = r; *c; c++) if (*c == '\\') *c = '/';
+    return adup(r);
+}
+static void know_roots(void)
+{
+    static int known;
+    if (known) return;
+    known = 1;
+    for (int d = 2; d < 26; d++) {                               /* (C: onwards: those the kernel knows) */
+        char in[4] = { (char)('A' + d), ':', '\\', 0 }, out[256];
+        if (os2_resolve(in, out, sizeof out) == 0 && out[0] == '/' && !strchr(out, ':')) {
+            struct stat st;
+            if (stat(out, &st) == 0 && S_ISDIR(st.st_mode)) snprintf(droot[d], sizeof droot[d], "%s", out);
+        }
+    }
+    for (int d = 3; d < 26; d++) if (droot[d][0] && !strcmp(droot[d], droot[2])) droot[d][0] = 0;   /* (a drive that isn't: as C:) */
+}
+static char *to_os2(const char *h)
+{
+    know_roots();
+    int best = -1; size_t bl = 0;
+    for (int d = 2; d < 26; d++) {
+        size_t l = strlen(droot[d]);
+        if (!l) continue;
+        int root = l == 1;
+        if ((root || (!strncmp(h, droot[d], l) && (h[l] == '/' || !h[l]))) && (best < 0 || l > bl)) { best = d; bl = l; }
+    }
+    if (best < 0) return adup(h);
+    const char *rest = h + (bl == 1 ? 1 : bl);
+    if (*rest == '/') rest++;
+    char *r = afmt("%c:\\%s", 'A' + best, rest);
+    for (char *c = r; *c; c++) if (*c == '/') *c = '\\';
+    return r;
+}
 typedef struct { char name[256]; FILE *f; int mode; } stream_t;  /* (mode: 0 read, 1 write) */
 static stream_t streams[16];
-static FILE *stream_get(const char *name, int write)
+static FILE *stream_get(const char *name0, int write)
 {
+    const char *name = to_host(name0);
     for (int i = 0; i < 16; i++) if (streams[i].f && !strcmp(streams[i].name, name)) {
         if (streams[i].mode == write) return streams[i].f;
         fclose(streams[i].f); streams[i].f = 0;
@@ -939,6 +1001,64 @@ static FILE *stream_get(const char *name, int write)
         return f;
     }
     return 0;
+}
+/* SysFileTree (spec, stem, options): F files, D directories, B both, S into subdirectories, O names only, T and L time formats */
+static void tree_walk(const char *dir, const char *pat, const char *opt, const char *stem, long *k)
+{
+    DIR *d = opendir(dir[0] ? dir : ".");
+    if (!d) return;
+    int files = !strchr(opt, 'D') || strchr(opt, 'B'), dirs = !strchr(opt, 'F') || strchr(opt, 'B');
+    if (strchr(opt, 'F') && !strchr(opt, 'B')) dirs = 0;
+    if (strchr(opt, 'D') && !strchr(opt, 'B')) files = 0;
+    char **subs = 0; int ns = 0;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        char path[1024];
+        snprintf(path, sizeof path, "%s%s%s", dir, dir[0] && dir[strlen(dir) - 1] != '/' ? "/" : "", e->d_name);
+        struct stat st;
+        if (stat(path, &st)) continue;
+        int isdir = S_ISDIR(st.st_mode);
+        if (isdir && strchr(opt, 'S')) { subs = realloc(subs, (size_t)(ns + 1) * sizeof *subs); subs[ns++] = strdup(path); }
+        if (fnmatch(pat, e->d_name, FNM_CASEFOLD) && strcmp(pat, "*.*")) continue;
+        if (isdir ? !dirs : !files) continue;
+        char *full = path[0] == '/' ? to_os2(path) : adup(path);
+        if (path[0] != '/') for (char *c = full; *c; c++) if (*c == '/') *c = '\\';
+        char *line;
+        if (strchr(opt, 'O')) line = full;
+        else {
+            struct tm tm; localtime_r(&st.st_mtime, &tm);
+            char at[6] = { isdir ? '-' : 'A', isdir ? 'D' : '-', e->d_name[0] == '.' ? 'H' : '-', access(path, W_OK) ? 'R' : '-', '-', 0 };
+            if (strchr(opt, 'L')) line = afmt("%04d-%02d-%02d %02d:%02d:%02d %10lld  %s  %s", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec, (long long)st.st_size, at, full);
+            else if (strchr(opt, 'T')) line = afmt("%02d/%02d/%02d/%02d/%02d %10lld  %s  %s", tm.tm_year % 100, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, (long long)st.st_size, at, full);
+            else line = afmt("%2d/%02d/%02d %2d:%02d%c %10lld  %s  %s", tm.tm_mon + 1, tm.tm_mday, tm.tm_year % 100, tm.tm_hour % 12 ? tm.tm_hour % 12 : 12, tm.tm_min,
+                             tm.tm_hour < 12 ? 'a' : 'p', (long long)(isdir ? 0 : st.st_size), at, full);
+        }
+        (*k)++;
+        var_set(afmt("%s%ld", stem, *k), line);
+    }
+    closedir(d);
+    for (int i = 0; i < ns; i++) { tree_walk(subs[i], pat, opt, stem, k); free(subs[i]); }
+    free(subs);
+}
+static char *sys_file_tree(const char *spec, const char *stem0, const char *opt0)
+{
+    char *opt = adup(opt0); for (char *c = opt; *c; c++) *c = (char)toupper((unsigned char)*c);
+    char *stem = adup(stem0); for (char *c = stem; *c; c++) *c = (char)toupper((unsigned char)*c);
+    if (!*stem) return adup("2");
+    if (stem[strlen(stem) - 1] != '.') stem = concat(stem, ".", 0);
+    char *sp = adup(spec);
+    char *bs = strrchr(sp, '\\'), *fs = strrchr(sp, '/'), *cut = bs > fs ? bs : fs;
+    if (!cut && sp[0] && sp[1] == ':') cut = sp + 1;
+    char *dir = cut ? astr(sp, (size_t)(cut - sp + 1)) : adup(""), *pat = adup(cut ? cut + 1 : sp);
+    if (!*pat) pat = adup("*");
+    char *hd = *dir ? to_host(dir) : adup("");
+    size_t l = strlen(hd);
+    if (l > 1 && hd[l - 1] == '/') hd[l - 1] = 0;
+    long k = 0;
+    tree_walk(hd, pat, opt, stem, &k);
+    var_set(afmt("%s0", stem), fmtnum((double)k));
+    return adup("0");
 }
 static char *builtin(const char *nm, char **a, int na, int *found)
 {
@@ -1237,11 +1357,89 @@ static char *builtin(const char *nm, char **a, int na, int *found)
         if (toupper(o[0]) == 'C') {
             char u[32]; snprintf(u, sizeof u, "%s", cmd); for (char *c = u; *c; c++) *c = (char)toupper((unsigned char)*c);
             if (!strncmp(u, "CLOSE", 5)) { for (int i = 0; i < 16; i++) if (streams[i].f && !strcmp(streams[i].name, f)) { fclose(streams[i].f); streams[i].f = 0; } return adup("READY:"); }
-            if (!strncmp(u, "QUERY EXISTS", 12)) return access(f, F_OK) == 0 ? adup(f) : adup("");
+            if (!strncmp(u, "QUERY EXISTS", 12)) return access(to_host(f), F_OK) == 0 ? adup(f) : adup("");
             if (!strncmp(u, "OPEN", 4)) return stream_get(f, strstr(u, "WRITE") != 0) ? adup("READY:") : adup("ERROR:");
             return adup("");
         }
-        return adup(access(f, F_OK) == 0 ? "READY" : "NOTREADY");
+        return adup(access(to_host(f), F_OK) == 0 ? "READY" : "NOTREADY");
+    }
+    if (!strcmp(nm, "FILESPEC")) {                              /* (option D drive, P path, N name; of a file's spec) */
+        const char *o = S(0), *f = S(1);
+        const char *colon = f[0] && f[1] == ':' ? f + 2 : f, *bs = strrchr(f, '\\'), *fs = strrchr(f, '/'), *last = bs > fs ? bs : fs;
+        const char *name = last ? last + 1 : colon;
+        switch (toupper(o[0])) {
+        case 'D': return colon != f ? astr(f, 2) : adup("");
+        case 'P': return astr(colon, (size_t)(name - colon));
+        case 'N': return adup(name);
+        }
+        rx_error(40, "FILESPEC: an option D, P or N");
+    }
+    /* registering functions (all of these are here already: nothing to load) */
+    if (!strcmp(nm, "RXFUNCADD") || !strcmp(nm, "RXFUNCDROP")) return adup("0");
+    if (!strcmp(nm, "RXFUNCQUERY")) return adup("0");            /* (0: registered) */
+    if (!strcmp(nm, "SYSLOADFUNCS") || !strcmp(nm, "SYSDROPFUNCS")) return adup("");
+    /* RexxUtil */
+    if (!strcmp(nm, "SYSFILETREE")) return sys_file_tree(S(0), S(1), arg_str(a, na, 2, "B"));
+    if (!strcmp(nm, "SYSFILEDELETE")) { const char *h = to_host(S(0)); if (access(h, F_OK)) return adup("2"); return adup(unlink(h) ? "5" : "0"); }
+    if (!strcmp(nm, "SYSMKDIR")) return adup(mkdir(to_host(S(0)), 0755) ? (access(to_host(S(0)), F_OK) == 0 ? "5" : "3") : "0");
+    if (!strcmp(nm, "SYSRMDIR")) return adup(rmdir(to_host(S(0))) ? "16" : "0");
+    if (!strcmp(nm, "SYSSLEEP")) { double v = num(S(0)); fflush(stdout); struct timespec ts = { (time_t)v, (long)((v - trunc(v)) * 1e9) }; nanosleep(&ts, 0); return adup(""); }
+    if (!strcmp(nm, "SYSCLS")) { fputs("\033[2J\033[H", stdout); return adup(""); }
+    if (!strcmp(nm, "SYSOS2VER")) return adup("2.45");          /* (Warp 4.52's) */
+    if (!strcmp(nm, "SYSBOOTDRIVE")) return adup("C:");
+    if (!strcmp(nm, "SYSTEXTSCREENSIZE")) { struct winsize ws; if (ioctl(1, TIOCGWINSZ, &ws) == 0 && ws.ws_row) return afmt("%d %d", ws.ws_row, ws.ws_col); return adup("25 80"); }
+    if (!strcmp(nm, "SYSDRIVEMAP")) {
+        know_roots();
+        char *r = adup(""); int st = toupper(arg_str(a, na, 0, "C")[0]) - 'A';
+        if (os2dev < 0) return adup("C:");
+        for (int d = st < 2 ? 2 : st; d < 26; d++) if (droot[d][0]) r = concat(r, afmt("%c:", 'A' + d), *r != 0);
+        return r;
+    }
+    if (!strcmp(nm, "SYSGETKEY")) {
+        struct termios t0, t1; int raw = tcgetattr(0, &t0) == 0;
+        fflush(stdout);
+        if (raw) { t1 = t0; t1.c_lflag &= (tcflag_t)~(ICANON | (toupper(arg_str(a, na, 0, "E")[0]) == 'N' ? ECHO : 0)); t1.c_cc[VMIN] = 1; t1.c_cc[VTIME] = 0; tcsetattr(0, TCSANOW, &t1); }
+        int c = getchar();
+        if (raw) tcsetattr(0, TCSANOW, &t0);
+        char b[2] = { (char)(c == EOF ? 0 : c), 0 };
+        return adup(b);
+    }
+    if (!strcmp(nm, "SYSTEMPFILENAME")) {
+        const char *tp = S(0), *filler = arg_str(a, na, 1, "?");
+        static int seeded; if (!seeded) { srand((unsigned)time(0) ^ (unsigned)getpid()); seeded = 1; }
+        for (int tries = 0; tries < 1000; tries++) {
+            char *r = adup(tp);
+            for (char *c = r; *c; c++) if (*c == filler[0]) *c = (char)('0' + rand() % 10);
+            if (access(to_host(r), F_OK) != 0) return r;
+        }
+        return adup("");
+    }
+    if (!strcmp(nm, "SYSSEARCHPATH")) {
+        const char *ev = getenv(S(0)), *f = S(1);
+        if (!ev) return adup("");
+        char *list = adup(ev);
+        for (char *d = strtok(list, ";:"); d; d = strtok(0, ";:")) {
+            char *cand = afmt("%s%s%s", d, d[strlen(d) - 1] == '\\' || d[strlen(d) - 1] == '/' ? "" : "/", f);
+            if (access(to_host(cand), F_OK) == 0) { char *h = to_host(cand); return h[0] == '/' ? to_os2(h) : cand; }
+        }
+        return adup("");
+    }
+    if (!strcmp(nm, "SYSFILESEARCH")) {                          /* (target, file, stem, options: C case, N line numbers) */
+        const char *tg = S(0), *o = arg_str(a, na, 3, "");
+        FILE *fp = fopen(to_host(S(1)), "r");
+        if (!fp) return adup("3");
+        int cs = strchr(o, 'C') || strchr(o, 'c'), ln = strchr(o, 'N') || strchr(o, 'n');
+        char *stem = adup(S(2)); for (char *c = stem; *c; c++) *c = (char)toupper((unsigned char)*c);
+        if (stem[strlen(stem) - 1] != '.') stem = concat(stem, ".", 0);
+        char *b = 0; size_t cap = 0; long k = 0, lno = 0;
+        while (getline(&b, &cap, fp) > 0) {
+            lno++;
+            size_t l = strlen(b); while (l && (b[l - 1] == '\n' || b[l - 1] == '\r')) b[--l] = 0;
+            if (cs ? strstr(b, tg) != 0 : strcasestr(b, tg) != 0) { k++; var_set(afmt("%s%ld", stem, k), ln ? afmt("%ld %s", lno, b) : b); }
+        }
+        free(b); fclose(fp);
+        var_set(afmt("%s0", stem), fmtnum((double)k));
+        return adup("0");
     }
     #undef S
     #undef N
