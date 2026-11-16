@@ -569,7 +569,8 @@ platform-specific are new code.
    `os2cmd /C "line"`; `userland/tests/rexx/run.sh` builds it on the build
    machine and compares `test.cmd`'s output with `test.out` and `util.cmd`'s
    (RexxUtil) with `util.out` `traps.cmd`'s (conditions) with `traps.out` and `ext.cmd`'s (external
-   routines: `extsub.cmd`) with `ext.out`. OS/2 paths in its file functions go through
+   routines: `extsub.cmd`) with `ext.out`, `queue.cmd`'s (the data queue,
+   RXQUEUE, NOTREADY) with `queue.out`. OS/2 paths in its file functions go through
    `/dev/os2cmd`'s resolve ioctl (drive letters, the session's directory).
 
    `userland/apps/os2cmd.c` relays a terminal to `/dev/os2cmd`, which runs

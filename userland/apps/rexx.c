@@ -20,7 +20,9 @@
  * ON ERROR/FAILURE/HALT (DELAY while the handler runs); RC, SIGL,
  * CONDITION(), ERRORTEXT(), SOURCELINE(). External routines: NAME.CMD in the
  * current directory, the program's or PATH's, run in a process of its own
- * (its own variables), its value back through a pipe. Any other clause is a command: its value goes to the shell (OS/2's,
+ * (its own variables), its value back through a pipe. The external data
+ * queue: PUSH, QUEUE, PULL (the queue first), QUEUED(), and "command |
+ * RXQUEUE [/LIFO]" puts a command's output on it. Any other clause is a command: its value goes to the shell (OS/2's,
  * /h/OS2/os2cmd, on the system; REXX_SHELL to choose), RC its result. */
 #define _GNU_SOURCE
 #include <ctype.h>
@@ -589,6 +591,25 @@ static void syntax_trap(int n, const char *msg)
     cond_jump(C_SYNTAX, msg, rc);
 }
 static void novalue(const char *name) { if (acts && traps[C_NOVALUE].on) cond_jump(C_NOVALUE, name, 0); }
+static char *pend_notready;                                      /* (CALL ON NOTREADY: its handler at the clause's end) */
+static void notready(const char *stream)
+{
+    trap_t *tr = &traps[C_NOTREADY];
+    if (!acts || !tr->on || tr->delayed) return;
+    if (!tr->call) cond_jump(C_NOTREADY, stream, 0);
+    if (!pend_notready) pend_notready = strdup(stream);
+}
+/* the external data queue: PUSH (to its head), QUEUE (its tail), PULL (from its head, else the keyboard), QUEUED(),
+ * and a command's output through "| RXQUEUE" */
+static char **queue_v;
+static int queue_n, queue_cap;
+static void queue_add(const char *line, int lifo)
+{
+    if (queue_n == queue_cap) { queue_cap = queue_cap ? queue_cap * 2 : 32; queue_v = realloc(queue_v, (size_t)queue_cap * sizeof *queue_v); }
+    if (lifo) { memmove(queue_v + 1, queue_v, (size_t)queue_n * sizeof *queue_v); queue_v[0] = strdup(line); }
+    else queue_v[queue_n] = strdup(line);
+    queue_n++;
+}
 static int find_label(const char *name);
 static char *call_routine(int label, char **args, int nargs, int as_function);
 static int raise_cond(int c, const char *desc)                   /* (between clauses: ERROR, FAILURE, HALT, NOTREADY) */
@@ -658,16 +679,44 @@ static int instr_end(int i)                                      /* (the clause 
 }
 static int exec_range(int from, int to);
 static int exec_clause(int *ip);
-static int run_command(const char *cmd)
+static int run_command(const char *cmd0)
 {
     fflush(stdout);
+    /* "command | RXQUEUE [name] [/FIFO|/LIFO]": the command's output lines onto the queue */
+    char *cmd = adup(cmd0);
+    int toq = 0;
+    char *bar = strrchr(cmd, '|');
+    if (bar) {
+        char *w = bar + 1;
+        while (*w == ' ') w++;
+        if (!strncasecmp(w, "RXQUEUE", 7) && (!w[7] || w[7] == ' ')) {
+            toq = 1;
+            char *u = adup(w); for (char *c = u; *c; c++) *c = (char)toupper((unsigned char)*c);
+            if (strstr(u, "/LIFO")) toq = 2;
+            *bar = 0;
+        }
+    }
+    int pp[2] = { -1, -1 };
+    if (toq && pipe(pp)) toq = 0;
     const char *sh = getenv("REXX_SHELL");
     if (!sh) sh = access("/h/OS2/os2cmd", X_OK) == 0 ? "/h/OS2/os2cmd" : "/bin/sh";
     pid_t pid = fork();
     if (!pid) {
+        if (toq) { dup2(pp[1], 1); close(pp[0]); close(pp[1]); }
         if (strstr(sh, "os2cmd")) execl(sh, sh, "/C", cmd, (char *)0);   /* (the line as it is: os2cmd /C) */
         else execl(sh, sh, "-c", cmd, (char *)0);
         _exit(127);
+    }
+    if (toq) {
+        close(pp[1]);
+        FILE *in = fdopen(pp[0], "r");
+        char *b = 0; size_t cap = 0; ssize_t r;
+        while ((r = getline(&b, &cap, in)) > 0 || (r < 0 && errno == EINTR && !feof(in))) {
+            if (r <= 0) { clearerr(in); continue; }
+            while (r && (b[r - 1] == '\n' || b[r - 1] == '\r')) b[--r] = 0;
+            queue_add(b, toq == 2);
+        }
+        free(b); fclose(in);
     }
     int st = 0;
     while (waitpid(pid, &st, 0) < 0) { }
@@ -891,6 +940,7 @@ static int exec_clause(int *ip)
         char kw[16];
         snprintf(kw, sizeof kw, "%.*s", (int)(t[0].n < 15 ? t[0].n : 15), t[0].s);
         for (char *p = kw; *p; p++) *p = (char)toupper((unsigned char)*p);
+        if (!strcmp(kw, "PUSH") || !strcmp(kw, "QUEUE")) { queue_add(eval_toks(t, 1, n), kw[0] == 'P'); goto done; }
         if (!strcmp(kw, "SAY")) { char *v = eval_toks(t, 1, n); fputs(v, stdout); fputc('\n', stdout); goto done; }
         if (!strcmp(kw, "NOP") || !strcmp(kw, "TRACE") || !strcmp(kw, "ADDRESS") || !strcmp(kw, "OPTIONS")) goto done;
         if (!strcmp(kw, "IF")) {
@@ -1016,7 +1066,12 @@ static int exec_clause(int *ip)
                         if (e == n) break;
                     }
                 }
-            } else if (!strcasecmp(how, "PULL")) parse_template(get_line_stdin(), t, k, n, upper);
+            } else if (!strcasecmp(how, "PULL")) {
+                char *line;
+                if (queue_n) { line = adup(queue_v[0]); free(queue_v[0]); memmove(queue_v, queue_v + 1, (size_t)--queue_n * sizeof *queue_v); }
+                else line = get_line_stdin();
+                parse_template(line, t, k, n, upper);
+            }
             else if (!strcasecmp(how, "LINEIN")) parse_template(get_line_stdin(), t, k, n, upper);
             else if (!strcasecmp(how, "VAR")) { const char *v = var_get(var_name(&t[k])); parse_template(v ? v : "", t, k + 1, n, upper); }
             else if (!strcasecmp(how, "VALUE")) {
@@ -1035,6 +1090,11 @@ static int exec_clause(int *ip)
         if (rc) res = raise_cond(rc < 0 || rc == 127 ? C_FAILURE : C_ERROR, cmd);   /* (127: not run at all) */
     }
 done:
+    if (pend_notready && res == R_NEXT) {
+        char *d = pend_notready; pend_notready = 0;
+        res = raise_cond(C_NOTREADY, d);
+        free(d);
+    }
     arelease(m);
     return res;
 }
@@ -1438,7 +1498,7 @@ static char *builtin(const char *nm, char **a, int na, int *found)
         if (na > 1 && a[1]) var_set(vn, a[1]);
         return old;
     }
-    if (!strcmp(nm, "QUEUED")) return adup("0");
+    if (!strcmp(nm, "QUEUED")) return fmtnum(queue_n);
     if (!strcmp(nm, "SOURCELINE")) {
         if (!na || !a[0]) return fmtnum(nsrc);
         int k = (int)num(S(0));
@@ -1480,12 +1540,25 @@ static char *builtin(const char *nm, char **a, int na, int *found)
         const char *f = S(0);
         if (!*f) return get_line_stdin();
         FILE *fp = stream_get(f, 0);
-        if (!fp) return adup("");
+        if (!fp) { notready(f); return adup(""); }
         char *b = 0; size_t cap = 0;
         ssize_t r = getline(&b, &cap, fp);
         char *out = adup("");
         if (r > 0) { while (r && (b[r - 1] == '\n' || b[r - 1] == '\r')) b[--r] = 0; out = adup(b); }
         free(b);
+        if (r <= 0) notready(f);                                  /* (the end of it) */
+        return out;
+    }
+    if (!strcmp(nm, "CHARIN")) {                                  /* (stream, -, count: 1) */
+        const char *f = S(0);
+        long cnt = na > 2 && a[2] ? (long)num(a[2]) : 1;
+        FILE *fp = *f ? stream_get(f, 0) : stdin;
+        if (!fp) { notready(f); return adup(""); }
+        if (fp == stdin) fflush(stdout);
+        char *out = amalloc((size_t)cnt + 1);
+        size_t got = cnt > 0 ? fread(out, 1, (size_t)cnt, fp) : 0;
+        out[got] = 0;
+        if ((long)got < cnt) { clearerr(fp); notready(*f ? f : "STDIN"); }
         return out;
     }
     if (!strcmp(nm, "LINEOUT")) {
@@ -1496,7 +1569,7 @@ static char *builtin(const char *nm, char **a, int na, int *found)
             return adup("0");
         }
         FILE *fp = stream_get(f, 1);
-        if (!fp) return adup("1");
+        if (!fp) { notready(f); return adup("1"); }
         fputs(S(1), fp); fputc('\n', fp); fflush(fp);
         return adup("0");
     }
@@ -1504,7 +1577,7 @@ static char *builtin(const char *nm, char **a, int na, int *found)
         const char *f = S(0);
         if (!*f) { fputs(S(1), stdout); return adup("0"); }
         FILE *fp = stream_get(f, 1);
-        if (!fp) return fmtnum((double)strlen(S(1)));
+        if (!fp) { notready(f); return fmtnum((double)strlen(S(1))); }
         fputs(S(1), fp); fflush(fp);
         return adup("0");
     }

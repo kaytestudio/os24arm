@@ -1,0 +1,9 @@
+queued: 3
+pulled: FIRST second third 0
+from a command: 2 rc 0
+   three
+   one two
+notready: NOTREADY SIGNAL no_such_file.txt
+at the end: NOTREADY CALL DELAY
+lines read: 2
+charin: ab c 0A6465
