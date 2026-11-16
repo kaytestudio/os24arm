@@ -234,12 +234,12 @@ static int format_f2fs_image(int fd)
 
 static int g_failures = 0;
 
-#define CHECK(cond, msg) do { \
+#define CHECK(cond, ...) do { \
     if (!(cond)) { \
-        printf("FAIL: %s (%s:%d)\n", msg, __FILE__, __LINE__); \
+        printf("FAIL: "); printf(__VA_ARGS__); printf(" (%s:%d)\n", __FILE__, __LINE__); \
         g_failures++; \
     } else { \
-        printf("  ok: %s\n", msg); \
+        printf("  ok: "); printf(__VA_ARGS__); printf("\n"); \
     } \
 } while (0)
 
@@ -272,8 +272,15 @@ int main(int argc, char **argv)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
 
+    if (argc == 3 && !strcmp(argv[1], "--format")) {    /* just a fresh, empty volume (42 MB) */
+        int fd = open(argv[2], HOST_O_RDWR_CREAT, 0644);
+        if (fd < 0) { perror("open image"); return 2; }
+        int r = format_f2fs_image(fd);
+        close(fd);
+        return r ? 2 : 0;
+    }
     if (argc != 2) {
-        fprintf(stderr, "usage: %s <image-path>\n", argv[0]);
+        fprintf(stderr, "usage: %s <image-path> | --format <image-path>\n", argv[0]);
         return 2;
     }
 
@@ -399,6 +406,89 @@ int main(int argc, char **argv)
     while (mnt.fs->readdir(&mnt, dpriv, &ent) == VFS_OK) count++;
     CHECK(count == 60, "listing shows all 60 subdirectories");
     mnt.fs->closedir(&mnt, dpriv);
+    printf("== many small writes in one open (as stdio does) ==\n");
+    {
+        static uint8_t pat[110000], back[110000];
+        for (uint32_t i = 0; i < sizeof pat; i++) pat[i] = (uint8_t)(i * 7 + (i >> 9));
+        void *wf = NULL;
+        r = mnt.fs->open(&mnt, "/small.bin", O_WRONLY | O_CREAT, &wf);
+        CHECK(r == VFS_OK, "create /small.bin");
+        uint32_t done = 0, bad = 0;
+        while (r == VFS_OK && done < sizeof pat) {
+            uint32_t n = sizeof pat - done < 1024 ? (uint32_t)(sizeof pat - done) : 1024, got = 0;
+            if (mnt.fs->write(&mnt, wf, pat + done, n, &got) != VFS_OK || got != n) { bad = 1; break; }
+            done += n;
+        }
+        if (wf) mnt.fs->close(&mnt, wf);
+        CHECK(!bad && done == sizeof pat, "110000 bytes written 1 KB at a time (%u)", done);
+        r = mnt.fs->stat(&mnt, "/small.bin", &st);
+        CHECK(r == VFS_OK && st.size == sizeof pat, "its size (%u)", (unsigned)st.size);
+        void *rf = NULL;
+        uint32_t tot = 0, got = 0;
+        if (mnt.fs->open(&mnt, "/small.bin", O_RDONLY, &rf) == VFS_OK) {
+            while (tot < sizeof back && mnt.fs->read(&mnt, rf, back + tot, sizeof back - tot, &got) == VFS_OK && got) tot += got;
+            mnt.fs->close(&mnt, rf);
+        }
+        CHECK(tot == sizeof pat && memcmp(back, pat, sizeof pat) == 0, "read back the same (%u bytes)", tot);
+    }
+
+    printf("== space: 30 files written, rewritten ==\n");
+    {
+        static uint8_t blk[20000];
+        memset(blk, 'q', sizeof blk);
+        int ok = 1;
+        for (int round = 0; round < 3 && ok; round++)
+            for (int i = 0; i < 10 && ok; i++) {
+                char nm[32]; snprintf(nm, sizeof nm, "/f%02d.dat", i);
+                void *wf = NULL; uint32_t got = 0;
+                if (mnt.fs->open(&mnt, nm, O_WRONLY | O_CREAT | O_TRUNC, &wf) != VFS_OK) { ok = 0; printf("  open %s failed (round %d)\n", nm, round); break; }
+                if (mnt.fs->write(&mnt, wf, blk, sizeof blk, &got) != VFS_OK || got != sizeof blk) { ok = 0; printf("  write %s failed (round %d)\n", nm, round); }
+                mnt.fs->close(&mnt, wf);
+            }
+        CHECK(ok, "rewrites don't run out of space");
+    }
+
+    printf("== space reclaim: line-at-a-time writes, rewrites past the volume's size ==\n");
+    {
+        void *wf = NULL; uint32_t got = 0, n = 0; int ok = 1;
+        r = mnt.fs->open(&mnt, "/lines.txt", O_WRONLY | O_CREAT | O_TRUNC, &wf);
+        for (int i = 1; r == VFS_OK && i <= 20000; i++) {    /* (a line a write: stdio, line-buffered) */
+            char ln[16]; int l = snprintf(ln, sizeof ln, "%d\n", i);
+            if (mnt.fs->write(&mnt, wf, ln, (uint32_t)l, &got) != VFS_OK || got != (uint32_t)l) { ok = 0; printf("  line %d failed\n", i); break; }
+            n += (uint32_t)l;
+        }
+        if (wf) mnt.fs->close(&mnt, wf);
+        r = mnt.fs->stat(&mnt, "/lines.txt", &st);
+        CHECK(ok && r == VFS_OK && st.size == n && n == 108894, "20000 one-line writes (%u bytes, size %u) - node blocks reclaimed", n, (unsigned)st.size);
+        static uint8_t mb[1 << 20];
+        for (uint32_t i = 0; i < sizeof mb; i++) mb[i] = (uint8_t)(i * 13);
+        ok = 1;
+        for (int round = 0; round < 50 && ok; round++) {
+            mb[0] = (uint8_t)round;
+            wf = NULL;
+            if (mnt.fs->open(&mnt, "/mb.bin", O_WRONLY | O_CREAT | O_TRUNC, &wf) != VFS_OK) { ok = 0; break; }
+            if (mnt.fs->write(&mnt, wf, mb, sizeof mb, &got) != VFS_OK || got != sizeof mb) { ok = 0; printf("  round %d: wrote %u\n", round, got); }
+            mnt.fs->close(&mnt, wf);
+        }
+        CHECK(ok, "a 1 MB file rewritten 50 times (50 MB through a 32 MB main area)");
+        uint32_t sum = 0;
+        for (uint32_t seg = 0; seg < fmnt->main_segments; seg++) {
+            uint8_t blk[F2FS_BLKSIZE];
+            uint32_t b = seg / SIT_ENTRY_PER_BLOCK;
+            pread(fd, blk, sizeof blk, (off_t)(fmnt->sb.sit_blkaddr + b) * F2FS_BLKSIZE);
+            sum += ((struct f2fs_sit_block *)blk)->entries[seg % SIT_ENTRY_PER_BLOCK].vblocks & 0x3FF;
+        }
+        CHECK(sum == fmnt->ckpt.valid_block_count, "SIT's live blocks (%u) are the checkpoint's count (%u)", sum, (unsigned)fmnt->ckpt.valid_block_count);
+    }
+
+    printf("== rmdir ==\n");
+    r = mnt.fs->mkdir(&mnt, "/rmd");
+    CHECK(r == VFS_OK, "mkdir /rmd");
+    r = mnt.fs->unlink(&mnt, "/rmd");
+    CHECK(r == VFS_OK, "an empty directory goes (%d)", r);
+    r = mnt.fs->stat(&mnt, "/rmd", &st);
+    CHECK(r != VFS_OK, "stat fails after it");
+
 
     printf("== unmount ==\n");
     r = mnt.fs->unmount(&mnt);

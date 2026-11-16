@@ -14,6 +14,7 @@
 
 #include "types.h"
 #include "vfs.h"
+#include "blkdev.h"
 #include "f2fs_disk.h"
 
 /* ── Mount data ───────────────────────────────────────────────────────────── */
@@ -50,6 +51,7 @@ typedef struct {
 /* ── Public API ───────────────────────────────────────────────────────────── */
 
 int       f2fs_init(const char *params);
+int       f2fs_probe(blkdev_t *dev);         /* 1: an f2fs superblock */
 vfs_fs_t *f2fs_get_fs(void);
 
 #endif /* F2FS_H */

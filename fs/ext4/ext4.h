@@ -10,6 +10,7 @@
 
 #include "types.h"
 #include "vfs.h"
+#include "blkdev.h"
 
 /* ── Define uint64_t if not available ───────────────────────────────────── */
 /* Guards on UINT64_MAX (a macro, so actually visible to the preprocessor -
@@ -298,6 +299,7 @@ typedef struct {
 
 int ext4_init(const char *params);
 vfs_fs_t* ext4_get_fs(void);
+int ext4_probe(blkdev_t *dev);         /* 1: an ext4 superblock */
 
 #endif /* EXT4_H */
 

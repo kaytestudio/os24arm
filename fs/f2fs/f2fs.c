@@ -636,14 +636,22 @@ static int f2fs_rename(vfs_mount_t *vmnt, const char *old, const char *nw)
 
 /* ── Driver init / VFS wiring ────────────────────────────────────────────── */
 
+/* An f2fs superblock (its magic, 1 KB in)? */
+int f2fs_probe(blkdev_t *dev)
+{
+    if (!dev || dev->sector_size == 0 || dev->sector_size > 1024) return 0;
+    uint8_t raw[1024];
+    if (blk_read(dev, F2FS_SUPER_OFFSET / dev->sector_size, 1024 / dev->sector_size, raw) != 0) return 0;
+    return ((const struct f2fs_super_block *)raw)->magic == F2FS_SUPER_MAGIC;
+}
+
+/* C: (the GPT "C" partition, as ext4_init/btrfs_init take it) when it's f2fs. */
 int f2fs_init(const char *params)
 {
     (void)params;
-    blkdev_t *dev = blkdev_get_by_name("disk0");
-    if (!dev) {
-        kprintf("[F2FS] No block device found; not mounting\n");
-        return 0;
-    }
+    blkdev_t *dev = blkdev_get_by_name("disk0p2");
+    if (!dev) dev = blkdev_get_by_name("C");
+    if (!dev || !f2fs_probe(dev)) return 0;              /* (not f2fs: another driver's) */
     int r = vfs_mount("/", f2fs_get_fs(), dev);
     if (r != VFS_OK) {
         kprintf("[F2FS] Mount failed: %d\n", r);

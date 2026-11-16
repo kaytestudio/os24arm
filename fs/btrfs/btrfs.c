@@ -816,6 +816,14 @@ static int btrfs_rename(vfs_mount_t *mnt, const char *old, const char *nw)
 
 /* ── Driver init / VFS wiring ────────────────────────────────────────────── */
 
+/* A btrfs superblock (its magic, 64 KB in)? */
+int btrfs_probe(blkdev_t *dev)
+{
+    static uint8_t sb_raw[4096];
+    if (!dev || btrfs_read_phys(dev, BTRFS_SUPER_OFFSET, sb_raw, sizeof sb_raw) != VFS_OK) return 0;
+    return memcmp(((const btrfs_super_t *)sb_raw)->magic, BTRFS_MAGIC_STR, 8) == 0;
+}
+
 int btrfs_init(const char *params)
 {
     (void)params;

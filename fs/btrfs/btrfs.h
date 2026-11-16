@@ -14,6 +14,7 @@
 #include "types.h"
 #include "vfs.h"
 #include "btrfs_disk.h"
+#include "blkdev.h"
 
 #define BTRFS_MAX_CHUNKS 32
 #define BTRFS_MAX_TREE_HEIGHT 8
@@ -82,6 +83,7 @@ typedef struct {
 } btrfs_dir_t;
 
 int btrfs_init(const char *params);
+int btrfs_probe(blkdev_t *dev);        /* 1: a btrfs superblock */
 vfs_fs_t *btrfs_get_fs(void);
 
 #endif /* BTRFS_H */

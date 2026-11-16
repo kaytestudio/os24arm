@@ -776,13 +776,55 @@ int ext4_do_mkdir(ext4_mount_t *mnt, const char *path)
     return ext4_write_inode(mnt, parent_ino, &parent_inode);
 }
 
+/* Only "." and ".." in it? (1 yes, 0 no, <0 an error) */
+static int ext4_dir_is_empty(ext4_mount_t *mnt, ext4_inode_t *dir_inode)
+{
+    uint64_t file_size = ext4_inode_size(dir_inode);
+    uint32_t num_blocks = (uint32_t)((file_size + mnt->block_size - 1) / mnt->block_size);
+    for (uint32_t lb = 0; lb < num_blocks; lb++) {
+        uint64_t phys = 0;
+        if (ext4_map_block(mnt, dir_inode, lb, &phys) != VFS_OK) return VFS_ERR_IO;
+        if (phys == 0) continue;
+        if (ext4_read_block(mnt, phys, mnt->block_buffer) != VFS_OK) return VFS_ERR_IO;
+        uint32_t off = 0;
+        while (off + 8 <= mnt->block_size) {
+            ext4_dirent_t *de = (ext4_dirent_t *)(mnt->block_buffer + off);
+            if (de->rec_len < 8) break;
+            if (de->inode != 0 && !(de->name_len == 1 && de->name[0] == '.') &&
+                !(de->name_len == 2 && de->name[0] == '.' && de->name[1] == '.'))
+                return 0;
+            off += de->rec_len;
+        }
+    }
+    return 1;
+}
+
+/* An inode nothing refers to any more: marked deleted (no links, a deletion time - what e2fsck goes by), its
+ * blocks and its bitmap bit freed. */
+static int ext4_release_inode(ext4_mount_t *mnt, uint32_t ino, ext4_inode_t *inode, int was_dir)
+{
+    int r = ext4_free_inode_blocks(mnt, inode);
+    if (r != VFS_OK) return r;
+    inode->i_links_count = 0;
+    /* a deletion time: any - but not below the inode count, or e2fsck takes it for an orphan list's next */
+    inode->i_dtime = mnt->sb.s_wtime > mnt->sb.s_inodes_count ? mnt->sb.s_wtime : 0x60000000u;
+    if ((r = ext4_write_inode(mnt, ino, inode)) != VFS_OK) return r;
+    return ext4_free_inode(mnt, ino, was_dir);
+}
+
 int ext4_do_unlink(ext4_mount_t *mnt, const char *path)
 {
     uint32_t ino;
     ext4_inode_t inode;
     int r = ext4_resolve_path(mnt, path, &ino, &inode);
     if (r != VFS_OK) return r;
-    if ((inode.i_mode & EXT4_S_IFMT) == EXT4_S_IFDIR) return VFS_ERR_ISDIR;
+    int is_dir = (inode.i_mode & EXT4_S_IFMT) == EXT4_S_IFDIR;
+    if (is_dir) {                                       /* (rmdir: only an empty one, not the root) */
+        if (ino == EXT4_ROOT_INO) return VFS_ERR_INVAL;
+        int e = ext4_dir_is_empty(mnt, &inode);
+        if (e < 0) return e;
+        if (!e) return VFS_ERR_ISDIR;
+    }
 
     char parent_path[VFS_PATH_MAX];
     const char *base; int base_len;
@@ -794,13 +836,15 @@ int ext4_do_unlink(ext4_mount_t *mnt, const char *path)
 
     r = ext4_dir_remove(mnt, &parent_inode, base, base_len);
     if (r != VFS_OK) return r;
+    if (is_dir) {                                       /* its ".." pointed at the parent */
+        if (ext4_resolve_path(mnt, parent_path, &parent_ino, &parent_inode) != VFS_OK) return VFS_ERR_IO;
+        if (parent_inode.i_links_count > 2) parent_inode.i_links_count--;
+        if ((r = ext4_write_inode(mnt, parent_ino, &parent_inode)) != VFS_OK) return r;
+    }
 
     /* Every file this driver creates has links_count == 1 (no hardlink
      * support anywhere in this project) - always free immediately. */
-    r = ext4_free_inode_blocks(mnt, &inode);
-    if (r != VFS_OK) return r;
-
-    return ext4_free_inode(mnt, ino, 0);
+    return ext4_release_inode(mnt, ino, &inode, is_dir);
 }
 
 int ext4_do_rename(ext4_mount_t *mnt, const char *old_path, const char *new_path)

@@ -241,6 +241,26 @@ int main(int argc, char **argv)
     CHECK(count == 80, "listing shows all 80 subdirectories");
     mnt.fs->closedir(&mnt, dpriv);
 
+    printf("== rmdir (unlink of a directory) and a file freed for good ==\n");
+    r = mnt.fs->mkdir(&mnt, "/rmd");
+    CHECK(r == VFS_OK, "mkdir /rmd");
+    r = mnt.fs->open(&mnt, "/rmd/f.txt", O_WRONLY | O_CREAT, &fpriv);
+    CHECK(r == VFS_OK, "create /rmd/f.txt");
+    if (r == VFS_OK) { mnt.fs->write(&mnt, fpriv, "x", 1, &actual); mnt.fs->close(&mnt, fpriv); }
+    r = mnt.fs->unlink(&mnt, "/rmd");
+    CHECK(r == VFS_ERR_ISDIR, "a directory with something in it stays");
+    r = mnt.fs->unlink(&mnt, "/rmd/f.txt");
+    CHECK(r == VFS_OK, "unlink /rmd/f.txt");
+    r = mnt.fs->unlink(&mnt, "/rmd");
+    CHECK(r == VFS_OK, "an empty one goes");
+    r = mnt.fs->stat(&mnt, "/rmd", &st);
+    CHECK(r != VFS_OK, "stat fails after it");
+    r = mnt.fs->unlink(&mnt, "/otherdir/moved/d079");
+    CHECK(r == VFS_OK, "rmdir one of the 80");
+    r = mnt.fs->unlink(&mnt, "/");
+    CHECK(r != VFS_OK, "the root doesn't go");
+    /* (nothing is created after this: e2fsck sees the freed inodes as they were left) */
+
     printf("== unmount ==\n");
     r = mnt.fs->unmount(&mnt);
     CHECK(r == VFS_OK, "unmount succeeds");

@@ -14,12 +14,15 @@
  *     warm/cold logs for node and data blocks as a flash placement
  *     heuristic, not a correctness requirement. This driver always
  *     allocates from log slot 0 (cur_node_segno[0]/cur_data_segno[0]).
- *   - **LFS-only, no GC/SSR, no space reclaim ever**: allocation always
- *     appends into the current open segment and rolls to a fresh
- *     all-free segment (found by scanning the SIT) when it fills. Delete
- *     paths (unlink/truncate/rename-over) never free blocks, nodes, or
- *     nids - the SIT/NAT never shrink. Same "never reclaims mid-session"
- *     philosophy as fs/btrfs/btrfs_write.c's bump allocator.
+ *   - **LFS, reclaiming whole segments, no GC/SSR**: allocation always
+ *     appends into the current open segment and rolls to an all-free
+ *     segment (found by scanning the SIT; never one of the open logs) when
+ *     it fills. A block that stops being live - a node block rewritten
+ *     elsewhere, a file's data and node blocks on truncate or unlink - is
+ *     invalidated in its SIT entry at once (valid map bit, vblocks), so a
+ *     segment whose blocks have all been superseded is free again. No
+ *     cleaner moves live blocks out of mostly-dead segments: a volume can
+ *     still fill with half-used ones. nids are never reused.
  *   - **Sequential nid allocation only**: new nids come from the
  *     checkpoint's own next_free_nid counter, bumped on every allocation,
  *     never reused.
@@ -108,6 +111,7 @@ static int write_sit_entry(f2fs_mount_t *mnt, uint32_t segno, const struct f2fs_
 static int alloc_free_segment(f2fs_mount_t *mnt, uint32_t *out_segno)
 {
     for (uint32_t segno = 0; segno < mnt->main_segments; segno++) {
+        if (segno == mnt->ckpt.cur_node_segno[0] || segno == mnt->ckpt.cur_data_segno[0]) continue;   /* (the open logs) */
         struct f2fs_sit_entry e;
         if (read_sit_entry(mnt, segno, &e) != VFS_OK) return VFS_ERR_IO;
         if ((e.vblocks & SIT_VBLOCKS_MASK) == 0) {
@@ -152,6 +156,28 @@ static int alloc_block(f2fs_mount_t *mnt, int is_node, uint32_t *out_blkaddr)
     return VFS_OK;
 }
 
+/* A block no longer live: its SIT bit cleared, the segment's count down (all superseded: a free segment again). */
+static int invalidate_block(f2fs_mount_t *mnt, uint32_t blkaddr, int is_node)
+{
+    if (blkaddr == NULL_ADDR || blkaddr == NEW_ADDR || blkaddr < mnt->sb.main_blkaddr) return VFS_OK;
+    uint32_t rel = blkaddr - mnt->sb.main_blkaddr, segno = rel / mnt->blocks_per_seg, off = rel % mnt->blocks_per_seg;
+    if (segno >= mnt->main_segments) return VFS_OK;
+    struct f2fs_sit_entry e;
+    if (read_sit_entry(mnt, segno, &e) != VFS_OK) return VFS_ERR_IO;
+    if (!bit_test(e.valid_map, off)) return VFS_OK;                  /* (already) */
+    e.valid_map[off / 8] &= (uint8_t)~(1u << (off % 8));
+    uint32_t v = e.vblocks & SIT_VBLOCKS_MASK;
+    if (v) v--;
+    e.vblocks = (uint16_t)((e.vblocks & ~SIT_VBLOCKS_MASK) | v);
+    if (write_sit_entry(mnt, segno, &e) != VFS_OK) return VFS_ERR_IO;
+    if (mnt->ckpt.valid_block_count) mnt->ckpt.valid_block_count--;
+    if (mnt->ckpt.user_block_count) mnt->ckpt.user_block_count--;
+    if (is_node && mnt->ckpt.valid_node_count) mnt->ckpt.valid_node_count--;
+    if (v == 0 && segno != mnt->ckpt.cur_node_segno[0] && segno != mnt->ckpt.cur_data_segno[0])
+        mnt->ckpt.free_segment_count++;
+    return VFS_OK;
+}
+
 /* ── NAT (nid allocation + entry write) ──────────────────────────────────── */
 
 static int alloc_nid(f2fs_mount_t *mnt, uint32_t *out_nid)
@@ -178,7 +204,8 @@ static int write_nat_entry(f2fs_mount_t *mnt, uint32_t nid, uint32_t ino, uint32
  * block and updates its NAT entry to point there. */
 static int f2fs_write_node(f2fs_mount_t *mnt, struct f2fs_node *node)
 {
-    uint32_t blkaddr;
+    uint32_t blkaddr, old = NULL_ADDR;
+    if (f2fs_get_node_blkaddr(mnt, node->footer.nid, &old) != VFS_OK) old = NULL_ADDR;   /* (where it was: superseded now) */
     if (alloc_block(mnt, /*is_node=*/1, &blkaddr) != VFS_OK) return VFS_ERR_NOSPACE;
 
     node->footer.cp_ver = mnt->ckpt.checkpoint_ver + 1;
@@ -188,7 +215,7 @@ static int f2fs_write_node(f2fs_mount_t *mnt, struct f2fs_node *node)
     if (write_nat_entry(mnt, node->footer.nid, node->footer.ino, blkaddr) != VFS_OK) return VFS_ERR_IO;
 
     mnt->ckpt.valid_node_count++;
-    return VFS_OK;
+    return invalidate_block(mnt, old, 1);
 }
 
 static int f2fs_write_inode(f2fs_mount_t *mnt, uint32_t ino, struct f2fs_inode *inode)
@@ -462,6 +489,47 @@ void f2fs_write_init_allocators(f2fs_mount_t *mnt)
     mnt->writable = 1;
 }
 
+/* A node no longer in use: its block invalidated, its NAT entry cleared. */
+static int release_node(f2fs_mount_t *mnt, uint32_t nid)
+{
+    uint32_t addr = NULL_ADDR;
+    if (!nid || f2fs_get_node_blkaddr(mnt, nid, &addr) != VFS_OK) return VFS_OK;
+    if (invalidate_block(mnt, addr, 1) != VFS_OK) return VFS_ERR_IO;
+    return write_nat_entry(mnt, nid, 0, NULL_ADDR);
+}
+
+/* Everything an inode's data takes: its data blocks and its direct node blocks (the inode itself stays). */
+static int release_data(f2fs_mount_t *mnt, struct f2fs_inode *inode)
+{
+    for (uint32_t i = 0; i < DEF_ADDRS_PER_INODE; i++)
+        if (inode->i_addr[i] && invalidate_block(mnt, inode->i_addr[i], 0) != VFS_OK) return VFS_ERR_IO;
+    for (int slot = 0; slot < 2; slot++) {
+        uint32_t nid = inode->i_nid[slot];
+        if (!nid) continue;
+        struct f2fs_node dnode;
+        if (f2fs_read_node(mnt, nid, &dnode) == VFS_OK)
+            for (uint32_t i = 0; i < DEF_ADDRS_PER_BLOCK; i++)
+                if (dnode.dn.addr[i] && invalidate_block(mnt, dnode.dn.addr[i], 0) != VFS_OK) return VFS_ERR_IO;
+        if (release_node(mnt, nid) != VFS_OK) return VFS_ERR_IO;
+    }
+    return VFS_OK;
+}
+
+/* No live dentries? (1 yes, 0 no, <0 an error) */
+static int dir_is_empty(f2fs_mount_t *mnt, struct f2fs_inode *dir_inode)
+{
+    uint32_t num_blocks = (uint32_t)((f2fs_inode_size(dir_inode) + F2FS_BLKSIZE - 1) / F2FS_BLKSIZE);
+    for (uint32_t lb = 0; lb < num_blocks; lb++) {
+        uint32_t phys = 0;
+        if (f2fs_map_block(mnt, dir_inode, lb, &phys) != VFS_OK) return VFS_ERR_IO;
+        if (phys == 0) continue;
+        if (f2fs_read_block(mnt, phys, mnt->block_buffer) != VFS_OK) return VFS_ERR_IO;
+        struct f2fs_dentry_block *db = (struct f2fs_dentry_block *)mnt->block_buffer;
+        for (uint32_t i = 0; i < SIZE_OF_DENTRY_BITMAP; i++) if (db->dentry_bitmap[i]) return 0;
+    }
+    return 1;
+}
+
 int f2fs_write_open(f2fs_mount_t *mnt, const char *path, int flags, f2fs_file_t **out_file)
 {
     uint32_t ino;
@@ -508,6 +576,8 @@ int f2fs_write_open(f2fs_mount_t *mnt, const char *path, int flags, f2fs_file_t 
         ino = new_ino;
         inode = new_inode;
     } else if (flags & O_TRUNC) {
+        r = release_data(mnt, &inode);                  /* (the old contents: free again) */
+        if (r != VFS_OK) return r;
         memset(inode.i_addr, 0, sizeof(inode.i_addr));
         memset(inode.i_nid, 0, sizeof(inode.i_nid));
         inode.i_size = 0;
@@ -625,7 +695,12 @@ int f2fs_do_unlink(f2fs_mount_t *mnt, const char *path)
     struct f2fs_inode inode;
     int r = f2fs_resolve_path(mnt, path, &ino, &inode);
     if (r != VFS_OK) return r;
-    if ((inode.i_mode & F2FS_S_IFMT) == F2FS_S_IFDIR) return VFS_ERR_ISDIR;
+    if ((inode.i_mode & F2FS_S_IFMT) == F2FS_S_IFDIR) {   /* (rmdir: an empty one, not the root) */
+        if (ino == mnt->sb.root_ino) return VFS_ERR_INVAL;
+        int e = dir_is_empty(mnt, &inode);
+        if (e < 0) return e;
+        if (!e) return VFS_ERR_ISDIR;
+    }
 
     char parent_path[VFS_PATH_MAX];
     const char *base; int base_len;
@@ -638,7 +713,9 @@ int f2fs_do_unlink(f2fs_mount_t *mnt, const char *path)
     r = f2fs_dir_remove(mnt, &parent_inode, base, base_len);
     if (r != VFS_OK) return r;
 
-    /* Blocks/nid are not freed - see this file's header comment. */
+    /* (every file has one link: its blocks, its nodes and its inode are free again; its nid isn't reused) */
+    if ((r = release_data(mnt, &inode)) != VFS_OK) return r;
+    if ((r = release_node(mnt, ino)) != VFS_OK) return r;
     return f2fs_commit_checkpoint(mnt);
 }
 

@@ -665,7 +665,7 @@ static void parse_cache_option(const char *params)
 }
 
 /* Returns nonzero if dev carries an ext2/3/4 superblock magic. */
-static int ext4_probe(blkdev_t *dev)
+int ext4_probe(blkdev_t *dev)
 {
     if (dev->sector_size == 0) return 0;
 
