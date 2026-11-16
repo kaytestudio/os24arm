@@ -546,8 +546,13 @@ address space, shows the AArch64 registers, and has `U` (unassemble) and
 FP/SIMD loads and stores, in LLVM's syntax - immediates take `#`, a bare
 number is a hex address). The disassembler gives llvm-objdump's text for
 every instruction of the kernel, busybox and musl, and assembling its
-output gives each word back (`dos/tests/test_a64.sh`). `?` lists its
-commands; the x86-only ones say so.
+output gives each word back (`dos/tests/test_a64.sh`). `G [=address]
+[breakpoints]`, `T [=address] [count]` and `P` run code at EL1 with a
+register set of their own (`R` shows it, `R x0 1234` sets one): the
+processor's hardware breakpoints (in read-only code too), single steps,
+and a return to DEBUG when the code returns; a fault says what it was. The
+2 MB block the code is in is made executable first, if it wasn't. `?`
+lists its commands; the x86-only ones say so.
 
 **AI** is a small on-box assistant. It is not a language model; it
 watches the commands you use. `AI STATUS` summarises the session, `AI
@@ -635,8 +640,7 @@ Not there yet:
 - **os2x86**: PM drag and drop between programs (within one works), IPF
   help files, and
   the rest of OS/2's API (the help manager, multimedia, ...).
-- **Other**: DEBUG's breakpoints and stepping (G, P, T), and FP/SIMD data
-  processing in U and A; REXX's
+- **Other**: FP/SIMD data processing in DEBUG's U and A; REXX's
   RexxUtil's less used functions (extended attributes, WPS objects), and
   REXX strings holding NUL bytes (they're C strings: `'00'x`, and binary
   .INI values with a zero byte, end at the first NUL).

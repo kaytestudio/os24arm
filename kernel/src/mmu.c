@@ -502,6 +502,20 @@ static void mmu_mark_rx(uint64_t start, uint64_t end)
         mmu_l2_ram[i] = (MMU_L2_BASE + (uint64_t)i * MMU_BLOCK_2MB) | MMU_ATTRS_NORMAL_RX;
 }
 
+/* DEBUG's G and T: code in the 2 MB block holding addr may run (privileged execute-never cleared; it stays
+ * writable). 1 if that changed it, 0 if it was executable already, -1 if it isn't RAM this table maps. */
+int mmu_kernel_allow_exec(unsigned long addr)
+{
+    if (addr < MMU_L2_BASE || addr >= MMU_L2_BASE + (unsigned long)MMU_L2_ENTRIES * MMU_BLOCK_2MB) return -1;
+    uint32_t i = (uint32_t)((addr - MMU_L2_BASE) / MMU_BLOCK_2MB);
+    uint64_t e = mmu_l2_ram[i];
+    if (!(e & 1) || (e & 3) != MMU_DESC_BLOCK) return -1;          /* (the user window: not the kernel's) */
+    if (!(e & MMU_DESC_PXN)) return 0;
+    mmu_l2_ram[i] = e & ~MMU_DESC_PXN;
+    __asm__ volatile("dsb ishst\n\ttlbi vmalle1is\n\tdsb ish\n\tisb" ::: "memory");
+    return 1;
+}
+
 void mmu_init(void)
 {
     /* L2: default every 2MB block in [0x40000000, 0x80000000) to RW+NX,

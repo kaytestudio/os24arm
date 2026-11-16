@@ -289,8 +289,10 @@ void dos_echo(int argc, char **argv)
  * (bank-switched memory above real mode's 640KB conventional-memory
  * ceiling) - meaningless with a flat 64-bit address space. A and U
  * assemble and disassemble AArch64 (dos/a64.c: the integer instructions
- * and FP/SIMD loads/stores, LLVM's syntax and aliases); G/P/T (go/proceed/trace) would need breakpoint/single-step support this
- * kernel's exception vectors don't wire up; L/W (load/write sectors) and
+ * and FP/SIMD loads/stores, LLVM's syntax and aliases). G, P and T run
+ * code at EL1 with a context of their own (kernel/src/debug_entry.S):
+ * hardware breakpoints, single steps, a return onto a BRK trampoline.
+ * L/W (load/write sectors) and
  * N (name a program to load) belong to DEBUG.COM's real-mode program
  * loader, which this kernel's own LX loader (RUN, kernel/src/lx_loader.c)
  * already covers differently.
@@ -567,9 +569,6 @@ static void debug_cmd_hex(int argc, char **argv)
     uart_puts("\r\n");
 }
 
-/* Genuinely-current AArch64 processor state - not a stopped debuggee's
- * general-purpose registers (X0-X30/PC), which aren't available without
- * breakpoint/single-step support (see this file's G/P/T comment). */
 /* U [address [end | Llength]]: disassembly - 8 instructions by default, on from the last U */
 static unsigned long debug_u_next;
 static void debug_cmd_unassemble(int argc, char **argv)
@@ -625,6 +624,145 @@ static void debug_cmd_assemble(int argc, char **argv)
     uart_puts("\r\n");
 }
 
+/* ── G, P, T: running code (kernel/src/debug_entry.S - the kernel's console only) ──
+ * A context of its own: x0-x30, sp (its own stack), pc, pstate; x30 starts at debug_return_trap, so code that
+ * returns comes back. Breakpoints are the processor's (DBGBVRn/DBGBCRn: nothing written into the code - the
+ * kernel's own read-only code too), a step its software step. */
+extern unsigned long debug_go(unsigned long *ctx, int step) __attribute__((weak));
+extern void debug_return_trap(void) __attribute__((weak));
+extern int mmu_kernel_allow_exec(unsigned long addr) __attribute__((weak));
+static unsigned long dctx[36];                      /* x0-x30, sp, pc, pstate, esr, far */
+static int dctx_ready;
+static unsigned char dstack[65536] __attribute__((aligned(16)));
+#define DC_SP 31
+#define DC_PC 32
+#define DC_PSTATE 33
+#define DC_ESR 34
+#define DC_FAR 35
+
+static void dctx_init(void)
+{
+    if (dctx_ready) return;
+    for (int i = 0; i < 36; i++) dctx[i] = 0;
+    dctx[DC_SP] = (unsigned long)(dstack + sizeof dstack);
+    dctx[30] = (unsigned long)debug_return_trap;
+    dctx_ready = 1;
+}
+static void debug_print_hex16(unsigned long v) { for (int s = 60; s >= 0; s -= 4) uart_putc("0123456789abcdef"[(v >> s) & 15]); }
+static void debug_show_insn(unsigned long a)
+{
+    char text[160];
+    uint32_t w = *(volatile uint32_t *)a;
+    a64_disasm(w, a, text, sizeof text);
+    debug_print_hex(a); uart_puts("  ");
+    for (int s = 28; s >= 0; s -= 4) uart_putc("0123456789abcdef"[(w >> s) & 15]);
+    uart_puts("  ");
+    for (char *c = text; *c; c++) uart_putc(*c == '\t' ? ' ' : *c);
+    uart_puts("\r\n");
+}
+static void debug_show_context(void)
+{
+    for (int i = 0; i < 31; i++) {
+        char n[6] = { 'X', (char)('0' + i / 10), (char)('0' + i % 10), '=', 0, 0 };
+        if (i < 10) { n[1] = (char)('0' + i); n[2] = '='; n[3] = ' '; }
+        uart_puts(n); debug_print_hex16(dctx[i]);
+        uart_puts((i % 4 == 3) ? "\r\n" : "  ");
+    }
+    uart_puts("  SP="); debug_print_hex16(dctx[DC_SP]);
+    unsigned long f = dctx[DC_PSTATE];
+    uart_puts("\r\nPC="); debug_print_hex16(dctx[DC_PC]);
+    uart_puts("  NZCV="); uart_putc(f >> 31 & 1 ? 'N' : 'n'); uart_putc(f >> 30 & 1 ? 'Z' : 'z'); uart_putc(f >> 29 & 1 ? 'C' : 'c'); uart_putc(f >> 28 & 1 ? 'V' : 'v');
+    uart_puts("\r\n");
+    debug_show_insn(dctx[DC_PC]);
+}
+static int debug_brp_count(void)
+{
+    unsigned long d;
+    __asm__ volatile("mrs %0, id_aa64dfr0_el1" : "=r"(d));
+    return (int)((d >> 12) & 15) + 1;
+}
+static void debug_set_bp(int n, unsigned long addr, int on)
+{
+    unsigned long ctl = on ? 0x1e3ul : 0;               /* E, PMC EL1, BAS all four bytes */
+    switch (n) {
+    case 0: __asm__ volatile("msr dbgbvr0_el1, %0\n\tmsr dbgbcr0_el1, %1" :: "r"(addr), "r"(ctl)); break;
+    case 1: __asm__ volatile("msr dbgbvr1_el1, %0\n\tmsr dbgbcr1_el1, %1" :: "r"(addr), "r"(ctl)); break;
+    case 2: __asm__ volatile("msr dbgbvr2_el1, %0\n\tmsr dbgbcr2_el1, %1" :: "r"(addr), "r"(ctl)); break;
+    case 3: __asm__ volatile("msr dbgbvr3_el1, %0\n\tmsr dbgbcr3_el1, %1" :: "r"(addr), "r"(ctl)); break;
+    }
+    __asm__ volatile("isb");
+}
+/* Runs the context (step: one instruction) with these breakpoints; then says why it stopped. 0: it returned. */
+static int debug_run(int step, const unsigned long *bps, int nbp)
+{
+    if (!debug_go || uart_user_services()) { uart_puts("G, P and T run code at EL1: at the kernel's console only\r\n"); return -1; }
+    if (mmu_kernel_allow_exec) {
+        int r = mmu_kernel_allow_exec(dctx[DC_PC]);
+        if (r < 0) { uart_puts("^ not memory code can run in\r\n"); return -1; }
+        if (r > 0) { uart_puts("(the 2 MB block at "); debug_print_hex(dctx[DC_PC] & ~0x1ffffful); uart_puts(" made executable)\r\n"); }
+    }
+    int max = debug_brp_count();
+    if (max > 4) max = 4;
+    if (nbp > max) { uart_puts("^ at most "); kprintf("%d", max); uart_puts(" breakpoints\r\n"); return -1; }
+    for (int k = 0; k < 4; k++) debug_set_bp(k, k < nbp ? bps[k] & ~3ul : 0, k < nbp);
+    unsigned long esr = debug_go(dctx, step);
+    for (int k = 0; k < 4; k++) debug_set_bp(k, 0, 0);
+    unsigned ec = (unsigned)(esr >> 26) & 0x3f;
+    if (ec == 0x3c && dctx[DC_PC] == (unsigned long)debug_return_trap) {
+        uart_puts("returned: X0="); debug_print_hex16(dctx[0]); uart_puts("\r\n");
+        dctx[30] = (unsigned long)debug_return_trap;
+        dctx[DC_PC] = dctx[30];
+        return 0;
+    }
+    if (ec == 0x31) uart_puts("breakpoint\r\n");
+    else if (ec == 0x33) { }                              /* (a step: just where it is) */
+    else if (ec == 0x3c) { uart_puts("brk #"); debug_print_hex(esr & 0xffff); uart_puts("\r\n"); }
+    else {
+        const char *w = ec == 0x25 ? "data abort" : ec == 0x21 ? "instruction abort" : ec == 0x22 ? "PC alignment fault" :
+                        ec == 0x26 ? "SP alignment fault" : ec == 0x00 ? "undefined instruction" : ec == 0x15 ? "svc" : "exception";
+        uart_puts(w); uart_puts(" (ESR "); debug_print_hex(esr); uart_puts(", FAR "); debug_print_hex(dctx[DC_FAR]); uart_puts(")\r\n");
+    }
+    debug_show_context();
+    return 1;
+}
+/* "=address": where to start (else where it is) */
+static int debug_start_at(int *argc, char ***argv)
+{
+    dctx_init();
+    if (*argc >= 1 && (*argv)[0][0] == '=') {
+        unsigned long a;
+        if (!debug_parse_hex((*argv)[0] + 1, &a)) return 0;
+        dctx[DC_PC] = a;
+        (*argc)--; (*argv)++;
+    }
+    return 1;
+}
+static void debug_cmd_go(int argc, char **argv)
+{
+    if (!debug_start_at(&argc, &argv)) { uart_puts("^ Error\r\n"); return; }
+    unsigned long bps[4]; int n = 0;
+    for (int i = 0; i < argc; i++) {
+        if (n == 4 || !debug_parse_hex(argv[i], &bps[n])) { uart_puts("^ Error\r\n"); return; }
+        n++;
+    }
+    debug_run(0, bps, n);
+}
+static void debug_cmd_trace(int argc, char **argv)
+{
+    if (!debug_start_at(&argc, &argv)) { uart_puts("^ Error\r\n"); return; }
+    unsigned long count = 1;
+    if (argc >= 1 && (!debug_parse_hex(argv[0], &count) || !count)) { uart_puts("^ Error\r\n"); return; }
+    for (unsigned long k = 0; k < count; k++) if (debug_run(1, 0, 0) != 1) break;
+}
+static void debug_cmd_proceed(int argc, char **argv)
+{
+    if (!debug_start_at(&argc, &argv)) { uart_puts("^ Error\r\n"); return; }
+    uint32_t w = *(volatile uint32_t *)dctx[DC_PC];
+    int call = (w & 0xfc000000u) == 0x94000000u || (w & 0xfffffc1fu) == 0xd63f0000u;   /* BL, BLR */
+    if (call) { unsigned long after = dctx[DC_PC] + 4; debug_run(0, &after, 1); }
+    else debug_run(1, 0, 0);
+}
+
 static void debug_cmd_registers(void)
 {
     unsigned long sp, currentel = 0, daif = 0;
@@ -640,7 +778,7 @@ static void debug_cmd_registers(void)
     kprintf("%u", (unsigned)((currentel >> 2) & 3));
     uart_puts("  DAIF=");
     debug_print_hex(daif);
-    uart_puts("\r\n(X0-X30/PC need a stopped breakpoint context - not available; see G/P/T)\r\n");
+    uart_puts("\r\n(the registers of code run with G, P or T: R after one of them)\r\n");
 }
 
 void dos_debug(int argc, char **argv)
@@ -694,7 +832,26 @@ void dos_debug(int argc, char **argv)
         if (mlen == 1 && strcmp(mnem, "M") == 0) { uart_puts("\r\n"); debug_cmd_move(cargc, cargv); continue; }
         if (mlen == 1 && strcmp(mnem, "S") == 0) { uart_puts("\r\n"); debug_cmd_search(cargc, cargv); continue; }
         if (mlen == 1 && strcmp(mnem, "H") == 0) { uart_puts("\r\n"); debug_cmd_hex(cargc, cargv); continue; }
-        if (mlen == 1 && strcmp(mnem, "R") == 0) { uart_puts("\r\n"); debug_cmd_registers(); continue; }
+        if (mlen == 1 && strcmp(mnem, "R") == 0) {
+            uart_puts("\r\n");
+            if (cargc == 0 && dctx_ready) { debug_show_context(); continue; }
+            if (cargc >= 1) {                             /* R Xn [value], R SP|PC [value] */
+                int r = -1; const char *s = cargv[0];
+                if ((s[0] == 'x' || s[0] == 'X') && s[1]) { r = 0; for (int k = 1; s[k]; k++) r = (s[k] >= '0' && s[k] <= '9' && r >= 0) ? r * 10 + s[k] - '0' : -1; if (r > 30) r = -1; }
+                else if ((s[0] == 's' || s[0] == 'S') && (s[1] == 'p' || s[1] == 'P') && !s[2]) r = DC_SP;
+                else if ((s[0] == 'p' || s[0] == 'P') && (s[1] == 'c' || s[1] == 'C') && !s[2]) r = DC_PC;
+                unsigned long v;
+                if (r < 0 || (cargc >= 2 && !debug_parse_hex(cargv[1], &v))) { uart_puts("^ Error\r\n"); continue; }
+                dctx_init();
+                if (cargc >= 2) dctx[r] = v;
+                uart_puts(cargv[0]); uart_puts("="); debug_print_hex16(dctx[r]); uart_puts("\r\n");
+                continue;
+            }
+            debug_cmd_registers(); continue;
+        }
+        if (mlen == 1 && strcmp(mnem, "G") == 0) { uart_puts("\r\n"); debug_cmd_go(cargc, cargv); continue; }
+        if (mlen == 1 && strcmp(mnem, "T") == 0) { uart_puts("\r\n"); debug_cmd_trace(cargc, cargv); continue; }
+        if (mlen == 1 && strcmp(mnem, "P") == 0) { uart_puts("\r\n"); debug_cmd_proceed(cargc, cargv); continue; }
         if (mlen == 1 && strcmp(mnem, "U") == 0) { uart_puts("\r\n"); debug_cmd_unassemble(cargc, cargv); continue; }
         if (mlen == 1 && strcmp(mnem, "A") == 0) { uart_puts("\r\n"); debug_cmd_assemble(cargc, cargv); continue; }
 

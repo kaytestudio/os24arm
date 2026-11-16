@@ -60,6 +60,7 @@ else()
             src/vgic.c          # ← emulated GICv2 the guest sees
             src/gicv3.c         # ← host GICv3: timer PPIs -> EL2 (preemption), each CPU's redistributor, SGIs
             src/smp.c           # ← the other CPUs: PSCI CPU_ON, the big kernel lock
+            src/debug_entry.S   # ← DEBUG's G/P/T: running code until a breakpoint, a step, its return
             src/vm_pl011.c      # ← emulated PL011 device model
             src/vm_cmd.c        # ← VM shell command / VM run loop
             src/vm_guest_hello.S  # ← built-in test guest for VM TEST

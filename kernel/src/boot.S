@@ -272,6 +272,11 @@ serror_exception_sp0:
     b       hang
 
 sync_exception_spx:
+    stp     x0, x1, [sp, #-16]!         /* DEBUG running code (G/P/T, kernel/src/debug_entry.S): its trap */
+    ldr     x0, =debug_trap_active
+    ldr     w0, [x0]
+    cbnz    w0, debug_trap_entry
+    ldp     x0, x1, [sp], #16
     stp     x29, x30, [sp, #-16]!
     mrs     x0, esr_el1
     mrs     x1, elr_el1
