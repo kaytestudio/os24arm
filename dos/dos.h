@@ -49,6 +49,7 @@ void dos_debug(int argc, char **argv);
  * CMD.EXE build (dos/cmd_main.c) so both use identical command handling.
  */
 int dos_shell_dispatch(int argc, char **argv);
+extern int dos_cmd_rc;                /* the last command's result: 0, or an error code */
 
 /**
  * Shared command-line reader for both shells (see dos_commands.c's big

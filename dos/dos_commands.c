@@ -28,8 +28,13 @@
 #include "kprintf.h"
 #include "string.h"
 
+/* The last command's result, as CMD.EXE's: 0 when it worked, else an OS/2 error code (or 1) - for os2cmd's exit
+ * code, so a REXX program's RC after a command */
+int dos_cmd_rc;
+
 static void print_dos_error(const char *cmd, APIRET rc)
 {
+    dos_cmd_rc = rc ? (int)rc : 1;
     uart_puts("\r\n");
     uart_puts(cmd);
     uart_puts(": ");
@@ -228,6 +233,7 @@ void dos_echo(int argc, char **argv)
     }
     if (last < argc && !target) {
         uart_puts("\r\nECHO: missing file name after >\r\n");
+        dos_cmd_rc = 1;
         return;
     }
     if (!target) {
@@ -664,7 +670,7 @@ void dos_debug(int argc, char **argv)
 void dos_comp(int argc, char **argv)
 {
     if (argc < 3) {
-        uart_puts("\r\nUsage: COMP file1 file2\r\n");
+        (void)(dos_cmd_rc = 1), uart_puts("\r\nUsage: COMP file1 file2\r\n");
         return;
     }
 
@@ -730,7 +736,7 @@ void dos_comp(int argc, char **argv)
 
     if (!differs) {
         uart_puts("\r\nFiles compare OK\r\n");
-    }
+    } else dos_cmd_rc = 1;
 }
 
 /* ── FC ───────────────────────────────────────────────────────────────────
@@ -789,7 +795,7 @@ static int fc_read_line(fc_reader_t *r, char *line, int max_len)
 void dos_fc(int argc, char **argv)
 {
     if (argc < 3) {
-        uart_puts("\r\nUsage: FC file1 file2\r\n");
+        (void)(dos_cmd_rc = 1), uart_puts("\r\nUsage: FC file1 file2\r\n");
         return;
     }
 
@@ -853,7 +859,7 @@ void dos_fc(int argc, char **argv)
 
     if (!any_diff) {
         uart_puts("\r\nFC: no differences encountered\r\n");
-    }
+    } else dos_cmd_rc = 1;
 }
 
 
@@ -1575,6 +1581,7 @@ void dos_dir(int argc, char **argv)
     if (rc != NO_ERROR) {
         if (rc == ERROR_NO_MORE_FILES || rc == ERROR_FILE_NOT_FOUND) {
             uart_puts("File not found\r\n\r\n");
+            dos_cmd_rc = ERROR_FILE_NOT_FOUND;
         } else {
             print_dos_error("DIR", rc);
         }
@@ -1625,7 +1632,7 @@ void dos_dir(int argc, char **argv)
 void dos_type(int argc, char **argv)
 {
     if (argc < 2) {
-        uart_puts("\r\nUsage: TYPE filename\r\n");
+        (void)(dos_cmd_rc = 1), uart_puts("\r\nUsage: TYPE filename\r\n");
         return;
     }
 
@@ -1742,7 +1749,7 @@ void dos_move(int argc, char **argv) { copy_or_move(argc, argv, 1); }
 void dos_del(int argc, char **argv)
 {
     if (argc < 2) {
-        uart_puts("\r\nUsage: DEL filename (wildcards * and ? allowed)\r\n");
+        (void)(dos_cmd_rc = 1), uart_puts("\r\nUsage: DEL filename (wildcards * and ? allowed)\r\n");
         return;
     }
 
@@ -1796,7 +1803,7 @@ void dos_del(int argc, char **argv)
 void dos_ren(int argc, char **argv)
 {
     if (argc < 3) {
-        uart_puts("\r\nUsage: REN oldname newname\r\n");
+        (void)(dos_cmd_rc = 1), uart_puts("\r\nUsage: REN oldname newname\r\n");
         return;
     }
 
@@ -1804,6 +1811,7 @@ void dos_ren(int argc, char **argv)
      * directory (REN \h\a.txt b.txt renames \h\a.txt to \h\b.txt). */
     if (base_index(argv[2]) != 0) {
         uart_puts("\r\nREN: the new name can't include a path\r\n");
+        dos_cmd_rc = 1;
         return;
     }
     char target[VFS_PATH_MAX];
@@ -1825,7 +1833,7 @@ void dos_ren(int argc, char **argv)
 void dos_md(int argc, char **argv)
 {
     if (argc < 2) {
-        uart_puts("\r\nUsage: MD dirname\r\n");
+        (void)(dos_cmd_rc = 1), uart_puts("\r\nUsage: MD dirname\r\n");
         return;
     }
 
@@ -1842,7 +1850,7 @@ void dos_md(int argc, char **argv)
 void dos_rd(int argc, char **argv)
 {
     if (argc < 2) {
-        uart_puts("\r\nUsage: RD dirname\r\n");
+        (void)(dos_cmd_rc = 1), uart_puts("\r\nUsage: RD dirname\r\n");
         return;
     }
 
@@ -1861,6 +1869,7 @@ void dos_rd(int argc, char **argv)
     }
     if (rc == ERROR_SHARING_VIOLATION) {
         uart_puts("\r\nRD: the directory is not empty (or is the current one)\r\n");
+        dos_cmd_rc = ERROR_ACCESS_DENIED;
     } else if (rc != NO_ERROR) {
         print_dos_error("RD", rc);
     } else {
@@ -1915,7 +1924,7 @@ void dos_vol(int argc, char **argv)
 void dos_attrib(int argc, char **argv)
 {
     if (argc < 2) {
-        uart_puts("\r\nUsage: ATTRIB filename\r\n");
+        (void)(dos_cmd_rc = 1), uart_puts("\r\nUsage: ATTRIB filename\r\n");
         return;
     }
 
@@ -2144,7 +2153,7 @@ void dos_find(int argc, char **argv)
             case 'c': o.count_only = 1; break;
             case 'n': o.numbers = 1; break;
             case 'v': o.invert = 1; break;
-            default: kprintf("\nFIND: unknown switch %s\n", argv[i]); return;
+            default: kprintf("\nFIND: unknown switch %s\n", argv[i]); dos_cmd_rc = 1; return;
         }
     }
     /* The shell splits at spaces: put a "quoted text" back together. */
@@ -2165,13 +2174,14 @@ void dos_find(int argc, char **argv)
         o.needle = needle;
     }
     if (!o.needle || i >= argc) {
-        uart_puts("\r\nUsage: FIND [/I] [/C] [/N] [/V] \"text\" file...\r\n");
+        (void)(dos_cmd_rc = 1), uart_puts("\r\nUsage: FIND [/I] [/C] [/N] [/V] \"text\" file...\r\n");
         return;
     }
     for (; i < argc; i++) {
         int n = for_each_file(argv[i], find_in_file, &o);
         if (n < 0) print_dos_error("FIND", (APIRET)-n);
     }
+    if (!o.total && !dos_cmd_rc) dos_cmd_rc = 1;                  /* (nothing found: 1, as FIND.EXE) */
 }
 
 /* ── MORE ────────────────────────────────────────────────────────────────── */
@@ -2179,7 +2189,7 @@ void dos_find(int argc, char **argv)
 /* MORE file: a screen (24 lines) at a time; any key continues, Q quits. */
 void dos_more(int argc, char **argv)
 {
-    if (argc < 2) { uart_puts("\r\nUsage: MORE file\r\n"); return; }
+    if (argc < 2) { dos_cmd_rc = 1; uart_puts("\r\nUsage: MORE file\r\n"); return; }
     HFILE h;
     uint32_t action;
     APIRET rc = DosOpen(argv[1], &h, &action, 0, 0, 0, O_RDONLY);
@@ -2275,7 +2285,7 @@ int dos_shell_dispatch(int argc, char **argv)
     if (argv[0][0] >= 'A' && argv[0][0] <= 'Z' && argv[0][1] == ':' && !argv[0][2] && argc == 1) {
         char root[4] = { argv[0][0], ':', '\\', 0 };
         if (DosSetCurrentDir(root) != NO_ERROR)
-            uart_puts("\r\nThe system cannot find the drive specified.\r\n");
+        { uart_puts("\r\nThe system cannot find the drive specified.\r\n"); dos_cmd_rc = ERROR_INVALID_DRIVE; }
         return 1;
     }
 

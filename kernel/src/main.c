@@ -712,6 +712,7 @@ static void execute_command(char *cmdline)
     char *argv[16];
     int argc = str_tokenize(cmdline, argv, 16);
 
+    dos_cmd_rc = 0;
     if (argc == 0)
         return;
 
@@ -803,6 +804,7 @@ static void execute_command(char *cmdline)
         uart_puts("\r\nBad command or file name: ");
         uart_puts(argv[0]);
         uart_puts("\r\nType HELP for list of commands\r\n");
+        dos_cmd_rc = 1041;                             /* (SYS1041, as CMD.EXE) */
     }
 }
 
@@ -894,6 +896,7 @@ void os2_shell_line(const char *line)
                 uart_puts(": the desktop is running - Alt+Shift+Q closes it\r\n");
             else
                 uart_puts(" is only available at the system console\r\n");
+            dos_cmd_rc = 1;
             return;
         }
     execute_command(buffer);

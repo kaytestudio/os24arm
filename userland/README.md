@@ -566,7 +566,10 @@ platform-specific are new code.
    `userland/apps/rexx.c` is REXX: `.CMD` files starting with `/*` run
    through it (the kernel's execve, as it hands x86 programs to os2x86;
    os2cmd finds NAME.CMD after NAME.EXE). Commands in them go to
-   `os2cmd /C "line"`; `userland/tests/rexx/run.sh` builds it on the build
+   `os2cmd /C "line"`, which starts in the caller's directory (as its drive
+   and path) and exits with the command's result (`/dev/os2cmd`'s
+   OS2CMD_RC ioctl: 0, an OS/2 error code such as 2 for a file that isn't
+   there, 1 for FIND finding nothing) - REXX's RC. `userland/tests/rexx/run.sh` builds it on the build
    machine and compares `test.cmd`'s output with `test.out` and `util.cmd`'s
    (RexxUtil) with `util.out` `traps.cmd`'s (conditions) with `traps.out` and `ext.cmd`'s (external
    routines: `extsub.cmd`) with `ext.out`, `queue.cmd`'s (the data queue,

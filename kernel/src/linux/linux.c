@@ -353,6 +353,7 @@ typedef struct file {
     int hopcm;                        /* F_INET: the hop limit asked for with each packet (its cmsg type) */
     struct tty *tty;                  /* F_CONSOLE, F_PTMX */
     char    *pbuf;                    /* F_PROC: the generated contents (one frame) */
+    int      os2rc;                   /* F_OS2: the last command's result */
     uint32_t plen;
     char     path[VFS_PATH_MAX];
 } file_t;
@@ -4643,6 +4644,8 @@ void os2_session_enter(char *cwd);
 void os2_session_leave(char *cwd);
 void DosResolvePath(const char *in, char *out, uint32_t out_size);   /* os2api */
 #define OS2CMD_RESOLVE 0x4F53                         /* ioctl: see sys_ioctl */
+#define OS2CMD_RC      0x4F54                         /* ioctl: the last command's result (an int) */
+extern int dos_cmd_rc;
 
 /* A session's current directory: kept at the end of its output buffer. */
 #define OS2_OUT_MAX (OS2_BUF - VFS_PATH_MAX)
@@ -4675,8 +4678,8 @@ static void os2_run(file_t *f, const char *line)
     os2_cap_limit = OS2_OUT_MAX - VFS_PATH_MAX - 64;   /* room for the note and the prompt */
     os2_cap_cut = 0;
     console_capture = os2_cap;
-    if (line) os2_shell_line(line);
-    else os2_shell_banner();
+    if (line) { dos_cmd_rc = 0; os2_shell_line(line); f->os2rc = dos_cmd_rc; }
+    else { os2_shell_banner(); f->os2rc = 0; }
     if (os2_cap_cut) os2_out(f, "\r\n[output cut short]\r\n");
     os2_cap_limit = OS2_OUT_MAX;
     os2_shell_prompt();
@@ -5271,6 +5274,11 @@ static s64 sys_ioctl(lx_u64 fd, lx_u64 req, lx_u64 arg)
         os2_session_enter(os2_cwd(f));
         DosResolvePath(in, u, VFS_PATH_MAX);
         os2_session_leave(os2_cwd(f));
+        return 0;
+    }
+    if (f->kind == F_OS2 && req == OS2CMD_RC) {
+        if (!uok(arg, 4, 1)) return -EFAULT;
+        *(int32_t *)(uintptr_t)arg = f->os2rc;
         return 0;
     }
     if (f->kind != F_CONSOLE && f->kind != F_PTMX) return -ENOTTY;

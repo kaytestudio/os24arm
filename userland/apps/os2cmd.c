@@ -46,6 +46,7 @@ static int dev_fd = -1;              /* /dev/os2cmd */
  * path, from the kernel (/dev/os2cmd's resolve ioctl, which knows the
  * drive letters and this session's current directory). */
 #define OS2CMD_RESOLVE 0x4F53
+#define OS2CMD_RC      0x4F54                         /* (an int: the last command's result) */
 #define VFS_PATH_MAX   256
 static int os2_resolve(const char *dos, char *out, size_t size)
 {
@@ -411,6 +412,40 @@ static void line_cmd(int fd, char *line, int interactive)
     put(out + a, p - a);
 }
 
+/* One-shot: the session starts where the caller is (a REXX program's commands run in its directory) - the Linux
+ * directory as the drive whose root holds it, then CD there; the output of that not shown */
+static void enter_callers_dir(int fd)
+{
+    char here[512], best_root[256] = "";
+    int best = -1;
+    size_t bl = 0;
+    if (!getcwd(here, sizeof here)) return;
+    for (int d = 2; d < 26; d++) {
+        char in[4] = { (char)('A' + d), ':', '\\', 0 }, root[256];
+        struct stat st;
+        if (os2_resolve(in, root, sizeof root) != 0 || root[0] != '/' || stat(root, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+        size_t l = strlen(root);
+        while (l > 1 && root[l - 1] == '/') root[--l] = 0;
+        int under = l == 1 || (!strncmp(here, root, l) && (here[l] == '/' || !here[l]));
+        if (under && (best < 0 || l > bl)) { best = d; bl = l; snprintf(best_root, sizeof best_root, "%s", root); }
+    }
+    if (best < 0) return;
+    const char *rest = here + (bl == 1 ? 0 : bl);
+    char line[600];
+    snprintf(line, sizeof line, "%c:", 'A' + best);
+    if (write(fd, line, strlen(line)) < 0) return;
+    collect(fd);
+    int n = snprintf(line, sizeof line, "CD \\");
+    for (const char *c = rest; *c && n < (int)sizeof line - 1; c++) {
+        if (*c == '/' && n == 4) continue;                    /* (the leading one: the "\\" already) */
+        line[n++] = *c == '/' ? '\\' : *c;
+    }
+    line[n] = 0;
+    if (write(fd, line, (size_t)n) < 0) return;
+    collect(fd);
+    if (os2_resolve(".", cwd, sizeof cwd) != 0) strcpy(cwd, "/");
+}
+
 int main(int argc, char **argv)
 {
     int fd = open("/dev/os2cmd", O_RDWR);
@@ -433,9 +468,12 @@ int main(int argc, char **argv)
                                   quote ? "\"" : "", argv[i], quote ? "\"" : "");
             if (n >= sizeof line) { fputs("os2cmd: command too long\n", stderr); return 1; }
         }
+        enter_callers_dir(fd);
         line_cmd(fd, line, 0);
         put("\n", 1);
-        return 0;
+        int rc = 0;                                   /* (the command's result: os2cmd's exit code, REXX's RC) */
+        if (ioctl(fd, OS2CMD_RC, &rc) != 0) rc = 0;
+        return rc < 0 || rc > 255 ? 255 : rc;
     }
 
     signal(SIGINT, SIG_IGN);                          /* Ctrl+C is for the programs it runs */
