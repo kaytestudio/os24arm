@@ -38,6 +38,13 @@ if [ -f "$W/Compose" ]; then cp "$W/Compose" "$SYS/Compose"; fi    # dead keys, 
 # UNIXROOT's /bin/sh (the stick is UNIXROOT): busybox's sh, through a
 # launcher - make, system() and popen() check that it's there
 if [ -f "$W/tests/applet" ]; then mkdir -p "$STAGE/bin"; cp "$W/tests/applet" "$STAGE/bin/sh"; fi
+# shared libraries (userland/build-dynamic.sh): musl's libc.so and dynamic
+# linker in \lib (UNIXROOT's /lib), and the dynamic-linking tests
+# (and the dynamic linker's library path: <its prefix>/etc/ld-musl-aarch64.path)
+if [ -d "$W/dyn/lib" ]; then
+    mkdir -p "$STAGE/lib" "$STAGE/etc"; cp "$W"/dyn/lib/* "$STAGE/lib"/; cp "$W"/dyn/bin/* "$SYS"/
+    printf '/lib\n/usr/local/lib\n/usr/lib\n/h/lib\n' > "$STAGE/etc/ld-musl-aarch64.path"
+fi
 # the UNIXROOT packages (userland/build-rpms.sh), for RPM -i NAME
 if ls "$W"/rpms/*.rpm >/dev/null 2>&1; then mkdir -p "$SYS/RPMS"; cp "$W"/rpms/*.rpm "$SYS/RPMS"/; fi
 # STICK_EXTRA=dir: that folder too, at the stick's root (scripts/desktop.sh --os2-demos: \OS2DEMOS)

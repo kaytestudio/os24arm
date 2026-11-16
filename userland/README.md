@@ -17,8 +17,8 @@ wlroots is a Linux userspace library, not a drop-in component. It needs:
 
 This kernel has none of the kernel side (everything runs at EL1, one
 address space, no syscalls). The plan is therefore **Linux-ABI
-compatibility**: the kernel runs unmodified static AArch64 Linux ELF
-binaries at EL0 and implements Linux system calls itself. Then musl,
+compatibility**: the kernel runs unmodified AArch64 Linux ELF binaries
+(static, or dynamically linked against musl - `build-dynamic.sh`) at EL0 and implements Linux system calls itself. Then musl,
 libwayland, libffi, pixman, libxkbcommon and wlroots build unmodified with
 a standard `aarch64-linux-musl` cross toolchain (clang + lld + a musl
 sysroot built here), and only the parts that are genuinely hardware- or
@@ -110,7 +110,11 @@ platform-specific are new code.
    condition variables, TLS, join, exit/execve/signals with threads),
    `smp` (the CPUs: N spinning threads in parallel - the speed-up it
    prints -, mmap/munmap and a futex mutex from all of them at once, fork +
-   waitpid from several threads).
+   waitpid from several threads). Dynamic linking (`build-dynamic.sh`, `tests/dyn`):
+   `dyntest` (fixed address), `dyntest-pie` (position-independent) - both
+   naming `/h/lib/ld-musl-aarch64.so.1` - and `dyntest-std`
+   (`/lib/ld-musl-aarch64.so.1`): libdyn.so's constructor, data and TLS,
+   dlopen/dlsym of libdyn2.so, execve of a dynamic program.
    Memory: demand paging. Each process has a 64 MB window at 0x60000000
    (program image, brk heap, a 16 MB stack) and a 4 GB mmap region at
    0x1_0000_0000; the heap, the stack and every mapping are VM areas

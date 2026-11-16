@@ -2064,8 +2064,11 @@ static int read_at(int vfd, lx_u64 off, void *buf, uint32_t n)
 }
 
 /* 0, or -errno (the reason is printed). */
+#define INTERP_BASE     (MMAP_LIMIT - (256UL << 20))   /* the dynamic linker: near the mmap region's top */
+#define INTERP_MAX      (64UL << 20)
+
 static int load_elf(mmu_as_t *as, const char *path, lx_u64 *entry, lx_u64 *phdr_va,
-                    uint32_t *phnum, lx_u64 *top_out)
+                    uint32_t *phnum, lx_u64 *top_out, char *interp)
 {
     uint8_t eh[64], ph[MAX_PHDRS * 56];
     int vfd = vfs_open(path, O_RDONLY);
@@ -2076,12 +2079,15 @@ static int load_elf(mmu_as_t *as, const char *path, lx_u64 *entry, lx_u64 *phdr_
     if (eh[4] != 2 || eh[5] != 1 || *(uint16_t *)(eh + 18) != 183) {
         kprintf("[PROG]   %s: not a 64-bit little-endian AArch64 ELF\n", path); goto out;
     }
-    if (*(uint16_t *)(eh + 16) != 2) {
-        kprintf("[PROG]   %s: not a static executable (ET_EXEC); dynamic linking comes later\n",
-                path);
+    uint16_t etype = *(uint16_t *)(eh + 16);
+    if (etype != 2 && etype != 3) {
+        kprintf("[PROG]   %s: not an executable (ET_EXEC or ET_DYN)\n", path);
         goto out;
     }
-    *entry = *(lx_u64 *)(eh + 24);
+    /* A position-independent one (ET_DYN: linked at 0): at the user window's base */
+    lx_u64 bias = etype == 3 ? MMU_USER_BASE : 0;
+    *entry = *(lx_u64 *)(eh + 24) + bias;
+    interp[0] = 0;
     lx_u64 phoff = *(lx_u64 *)(eh + 32);
     uint16_t phent = *(uint16_t *)(eh + 54), n = *(uint16_t *)(eh + 56);
     if (phent != 56 || n == 0 || n > MAX_PHDRS || read_at(vfd, phoff, ph, n * 56u) != 0) {
@@ -2097,7 +2103,7 @@ static int load_elf(mmu_as_t *as, const char *path, lx_u64 *entry, lx_u64 *phdr_
     uint8_t *prot_tab = page_prot;
     for (uint32_t i = 0; i < n; i++) {
         const uint8_t *p = ph + 56 * i;
-        if (*(uint32_t *)p == 1 && *(lx_u64 *)(p + 16) >= IMAGE_HI_BASE) {
+        if (*(uint32_t *)p == 1 && *(lx_u64 *)(p + 16) + bias >= IMAGE_HI_BASE) {
             base = IMAGE_HI_BASE;
             limit = IMAGE_HI_BASE + IMAGE_HI_SIZE;
             prot_tab = page_prot_hi;
@@ -2111,9 +2117,15 @@ static int load_elf(mmu_as_t *as, const char *path, lx_u64 *entry, lx_u64 *phdr_
     for (uint32_t i = 0; i < n; i++) {
         const uint8_t *p = ph + 56 * i;
         uint32_t type = *(uint32_t *)p, fl = *(uint32_t *)(p + 4);
-        lx_u64 off = *(lx_u64 *)(p + 8), va = *(lx_u64 *)(p + 16);
+        lx_u64 off = *(lx_u64 *)(p + 8), va = *(lx_u64 *)(p + 16) + bias;
         lx_u64 fsz = *(lx_u64 *)(p + 32), msz = *(lx_u64 *)(p + 40);
         if (type == 6) *phdr_va = va;                    /* PT_PHDR */
+        if (type == 3) {                                 /* PT_INTERP: the dynamic linker's path */
+            if (fsz < 2 || fsz >= VFS_PATH_MAX || read_at(vfd, off, interp, (uint32_t)fsz) != 0) {
+                kprintf("[PROG]   %s: bad PT_INTERP\n", path); goto out;
+            }
+            interp[fsz] = 0;
+        }
         if (type != 1) continue;                         /* PT_LOAD */
         if (va < base || va + msz > limit || va + msz < va || fsz > msz) {
             kprintf("[PROG]   %s: segment %p+0x%x outside %p..%p - link it with "
@@ -2147,7 +2159,7 @@ static int load_elf(mmu_as_t *as, const char *path, lx_u64 *entry, lx_u64 *phdr_
     for (uint32_t i = 0; i < n; i++) {
         const uint8_t *p = ph + 56 * i;
         if (*(uint32_t *)p != 1) continue;
-        lx_u64 off = *(lx_u64 *)(p + 8), va = *(lx_u64 *)(p + 16), fsz = *(lx_u64 *)(p + 32);
+        lx_u64 off = *(lx_u64 *)(p + 8), va = *(lx_u64 *)(p + 16) + bias, fsz = *(lx_u64 *)(p + 32);
         if (fsz && read_at(vfd, off, (void *)(uintptr_t)va, (uint32_t)fsz) != 0) goto out;
     }
     /* Pass 3: final permissions. */
@@ -2163,12 +2175,66 @@ out:
     return err;
 }
 
+/* The dynamic linker a program names (PT_INTERP: musl's libc.so, ld-musl-aarch64.so.1) - a position-independent
+ * ELF, at base: its pages mapped with their segments' permissions. Its entry, and the end of what it takes. */
+static int load_interp(mmu_as_t *as, const char *path, lx_u64 base, lx_u64 *entry, lx_u64 *end)
+{
+    static uint8_t prot[INTERP_MAX / PAGE];
+    uint8_t eh[64], ph[MAX_PHDRS * 56];
+    int vfd = vfs_open(path, O_RDONLY);
+    if (vfd < 0) { kprintf("[PROG]   its dynamic linker %s isn't there\n", path); return verr(vfd); }
+    int err = -ENOEXEC;
+    if (read_at(vfd, 0, eh, 64) != 0 || eh[0] != 0x7F || eh[1] != 'E' || eh[2] != 'L' || eh[3] != 'F' ||
+        eh[4] != 2 || eh[5] != 1 || *(uint16_t *)(eh + 18) != 183 || *(uint16_t *)(eh + 16) != 3) {
+        kprintf("[PROG]   %s: not an AArch64 shared object\n", path); goto out;
+    }
+    lx_u64 phoff = *(lx_u64 *)(eh + 32);
+    uint16_t phent = *(uint16_t *)(eh + 54), n = *(uint16_t *)(eh + 56);
+    if (phent != 56 || !n || n > MAX_PHDRS || read_at(vfd, phoff, ph, n * 56u) != 0) goto out;
+    lx_u64 span = 0;
+    kmemset(prot, 0, sizeof prot);
+    for (uint32_t i = 0; i < n; i++) {
+        const uint8_t *p = ph + 56 * i;
+        if (*(uint32_t *)p != 1) continue;
+        uint32_t fl = *(uint32_t *)(p + 4);
+        lx_u64 va = *(lx_u64 *)(p + 16), fsz = *(lx_u64 *)(p + 32), msz = *(lx_u64 *)(p + 40);
+        if (va + msz > INTERP_MAX || va + msz < va || fsz > msz) { kprintf("[PROG]   %s: too big\n", path); goto out; }
+        int pr = (fl & 4 ? MMU_PROT_READ : 0) | (fl & 2 ? MMU_PROT_WRITE : 0) | (fl & 1 ? MMU_PROT_EXEC : 0);
+        for (lx_u64 a = va & ~(PAGE - 1); a < va + msz; a += PAGE) {
+            prot[a / PAGE] |= (uint8_t)pr;
+            if ((prot[a / PAGE] & MMU_PROT_WRITE) && (prot[a / PAGE] & MMU_PROT_EXEC)) {
+                kprintf("[PROG]   %s: a page would be writable and executable - refusing\n", path); goto out;
+            }
+        }
+        if (page_up(va + msz) > span) span = page_up(va + msz);
+    }
+    if (!span) goto out;
+    err = -ENOMEM;
+    for (lx_u64 a = 0; a < span; a += PAGE)
+        if (prot[a / PAGE] && mmu_as_map(as, base + a, PAGE, MMU_PROT_READ | MMU_PROT_WRITE)) goto out;
+    err = -EIO;
+    for (uint32_t i = 0; i < n; i++) {
+        const uint8_t *p = ph + 56 * i;
+        if (*(uint32_t *)p != 1) continue;
+        lx_u64 off = *(lx_u64 *)(p + 8), va = *(lx_u64 *)(p + 16), fsz = *(lx_u64 *)(p + 32);
+        if (fsz && read_at(vfd, off, (void *)(uintptr_t)(base + va), (uint32_t)fsz) != 0) goto out;
+    }
+    for (lx_u64 a = 0; a < span; a += PAGE)
+        if (prot[a / PAGE]) mmu_as_protect(as, base + a, PAGE, prot[a / PAGE] | MMU_PROT_READ);
+    *entry = base + *(lx_u64 *)(eh + 24);
+    *end = base + span;
+    err = 0;
+out:
+    vfs_close(vfd);
+    return err;
+}
+
 /* Initial stack (in the active address space): argc, argv[], NULL,
  * envp[], NULL, auxv pairs, AT_NULL, with strings and AT_RANDOM above.
  * args holds argc argument strings then envc environment strings, each
  * NUL-terminated. Returns the stack pointer, or 0 if it doesn't fit. */
 static lx_u64 build_stack(const char *args, int argc, int envc, lx_u64 entry, lx_u64 phdr,
-                          uint32_t phnum, const char *execfn)
+                          uint32_t phnum, const char *execfn, lx_u64 interp_base)
 {
     static lx_u64 sptr[512];
     if (argc + envc > 510) return 0;
@@ -2192,7 +2258,7 @@ static lx_u64 build_stack(const char *args, int argc, int envc, lx_u64 entry, lx
     for (int i = 0; i < 16; i++) ((uint8_t *)(uintptr_t)sp)[i] = (uint8_t)(rnd() >> 32);
     sp &= ~15UL;
     lx_u64 aux[][2] = {
-        { 3, phdr }, { 4, 56 }, { 5, phnum }, { 6, PAGE }, { 9, entry },
+        { 3, phdr }, { 4, 56 }, { 5, phnum }, { 6, PAGE }, { 7, interp_base }, { 9, entry },
         { 11, 0 }, { 12, 0 }, { 13, 0 }, { 14, 0 }, { 16, 0 }, { 17, 100 },
         { 23, 0 }, { 25, rnd_at }, { 31, sexec }, { 0, 0 },
     };
@@ -2448,8 +2514,12 @@ static s64 sys_lx(linux_tf_t *tf)
 /* ELF or LX: *x0 and *lr are what an LX program starts with (else 0) */
 static int exec_image(const char *path, const char *args, int argc, int envc,
                       mmu_as_t **as_out, lx_u64 *entry, lx_u64 *sp, lx_u64 *top,
-                      lx_u64 *x0, lx_u64 *lr)
+                      lx_u64 *x0, lx_u64 *lr, lx_u64 *interp_end)
 {
+    char interp[VFS_PATH_MAX];
+    lx_u64 ientry = 0;
+    interp[0] = 0;
+    *interp_end = 0;
     mmu_as_t *old = mmu_as_current(), *as = mmu_as_create();
     if (!as) return -ENOMEM;
     mmu_as_activate(as);
@@ -2461,13 +2531,27 @@ static int exec_image(const char *path, const char *args, int argc, int envc,
         r = load_lx(as, path, entry, x0, lr);
         *top = USER_TOP - 16 * 1024 * 1024;            /* (brk: none of its business) */
     } else {
-        r = load_elf(as, path, entry, &phdr, &phnum, top);
+        r = load_elf(as, path, entry, &phdr, &phnum, top, interp);
+        if (r == 0 && interp[0]) {                     /* dynamically linked: its dynamic linker too */
+            char mapped[VFS_PATH_MAX];
+            if (unixroot_map(interp, mapped, sizeof mapped)) kstrncpy(interp, mapped, sizeof interp);
+            vfs_stat_t ist;
+            if (vfs_stat(interp, &ist) != VFS_OK && !kstrncmp(interp, "/lib/", 5)) {
+                /* no /lib (UNIXROOT not mounted): the system volume's \lib (the stick's, beside \OS2) */
+                char sys[VFS_PATH_MAX];
+                kstrncpy(sys, "/h", sizeof sys);
+                kstrncpy(sys + 2, interp, sizeof sys - 2);
+                if (vfs_stat(sys, &ist) == VFS_OK) kstrncpy(interp, sys, sizeof interp);
+            }
+            r = load_interp(as, interp, INTERP_BASE, &ientry, interp_end);
+        }
     }
     if (r == 0 && mmu_as_map(as, USER_TOP - STACK_EAGER, STACK_EAGER,
                              MMU_PROT_READ | MMU_PROT_WRITE))
         r = -ENOMEM;
-    if (r == 0 && !(*sp = build_stack(args, argc, envc, *entry, phdr, phnum, path)))
+    if (r == 0 && !(*sp = build_stack(args, argc, envc, *entry, phdr, phnum, path, ientry ? INTERP_BASE : 0)))
         r = -E2BIG;
+    if (r == 0 && ientry) *entry = ientry;             /* (it starts there; AT_ENTRY is the program's) */
     if (r) {
         mmu_as_activate(old);
         mmu_as_destroy(as);
@@ -2885,7 +2969,9 @@ static s64 sys_execve(lx_u64 upath, lx_u64 uargv, lx_u64 uenvp)
     fwb_flush(cur->g, 0, ~0ULL, 1);                   /* shared file mappings go with the image */
     mmu_as_t *as, *old = cur->g->as;
     lx_u64 entry, sp, top, lx_x0, lx_lr;
-    if ((r = exec_image(path, argbuf, argc, envc, &as, &entry, &sp, &top, &lx_x0, &lx_lr))) return r;
+    lx_u64 interp_end;
+    if ((r = exec_image(path, argbuf, argc, envc, &as, &entry, &sp, &top, &lx_x0, &lx_lr, &interp_end))) return r;
+    set_cmdline(cur->g, argbuf, argc);                 /* (now: argbuf is anybody's once this sleeps below) */
     /* Point of no return: the new image replaces the old one, and this
      * thread is the process's only one. */
     group_t *g = cur->g;
@@ -2909,10 +2995,13 @@ static s64 sys_execve(lx_u64 upath, lx_u64 uargv, lx_u64 uenvp)
     cur->g->as = as;
     cur->g->brk_start = cur->g->brk_cur = top;
     kstrncpy(cur->g->exe, path, sizeof cur->g->exe);
-    set_cmdline(cur->g, argbuf, argc);
     vma_clear(cur->g);                                  /* a fresh layout: the stack area */
     vma_t sv = { STACK_BOTTOM, USER_TOP, MMU_PROT_READ | MMU_PROT_WRITE, V_ANON, 0, 0 };
     vma_insert(cur->g, &sv);
+    if (interp_end) {                                   /* the dynamic linker's pages (mmap keeps off them) */
+        vma_t iv = { INTERP_BASE, interp_end, MMU_PROT_READ | MMU_PROT_WRITE, V_ANON, 0, 0 };
+        vma_insert(cur->g, &iv);
+    }
     if (lx_lr) lx_vmas(cur->g);
     for (int i = 0; i < MAX_FDS; i++)
         if ((cur->g->cloexec >> i) & 1) fd_close(cur, i);
@@ -5750,6 +5839,13 @@ static s64 linux_syscall(linux_tf_t *tf)
         return 8;
     }
     case 122: return 0;                                 /* sched_setaffinity: (any CPU, still) */
+    case 283:                                           /* membarrier: QUERY, GLOBAL, PRIVATE_EXPEDITED (+REGISTER) */
+        if (a0 == 0) return 1 | 8 | 16;
+        if (a0 == 16) return 0;
+        if (a0 != 1 && a0 != 8) return -EINVAL;
+        __asm__ volatile("dsb ish" ::: "memory");
+        if (smp_ncpus > 1) gicv3_sgi_others();          /* (the others: an interrupt, a full barrier) */
+        return 0;
     case 168: {                                         /* getcpu */
         if (a0) { if (!uok(a0, 4, 1)) return -EFAULT; *(uint32_t *)(uintptr_t)a0 = smp_cpu(); }
         if (a1) { if (!uok(a1, 4, 1)) return -EFAULT; *(uint32_t *)(uintptr_t)a1 = 0; }
@@ -6128,7 +6224,8 @@ static int linux_run_locked(const char *path, int argc, char **argv)
     ig->nthreads = 1;
     mmu_as_t *as;
     lx_u64 entry, sp, top, lx_x0, lx_lr;
-    int r = exec_image(path, argbuf, argc, envc, &as, &entry, &sp, &top, &lx_x0, &lx_lr);
+    lx_u64 interp_end;
+    int r = exec_image(path, argbuf, argc, envc, &as, &entry, &sp, &top, &lx_x0, &lx_lr, &interp_end);
     mmu_as_activate(0);
     if (r) {
         kprintf("[PROG]   %s: can't run (errno %d)\n", path, -r);
@@ -6142,6 +6239,10 @@ static int linux_run_locked(const char *path, int argc, char **argv)
     init->g->brk_start = init->g->brk_cur = top;
     vma_t sv = { STACK_BOTTOM, USER_TOP, MMU_PROT_READ | MMU_PROT_WRITE, V_ANON, 0, 0 };
     vma_insert(init->g, &sv);
+    if (interp_end) {
+        vma_t iv = { INTERP_BASE, interp_end, MMU_PROT_READ | MMU_PROT_WRITE, V_ANON, 0, 0 };
+        vma_insert(init->g, &iv);
+    }
     if (lx_lr) lx_vmas(init->g);
     kstrncpy(init->g->cwd, "/", sizeof init->g->cwd);
     if (lx_lr) lx_shell_cwd(init->g->cwd, sizeof init->g->cwd);

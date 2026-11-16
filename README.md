@@ -9,7 +9,8 @@ programs of three kinds:
 
 - **OS/2 programs built for ARM64** (LX executables: `CMD.EXE`, ...), on
   an OS/2 API of its own (`DOSCALLS.DLL`);
-- **Linux programs**: static AArch64 Linux ELF binaries run unmodified on
+- **Linux programs**: AArch64 Linux ELF binaries (static, or dynamically
+  linked against musl) run unmodified on
   a Linux system-call layer, so musl, busybox, wlroots, foot, GNU
   binutils and clang/LLVM all run here;
 - **real x86 OS/2 programs**: 32-bit OS/2 2.x-4.x ones and 16-bit OS/2
@@ -72,6 +73,7 @@ scripts/desktop.sh --hvf
 | kernel, C: test disk | CMake | `build/os2warp.img` |
 | musl sysroot | `userland/build-musl.sh` | |
 | libraries (wayland, wlroots, pixman, xkbcommon, fcft, ...) | `userland/build-libs.sh` | |
+| musl's `libc.so` / dynamic linker, the dynamic-linking test | `userland/build-dynamic.sh` | `build/userland/dyn` |
 | busybox | `userland/build-busybox.sh` | |
 | foot, fuzzel, cage, dwl | `userland/build-compositor.sh` | |
 | packages: musl-devel, LLVM (libc++ for the shell) | `userland/build-rpms.sh` | an hour or more, the first time |
@@ -291,9 +293,16 @@ Keyboard layouts come from xkeyboard-config, with dead keys and Compose.
 
 ### Linux programs
 
-The kernel runs static AArch64 Linux ELF binaries at EL0 and implements
-the Linux system calls itself (`kernel/src/linux/linux.c`). It provides:
+The kernel runs AArch64 Linux ELF binaries at EL0 and implements the
+Linux system calls itself (`kernel/src/linux/linux.c`). It provides:
 
+- **Static and dynamic executables**: `ET_EXEC` at their address, and
+  position-independent ones (`ET_DYN`, at 0x60000000); a program naming
+  an interpreter (`PT_INTERP`) gets it loaded beside it (musl's `libc.so`,
+  `ld-musl-aarch64.so.1`, built by `userland/build-dynamic.sh`, in the
+  stick's `\lib` - UNIXROOT's `/lib`), which then loads its shared
+  libraries; `dlopen`/`dlsym` and TLS in shared libraries work
+  (`dyntest`).
 - **Processes**, each with its own address space, preemptively scheduled
   (10 ms, GICv3 timer), with demand paging. **SMP**: every CPU QEMU gives
   the machine (PSCI CPU_ON, up to 8) runs programs' threads at once - 4
@@ -607,8 +616,8 @@ Not there yet:
 
 - **Storage**: the btrfs extent and checksum trees, f2fs mounted at boot.
 - **The kernel**: finer-grained locking than the one big kernel lock (system
-  calls from different CPUs wait for each other), dynamic linking for
-  Linux programs, datagram Unix sockets.
+  calls from different CPUs wait for each other), datagram Unix sockets;
+  glibc-linked programs (musl's dynamic linker only).
 - **Graphics**: GPU acceleration (the desktop renders with pixman).
 - **os2x86**: PM drag and drop between programs (within one works), IPF
   help files, and
