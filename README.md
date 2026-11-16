@@ -238,7 +238,8 @@ INTERPRET -, stems, REXX arithmetic, about 60 built-in functions with
 LINEIN/LINEOUT file I/O) and the common RexxUtil functions (RxFuncAdd and
 SysLoadFuncs, SysFileTree, SysFileSearch, SysMkDir/SysRmDir/SysFileDelete,
 SysTempFileName, SysSearchPath, SysDriveMap, SysSleep, SysGetKey, SysCls,
-...), with OS/2 paths (`D:\NOTES\*.TXT`), and condition traps (SIGNAL ON
+SysIni - OS/2's binary .INI profiles, the same USER/SYSTEM ones os2x86's PM
+programs use - ...), with OS/2 paths (`D:\NOTES\*.TXT`), and condition traps (SIGNAL ON
 SYNTAX/NOVALUE/ERROR/HALT, CALL ON ERROR, CONDITION()); a routine that
 isn't internal or built in is another .CMD file; PUSH/QUEUE/PULL and
 `'command | RXQUEUE'` for the data queue; other clauses are commands for the
@@ -630,8 +631,7 @@ Not there yet:
   help files, and
   the rest of OS/2's API (the help manager, multimedia, ...).
 - **Other**: DEBUG's assembler, disassembler and breakpoints; REXX's
-  RexxUtil's less used
-  functions (extended attributes, WPS objects, INI files).
+  RexxUtil's less used functions (extended attributes, WPS objects).
 
 ---
 

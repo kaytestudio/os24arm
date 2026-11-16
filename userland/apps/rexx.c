@@ -15,7 +15,8 @@
  * (decimal strings, NUMERIC DIGITS significant digits), concatenation
  * (abuttal, blank, ||), comparisons (normal and strict), logic. About 60
  * built-in functions, LINEIN/LINEOUT/LINES/CHARIN/CHAROUT/STREAM for files,
- * RexxUtil's common functions (OS/2 paths through /dev/os2cmd). Conditions:
+ * RexxUtil's common functions (OS/2 paths through /dev/os2cmd; SysIni: OS/2's
+ * binary .INI profiles, os2x86's USER/SYSTEM ones). Conditions:
  * SIGNAL ON ERROR/FAILURE/HALT/NOVALUE/SYNTAX/NOTREADY [NAME label] and CALL
  * ON ERROR/FAILURE/HALT (DELAY while the handler runs); RC, SIGL,
  * CONDITION(), ERRORTEXT(), SOURCELINE(). External routines: NAME.CMD in the
@@ -30,6 +31,7 @@
 #include <math.h>
 #include <setjmp.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1248,6 +1250,196 @@ static char *sys_file_tree(const char *spec, const char *stem0, const char *opt0
     var_set(afmt("%s0", stem), fmtnum((double)k));
     return adup("0");
 }
+/* ── SysIni: OS/2 profiles (.INI), in OS/2's binary format - the same files os2x86's Prf calls use (USER: $USER_INI,
+ * else OS2.INI in $OS2X86_HOME or ~/.os2x86; SYSTEM: $SYSTEM_INI, else OS2SYS.INI). A header { 0xFFFFFFFF, first
+ * application, size, 0, 0 }; applications { next, first key, 0, name length twice, name }; keys { next, 0, name
+ * length twice, name, data length twice, data } - offsets from the file's start, 0 ending a list. ── */
+typedef struct { char *name; uint8_t *data; uint32_t len; } inikey_t;
+typedef struct { char *name; inikey_t *k; int nk; } iniapp_t;
+typedef struct { iniapp_t *a; int na; } ini_t;
+static uint32_t ird32(const uint8_t *d) { return d[0] | d[1] << 8 | d[2] << 16 | (uint32_t)d[3] << 24; }
+static void iput32(uint8_t *d, uint32_t v) { d[0] = (uint8_t)v; d[1] = (uint8_t)(v >> 8); d[2] = (uint8_t)(v >> 16); d[3] = (uint8_t)(v >> 24); }
+static void iput16(uint8_t *d, uint32_t v) { d[0] = (uint8_t)v; d[1] = (uint8_t)(v >> 8); }
+static iniapp_t *ini_app(ini_t *p, const char *name, int make)
+{
+    for (int i = 0; i < p->na; i++) if (!strcasecmp(p->a[i].name, name)) return &p->a[i];
+    if (!make) return 0;
+    p->a = realloc(p->a, (size_t)(p->na + 1) * sizeof *p->a);
+    iniapp_t *a = &p->a[p->na++];
+    memset(a, 0, sizeof *a); a->name = strdup(name);
+    return a;
+}
+static inikey_t *ini_key(iniapp_t *a, const char *name, int make)
+{
+    for (int i = 0; i < a->nk; i++) if (!strcasecmp(a->k[i].name, name)) return &a->k[i];
+    if (!make) return 0;
+    a->k = realloc(a->k, (size_t)(a->nk + 1) * sizeof *a->k);
+    inikey_t *k = &a->k[a->nk++];
+    memset(k, 0, sizeof *k); k->name = strdup(name);
+    return k;
+}
+static int ini_load(ini_t *p, const char *path)          /* (0: read, or not there yet; -1: not a profile) */
+{
+    memset(p, 0, sizeof *p);
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+    uint8_t *d = n > 0 && n < (64 << 20) ? malloc((size_t)n) : 0;
+    if (!d || fread(d, 1, (size_t)n, f) != (size_t)n || n < 20 || ird32(d) != 0xFFFFFFFFu) { free(d); fclose(f); return n ? -1 : 0; }
+    fclose(f);
+    #define IN(o, len) ((o) && (uint64_t)(o) + (len) <= (uint64_t)n)
+    int guard = 0;
+    for (uint32_t ao = ird32(d + 4); IN(ao, 20) && guard++ < 100000; ao = ird32(d + ao)) {
+        uint32_t nl = (uint32_t)(d[ao + 12] | d[ao + 13] << 8), no = ird32(d + ao + 16);
+        if (!IN(no, nl) || !nl) break;
+        char *an = strndup((char *)d + no, nl);
+        iniapp_t *a = ini_app(p, an, 1);
+        free(an);
+        for (uint32_t ko = ird32(d + ao + 4); IN(ko, 24) && guard++ < 100000; ko = ird32(d + ko)) {
+            uint32_t kl = (uint32_t)(d[ko + 8] | d[ko + 9] << 8), kn = ird32(d + ko + 12);
+            uint32_t vl = (uint32_t)(d[ko + 16] | d[ko + 17] << 8), vo = ird32(d + ko + 20);
+            if (!IN(kn, kl) || !kl || (vl && !IN(vo, vl))) break;
+            char *knm = strndup((char *)d + kn, kl);
+            inikey_t *k = ini_key(a, knm, 1);
+            free(knm);
+            free(k->data); k->data = malloc(vl ? vl : 1);
+            if (vl) memcpy(k->data, d + vo, vl);
+            k->len = vl;
+        }
+    }
+    #undef IN
+    free(d);
+    return 0;
+}
+static int ini_save(ini_t *p, const char *path)
+{
+    size_t n = 20;
+    for (int i = 0; i < p->na; i++) {
+        n += 20 + strlen(p->a[i].name) + 1;
+        for (int j = 0; j < p->a[i].nk; j++) n += 24 + strlen(p->a[i].k[j].name) + 1 + p->a[i].k[j].len;
+    }
+    uint8_t *d = calloc(1, n);
+    size_t o = 20;
+    iput32(d, 0xFFFFFFFFu); iput32(d + 4, p->na ? 20 : 0); iput32(d + 8, (uint32_t)n);
+    for (int i = 0; i < p->na; i++) {
+        size_t ao = o, nl = strlen(p->a[i].name) + 1;
+        o += 20;
+        iput16(d + ao + 12, (uint32_t)nl); iput16(d + ao + 14, (uint32_t)nl); iput32(d + ao + 16, (uint32_t)o);
+        memcpy(d + o, p->a[i].name, nl); o += nl;
+        iput32(d + ao + 4, p->a[i].nk ? (uint32_t)o : 0);
+        for (int j = 0; j < p->a[i].nk; j++) {
+            inikey_t *k = &p->a[i].k[j];
+            size_t ko = o, kl = strlen(k->name) + 1;
+            o += 24;
+            iput16(d + ko + 8, (uint32_t)kl); iput16(d + ko + 10, (uint32_t)kl); iput32(d + ko + 12, (uint32_t)o);
+            memcpy(d + o, k->name, kl); o += kl;
+            iput16(d + ko + 16, k->len); iput16(d + ko + 18, k->len); iput32(d + ko + 20, (uint32_t)o);
+            memcpy(d + o, k->data, k->len); o += k->len;
+            iput32(d + ko, j + 1 < p->a[i].nk ? (uint32_t)o : 0);
+        }
+        iput32(d + ao, i + 1 < p->na ? (uint32_t)o : 0);
+    }
+    char *tmp = afmt("%s.tmp", path);
+    FILE *f = fopen(tmp, "wb");
+    int ok = 0;
+    if (f) {
+        int good = fwrite(d, 1, n, f) == n;
+        if (fclose(f) == 0 && good && rename(tmp, path) == 0) ok = 1; else remove(tmp);
+    }
+    free(d);
+    return ok ? 0 : -1;
+}
+static void ini_free(ini_t *p)
+{
+    for (int i = 0; i < p->na; i++) {
+        for (int j = 0; j < p->a[i].nk; j++) { free(p->a[i].k[j].name); free(p->a[i].k[j].data); }
+        free(p->a[i].k); free(p->a[i].name);
+    }
+    free(p->a); p->a = 0; p->na = 0;
+}
+static char *ini_path(const char *which)                /* USER, SYSTEM, or a file */
+{
+    int sys = !strcasecmp(which, "SYSTEM");
+    if (!sys && strcasecmp(which, "USER") && strcasecmp(which, "BOTH")) return to_host(which);
+    const char *env = getenv(sys ? "SYSTEM_INI" : "USER_INI");
+    if (env && *env) return to_host(env);
+    const char *home = getenv("OS2X86_HOME"), *h = getenv("HOME");
+    char *dir = home && *home ? adup(home) : afmt("%s/.os2x86", h && *h ? h : "/tmp");
+    mkdir(dir, 0755);
+    return afmt("%s/%s", dir, sys ? "OS2SYS.INI" : "OS2.INI");
+}
+static void stem_put(const char *stem0, int i, const char *v)
+{
+    char *stem = adup(stem0); for (char *c = stem; *c; c++) *c = (char)toupper((unsigned char)*c);
+    if (stem[strlen(stem) - 1] != '.') stem = concat(stem, ".", 0);
+    var_set(afmt("%s%d", stem, i), v);
+}
+/* SysIni([ini], app, key, value | 'DELETE:') / SysIni(ini, app, 'DELETE:') / SysIni(ini, app, 'ALL:', stem) /
+ * SysIni(ini, 'ALL:', stem): '' when done, the value, or 'ERROR:' */
+static char *sys_ini(char **a, int na)
+{
+    const char *which = na > 0 && a[0] && *a[0] ? a[0] : "USER";
+    const char *app = na > 1 && a[1] ? a[1] : "", *key = na > 2 && a[2] ? a[2] : 0, *val = na > 3 ? a[3] : 0;
+    int both = !strcasecmp(which, "BOTH");
+    char *path = ini_path(which);
+    ini_t p;
+    if (ini_load(&p, path) < 0) return adup("ERROR:");
+    char *res = adup("");
+    if (!strcasecmp(app, "ALL:")) {                         /* the applications' names, into the stem (key) */
+        if (!key) { ini_free(&p); return adup("ERROR:"); }
+        for (int i = 0; i < p.na; i++) stem_put(key, i + 1, p.a[i].name);
+        stem_put(key, 0, fmtnum(p.na));
+        if (both) {                                         /* (and the system's) */
+            ini_t q; char *sp = ini_path("SYSTEM"); int c = p.na;
+            if (ini_load(&q, sp) == 0) { for (int i = 0; i < q.na; i++) if (!ini_app(&p, q.a[i].name, 0)) stem_put(key, ++c, q.a[i].name); ini_free(&q); }
+            stem_put(key, 0, fmtnum(c));
+        }
+        ini_free(&p);
+        return res;
+    }
+    iniapp_t *ap = ini_app(&p, app, 0);
+    if (key && !strcasecmp(key, "DELETE:")) {               /* the whole application */
+        if (!ap) { ini_free(&p); return adup("ERROR:"); }
+        for (int j = 0; j < ap->nk; j++) { free(ap->k[j].name); free(ap->k[j].data); }
+        free(ap->k); free(ap->name);
+        int i = (int)(ap - p.a);
+        memmove(p.a + i, p.a + i + 1, (size_t)(p.na - i - 1) * sizeof *p.a); p.na--;
+        if (ini_save(&p, path)) res = adup("ERROR:");
+    } else if (key && !strcasecmp(key, "ALL:")) {           /* its keys' names, into the stem (value) */
+        if (!ap || !val) res = adup("ERROR:");
+        else { for (int j = 0; j < ap->nk; j++) stem_put(val, j + 1, ap->k[j].name); stem_put(val, 0, fmtnum(ap->nk)); }
+    } else if (key && val && !strcasecmp(val, "DELETE:")) {  /* one key */
+        inikey_t *k = ap ? ini_key(ap, key, 0) : 0;
+        if (!k) res = adup("ERROR:");
+        else {
+            free(k->name); free(k->data);
+            int j = (int)(k - ap->k);
+            memmove(ap->k + j, ap->k + j + 1, (size_t)(ap->nk - j - 1) * sizeof *ap->k); ap->nk--;
+            if (!ap->nk) { int i = (int)(ap - p.a); free(ap->k); free(ap->name); memmove(p.a + i, p.a + i + 1, (size_t)(p.na - i - 1) * sizeof *p.a); p.na--; }
+            if (ini_save(&p, path)) res = adup("ERROR:");
+        }
+    } else if (key && val) {                                /* set it */
+        inikey_t *k = ini_key(ini_app(&p, app, 1), key, 1);
+        free(k->data);
+        k->len = (uint32_t)strlen(val);
+        k->data = malloc(k->len ? k->len : 1);
+        memcpy(k->data, val, k->len);
+        if (ini_save(&p, path)) res = adup("ERROR:");
+    } else if (key) {                                       /* query it */
+        inikey_t *k = ap ? ini_key(ap, key, 0) : 0;
+        if (!k && both) {
+            ini_t q;
+            if (ini_load(&q, ini_path("SYSTEM")) == 0) {
+                iniapp_t *qa = ini_app(&q, app, 0); inikey_t *qk = qa ? ini_key(qa, key, 0) : 0;
+                res = qk ? astr((char *)qk->data, qk->len) : adup("ERROR:");
+                ini_free(&q);
+            } else res = adup("ERROR:");
+        } else res = k ? astr((char *)k->data, k->len) : adup("ERROR:");
+    } else res = adup("ERROR:");
+    ini_free(&p);
+    return res;
+}
+
 static char *builtin(const char *nm, char **a, int na, int *found)
 {
     *found = 1;
@@ -1595,6 +1787,7 @@ static char *builtin(const char *nm, char **a, int na, int *found)
             char u[32]; snprintf(u, sizeof u, "%s", cmd); for (char *c = u; *c; c++) *c = (char)toupper((unsigned char)*c);
             if (!strncmp(u, "CLOSE", 5)) { for (int i = 0; i < 16; i++) if (streams[i].f && !strcmp(streams[i].name, f)) { fclose(streams[i].f); streams[i].f = 0; } return adup("READY:"); }
             if (!strncmp(u, "QUERY EXISTS", 12)) return access(to_host(f), F_OK) == 0 ? adup(f) : adup("");
+            if (!strncmp(u, "QUERY SIZE", 10)) { struct stat st; return stat(to_host(f), &st) == 0 ? fmtnum((double)st.st_size) : adup(""); }
             if (!strncmp(u, "OPEN", 4)) return stream_get(f, strstr(u, "WRITE") != 0) ? adup("READY:") : adup("ERROR:");
             return adup("");
         }
@@ -1616,6 +1809,7 @@ static char *builtin(const char *nm, char **a, int na, int *found)
     if (!strcmp(nm, "RXFUNCQUERY")) return adup("0");            /* (0: registered) */
     if (!strcmp(nm, "SYSLOADFUNCS") || !strcmp(nm, "SYSDROPFUNCS")) return adup("");
     /* RexxUtil */
+    if (!strcmp(nm, "SYSINI")) return sys_ini(a, na);
     if (!strcmp(nm, "SYSFILETREE")) return sys_file_tree(S(0), S(1), arg_str(a, na, 2, "B"));
     if (!strcmp(nm, "SYSFILEDELETE")) { const char *h = to_host(S(0)); if (access(h, F_OK)) return adup("2"); return adup(unlink(h) ? "5" : "0"); }
     if (!strcmp(nm, "SYSMKDIR")) return adup(mkdir(to_host(S(0)), 0755) ? (access(to_host(S(0)), F_OK) == 0 ? "5" : "3") : "0");

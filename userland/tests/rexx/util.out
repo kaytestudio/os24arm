@@ -9,5 +9,10 @@ search: 1 alpha line
 case: 0
 numbered: 2 Beta line
 temp: 8 1
+ini set:   
+ini get: blue 42 ERROR:
+ini all: 2 MyApp Other / 2 Colour Size
+ini delete:  ERROR:  ERROR:
+ini bytes: 77 FFFFFFFF
 delete: 0 0 2 0
 rmdir: 0 0

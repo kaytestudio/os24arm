@@ -33,5 +33,15 @@ call SysFileSearch 'line', d'\a.txt', 'num.', 'N'
 say 'numbered:' num.2
 t = SysTempFileName(d'\tmp???.x')
 say 'temp:' length(filespec('name', t)) (stream(t, 'C', 'QUERY EXISTS') = '')
+ini = d'\test.ini'
+say 'ini set:' SysIni(ini, 'MyApp', 'Colour', 'blue') SysIni(ini, 'MyApp', 'Size', '42') SysIni(ini, 'Other', 'K', 'v')
+say 'ini get:' SysIni(ini, 'MyApp', 'Colour') SysIni(ini, 'MyApp', 'size') SysIni(ini, 'MyApp', 'Nope')
+call SysIni ini, 'ALL:', 'apps.'
+call SysIni ini, 'MyApp', 'ALL:', 'keys.'
+say 'ini all:' apps.0 apps.1 apps.2 '/' keys.0 keys.1 keys.2
+say 'ini delete:' SysIni(ini, 'MyApp', 'Colour', 'DELETE:') SysIni(ini, 'MyApp', 'Colour') SysIni(ini, 'Other', 'DELETE:') SysIni(ini, 'Other', 'K')
+say 'ini bytes:' stream(ini, 'C', 'QUERY SIZE') c2x(charin(ini, 1, 4))
+call stream ini, 'C', 'CLOSE'
+call SysFileDelete ini
 say 'delete:' SysFileDelete(d'\a.txt') SysFileDelete(d'\b.dat') SysFileDelete(d'\nosuch') SysFileDelete(d'\sub\c.txt')
 say 'rmdir:' SysRmDir(d'\sub') SysRmDir(d)
