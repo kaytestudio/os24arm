@@ -7,6 +7,39 @@
 
 .section ".text.boot"
 
+/* EL2 kept for the hypervisor: what the boot CPU and the others (SMP) set up
+ * alike before dropping to EL1 (x0 clobbered). */
+    .macro el2_host_setup
+    mov     x0, #HCR_EL2_HOST       /* EL1 is AArch64; nothing trapped */
+    msr     hcr_el2, x0
+    mov     x0, #CPTR_EL2_HOST      /* no FP/SIMD trap to EL2 */
+    msr     cptr_el2, x0
+    msr     hstr_el2, xzr
+    mov     x0, #CNTHCTL_EL2_HOST   /* EL1 physical counter/timer access */
+    msr     cnthctl_el2, x0
+    msr     cnthp_ctl_el2, xzr      /* EL2 timer off until a guest runs */
+    msr     cntvoff_el2, xzr
+    msr     vttbr_el2, xzr
+    msr     tpidr_el2, xzr          /* 0 = host running (hyp_entry.S) */
+    mrs     x0, midr_el1            /* EL1 reads of MIDR/MPIDR see these */
+    msr     vpidr_el2, x0
+    mrs     x0, mpidr_el1
+    msr     vmpidr_el2, x0
+    ldr     x0, =0x30c50830         /* SCTLR_EL2: RES1 bits, MMU/caches off */
+    msr     sctlr_el2, x0
+
+    /* GICv3 present (ID_AA64PFR0_EL1.GIC != 0): let EL1 use the
+     * system-register CPU interface - otherwise ICC_* at EL1 is UNDEFINED. */
+    mrs     x0, id_aa64pfr0_el1
+    ubfx    x0, x0, #24, #4
+    cbz     x0, 1f
+    mov     x0, #0xf                /* ICC_SRE_EL2: Enable | DIB | DFB | SRE */
+    msr     S3_4_C12_C9_5, x0       /* ICC_SRE_EL2 */
+1:
+    isb
+
+    .endm
+
 .global _start
 
 _start:
@@ -43,34 +76,7 @@ core0:
     ldr     x0, =hyp_stack_top
     mov     sp, x0                  /* SP_EL2 */
 
-    mov     x0, #HCR_EL2_HOST       /* EL1 is AArch64; nothing trapped */
-    msr     hcr_el2, x0
-    mov     x0, #CPTR_EL2_HOST      /* no FP/SIMD trap to EL2 */
-    msr     cptr_el2, x0
-    msr     hstr_el2, xzr
-    mov     x0, #CNTHCTL_EL2_HOST   /* EL1 physical counter/timer access */
-    msr     cnthctl_el2, x0
-    msr     cnthp_ctl_el2, xzr      /* EL2 timer off until a guest runs */
-    msr     cntvoff_el2, xzr
-    msr     vttbr_el2, xzr
-    msr     tpidr_el2, xzr          /* 0 = host running (hyp_entry.S) */
-    mrs     x0, midr_el1            /* EL1 reads of MIDR/MPIDR see these */
-    msr     vpidr_el2, x0
-    mrs     x0, mpidr_el1
-    msr     vmpidr_el2, x0
-    ldr     x0, =0x30c50830         /* SCTLR_EL2: RES1 bits, MMU/caches off */
-    msr     sctlr_el2, x0
-
-    /* GICv3 present (ID_AA64PFR0_EL1.GIC != 0): let EL1 use the
-     * system-register CPU interface - otherwise ICC_* at EL1 is UNDEFINED. */
-    mrs     x0, id_aa64pfr0_el1
-    ubfx    x0, x0, #24, #4
-    cbz     x0, 1f
-    mov     x0, #0xf                /* ICC_SRE_EL2: Enable | DIB | DFB | SRE */
-    msr     S3_4_C12_C9_5, x0       /* ICC_SRE_EL2 */
-1:
-    isb
-
+    el2_host_setup
     mov     x0, #0x3c5              /* EL1h, DAIF masked */
     msr     spsr_el2, x0
     adr     x0, el1_entry
@@ -82,6 +88,7 @@ el1_entry:
     /* Set up stack pointer (grows downward) */
     ldr     x1, =_stack_top
     mov     sp, x1
+    msr     tpidr_el1, xzr          /* this CPU's index (kernel/src/smp.c): 0 */
 
     /* Ensure stack is valid before proceeding */
     mov     x0, #0
@@ -139,6 +146,65 @@ bss_done:
     bl      kernel_main
 
     /* If kernel_main returns, hang */
+    b       hang
+
+/* ── The other CPUs (kernel/src/smp.c starts them with PSCI CPU_ON) ───────
+ * x0 = the CPU's index (the CPU_ON context id). It comes up at EL2 when
+ * the boot CPU did (QEMU's virtualization=on), else at EL1; with the MMU
+ * and caches off - so nothing is read from memory but smp_boot_args
+ * (cleaned to the point of coherency by the boot CPU), and no stack is
+ * used until the MMU is on. */
+    .global secondary_start
+secondary_start:
+    msr     daifset, #0xF
+    mov     x20, x0
+    mrs     x19, CurrentEL
+    lsr     x19, x19, #2
+    and     x19, x19, #3
+    cmp     x19, #2
+    b.ne    secondary_el1
+    ldr     x0, =hyp_vectors
+    msr     vbar_el2, x0
+    ldr     x0, =smp_hyp_stacks     /* SP_EL2: its own 4 KB */
+    add     x1, x20, #1
+    lsl     x1, x1, #12
+    add     x0, x0, x1
+    mov     sp, x0
+    el2_host_setup
+    mov     x0, #0x3c5              /* EL1h, DAIF masked */
+    msr     spsr_el2, x0
+    adr     x0, secondary_el1
+    msr     elr_el2, x0
+    eret
+
+secondary_el1:
+    msr     tpidr_el1, x20
+    ldr     x0, =vector_table
+    msr     vbar_el1, x0
+    mov     x0, #(3 << 20)          /* FP/SIMD at EL1 */
+    msr     cpacr_el1, x0
+    isb
+    ldr     x1, =smp_boot_args      /* the boot CPU's MMU settings */
+    ldr     x2, [x1, #0]
+    msr     mair_el1, x2
+    ldr     x2, [x1, #8]
+    msr     tcr_el1, x2
+    ldr     x2, [x1, #16]
+    msr     ttbr0_el1, x2
+    isb
+    tlbi    vmalle1
+    dsb     ish
+    isb
+    ldr     x2, [x1, #24]
+    msr     sctlr_el1, x2           /* MMU, caches, alignment checks: as the boot CPU */
+    isb
+    ldr     x0, =smp_stacks         /* its stack: smp_stacks[index] */
+    add     x1, x20, #1
+    lsl     x1, x1, #15
+    add     x0, x0, x1
+    mov     sp, x0
+    mov     x0, x20
+    bl      smp_secondary_main
     b       hang
 
 /* Exception vector table (required for ARM64) */

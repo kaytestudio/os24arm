@@ -31,6 +31,15 @@
  * shell's context runs the idle loop in linux_run() until a deadline
  * passes.
  *
+ * SMP (kernel/include/smp.h): every CPU runs threads - each has its own
+ * current thread (cur), idle context (the boot CPU's is the shell's), tick
+ * and address space; a thread runs on one CPU at a time (on_cpu). The
+ * kernel runs on one CPU at a time: the big kernel lock, taken on every way
+ * in from EL0 (el0.S -> linux_kernel_enter) and given up on every way back
+ * (linux_kernel_exit) and while an idle CPU waits (cpu_wait). Making a
+ * thread runnable kicks idle CPUs (an SGI); a signal for a thread running
+ * on another CPU kicks it into the kernel at once.
+ *
  * Processes: clone (fork: the address space is copied, MAP_SHARED pages
  * are shared; CLONE_VM | CLONE_VFORK, as musl's posix_spawn uses it: the
  * child borrows the parent's address space, the parent waits until the
@@ -86,6 +95,7 @@
 #include "uart.h"
 #include "kprintf.h"
 #include "gicv3.h"
+#include "smp.h"
 #include "lx_loader.h"
 #include "lx_dll_loader.h"
 #include "lx_services.h"
@@ -424,13 +434,25 @@ typedef struct proc {
     mmu_as_t *futex_as;        /* futex wait: (address space, address), */
     lx_u64   futex_addr;       /* 0 once woken */
     uint32_t futex_bits;
+    int      on_cpu;           /* running on CPU on_cpu - 1 (0: none) - SMP */
 } proc_t;
 
 static proc_t  procs[MAX_PROCS];
 static group_t groups[MAX_GROUPS];
 static int     futexq;                 /* channel futex waiters sleep on */
-static proc_t *cur;                    /* NULL = the shell's context */
-static lx_u64  shell_ctx[13];
+/* Per CPU (SMP: kernel/include/smp.h): the thread it runs (NULL: its idle
+ * context - the boot CPU's is the shell's, linux_run's loop - whose kernel
+ * context is idle_ctx), whether it's waiting for work, its tick. */
+typedef struct {
+    struct proc *thread;
+    lx_u64   idle_ctx[13];
+    volatile int idle;         /* in its idle wait: kick it when something's runnable */
+    volatile int parked;       /* (the others) waiting while no program runs */
+    int      ticking;
+} cpu_t;
+static cpu_t   cpus[SMP_MAX_CPUS];
+#define cur (cpus[smp_cpu()].thread)
+static volatile int linux_active;      /* programs running: the other CPUs take part */
 static int     next_pid = 1;
 static lx_u64  rng;
 static int     pollq;                  /* channel: "something may be ready" */
@@ -453,17 +475,21 @@ static void check_kstack(proc_t *p)
         }
 }
 
+/* (With the big kernel lock held - all the way through: prev's context is
+ * saved before another CPU can take it up.) */
 static void switch_to(proc_t *next)
 {
-    proc_t *prev = cur;
+    cpu_t *c = &cpus[smp_cpu()];
+    proc_t *prev = c->thread;
     if (prev == next) return;
     check_kstack(prev);
-    if (prev) __asm__ volatile("mrs %0, tpidr_el0" : "=r"(prev->tpidr));
-    cur = next;
+    if (prev) { __asm__ volatile("mrs %0, tpidr_el0" : "=r"(prev->tpidr)); prev->on_cpu = 0; }
+    c->thread = next;
+    if (next) next->on_cpu = (int)smp_cpu() + 1;
     mmu_as_t *as = next ? next->g->as : 0;
     if (mmu_as_current() != as) mmu_as_activate(as);         /* threads share one */
     if (next) __asm__ volatile("msr tpidr_el0, %0" :: "r"(next->tpidr));
-    cpu_switch(prev ? prev->kctx : shell_ctx, next ? next->kctx : shell_ctx);
+    cpu_switch(prev ? prev->kctx : c->idle_ctx, next ? next->kctx : c->idle_ctx);
 }
 
 /* Wake sleepers whose deadline has passed. */
@@ -492,9 +518,47 @@ static proc_t *pick_runnable(proc_t *after)
     int start = after ? (int)(after - procs) + 1 : 0;
     for (int k = 0; k < MAX_PROCS; k++) {
         proc_t *p = &procs[(start + k) % MAX_PROCS];
-        if (p->state == P_RUN) return p;
+        if (p->state == P_RUN && (!p->on_cpu || p == cur)) return p;   /* (not one another CPU runs) */
     }
     return 0;
+}
+
+/* ── SMP: into and out of the kernel, idle CPUs ───────────────────────── */
+/* el0.S, on every way in from EL0 and out to it. */
+void linux_kernel_enter(void) { bkl_lock(); }
+
+static void kick_idle(void)                 /* something runnable, a CPU idle: wake it */
+{
+    if (smp_ncpus < 2) return;
+    unsigned me = smp_cpu();
+    int idle = 0;
+    for (int i = 0; i < smp_ncpus; i++) if ((unsigned)i != me && cpus[i].idle) idle = 1;
+    if (!idle) return;
+    for (int i = 0; i < MAX_PROCS; i++)
+        if (procs[i].state == P_RUN && !procs[i].on_cpu) { gicv3_sgi_others(); return; }
+}
+
+void linux_kernel_exit(void)
+{
+    kick_idle();
+    bkl_unlock();
+}
+
+static void tick_arm(void);
+/* Wait for something (with the lock given up meanwhile): about 5 ms, a
+ * kick, or this CPU's tick. */
+static void cpu_wait(void)
+{
+    cpu_t *c = &cpus[smp_cpu()];
+    c->idle = 1;
+    bkl_unlock();
+    uart_idle_wait();                        /* WFI, ended by the virtual timer in 5 ms at most */
+    gicv3_drain();                           /* (the kick SGI, the tick, taken and ended) */
+    lx_u64 ctl;
+    __asm__ volatile("mrs %0, cntp_ctl_el0" : "=r"(ctl));
+    if ((ctl & 4) && c->ticking) tick_arm(); /* ISTATUS: the tick fired; the next one */
+    bkl_lock();
+    c->idle = 0;
 }
 
 /* The current process gives up the CPU (it may stay runnable: a yield). */
@@ -580,6 +644,8 @@ static void send_sig(proc_t *p, int sig, int from)
     p->sig_from[sig - 1] = from;
     if (!(p->sig_blocked & bit) || (bit & UNBLOCKABLE)) {
         if (p->state == P_SLEEP) { p->state = P_RUN; p->wchan = 0; }
+        /* running on another CPU: into the kernel now (its IRQ entry acts on it), not at its next tick */
+        if (p->on_cpu && (unsigned)(p->on_cpu - 1) != smp_cpu()) gicv3_sgi_others();
     } else {
         wakeup(&pollq);                     /* signalfd readers */
     }
@@ -2417,7 +2483,7 @@ static int exec_image(const char *path, const char *args, int argc, int envc,
 static void reap_dead(void)
 {
     for (int i = 0; i < MAX_PROCS; i++)
-        if (procs[i].state == P_DEAD && &procs[i] != cur) {
+        if (procs[i].state == P_DEAD && &procs[i] != cur && !procs[i].on_cpu) {
             if (procs[i].kstack) mmu_frames_free(procs[i].kstack, KSTACK_PAGES);
             procs[i].kstack = 0;
             procs[i].state = P_FREE;
@@ -4304,7 +4370,8 @@ static void shm_unlink_index(int i)
  * directories are listed by getdents64. CPU time: the scheduler tick
  * (10 ms = one USER_HZ jiffy) is charged to the process it interrupts. */
 enum { PR_NONE, PR_DIR, PR_FILE, PR_LINK };
-static lx_u64 busy_jiffies;
+static lx_u64 busy_jiffies;                /* ticks some CPU spent running a program: all CPUs */
+static lx_u64 busy_cpu[SMP_MAX_CPUS];        /* ... each CPU */
 static const char *const proc_top[] = { "meminfo", "uptime", "loadavg", "stat", "version",
                                         "cpuinfo", "mounts", 0 };
 static const char *const proc_pid[] = { "stat", "status", "statm", "cmdline", "comm", 0 };
@@ -4477,7 +4544,7 @@ static void proc_gen(const char *path, pbuf_t *p)
             pb_kb(p, "SwapFree", 0);
             pb_kb(p, "Shmem", shm);
         } else if (!kstrcmp(leaf, "uptime")) {
-            lx_u64 j = jiffies(), idle = j > busy_jiffies ? j - busy_jiffies : 0;
+            lx_u64 j = jiffies(), all = j * (lx_u64)smp_ncpus, idle = all > busy_jiffies ? all - busy_jiffies : 0;
             pb_u(p, j / 100); pb_c(p, '.'); pb_c(p, (char)('0' + j / 10 % 10)); pb_c(p, (char)('0' + j % 10));
             pb_c(p, ' ');
             pb_u(p, idle / 100); pb_c(p, '.'); pb_c(p, (char)('0' + idle / 10 % 10)); pb_c(p, (char)('0' + idle % 10));
@@ -4489,13 +4556,14 @@ static void proc_gen(const char *path, pbuf_t *p)
             pb_s(p, "0.00 0.00 0.00 ");
             pb_u(p, (lx_u64)run); pb_c(p, '/'); pb_u(p, (lx_u64)all); pb_c(p, ' '); pb_u(p, (lx_u64)last); pb_c(p, '\n');
         } else if (!kstrcmp(leaf, "stat")) {
-            lx_u64 j = jiffies(), idle = j > busy_jiffies ? j - busy_jiffies : 0;
+            lx_u64 j = jiffies();
             int run = 0, ngroups = 0;
             for (int i = 0; i < MAX_PROCS; i++) if (procs[i].state == P_RUN) run++;
             for (int i = 0; i < MAX_GROUPS; i++) if (groups[i].state != G_FREE) ngroups++;
-            for (int cpu = -1; cpu < 1; cpu++) {
-                pb_s(p, cpu < 0 ? "cpu  " : "cpu0 ");
-                pb_u(p, busy_jiffies); pb_s(p, " 0 0 "); pb_u(p, idle); pb_s(p, " 0 0 0 0 0 0\n");
+            for (int cpu = -1; cpu < smp_ncpus; cpu++) {         /* all of them, then each */
+                lx_u64 busy = cpu < 0 ? busy_jiffies : busy_cpu[cpu], all = cpu < 0 ? j * (lx_u64)smp_ncpus : j;
+                if (cpu < 0) pb_s(p, "cpu  "); else { pb_s(p, "cpu"); pb_u(p, (lx_u64)cpu); pb_c(p, ' '); }
+                pb_u(p, busy); pb_s(p, " 0 0 "); pb_u(p, all > busy ? all - busy : 0); pb_s(p, " 0 0 0 0 0 0\n");
             }
             pb_s(p, "intr 0\nctxt 0\nbtime ");
             time_init();
@@ -4509,9 +4577,11 @@ static void proc_gen(const char *path, pbuf_t *p)
         } else if (!kstrcmp(leaf, "cpuinfo")) {
             lx_u64 midr;
             __asm__ volatile("mrs %0, midr_el1" : "=r"(midr));
-            pb_s(p, "processor\t: 0\nBogoMIPS\t: ");
-            pb_u(p, freq() / 500000); pb_s(p, ".00\nFeatures\t: fp asimd\nCPU implementer\t: ");
-            pb_u(p, midr >> 24); pb_s(p, "\nCPU part\t: "); pb_u(p, (midr >> 4) & 0xFFF); pb_s(p, "\n\n");
+            for (int cpu = 0; cpu < smp_ncpus; cpu++) {
+                pb_s(p, "processor\t: "); pb_u(p, (lx_u64)cpu); pb_s(p, "\nBogoMIPS\t: ");
+                pb_u(p, freq() / 500000); pb_s(p, ".00\nFeatures\t: fp asimd\nCPU implementer\t: ");
+                pb_u(p, midr >> 24); pb_s(p, "\nCPU part\t: "); pb_u(p, (midr >> 4) & 0xFFF); pb_s(p, "\n\n");
+            }
         } else if (!kstrcmp(leaf, "mounts")) {
             pb_s(p, "proc /proc proc rw 0 0\ndevtmpfs /dev devtmpfs rw 0 0\n");
             const char *mp, *fs;
@@ -5673,11 +5743,17 @@ static s64 linux_syscall(linux_tf_t *tf)
     case 94: do_exit_group((int)((a0 & 0xFF) << 8)); return 0;    /* exit_group */
     case 96: cur->clear_tid = a0; return cur->pid;      /* set_tid_address -> tid */
     case 98: return sys_futex(a0, a1, a2, a3, a4, a5);
-    case 123: {                                         /* sched_getaffinity: one CPU */
+    case 123: {                                         /* sched_getaffinity: every CPU */
         if (a1 < 8) return -EINVAL;
         if (!uok(a2, 8, 1)) return -EFAULT;
-        *(lx_u64 *)(uintptr_t)a2 = 1;
+        *(lx_u64 *)(uintptr_t)a2 = (1ULL << smp_ncpus) - 1;
         return 8;
+    }
+    case 122: return 0;                                 /* sched_setaffinity: (any CPU, still) */
+    case 168: {                                         /* getcpu */
+        if (a0) { if (!uok(a0, 4, 1)) return -EFAULT; *(uint32_t *)(uintptr_t)a0 = smp_cpu(); }
+        if (a1) { if (!uok(a1, 4, 1)) return -EFAULT; *(uint32_t *)(uintptr_t)a1 = 0; }
+        return 0;
     }
     case 99: return 0;                                  /* set_robust_list */
     case 101: return sys_nanosleep(a0, a1);
@@ -5891,16 +5967,42 @@ static void tick_arm(void)
     __asm__ volatile("msr cntp_tval_el0, %0\n\tmsr cntp_ctl_el0, %1\n\tisb" :: "r"(t), "r"(1UL));
 }
 
-static void tick_start(void)
+static void tick_start(void)                 /* (this CPU's) */
 {
     gicv3_ppi_setup(GICV3_PPI_PHYS_TIMER, 1);
     tick_arm();
+    cpus[smp_cpu()].ticking = 1;
 }
 
 static void tick_stop(void)
 {
     __asm__ volatile("msr cntp_ctl_el0, %0\n\tisb" :: "r"(0UL));
     gicv3_ppi_setup(GICV3_PPI_PHYS_TIMER, 0);
+    cpus[smp_cpu()].ticking = 0;
+}
+
+/* The other CPUs, after their bring-up (kernel/src/smp.c): run threads
+ * while programs are running, wait otherwise. */
+void linux_cpu_idle(void)
+{
+    cpu_t *c = &cpus[smp_cpu()];
+    for (;;) {
+        if (!linux_active) {
+            if (c->ticking) tick_stop();
+            c->parked = 1;
+            uart_idle_wait();
+            gicv3_drain();
+            continue;
+        }
+        c->parked = 0;
+        bkl_lock();
+        if (!linux_active) { bkl_unlock(); continue; }
+        if (!c->ticking) tick_start();
+        proc_t *p = pick_runnable(0);
+        if (p) { switch_to(p); linux_kernel_exit(); continue; }
+        cpu_wait();
+        bkl_unlock();
+    }
 }
 
 /* IRQ taken from EL0 (el0_irq_entry). */
@@ -5915,6 +6017,7 @@ void linux_el0_irq(linux_tf_t *tf)
         tick_arm();
         cur->g->utime++;                                           /* /proc: a jiffy of CPU */
         busy_jiffies++;
+        busy_cpu[smp_cpu()]++;
     }
     if (console_tty.used) con_pump(&console_tty);                  /* typed keys, Ctrl-C */
     __asm__ volatile("msr S3_0_C12_C12_1, %0\n\tisb" :: "r"(intid)); /* ICC_EOIR1_EL1 */
@@ -5969,9 +6072,25 @@ void linux_el0_trap(linux_tf_t *tf)
 }
 
 /* ── Entry from the shell ─────────────────────────────────────────────── */
+static int linux_run_locked(const char *path, int argc, char **argv);
 int linux_run(const char *path, int argc, char **argv)
 {
     if (cur) { kprintf("[PROG]   already running\n"); return -1; }
+    bkl_lock();
+    int r = linux_run_locked(path, argc, argv);
+    bkl_unlock();
+    return r;
+}
+
+static int any_thread(void)                  /* alive, or still on a CPU */
+{
+    for (int i = 0; i < MAX_PROCS; i++)
+        if (procs[i].state == P_RUN || procs[i].state == P_SLEEP || procs[i].on_cpu) return 1;
+    return 0;
+}
+
+static int linux_run_locked(const char *path, int argc, char **argv)
+{
     static int tmp_mounted;
     vfs_quiet = 1;
     int tmp_ok = !tmp_mounted && vfs_mount("/tmp", &vfs_ramfs, 0) == VFS_OK;
@@ -6057,6 +6176,8 @@ int linux_run(const char *path, int argc, char **argv)
     init->state = P_RUN;
     tick_start();
     nsock_wakeup = wakeup;                              /* (lwIP's callbacks wake the sleepers) */
+    linux_active = 1;                                   /* the other CPUs: to work */
+    gicv3_sgi_others();
 
     /* The shell's context is the idle loop: run whatever is runnable
      * until the first process has exited. */
@@ -6072,12 +6193,8 @@ int linux_run(const char *path, int argc, char **argv)
         if (usbd_daemon) usbd_daemon();
         if (net_poll) net_poll();
         if (pick_runnable(0)) continue;
-        lx_u64 ctl;
-        __asm__ volatile("mrs %0, cntp_ctl_el0" : "=r"(ctl));
-        if (ctl & 4) tick_arm();                       /* ISTATUS: it fired; next one */
-        __asm__ volatile("dsb sy\n\twfi");
+        cpu_wait();                                    /* (the lock given up meanwhile) */
     }
-    tick_stop();
     int status = ig->wstatus;
     /* Whatever is left: kill it, let it exit, reap everything. */
     for (int i = 0; i < MAX_PROCS; i++)
@@ -6085,7 +6202,17 @@ int linux_run(const char *path, int argc, char **argv)
             send_sig(&procs[i], SIGKILL, 0);
             procs[i].state = P_RUN;
         }
-    for (proc_t *p; (p = pick_runnable(0)) != 0; ) switch_to(p);
+    for (;;) {                                          /* (the other CPUs too) until they're all gone */
+        proc_t *p = pick_runnable(0);
+        if (p) { switch_to(p); continue; }
+        if (!any_thread()) break;
+        cpu_wait();
+    }
+    linux_active = 0;                                   /* the other CPUs: stand by */
+    gicv3_sgi_others();
+    for (int i = 1; i < smp_ncpus; i++)
+        while (!cpus[i].parked) { bkl_unlock(); __asm__ volatile("yield"); bkl_lock(); }
+    tick_stop();
     for (int i = 0; i < MAX_GROUPS; i++) groups[i].state = G_FREE;   /* zombies nobody reaped */
     cur = 0;
     reap_dead();

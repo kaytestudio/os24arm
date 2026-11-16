@@ -50,6 +50,7 @@
  * executable.
  */
 
+#include "smp.h"
 #include "mmu.h"
 #include "types.h"
 #include "lx_loader.h"
@@ -221,11 +222,25 @@ struct mmu_as {
     uint64_t *l3[MMU_USER_L3S];               /* frames, NULL = nothing mapped there */
 };
 static mmu_as_t as_pool[MAX_AS];
-static mmu_as_t *as_active;
+/* Each CPU's active address space (SMP: kernel/include/smp.h) */
+static mmu_as_t *as_active_cpu[SMP_MAX_CPUS];
+#define as_active (as_active_cpu[smp_cpu()])
 
-static void mmu_tlb_flush(void)
+static void mmu_tlb_flush(void)                  /* this CPU's */
 {
     __asm__ volatile("dsb ishst\n\ttlbi vmalle1\n\tdsb ish\n\tisb" ::: "memory");
+}
+
+/* as's mappings changed: every CPU running it forgets the old ones (the
+ * inner-shareable TLBI reaches them all - another thread of the process
+ * may be running on one). */
+static void mmu_tlb_flush_as(mmu_as_t *as)
+{
+    for (int i = 0; i < SMP_MAX_CPUS; i++)
+        if (as_active_cpu[i] == as) {
+            __asm__ volatile("dsb ishst\n\ttlbi vmalle1is\n\tdsb ish\n\tisb" ::: "memory");
+            return;
+        }
 }
 
 static uint64_t page_attrs(int prot)
@@ -335,7 +350,7 @@ void mmu_as_unmap(mmu_as_t *as, unsigned long va, unsigned long len)
         }
         a += MMU_PAGE;
     }
-    if (as == as_active) mmu_tlb_flush();
+    mmu_tlb_flush_as(as);
 }
 
 void mmu_as_destroy(mmu_as_t *as)
@@ -365,10 +380,10 @@ int mmu_as_map(mmu_as_t *as, unsigned long va, unsigned long len, int prot)
         if (!p) return -1;
         uint64_t frame = *p & 1 ? (*p & (MMU_PA_MASK | MMU_SW_SHARED))
                                 : (uint64_t)(uintptr_t)mmu_frames_alloc(1);
-        if (!frame) { if (as == as_active) mmu_tlb_flush(); return -1; }
+        if (!frame) { mmu_tlb_flush_as(as); return -1; }
         *p = frame | attrs;
     }
-    if (as == as_active) mmu_tlb_flush();
+    mmu_tlb_flush_as(as);
     return 0;
 }
 
@@ -384,7 +399,7 @@ int mmu_as_map_shared(mmu_as_t *as, unsigned long va, void *const *frames, unsig
         mmu_frame_get(frames[k]);
         *p = (uint64_t)(uintptr_t)frames[k] | attrs;
     }
-    if (as == as_active) mmu_tlb_flush();
+    mmu_tlb_flush_as(as);
     return 0;
 }
 
@@ -401,7 +416,7 @@ int mmu_as_protect(mmu_as_t *as, unsigned long va, unsigned long len, int prot)
         if (*p & 1) *p = (*p & (MMU_PA_MASK | MMU_SW_SHARED)) | attrs;
         a += MMU_PAGE;
     }
-    if (as == as_active) mmu_tlb_flush();
+    mmu_tlb_flush_as(as);
     return 0;
 }
 

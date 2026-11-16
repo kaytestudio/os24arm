@@ -26,6 +26,8 @@
 #   --hvf        run natively with Apple's Hypervisor.framework (-accel hvf
 #                -cpu host) instead of TCG: much faster, but no EL2 for the
 #                kernel's own hypervisor (VM TEST; not with --test)
+#   --smp N      N CPUs (default 4, or $SMP): programs' threads run on all
+#                of them (kernel/src/smp.c)
 #   -h, --help
 #
 # --wayland: the display starts at 1920x1080 (RES=WIDTHxHEIGHT for another
@@ -61,6 +63,7 @@ while [ $# -gt 0 ]; do
         --usb)      USB_OPT=(-device qemu-xhci -device usb-kbd) ;;
         --wayland)  WAYLAND=1 ;;
         --hvf)      HVF=1 ;;
+        --smp)      SMP="$2"; shift ;;
         -h|--help)  sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "Unknown option: $1 (see --help)" >&2; exit 1 ;;
     esac
@@ -128,7 +131,7 @@ fi
 QEMU=(qemu-system-aarch64
       "${ACCEL[@]}"
       -m 2G
-      -smp 1
+      -smp "${SMP:-4}"
       -kernel "$KERNEL"
       "${DISK_OPT[@]}"
       -serial mon:stdio

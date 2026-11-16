@@ -58,7 +58,8 @@ else()
             src/hyp.c           # ← EL2 hypervisor: stage 2, vCPU run loop, VM command
             src/hyp_entry.S     # ← EL2 vectors + guest/host world switch
             src/vgic.c          # ← emulated GICv2 the guest sees
-            src/gicv3.c         # ← host GICv3: timer PPIs -> EL2 (preemption)
+            src/gicv3.c         # ← host GICv3: timer PPIs -> EL2 (preemption), each CPU's redistributor, SGIs
+            src/smp.c           # ← the other CPUs: PSCI CPU_ON, the big kernel lock
             src/vm_pl011.c      # ← emulated PL011 device model
             src/vm_cmd.c        # ← VM shell command / VM run loop
             src/vm_guest_hello.S  # ← built-in test guest for VM TEST

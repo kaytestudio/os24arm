@@ -117,6 +117,7 @@ el0_start:
 el0_sync_entry:
     save_frame
     align_check 1
+    bl      linux_kernel_enter          /* the big kernel lock (SMP) */
     mov     x0, sp
     bl      linux_el0_trap
     b       el0_restore
@@ -127,9 +128,11 @@ el0_sync_entry:
 el0_irq_entry:
     save_frame
     align_check 1
+    bl      linux_kernel_enter
     mov     x0, sp
     bl      linux_el0_irq
 el0_restore:                            /* sp = trap frame */
+    bl      linux_kernel_exit           /* idle CPUs kicked, the lock given up: nothing in the kernel after this */
     align_check 0
 
     add     x9, sp, #784

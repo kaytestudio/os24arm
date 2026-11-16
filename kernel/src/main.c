@@ -18,6 +18,7 @@
 #include "gui/wayland.h"
 #include "gui/virtio_input.h"
 #include "dos.h"
+#include "smp.h"
 #include "lx_loader.h"
 #include "ai.h"
 #include "string.h"
@@ -1056,6 +1057,9 @@ void kernel_main(void)
         uart_puts("[HYP]    EL2 hypervisor : ready (type VM TEST)\r\n");
     else if (hyp_boot_el == 2)
         uart_puts("[HYP]    EL2 hypervisor : bring-up FAILED\r\n");
+
+    smp_init();                                    /* the other CPUs (kernel/src/smp.c) */
+    kprintf("[SMP]    CPUs         : %d\n", smp_ncpus);
 
     uart_puts("[IPC]    Semaphores   : stub\r\n");
 

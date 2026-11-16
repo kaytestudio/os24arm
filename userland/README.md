@@ -107,7 +107,10 @@ platform-specific are new code.
    Tests: `procs` (fork/wait, pipes, posix_spawn, execve, kill), `cat`
    (console input, Ctrl-D, Ctrl-C), `preempt` (children spinning without
    system calls don't starve the parent), `threads` (pthreads: mutexes,
-   condition variables, TLS, join, exit/execve/signals with threads).
+   condition variables, TLS, join, exit/execve/signals with threads),
+   `smp` (the CPUs: N spinning threads in parallel - the speed-up it
+   prints -, mmap/munmap and a futex mutex from all of them at once, fork +
+   waitpid from several threads).
    Memory: demand paging. Each process has a 64 MB window at 0x60000000
    (program image, brk heap, a 16 MB stack) and a 4 GB mmap region at
    0x1_0000_0000; the heap, the stack and every mapping are VM areas

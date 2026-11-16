@@ -12,7 +12,7 @@
  * world switch drops each line (timer disabled / guest timer swapped
  * out) before the host runs, so their pending state clears by itself.
  *
- * QEMU virt (gic-version=3) addresses, CPU 0's redistributor only.
+ * QEMU virt (gic-version=3) addresses; each CPU its own redistributor.
  */
 
 #ifndef GICV3_H
@@ -23,7 +23,12 @@
 #define GICV3_PPI_PHYS_TIMER  30   /* EL1 physical timer: the Linux-ABI scheduler tick */
 
 /* Returns 0 on success, <0 if there's no GICv3 at the virt address. */
+#define GICV3_SGI_WAKE        1    /* SGI: "something is runnable" to an idle CPU (SMP) */
+
 int  gicv3_init(void);
+void gicv3_cpu_init(void);              /* this CPU's redistributor and CPU interface */
+void gicv3_sgi_others(void);            /* the wake-up SGI to every other CPU */
+unsigned gicv3_drain(void);             /* pending interrupts taken and ended (after a masked WFI) */
 int  gicv3_available(void);
 void gicv3_ppi_enable(unsigned int intid, int enable);
 /* Route a PPI to this CPU as a Group 1 IRQ and enable or disable it,

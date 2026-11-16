@@ -174,6 +174,7 @@ them. Each `userland/build-*.sh` script lists what it needs at its top;
 | `--no-disk` | without the C: test disk |
 | `--no-build` | don't rebuild first |
 | `--gdb` | wait for a debugger on `:1234` |
+| `--smp N` | N CPUs (default 4, up to 8; or `SMP=N`) |
 | `--test` | run `VM TEST` non-interactively and check its output |
 
 Every run has a network card (QEMU's user networking: the guest is
@@ -294,7 +295,12 @@ The kernel runs static AArch64 Linux ELF binaries at EL0 and implements
 the Linux system calls itself (`kernel/src/linux/linux.c`). It provides:
 
 - **Processes**, each with its own address space, preemptively scheduled
-  (10 ms, GICv3 timer), with demand paging. `fork`, `vfork`/`posix_spawn`,
+  (10 ms, GICv3 timer), with demand paging. **SMP**: every CPU QEMU gives
+  the machine (PSCI CPU_ON, up to 8) runs programs' threads at once - 4
+  spinning threads take about as long as one, under TCG and HVF alike -
+  while the kernel itself runs on one CPU at a time (a big kernel lock,
+  `kernel/src/smp.c`); `/proc/cpuinfo`, `/proc/stat` and
+  `sched_getaffinity` show them all. `fork`, `vfork`/`posix_spawn`,
   `execve`, `wait4` and `#!` scripts all work.
 - **Threads**: `clone` with `CLONE_THREAD`, futexes and TLS.
 - **Signals**: Linux-layout signal frames, `SA_RESTART`, process groups and
@@ -600,7 +606,8 @@ QEMU only.
 Not there yet:
 
 - **Storage**: the btrfs extent and checksum trees, f2fs mounted at boot.
-- **The kernel**: SMP (one CPU runs everything), dynamic linking for
+- **The kernel**: finer-grained locking than the one big kernel lock (system
+  calls from different CPUs wait for each other), dynamic linking for
   Linux programs, datagram Unix sockets.
 - **Graphics**: GPU acceleration (the desktop renders with pixman).
 - **os2x86**: PM drag and drop between programs (within one works), IPF
