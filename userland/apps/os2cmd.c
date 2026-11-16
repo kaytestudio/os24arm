@@ -386,7 +386,14 @@ static void line_cmd(int fd, char *line, int interactive)
             if (!interactive) {
                 char path[512];
                 char *run[64];
-                if (!resolve(argv, argc, path, sizeof path, run, 64)) { put(out, p); exit(1); }
+                if (!resolve(argv, argc, path, sizeof path, run, 64)) {   /* (the message to stderr, as CMD.EXE's) */
+                    size_t a = 0;
+                    while (a < p && (out[a] == '\r' || out[a] == '\n')) a++;
+                    while (p > a && (out[p - 1] == '\r' || out[p - 1] == '\n' || out[p - 1] == ' ')) p--;
+                    fflush(stdout);
+                    if (write(2, out + a, p - a) < 0 || write(2, "\n", 1) < 0) { }
+                    exit(1);
+                }
                 if (chdir(cwd) != 0) { /* the caller's directory, then */ }
                 execve(path, run, environ);
                 perror(argv[0]);

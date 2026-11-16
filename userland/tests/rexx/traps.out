@@ -1,0 +1,13 @@
+syntax: 42 Arithmetic overflow/underflow at line 8
+source: x = 1 / 0
+condition: SYNTAX SIGNAL OFF
+lines: 1
+routine: recovered 42 from line 42
+novalue: UNDEFINED_THING at line 19
+off again: PLAIN_SYMBOL
+handler: ERROR CALL DELAY nosuch_cmd_x1 1
+after the call: count 1
+handler: ERROR CALL DELAY nosuch_cmd_x2 1
+again: count 2 ON
+jumped: ERROR SIGNAL nosuch_cmd_x3 1
+signal in a routine: skipped

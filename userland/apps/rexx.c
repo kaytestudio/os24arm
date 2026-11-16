@@ -7,20 +7,24 @@
  * instructions: assignments, SAY, IF/THEN/ELSE, DO (count, a control
  * variable TO BY FOR, FOREVER, WHILE, UNTIL), SELECT/WHEN/OTHERWISE,
  * ITERATE, LEAVE, CALL and RETURN (internal routines, functions, labels;
- * PROCEDURE EXPOSE), EXIT, SIGNAL (a label; ON/OFF ignored), PARSE [UPPER]
+ * PROCEDURE EXPOSE), EXIT, SIGNAL (a label, in a routine too), PARSE [UPPER]
  * ARG/PULL/VAR/VALUE...WITH/SOURCE/VERSION/LINEIN with templates (words,
  * '.', literal patterns, columns, +/- offsets, (variable) patterns), PULL,
  * ARG, DROP, NOP, INTERPRET, NUMERIC DIGITS, ADDRESS, TRACE (ignored);
  * stems (A.I.J, tails substituted), expressions with REXX's arithmetic
  * (decimal strings, NUMERIC DIGITS significant digits), concatenation
  * (abuttal, blank, ||), comparisons (normal and strict), logic. About 60
- * built-in functions, LINEIN/LINEOUT/LINES/CHARIN/CHAROUT/STREAM for files.
- * Any other clause is a command: its value goes to the shell (OS/2's,
+ * built-in functions, LINEIN/LINEOUT/LINES/CHARIN/CHAROUT/STREAM for files,
+ * RexxUtil's common functions (OS/2 paths through /dev/os2cmd). Conditions:
+ * SIGNAL ON ERROR/FAILURE/HALT/NOVALUE/SYNTAX/NOTREADY [NAME label] and CALL
+ * ON ERROR/FAILURE/HALT (DELAY while the handler runs); RC, SIGL,
+ * CONDITION(), ERRORTEXT(), SOURCELINE(). Any other clause is a command: its value goes to the shell (OS/2's,
  * /h/OS2/os2cmd, on the system; REXX_SHELL to choose), RC its result. */
 #define _GNU_SOURCE
 #include <ctype.h>
 #include <math.h>
 #include <setjmp.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -71,10 +75,13 @@ static char *afmt(const char *f, ...)
 /* ── errors ── */
 static const char *src_name = "";
 static int cur_line;
+static void syntax_trap(int n, const char *msg);                 /* (SIGNAL ON SYNTAX: doesn't return when on) */
+static void novalue(const char *name);                           /* (SIGNAL ON NOVALUE: likewise) */
 static void rx_error(int n, const char *fmt, ...)
 {
     va_list a; char b[512];
     va_start(a, fmt); vsnprintf(b, sizeof b, fmt, a); va_end(a);
+    syntax_trap(n, b);
     fprintf(stderr, "REX%04d: Error %d running %s, line %d: %s\n", n, n, src_name, cur_line, b);
     fflush(stdout);
     exit(n > 255 ? 255 : n);
@@ -391,6 +398,7 @@ static char *expr_primary(ex_t *e)
         if (isdigit((unsigned char)t->s[0]) || (t->s[0] == '.' && t->n > 1 && isdigit((unsigned char)t->s[1]))) return astr(t->s, t->n);   /* a constant */
         char *nm = var_name(t);
         const char *v = var_get(nm);
+        if (!v) novalue(nm);
         return v ? adup(v) : nm;                                 /* (unset: its own name) */
     }
     rx_error(35, "an unexpected \"%.*s\"", (int)t->n, t->s);
@@ -534,11 +542,82 @@ static char *eval_toks(const tok_t *t, int i, int n)
 
 /* ── execution ── */
 enum { R_NEXT, R_LEAVE, R_ITERATE, R_RETURN, R_EXIT, R_SIGNAL };
-typedef struct frame { char **args; int nargs; char *result; int has_result; int internal; } frame_t;
+typedef struct frame { char **args; int nargs; char *result; int has_result; int internal; struct scope *own; } frame_t;
 static frame_t *frame;
 static char *ctl_name;                                           /* (ITERATE/LEAVE name; SIGNAL's label) */
 static char *exit_val;
 static char *source_line(void) { return afmt("OS/2 COMMAND %s", src_name); }
+
+/* ── conditions: SIGNAL ON / CALL ON ── */
+enum { C_ERROR, C_FAILURE, C_HALT, C_NOVALUE, C_SYNTAX, C_NOTREADY, C_N };
+static const char *const cond_names[C_N] = { "ERROR", "FAILURE", "HALT", "NOVALUE", "SYNTAX", "NOTREADY" };
+typedef struct { int on, call, delayed; char label[64]; } trap_t;
+static trap_t traps[C_N];
+static struct { int cond, call; char *desc; } cinfo = { -1, 0, 0 };   /* (CONDITION()'s: the last one trapped) */
+/* an activation (the program, a routine called): where SIGNAL goes on from, and where a trap from deep inside an
+ * expression (SYNTAX, NOVALUE) comes back to */
+typedef struct act { jmp_buf jb; struct act *prev; frame_t *frame; struct scope *scope; int ncls; } act_t;
+static act_t *acts;
+static char *pend_label, *pend_rc;
+static int pend_line, sig_line;
+static volatile sig_atomic_t halted;
+static void on_sigint(int sig) { (void)sig; halted = 1; }
+static void cond_info(int c, int call, const char *desc)
+{
+    cinfo.cond = c; cinfo.call = call;
+    free(cinfo.desc); cinfo.desc = strdup(desc ? desc : "");
+}
+static void cond_jump(int c, const char *desc, const char *rc)   /* (SIGNAL to its label, from anywhere) */
+{
+    traps[c].on = 0;
+    cond_info(c, 0, desc);
+    free(pend_label); pend_label = strdup(traps[c].label);
+    free(pend_rc); pend_rc = rc ? strdup(rc) : 0;
+    pend_line = cur_line;
+    longjmp(acts->jb, 1);
+}
+static void syntax_trap(int n, const char *msg)
+{
+    if (!acts || !traps[C_SYNTAX].on) return;
+    char rc[16]; snprintf(rc, sizeof rc, "%d", n);
+    cond_jump(C_SYNTAX, msg, rc);
+}
+static void novalue(const char *name) { if (acts && traps[C_NOVALUE].on) cond_jump(C_NOVALUE, name, 0); }
+static int find_label(const char *name);
+static char *call_routine(int label, char **args, int nargs, int as_function);
+static int raise_cond(int c, const char *desc)                   /* (between clauses: ERROR, FAILURE, HALT, NOTREADY) */
+{
+    if (c == C_FAILURE && !traps[c].on) c = C_ERROR;              /* (FAILURE not trapped: an ERROR) */
+    trap_t *tr = &traps[c];
+    if (!tr->on || tr->delayed) return R_NEXT;
+    cond_info(c, tr->call, desc);
+    if (!tr->call) {
+        tr->on = 0;
+        free(ctl_name); ctl_name = strdup(tr->label);
+        sig_line = cur_line;
+        return R_SIGNAL;
+    }
+    int lab = find_label(tr->label), line = cur_line;
+    if (lab < 0) rx_error(16, "label %s not found", tr->label);
+    var_set("SIGL", fmtnum(line));
+    tr->delayed = 1;
+    call_routine(lab, 0, 0, 0);
+    tr->delayed = 0;
+    cur_line = line;
+    return R_NEXT;
+}
+static void trap_set(const tok_t *t, int n, int call)           /* SIGNAL|CALL ON|OFF condition [NAME label] */
+{
+    int c = -1;
+    if (n >= 3) for (int k = 0; k < C_N; k++) if (tok_is(&t[2], cond_names[k])) c = k;
+    if (c < 0) rx_error(25, "%s %s: ERROR, FAILURE, HALT, NOVALUE, SYNTAX or NOTREADY", call ? "CALL" : "SIGNAL", tok_is(&t[1], "ON") ? "ON" : "OFF");
+    if (call && (c == C_NOVALUE || c == C_SYNTAX)) rx_error(25, "CALL ON %s isn't allowed", cond_names[c]);
+    trap_t *tr = &traps[c];
+    if (tok_is(&t[1], "OFF")) { tr->on = 0; return; }
+    tr->on = 1; tr->call = call; tr->delayed = 0;
+    if (n >= 5 && tok_is(&t[3], "NAME")) snprintf(tr->label, sizeof tr->label, "%.*s", (int)t[4].n, t[4].s);
+    else snprintf(tr->label, sizeof tr->label, "%s", cond_names[c]);
+}
 static int find_label(const char *name)
 {
     for (int i = 0; i < ncls; i++)
@@ -573,7 +652,7 @@ static int instr_end(int i)                                      /* (the clause 
 }
 static int exec_range(int from, int to);
 static int exec_clause(int *ip);
-static void run_command(const char *cmd)
+static int run_command(const char *cmd)
 {
     fflush(stdout);
     const char *sh = getenv("REXX_SHELL");
@@ -586,7 +665,9 @@ static void run_command(const char *cmd)
     }
     int st = 0;
     while (waitpid(pid, &st, 0) < 0) { }
-    var_set("RC", fmtnum(WIFEXITED(st) ? WEXITSTATUS(st) : -1));
+    int rc = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+    var_set("RC", fmtnum(rc));
+    return rc;
 }
 /* PARSE's template against a string */
 static void parse_template(const char *src, const tok_t *t, int i, int n, int upper)
@@ -650,7 +731,7 @@ static char *get_line_stdin(void)
     static char *b; static size_t cap;
     fflush(stdout);
     ssize_t r = getline(&b, &cap, stdin);
-    if (r <= 0) return adup("");
+    if (r <= 0) { clearerr(stdin); return adup(""); }
     while (r && (b[r - 1] == '\n' || b[r - 1] == '\r')) b[--r] = 0;
     return adup(b);
 }
@@ -736,16 +817,43 @@ static int exec_do(int i, int *next)
     }
     return R_NEXT;
 }
+static int run_act(int start)
+{
+    act_t a;
+    a.prev = acts; a.frame = frame; a.scope = scope; a.ncls = ncls;
+    acts = &a;
+    volatile int ip = start;
+    int r;
+    if (setjmp(a.jb)) {                                           /* (a trap from inside: this activation's state again) */
+        acts = &a; frame = a.frame; ncls = a.ncls;
+        scope_t *target = a.frame->own ? a.frame->own : a.scope;
+        while (scope != target && scope->parent) { scope_t *sc = scope; scope = sc->parent; scope_free(sc); }
+        var_set("SIGL", fmtnum(pend_line));
+        if (pend_rc) var_set("RC", pend_rc);
+        int lab = find_label(pend_label);
+        if (lab < 0) rx_error(16, "label %s not found", pend_label);
+        ip = lab + 1;
+    }
+    for (;;) {
+        r = exec_range(ip, ncls);
+        if (r != R_SIGNAL) break;
+        int lab = find_label(ctl_name);
+        if (lab < 0) rx_error(16, "label %s not found", ctl_name);
+        var_set("SIGL", fmtnum(sig_line));
+        ip = lab + 1;
+    }
+    acts = a.prev;
+    return r;
+}
 static char *call_routine(int label, char **args, int nargs, int as_function)
 {
-    frame_t f = { args, nargs, 0, 0, 1 }, *saved = frame;
+    frame_t f = { args, nargs, 0, 0, 1, 0 }, *saved = frame;
     scope_t *sc = scope;
     frame = &f;
-    int r = exec_range(label + 1, ncls);
+    int r = run_act(label + 1);
     frame = saved;
     if (scope != sc) { scope_t *mine = scope; scope = sc; scope_free(mine); }   /* (a PROCEDURE's scope gone) */
     if (r == R_EXIT) { fflush(stdout); exit(exit_val && is_num(exit_val, 0) ? (int)num(exit_val) : 0); }
-    if (r == R_SIGNAL) rx_error(16, "SIGNAL out of a routine isn't supported");
     if (as_function && !f.has_result) rx_error(44, "a function returned nothing");
     if (f.has_result) { char *v = adup(f.result); free(f.result); if (!as_function) var_set("RESULT", v); return v; }
     if (!as_function) var_drop("RESULT");
@@ -758,6 +866,12 @@ static int exec_clause(int *ip)
     const tok_t *t = c->t;
     int n = c->n;
     cur_line = c->line;
+    if (halted) {
+        halted = 0;
+        if (!traps[C_HALT].on) rx_error(4, "program interrupted");
+        int r = raise_cond(C_HALT, "");
+        if (r != R_NEXT) return r;
+    }
     *ip = i + 1;
     mark_t m = amark();
     int res = R_NEXT;
@@ -825,7 +939,7 @@ static int exec_clause(int *ip)
         }
         if (!strcmp(kw, "CALL")) {
             if (n < 2) rx_error(19, "CALL without a name");
-            if (tok_is(&t[1], "ON") || tok_is(&t[1], "OFF")) goto done;
+            if (tok_is(&t[1], "ON") || tok_is(&t[1], "OFF")) { trap_set(t, n, 1); goto done; }
             char nm[128];
             snprintf(nm, sizeof nm, "%.*s", (int)t[1].n, t[1].s);
             if (t[1].type == T_SYM) for (char *p = nm; *p; p++) *p = (char)toupper((unsigned char)*p);
@@ -852,11 +966,13 @@ static int exec_clause(int *ip)
                     s->expose[s->nexpose++] = strdup(nm);
                 }
             scope = s;
+            frame->own = s;
             goto done;
         }
         if (!strcmp(kw, "DROP")) { for (int k = 1; k < n; k++) var_drop(var_name(&t[k])); goto done; }
         if (!strcmp(kw, "SIGNAL")) {
-            if (n > 1 && (tok_is(&t[1], "ON") || tok_is(&t[1], "OFF"))) goto done;
+            if (n > 1 && (tok_is(&t[1], "ON") || tok_is(&t[1], "OFF"))) { trap_set(t, n, 0); goto done; }
+            sig_line = cur_line;
             free(ctl_name);
             ctl_name = n > 1 && tok_is(&t[1], "VALUE") ? strdup(eval_toks(t, 2, n)) : n > 1 ? strndup(t[1].s, t[1].n) : strdup("");
             res = R_SIGNAL;
@@ -907,7 +1023,11 @@ static int exec_clause(int *ip)
         }
     }
     /* anything else: an expression, a command for the shell */
-    run_command(eval_toks(t, 0, n));
+    {
+        char *cmd = eval_toks(t, 0, n);
+        int rc = run_command(cmd);
+        if (rc) res = raise_cond(rc < 0 || rc == 127 ? C_FAILURE : C_ERROR, cmd);   /* (127: not run at all) */
+    }
 done:
     arelease(m);
     return res;
@@ -915,6 +1035,8 @@ done:
 
 /* ── built-in functions ── */
 static char *argv1;                                              /* (the program's argument string) */
+static char **src_lines;                                         /* (the program's lines, for SOURCELINE) */
+static int nsrc;
 static long arg_num(char **a, int na, int i, long def) { return i < na && a[i] ? (long)num(a[i]) : def; }
 static const char *arg_str(char **a, int na, int i, const char *def) { return i < na && a[i] ? a[i] : def; }
 static int word_bounds(const char *s, long w, size_t *b, size_t *e)   /* the w-th word's [b, e) */
@@ -1311,7 +1433,43 @@ static char *builtin(const char *nm, char **a, int na, int *found)
         return old;
     }
     if (!strcmp(nm, "QUEUED")) return adup("0");
-    if (!strcmp(nm, "SOURCELINE")) return na ? adup("") : fmtnum(0);
+    if (!strcmp(nm, "SOURCELINE")) {
+        if (!na || !a[0]) return fmtnum(nsrc);
+        int k = (int)num(S(0));
+        if (k < 1 || k > nsrc) rx_error(40, "SOURCELINE: no line %d", k);
+        return adup(src_lines[k - 1]);
+    }
+    if (!strcmp(nm, "CONDITION")) {
+        int o = toupper(arg_str(a, na, 0, "I")[0]);
+        if (cinfo.cond < 0) return adup("");
+        switch (o) {
+        case 'C': return adup(cond_names[cinfo.cond]);
+        case 'I': return adup(cinfo.call ? "CALL" : "SIGNAL");
+        case 'D': return adup(cinfo.desc ? cinfo.desc : "");
+        case 'S': { trap_t *tr = &traps[cinfo.cond]; return adup(tr->delayed ? "DELAY" : tr->on ? "ON" : "OFF"); }
+        }
+        rx_error(40, "CONDITION: an option C, D, I or S");
+    }
+    if (!strcmp(nm, "ERRORTEXT")) {
+        static const char *const et[50] = {
+            [3] = "Program is unreadable", [4] = "Program interrupted", [5] = "Machine resources exhausted",
+            [6] = "Unmatched \"/*\" or quote", [7] = "WHEN or OTHERWISE expected", [8] = "Unexpected THEN or ELSE",
+            [9] = "Unexpected WHEN or OTHERWISE", [10] = "Unexpected or unmatched END", [11] = "Control stack full",
+            [13] = "Invalid character in program", [14] = "Incomplete DO/SELECT/IF", [15] = "Invalid hexadecimal or binary string",
+            [16] = "Label not found", [17] = "Unexpected PROCEDURE", [18] = "THEN expected", [19] = "String or symbol expected",
+            [20] = "Symbol expected", [21] = "Invalid data on end of clause", [24] = "Invalid TRACE request",
+            [25] = "Invalid sub-keyword found", [26] = "Invalid whole number", [27] = "Invalid DO syntax",
+            [28] = "Invalid LEAVE or ITERATE", [29] = "Environment name too long", [30] = "Name or string too long",
+            [31] = "Name starts with number or \".\"", [33] = "Invalid expression result", [34] = "Logical value not 0 or 1",
+            [35] = "Invalid expression", [36] = "Unmatched \"(\" in expression", [37] = "Unexpected \",\" or \")\"",
+            [38] = "Invalid template or pattern", [39] = "Evaluation stack overflow", [40] = "Incorrect call to routine",
+            [41] = "Bad arithmetic conversion", [42] = "Arithmetic overflow/underflow", [43] = "Routine not found",
+            [44] = "Function did not return data", [45] = "No data specified on function RETURN",
+            [46] = "Invalid variable reference", [48] = "Failure in system service", [49] = "Interpretation error" };
+        int k = (int)num(S(0));
+        if (k < 0 || k > 99) rx_error(40, "ERRORTEXT: 0 to 99");
+        return adup(k < 50 && et[k] ? et[k] : "");
+    }
     if (!strcmp(nm, "LINEIN")) {
         const char *f = S(0);
         if (!*f) return get_line_stdin();
@@ -1493,20 +1651,24 @@ int main(int argc, char **argv)
     for (int i = 2; i < argc; i++) { if (i > 2) strcat(argv1, " "); strcat(argv1, argv[i]); }
     scope = calloc(1, sizeof *scope);
     char *margs[1] = { argv1 };
-    frame_t top = { margs, argc > 2 ? 1 : 0, 0, 0, 0 };
+    frame_t top = { margs, argc > 2 ? 1 : 0, 0, 0, 0, 0 };
     frame = &top;
-    tokenize(src);
-    int ip = 0, r;
-    for (;;) {
-        r = exec_range(ip, ncls);
-        if (r == R_SIGNAL) {
-            int lab = find_label(ctl_name);
-            if (lab < 0) rx_error(16, "label %s not found", ctl_name);
-            ip = lab + 1;
-            continue;
-        }
-        break;
+    for (char *p = src;;) {
+        char *nl = strchr(p, '\n');
+        src_lines = realloc(src_lines, (size_t)(nsrc + 1) * sizeof *src_lines);
+        size_t l = nl ? (size_t)(nl - p) : strlen(p);
+        if (l && p[l - 1] == '\r') l--;
+        src_lines[nsrc++] = strndup(p, l);
+        if (!nl) break;
+        p = nl + 1;
     }
+    if (nsrc && !*src_lines[nsrc - 1]) nsrc--;
+    tokenize(src);
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = on_sigint;                                    /* (Ctrl+C: HALT, between clauses) */
+    sigaction(SIGINT, &sa, 0);
+    int r = run_act(0);
     if (r == R_LEAVE || r == R_ITERATE) rx_error(28, "LEAVE or ITERATE outside a loop");
     fflush(stdout);
     for (int i = 0; i < 16; i++) if (streams[i].f) fclose(streams[i].f);
