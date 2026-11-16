@@ -236,7 +236,8 @@ LINEIN/LINEOUT file I/O) and the common RexxUtil functions (RxFuncAdd and
 SysLoadFuncs, SysFileTree, SysFileSearch, SysMkDir/SysRmDir/SysFileDelete,
 SysTempFileName, SysSearchPath, SysDriveMap, SysSleep, SysGetKey, SysCls,
 ...), with OS/2 paths (`D:\NOTES\*.TXT`), and condition traps (SIGNAL ON
-SYNTAX/NOVALUE/ERROR/HALT, CALL ON ERROR, CONDITION()); other clauses are commands for the
+SYNTAX/NOVALUE/ERROR/HALT, CALL ON ERROR, CONDITION()); a routine that
+isn't internal or built in is another .CMD file; other clauses are commands for the
 OS/2 shell, RC their result. `rexx -e 'say 2**10'` runs a line.
 
 In a Command Prompt window, a name the shell doesn't know runs as a
@@ -605,7 +606,7 @@ Not there yet:
   help files, and
   the rest of OS/2's API (the help manager, multimedia, ...).
 - **Other**: DEBUG's assembler, disassembler and breakpoints; REXX's
-  external routines (other .CMD files), NOTREADY raised by stream errors, and RexxUtil's less used
+  NOTREADY raised by stream errors, the external data queue, and RexxUtil's less used
   functions (extended attributes, WPS objects, INI files).
 
 ---

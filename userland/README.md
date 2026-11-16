@@ -568,7 +568,8 @@ platform-specific are new code.
    os2cmd finds NAME.CMD after NAME.EXE). Commands in them go to
    `os2cmd /C "line"`; `userland/tests/rexx/run.sh` builds it on the build
    machine and compares `test.cmd`'s output with `test.out` and `util.cmd`'s
-   (RexxUtil) with `util.out` and `traps.cmd`'s (conditions) with `traps.out`. OS/2 paths in its file functions go through
+   (RexxUtil) with `util.out` `traps.cmd`'s (conditions) with `traps.out` and `ext.cmd`'s (external
+   routines: `extsub.cmd`) with `ext.out`. OS/2 paths in its file functions go through
    `/dev/os2cmd`'s resolve ioctl (drive letters, the session's directory).
 
    `userland/apps/os2cmd.c` relays a terminal to `/dev/os2cmd`, which runs

@@ -1,0 +1,6 @@
+function: FUNCTION [one] [two words] 2 LIT
+result: SUBROUTINE [sub] [] 1 LIT
+mine still: caller
+by exit: exited FUNCTION
+no result: LIT
+nested: square 25

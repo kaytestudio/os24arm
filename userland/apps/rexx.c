@@ -18,10 +18,13 @@
  * RexxUtil's common functions (OS/2 paths through /dev/os2cmd). Conditions:
  * SIGNAL ON ERROR/FAILURE/HALT/NOVALUE/SYNTAX/NOTREADY [NAME label] and CALL
  * ON ERROR/FAILURE/HALT (DELAY while the handler runs); RC, SIGL,
- * CONDITION(), ERRORTEXT(), SOURCELINE(). Any other clause is a command: its value goes to the shell (OS/2's,
+ * CONDITION(), ERRORTEXT(), SOURCELINE(). External routines: NAME.CMD in the
+ * current directory, the program's or PATH's, run in a process of its own
+ * (its own variables), its value back through a pipe. Any other clause is a command: its value goes to the shell (OS/2's,
  * /h/OS2/os2cmd, on the system; REXX_SHELL to choose), RC its result. */
 #define _GNU_SOURCE
 #include <ctype.h>
+#include <errno.h>
 #include <math.h>
 #include <setjmp.h>
 #include <signal.h>
@@ -359,7 +362,7 @@ static int truthy(const char *s)
 
 /* ── expressions ── */
 typedef struct { const tok_t *t; int i, n; } ex_t;
-static char *call_function(const char *name, char **args, int nargs, int internal_first, int line);
+static char *call_function(const char *name, char **args, int nargs, int internal_first, int line, int as_fn);
 static char *expr_or(ex_t *e);
 static const tok_t *ex_peek(ex_t *e) { return e->i < e->n ? &e->t[e->i] : 0; }
 static int at_term_start(const tok_t *t) { return t && (t->type != T_OP || op_is(t, "(") || op_is(t, "\\") || op_is(t, "-") || op_is(t, "+")); }
@@ -392,7 +395,7 @@ static char *expr_primary(ex_t *e)
             }
             char *nm = t->type == T_STR ? astr(t->s, t->n) : astr(t->s, t->n);
             if (t->type == T_SYM) for (char *c = nm; *c; c++) *c = (char)toupper((unsigned char)*c);
-            return call_function(nm, args, na, t->type == T_SYM, t->line);
+            return call_function(nm, args, na, t->type == T_SYM, t->line, 1);
         }
         if (t->type == T_STR) return astr(t->s, t->n);
         if (isdigit((unsigned char)t->s[0]) || (t->s[0] == '.' && t->n > 1 && isdigit((unsigned char)t->s[1]))) return astr(t->s, t->n);   /* a constant */
@@ -546,7 +549,10 @@ typedef struct frame { char **args; int nargs; char *result; int has_result; int
 static frame_t *frame;
 static char *ctl_name;                                           /* (ITERATE/LEAVE name; SIGNAL's label) */
 static char *exit_val;
-static char *source_line(void) { return afmt("OS/2 COMMAND %s", src_name); }
+static const char *call_type = "COMMAND";                      /* (PARSE SOURCE's: an external routine SUBROUTINE or FUNCTION) */
+static char *source_line(void) { return afmt("OS/2 %s %s", call_type, src_name); }
+static int ext_fd = -1;                                          /* (an external routine: its result to the caller through this) */
+static void ext_done(void);
 
 /* ── conditions: SIGNAL ON / CALL ON ── */
 enum { C_ERROR, C_FAILURE, C_HALT, C_NOVALUE, C_SYNTAX, C_NOTREADY, C_N };
@@ -853,7 +859,7 @@ static char *call_routine(int label, char **args, int nargs, int as_function)
     int r = run_act(label + 1);
     frame = saved;
     if (scope != sc) { scope_t *mine = scope; scope = sc; scope_free(mine); }   /* (a PROCEDURE's scope gone) */
-    if (r == R_EXIT) { fflush(stdout); exit(exit_val && is_num(exit_val, 0) ? (int)num(exit_val) : 0); }
+    if (r == R_EXIT) { ext_done(); fflush(stdout); exit(exit_val && is_num(exit_val, 0) ? (int)num(exit_val) : 0); }
     if (as_function && !f.has_result) rx_error(44, "a function returned nothing");
     if (f.has_result) { char *v = adup(f.result); free(f.result); if (!as_function) var_set("RESULT", v); return v; }
     if (!as_function) var_drop("RESULT");
@@ -931,10 +937,10 @@ static int exec_clause(int *ip)
             res = !strcmp(kw, "LEAVE") ? R_LEAVE : R_ITERATE;
             goto done;
         }
-        if (!strcmp(kw, "EXIT")) { char *v = eval_toks(t, 1, n); free(exit_val); exit_val = strdup(v); res = R_EXIT; goto done; }
+        if (!strcmp(kw, "EXIT")) { free(exit_val); exit_val = n > 1 ? strdup(eval_toks(t, 1, n)) : 0; res = R_EXIT; goto done; }
         if (!strcmp(kw, "RETURN")) {
             if (frame && frame->internal) { if (n > 1) { frame->result = strdup(eval_toks(t, 1, n)); frame->has_result = 1; } res = R_RETURN; }
-            else { char *v = eval_toks(t, 1, n); free(exit_val); exit_val = strdup(v); res = R_EXIT; }
+            else { free(exit_val); exit_val = n > 1 ? strdup(eval_toks(t, 1, n)) : 0; res = R_EXIT; }
             goto done;
         }
         if (!strcmp(kw, "CALL")) {
@@ -950,7 +956,7 @@ static int exec_clause(int *ip)
                 args[na++] = e > k ? eval_toks(t, k, e) : 0;
                 k = e + 1;
             }
-            char *v = call_function(nm, args, na, t[1].type == T_SYM, t[1].line);
+            char *v = call_function(nm, args, na, t[1].type == T_SYM, t[1].line, 0);
             (void)v;
             goto done;
         }
@@ -1604,7 +1610,125 @@ static char *builtin(const char *nm, char **a, int na, int *found)
     *found = 0;
     return 0;
 }
-static char *call_function(const char *name, char **args, int nargs, int internal_first, int line)
+static void load_program(char *src)                             /* (its lines, for SOURCELINE; its clauses) */
+{
+    nsrc = 0; src_lines = 0; ncls = 0;
+    for (char *p = src;;) {
+        char *nl = strchr(p, '\n');
+        src_lines = realloc(src_lines, (size_t)(nsrc + 1) * sizeof *src_lines);
+        size_t l = nl ? (size_t)(nl - p) : strlen(p);
+        if (l && p[l - 1] == '\r') l--;
+        src_lines[nsrc++] = strndup(p, l);
+        if (!nl) break;
+        p = nl + 1;
+    }
+    if (nsrc && !*src_lines[nsrc - 1]) nsrc--;
+    tokenize(src);
+}
+static char *read_file(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+    if (n < 0) n = 0;
+    char *src = malloc((size_t)n + 1);
+    if (fread(src, 1, (size_t)n, f) != (size_t)n) n = 0;
+    src[n] = 0; fclose(f);
+    return src;
+}
+static void ext_done(void)                                       /* (an external routine's end: its result to the caller) */
+{
+    if (ext_fd < 0) return;
+    fflush(stdout);
+    for (int i = 0; i < 16; i++) if (streams[i].f) fclose(streams[i].f);
+    char has = exit_val ? 1 : 0;
+    if (write(ext_fd, &has, 1) < 0) { }
+    if (exit_val) for (size_t l = strlen(exit_val), o = 0; o < l;) { ssize_t w = write(ext_fd, exit_val + o, l - o); if (w <= 0) break; o += (size_t)w; }
+    _exit(0);
+}
+/* an external routine: NAME.CMD (or the name as given, with its extension or path) in the current directory, the
+ * calling program's, then PATH's (OS/2 paths too); it runs in a process of its own - its own variables - with these
+ * arguments; its RETURN or EXIT value back */
+static char *find_external(const char *name)
+{
+    const char *base = strrchr(name, '/'), *bs = strrchr(name, '\\');
+    if (bs > base) base = bs;
+    int has_ext = strchr(base ? base : name, '.') != 0;
+    char *dirs[64]; int nd = 0;
+    if (base || (name[0] && name[1] == ':')) dirs[nd++] = adup("");
+    else {
+        dirs[nd++] = adup(".");
+        const char *sl = strrchr(src_name, '/');
+        if (sl) dirs[nd++] = astr(src_name, (size_t)(sl - src_name));
+        const char *pe = getenv("PATH");
+        if (pe) {
+            char *pl = adup(pe);
+            for (char *d = strtok(pl, ";:"); d && nd < 64; d = strtok(0, ";:")) dirs[nd++] = d;
+        }
+    }
+    size_t nl = strlen(name);
+    for (int i = 0; i < nd; i++)
+        for (int v = 0; v < (has_ext ? 1 : 3); v++) {
+            char *nm = has_ext ? adup(name) : afmt("%s.%s", name, v == 2 ? "CMD" : "cmd");
+            if (v == 1) for (size_t c = 0; c < nl; c++) nm[c] = (char)tolower((unsigned char)nm[c]);
+            char *cand = *dirs[i] ? afmt("%s/%s", dirs[i], nm) : nm;
+            char *h = to_host(cand);
+            struct stat st;
+            if (stat(h, &st) == 0 && S_ISREG(st.st_mode)) return h;
+        }
+    return 0;
+}
+static char *call_external(const char *path, char **args, int nargs, int as_function)
+{
+    int p[2];
+    if (pipe(p)) rx_error(48, "a pipe for %s", path);
+    fflush(stdout);
+    pid_t pid = fork();
+    if (pid < 0) rx_error(48, "fork for %s", path);
+    if (!pid) {
+        close(p[0]);
+        ext_fd = p[1];
+        char *src = read_file(path);
+        if (!src) rx_error(3, "%s can't be read", path);
+        char **copy = malloc((size_t)(nargs ? nargs : 1) * sizeof *copy);
+        for (int i = 0; i < nargs; i++) copy[i] = args[i] ? strdup(args[i]) : 0;
+        src_name = strdup(path);
+        call_type = as_function ? "FUNCTION" : "SUBROUTINE";
+        memset(traps, 0, sizeof traps);
+        cinfo.cond = -1;
+        acts = 0;
+        free(exit_val); exit_val = 0;
+        scope = calloc(1, sizeof *scope);
+        static frame_t top;
+        frame_t t0 = { copy, nargs, 0, 0, 0, 0 };
+        top = t0;
+        frame = &top;
+        load_program(src);
+        run_act(0);
+        ext_done();
+    }
+    close(p[1]);
+    char *buf = 0; size_t len = 0, cap = 0;
+    for (;;) {
+        if (len + 4096 > cap) { cap = cap ? cap * 2 : 8192; buf = realloc(buf, cap); }
+        ssize_t r = read(p[0], buf + len, cap - len - 1);
+        if (r < 0 && errno == EINTR) continue;
+        if (r <= 0) break;
+        len += (size_t)r;
+    }
+    close(p[0]);
+    int st = 0;
+    while (waitpid(pid, &st, 0) < 0 && errno == EINTR) { }
+    if (!len) {                                                   /* (it ended with an error: so does the caller) */
+        fflush(stdout);
+        exit(WIFEXITED(st) ? WEXITSTATUS(st) : 255);
+    }
+    buf[len] = 0;
+    char *r = buf[0] ? adup(buf + 1) : 0;
+    free(buf);
+    return r;
+}
+static char *call_function(const char *name, char **args, int nargs, int internal_first, int line, int as_fn)
 {
     cur_line = line;
     if (internal_first) {                                         /* (an internal routine first: a label of that name) */
@@ -1627,6 +1751,14 @@ static char *call_function(const char *name, char **args, int nargs, int interna
     int found;
     char *r = builtin(name, args, nargs, &found);
     if (found) { if (r) var_set("RESULT", r); return r ? r : adup(""); }
+    char *path = find_external(name);
+    if (path) {
+        r = call_external(path, args, nargs, as_fn);
+        cur_line = line;
+        if (as_fn && !r) rx_error(44, "function %s returned nothing", name);
+        if (r) var_set("RESULT", r); else var_drop("RESULT");
+        return r ? r : adup("");
+    }
     rx_error(43, "routine %s not found", name);
     return 0;
 }
@@ -1636,12 +1768,8 @@ int main(int argc, char **argv)
     char *src = 0;
     if (argc >= 3 && !strcmp(argv[1], "-e")) { src = strdup(argv[2]); src_name = "(-e)"; argv += 2; argc -= 2; }
     else if (argc >= 2) {
-        FILE *f = fopen(argv[1], "rb");
-        if (!f) { fprintf(stderr, "REX0003: %s: can't be read\n", argv[1]); return 3; }
-        fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
-        src = malloc((size_t)n + 1);
-        if (fread(src, 1, (size_t)n, f) != (size_t)n) n = 0;
-        src[n] = 0; fclose(f);
+        src = read_file(argv[1]);
+        if (!src) { fprintf(stderr, "REX0003: %s: can't be read\n", argv[1]); return 3; }
         src_name = argv[1];
     } else { fprintf(stderr, "usage: rexx file.cmd [arguments] | rexx -e 'instructions'\n"); return 1; }
     /* the argument: one string, as OS/2 gives a REXX program */
@@ -1653,17 +1781,7 @@ int main(int argc, char **argv)
     char *margs[1] = { argv1 };
     frame_t top = { margs, argc > 2 ? 1 : 0, 0, 0, 0, 0 };
     frame = &top;
-    for (char *p = src;;) {
-        char *nl = strchr(p, '\n');
-        src_lines = realloc(src_lines, (size_t)(nsrc + 1) * sizeof *src_lines);
-        size_t l = nl ? (size_t)(nl - p) : strlen(p);
-        if (l && p[l - 1] == '\r') l--;
-        src_lines[nsrc++] = strndup(p, l);
-        if (!nl) break;
-        p = nl + 1;
-    }
-    if (nsrc && !*src_lines[nsrc - 1]) nsrc--;
-    tokenize(src);
+    load_program(src);
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
     sa.sa_handler = on_sigint;                                    /* (Ctrl+C: HALT, between clauses) */
