@@ -398,7 +398,7 @@ blkdev (GPT, MBR)  ←  virtio-blk  ·  USB mass storage (xHCI)  ·  SD (boards)
 | **FAT16/FAT32** (`kernel/src/fat32.c`) | `MOUNT`ed volumes, the BOOT partition, SD cards | yes | create, write, mkdir, delete, rename |
 | **ext4** (`fs/ext4`) | C: on the test disk, or `MOUNT`ed | yes | create, write, truncate, delete, mkdir, rmdir, rename (not with `metadata_csum`/`uninit_bg`: read-only then); checked against `e2fsck` by `scripts/test_ext4_driver.sh` |
 | **btrfs** (`fs/btrfs`) | C: on the test disk (`C_FS=btrfs`) | yes | copy-on-write with checksummed nodes, but no extent or checksum tree: written volumes are for this system only |
-| **f2fs** (`fs/f2fs`) | C: when it's f2fs, or `MOUNT`ed | yes | create, write, truncate, delete, mkdir, rmdir, rename; segments whose blocks were all superseded are reused (no cleaner for half-used ones); self-checked only (`scripts/test_f2fs_driver.sh`, whose `--format` makes an empty volume) |
+| **f2fs** (`fs/f2fs`) | C: when it's f2fs, or `MOUNT`ed | yes | create, write, truncate, delete, mkdir, rmdir, rename; superseded blocks freed, and a segment cleaner (owners from the segment summaries) when free segments run low; self-checked only (`scripts/test_f2fs_driver.sh`, whose `--format` makes an empty volume) |
 | **ramfs** (`kernel/src/ramfs.c`) | `/tmp` | | |
 
 The stick (`userland/make-stick.sh`, built by `scripts/mkhpfs.py`) holds
@@ -621,7 +621,7 @@ QEMU only.
 
 Not there yet:
 
-- **Storage**: the btrfs extent and checksum trees, an f2fs segment cleaner.
+- **Storage**: the btrfs extent and checksum trees; checking f2fs against real f2fs-tools.
 - **The kernel**: finer-grained locking than the one big kernel lock (system
   calls from different CPUs wait for each other); glibc-linked programs
   (musl's dynamic linker only).

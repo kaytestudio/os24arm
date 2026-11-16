@@ -20,9 +20,15 @@
  *     it fills. A block that stops being live - a node block rewritten
  *     elsewhere, a file's data and node blocks on truncate or unlink - is
  *     invalidated in its SIT entry at once (valid map bit, vblocks), so a
- *     segment whose blocks have all been superseded is free again. No
- *     cleaner moves live blocks out of mostly-dead segments: a volume can
- *     still fill with half-used ones. nids are never reused.
+ *     segment whose blocks have all been superseded is free again. Each
+ *     block's owner (nid, slot) goes in its segment's summary block (SSA);
+ *     when free segments run low, at the start of an operation, a cleaner
+ *     moves the live blocks of the least-used, at most 3/4-used segments
+ *     to the logs (each owner node rewritten once) - foreground cleaning,
+ *     greedy victims, no background thread. Two free segments are kept for
+ *     it (ordinary allocation can't take them). Open files read their
+ *     inode again on every call, since the cleaner moves blocks. nids are
+ *     never reused.
  *   - **Sequential nid allocation only**: new nids come from the
  *     checkpoint's own next_free_nid counter, bumped on every allocation,
  *     never reused.
@@ -108,8 +114,13 @@ static int write_sit_entry(f2fs_mount_t *mnt, uint32_t segno, const struct f2fs_
     return f2fs_write_block(mnt, mnt->sb.sit_blkaddr + block, mnt->bitmap_buffer);
 }
 
+#define GC_KEEP 2                                       /* free segments only the cleaner may take (f2fs's overprovisioning) */
+static int in_gc;
+static uint32_t free_segments(f2fs_mount_t *mnt);
+
 static int alloc_free_segment(f2fs_mount_t *mnt, uint32_t *out_segno)
 {
+    if (!in_gc && free_segments(mnt) <= GC_KEEP) return VFS_ERR_NOSPACE;   /* (the rest is the cleaner's) */
     for (uint32_t segno = 0; segno < mnt->main_segments; segno++) {
         if (segno == mnt->ckpt.cur_node_segno[0] || segno == mnt->ckpt.cur_data_segno[0]) continue;   /* (the open logs) */
         struct f2fs_sit_entry e;
@@ -124,7 +135,7 @@ static int alloc_free_segment(f2fs_mount_t *mnt, uint32_t *out_segno)
 
 /* ── LFS block allocation (node or data, single active log per type) ─────── */
 
-static int alloc_block(f2fs_mount_t *mnt, int is_node, uint32_t *out_blkaddr)
+static int alloc_block(f2fs_mount_t *mnt, int is_node, uint32_t owner, uint16_t ofs, uint32_t *out_blkaddr)
 {
     uint32_t *segno_slot = is_node ? &mnt->ckpt.cur_node_segno[0] : &mnt->ckpt.cur_data_segno[0];
     uint16_t *blkoff_slot = is_node ? &mnt->ckpt.cur_node_blkoff[0] : &mnt->ckpt.cur_data_blkoff[0];
@@ -151,6 +162,15 @@ static int alloc_block(f2fs_mount_t *mnt, int is_node, uint32_t *out_blkaddr)
     *blkoff_slot = (uint16_t)(off + 1);
     mnt->ckpt.valid_block_count++;
     mnt->ckpt.user_block_count++;
+
+    /* its owner, in the segment's summary block (what the cleaner goes by) */
+    if (f2fs_read_block(mnt, mnt->sb.ssa_blkaddr + segno, mnt->bitmap_buffer) != VFS_OK) return VFS_ERR_IO;
+    struct f2fs_summary_block *sum = (struct f2fs_summary_block *)mnt->bitmap_buffer;
+    sum->entries[off].nid = owner;
+    sum->entries[off].version = 0;
+    sum->entries[off].ofs_in_node = ofs;
+    sum->footer.entry_type = is_node ? SUM_TYPE_NODE : SUM_TYPE_DATA;
+    if (f2fs_write_block(mnt, mnt->sb.ssa_blkaddr + segno, mnt->bitmap_buffer) != VFS_OK) return VFS_ERR_IO;
 
     *out_blkaddr = blkaddr;
     return VFS_OK;
@@ -206,7 +226,7 @@ static int f2fs_write_node(f2fs_mount_t *mnt, struct f2fs_node *node)
 {
     uint32_t blkaddr, old = NULL_ADDR;
     if (f2fs_get_node_blkaddr(mnt, node->footer.nid, &old) != VFS_OK) old = NULL_ADDR;   /* (where it was: superseded now) */
-    if (alloc_block(mnt, /*is_node=*/1, &blkaddr) != VFS_OK) return VFS_ERR_NOSPACE;
+    if (alloc_block(mnt, /*is_node=*/1, node->footer.nid, 0, &blkaddr) != VFS_OK) return VFS_ERR_NOSPACE;
 
     node->footer.cp_ver = mnt->ckpt.checkpoint_ver + 1;
     node->footer.next_blkaddr = 0;
@@ -237,9 +257,8 @@ static int f2fs_grow_inode(f2fs_mount_t *mnt, uint32_t ino, struct f2fs_inode *i
                             uint32_t next_lb, uint32_t *out_phys)
 {
     uint32_t phys;
-    if (alloc_block(mnt, /*is_node=*/0, &phys) != VFS_OK) return VFS_ERR_NOSPACE;
-
     if (next_lb < DEF_ADDRS_PER_INODE) {
+        if (alloc_block(mnt, /*is_node=*/0, ino, (uint16_t)next_lb, &phys) != VFS_OK) return VFS_ERR_NOSPACE;
         inode->i_addr[next_lb] = phys;
     } else {
         uint32_t rel = next_lb - DEF_ADDRS_PER_INODE;
@@ -259,6 +278,7 @@ static int f2fs_grow_inode(f2fs_mount_t *mnt, uint32_t ino, struct f2fs_inode *i
         } else {
             if (f2fs_read_node(mnt, nid, &dnode) != VFS_OK) return VFS_ERR_IO;
         }
+        if (alloc_block(mnt, /*is_node=*/0, nid, (uint16_t)off, &phys) != VFS_OK) return VFS_ERR_NOSPACE;
         dnode.footer.nid = nid;
         dnode.footer.ino = ino;
         dnode.dn.addr[off] = phys;
@@ -489,6 +509,99 @@ void f2fs_write_init_allocators(f2fs_mount_t *mnt)
     mnt->writable = 1;
 }
 
+/* ── The cleaner: when free segments run low, the least-used segment's live blocks move to the logs (their owners -
+ * from the segment's summary - pointed at the new places), and the segment is free again. Run only at the start of
+ * an operation (f2fs_gc_if_needed), before it has read any inode it holds on to. */
+#define GC_RESERVE (GC_KEEP + 2)                        /* below this many free segments: clean */
+
+static uint32_t free_segments(f2fs_mount_t *mnt)
+{
+    uint32_t n = 0;
+    for (uint32_t segno = 0; segno < mnt->main_segments; segno++) {
+        if (segno == mnt->ckpt.cur_node_segno[0] || segno == mnt->ckpt.cur_data_segno[0]) continue;
+        struct f2fs_sit_entry e;
+        if (read_sit_entry(mnt, segno, &e) != VFS_OK) return n;
+        if ((e.vblocks & SIT_VBLOCKS_MASK) == 0) n++;
+    }
+    return n;
+}
+
+/* Moves one segment's live blocks; VFS_OK when it's free after. A block whose owner isn't known (no summary - an
+ * image this driver didn't write) makes the segment one it leaves alone. */
+static int gc_segment(f2fs_mount_t *mnt, uint32_t victim)
+{
+    static struct f2fs_summary_block sum;
+    static uint8_t data[F2FS_BLKSIZE];
+    struct f2fs_sit_entry e;
+    if (read_sit_entry(mnt, victim, &e) != VFS_OK) return VFS_ERR_IO;
+    if (f2fs_read_block(mnt, mnt->sb.ssa_blkaddr + victim, &sum) != VFS_OK) return VFS_ERR_IO;
+    int is_node = sum.footer.entry_type == SUM_TYPE_NODE;
+    uint32_t base = mnt->sb.main_blkaddr + victim * mnt->blocks_per_seg;
+    for (uint32_t off = 0; off < mnt->blocks_per_seg; off++)          /* (first: is everything accounted for?) */
+        if (bit_test(e.valid_map, off) && sum.entries[off].nid == 0) return VFS_ERR_INVAL;
+    for (uint32_t off = 0; off < mnt->blocks_per_seg; off++) {
+        if (!bit_test(e.valid_map, off)) continue;
+        uint32_t blk = base + off, owner = sum.entries[off].nid, where = NULL_ADDR;
+        struct f2fs_node n;
+        if (f2fs_get_node_blkaddr(mnt, owner, &where) != VFS_OK) return VFS_ERR_IO;
+        if (is_node) {                                    /* a node: written again (elsewhere) */
+            if (where != blk) { invalidate_block(mnt, blk, 1); continue; }   /* (not its current copy) */
+            if (f2fs_read_block(mnt, blk, &n) != VFS_OK) return VFS_ERR_IO;
+            if (f2fs_write_node(mnt, &n) != VFS_OK) return VFS_ERR_NOSPACE;
+            continue;
+        }
+        /* data: this block and every other one of the same owner here copied, the owner written once */
+        if (where == NULL_ADDR || f2fs_read_block(mnt, where, &n) != VFS_OK) { invalidate_block(mnt, blk, 0); continue; }
+        int moved = 0;
+        for (uint32_t o2 = off; o2 < mnt->blocks_per_seg; o2++) {
+            if (!bit_test(e.valid_map, o2) || sum.entries[o2].nid != owner) continue;
+            uint32_t b2 = base + o2;
+            uint16_t o = sum.entries[o2].ofs_in_node;
+            uint32_t *ptr = 0;
+            if (n.footer.ino == n.footer.nid) { if (o < DEF_ADDRS_PER_INODE) ptr = &n.i.i_addr[o]; }
+            else if (o < DEF_ADDRS_PER_BLOCK) ptr = &n.dn.addr[o];
+            e.valid_map[o2 / 8] &= (uint8_t)~(1u << (o2 % 8));          /* (handled: not again in the outer loop) */
+            if (!ptr || *ptr != b2) { invalidate_block(mnt, b2, 0); continue; }   /* (nobody's any more) */
+            if (f2fs_read_block(mnt, b2, data) != VFS_OK) return VFS_ERR_IO;
+            uint32_t nb;
+            if (alloc_block(mnt, 0, owner, o, &nb) != VFS_OK) return VFS_ERR_NOSPACE;
+            if (f2fs_write_block(mnt, nb, data) != VFS_OK) return VFS_ERR_IO;
+            *ptr = nb;
+            moved = 1;
+            if (invalidate_block(mnt, b2, 0) != VFS_OK) return VFS_ERR_IO;
+        }
+        if (moved && f2fs_write_node(mnt, &n) != VFS_OK) return VFS_ERR_NOSPACE;
+    }
+    return VFS_OK;
+}
+
+/* Free segments below the reserve: clean the least-used ones (at most three quarters full: moving one costs fewer
+ * blocks than the cleaner's two reserved segments, and gains a quarter of one) until there are enough, or nothing is
+ * worth cleaning. */
+static int f2fs_gc_if_needed(f2fs_mount_t *mnt)
+{
+    if (in_gc || free_segments(mnt) >= GC_RESERVE) return VFS_OK;
+    in_gc = 1;
+    static uint8_t tried[4096];
+    memset(tried, 0, sizeof tried);
+    int cleaned = 0;
+    while (free_segments(mnt) < GC_RESERVE) {
+        uint32_t best = 0, bestv = ~0u;
+        for (uint32_t segno = 0; segno < mnt->main_segments && segno < sizeof tried; segno++) {
+            if (tried[segno] || segno == mnt->ckpt.cur_node_segno[0] || segno == mnt->ckpt.cur_data_segno[0]) continue;
+            struct f2fs_sit_entry e;
+            if (read_sit_entry(mnt, segno, &e) != VFS_OK) break;
+            uint32_t v = e.vblocks & SIT_VBLOCKS_MASK;
+            if (v && v <= mnt->blocks_per_seg * 3 / 4 && v < bestv) { best = segno; bestv = v; }
+        }
+        if (bestv == ~0u) break;                            /* (nothing half empty: no use) */
+        tried[best] = 1;
+        if (gc_segment(mnt, best) == VFS_OK) cleaned++;
+    }
+    in_gc = 0;
+    return cleaned ? f2fs_commit_checkpoint(mnt) : VFS_OK;
+}
+
 /* A node no longer in use: its block invalidated, its NAT entry cleared. */
 static int release_node(f2fs_mount_t *mnt, uint32_t nid)
 {
@@ -532,6 +645,7 @@ static int dir_is_empty(f2fs_mount_t *mnt, struct f2fs_inode *dir_inode)
 
 int f2fs_write_open(f2fs_mount_t *mnt, const char *path, int flags, f2fs_file_t **out_file)
 {
+    f2fs_gc_if_needed(mnt);
     uint32_t ino;
     struct f2fs_inode inode;
     int r = f2fs_resolve_path(mnt, path, &ino, &inode);
@@ -605,6 +719,9 @@ int f2fs_write_data(f2fs_file_t *f, const void *buf, uint32_t len, uint32_t *act
     if (len == 0) return VFS_OK;
 
     f2fs_mount_t *mnt = f->mnt;
+    f2fs_gc_if_needed(mnt);
+    /* (the inode as it is now: the cleaner may have moved its blocks since the last call) */
+    if (f2fs_read_inode(mnt, f->ino, &f->inode) != VFS_OK) return VFS_ERR_IO;
     uint64_t cur_size = f2fs_inode_size(&f->inode);
     /* Sequential/append-only - see this file's header comment. */
     if (f->pos != cur_size) return VFS_ERR_INVAL;
@@ -652,6 +769,7 @@ int f2fs_write_data(f2fs_file_t *f, const void *buf, uint32_t len, uint32_t *act
 
 int f2fs_do_mkdir(f2fs_mount_t *mnt, const char *path)
 {
+    f2fs_gc_if_needed(mnt);
     uint32_t existing_ino;
     struct f2fs_inode existing;
     if (f2fs_resolve_path(mnt, path, &existing_ino, &existing) == VFS_OK) return VFS_ERR_INVAL;
@@ -691,6 +809,7 @@ int f2fs_do_mkdir(f2fs_mount_t *mnt, const char *path)
 
 int f2fs_do_unlink(f2fs_mount_t *mnt, const char *path)
 {
+    f2fs_gc_if_needed(mnt);
     uint32_t ino;
     struct f2fs_inode inode;
     int r = f2fs_resolve_path(mnt, path, &ino, &inode);
@@ -721,6 +840,7 @@ int f2fs_do_unlink(f2fs_mount_t *mnt, const char *path)
 
 int f2fs_do_rename(f2fs_mount_t *mnt, const char *old_path, const char *new_path)
 {
+    f2fs_gc_if_needed(mnt);
     uint32_t ino;
     struct f2fs_inode inode;
     if (f2fs_resolve_path(mnt, old_path, &ino, &inode) != VFS_OK) return VFS_ERR_NOTFOUND;

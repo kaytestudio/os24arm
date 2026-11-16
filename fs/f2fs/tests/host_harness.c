@@ -190,6 +190,16 @@ static int format_f2fs_image(int fd)
     sit_blk->entries[0].valid_map[0] = 0x01;
     if (pwrite_block(fd, sit_blkaddr, sit_raw) != 0) return -1;
 
+    /* ── SSA: segment 0's summary - the root inode (a node) in its first block ── */
+    {
+        uint8_t sum_raw[F2FS_BLKSIZE];
+        memset(sum_raw, 0, sizeof(sum_raw));
+        struct f2fs_summary_block *sumb = (struct f2fs_summary_block *)sum_raw;
+        sumb->entries[0].nid = FMT_ROOT_INO;
+        sumb->footer.entry_type = SUM_TYPE_NODE;
+        if (pwrite_block(fd, ssa_blkaddr, sum_raw) != 0) return -1;
+    }
+
     /* ── NAT: root_ino -> root_blkaddr ───────────────────────────────────── */
     uint8_t nat_raw[F2FS_BLKSIZE];
     memset(nat_raw, 0, sizeof(nat_raw));
@@ -481,6 +491,54 @@ int main(int argc, char **argv)
         CHECK(sum == fmnt->ckpt.valid_block_count, "SIT's live blocks (%u) are the checkpoint's count (%u)", sum, (unsigned)fmnt->ckpt.valid_block_count);
     }
 
+    printf("== the cleaner: half-used segments made free again ==\n");
+    {
+        static uint8_t f128[128 * 1024], back[128 * 1024];
+        int made = 0, ok = 1;
+        for (int i = 0; i < 400; i++) {                       /* (until it's full) */
+            char nm[32]; snprintf(nm, sizeof nm, "/g%03d.dat", i);
+            for (uint32_t k = 0; k < sizeof f128; k++) f128[k] = (uint8_t)(i + k * 3);
+            void *wf = NULL; uint32_t got = 0;
+            if (mnt.fs->open(&mnt, nm, O_WRONLY | O_CREAT | O_TRUNC, &wf) != VFS_OK) break;
+            int w = mnt.fs->write(&mnt, wf, f128, sizeof f128, &got);
+            mnt.fs->close(&mnt, wf);
+            if (w != VFS_OK || got != sizeof f128) { mnt.fs->unlink(&mnt, nm); break; }
+            made++;
+        }
+        for (int i = 0; i < made; i += 2) { char nm[32]; snprintf(nm, sizeof nm, "/g%03d.dat", i); mnt.fs->unlink(&mnt, nm); }
+        uint32_t big = 0;
+        static uint8_t mb4[4 << 20];
+        memset(mb4, 'B', sizeof mb4);
+        for (int k = 0; k < 2; k++) {                          /* 8 MB more: only room if half-used segments are cleaned */
+            char nm[32]; snprintf(nm, sizeof nm, "/big%d.dat", k);
+            void *wf = NULL; uint32_t got = 0;
+            if (mnt.fs->open(&mnt, nm, O_WRONLY | O_CREAT | O_TRUNC, &wf) != VFS_OK) break;
+            for (uint32_t off = 0; off < sizeof mb4; off += 256 * 1024) {
+                if (mnt.fs->write(&mnt, wf, mb4 + off, 256 * 1024, &got) != VFS_OK || got != 256 * 1024) break;
+                big += got;
+            }
+            mnt.fs->close(&mnt, wf);
+        }
+        CHECK(made > 40 && big == 2u * sizeof mb4, "%d files of 128 KB (the volume full), every other one deleted, then 8 MB more (%u)", made, big);
+        for (int i = 1; i < made && ok; i += 2) {             /* the ones left, intact after their blocks moved */
+            char nm[32]; snprintf(nm, sizeof nm, "/g%03d.dat", i);
+            for (uint32_t k = 0; k < sizeof f128; k++) f128[k] = (uint8_t)(i + k * 3);
+            void *rf = NULL; uint32_t tot = 0, got = 0;
+            if (mnt.fs->open(&mnt, nm, O_RDONLY, &rf) != VFS_OK) { ok = 0; printf("  %s gone\n", nm); break; }
+            while (tot < sizeof back && mnt.fs->read(&mnt, rf, back + tot, sizeof back - tot, &got) == VFS_OK && got) tot += got;
+            mnt.fs->close(&mnt, rf);
+            if (tot != sizeof f128 || memcmp(back, f128, sizeof f128)) { ok = 0; printf("  %s differs (%u bytes)\n", nm, tot); }
+        }
+        CHECK(ok, "the files that stayed read back the same");
+        uint32_t sum = 0;
+        for (uint32_t seg = 0; seg < fmnt->main_segments; seg++) {
+            uint8_t blk[F2FS_BLKSIZE];
+            pread(fd, blk, sizeof blk, (off_t)(fmnt->sb.sit_blkaddr + seg / SIT_ENTRY_PER_BLOCK) * F2FS_BLKSIZE);
+            sum += ((struct f2fs_sit_block *)blk)->entries[seg % SIT_ENTRY_PER_BLOCK].vblocks & 0x3FF;
+        }
+        CHECK(sum == fmnt->ckpt.valid_block_count, "SIT's live blocks (%u) are still the checkpoint's count (%u)", sum, (unsigned)fmnt->ckpt.valid_block_count);
+    }
+
     printf("== rmdir ==\n");
     r = mnt.fs->mkdir(&mnt, "/rmd");
     CHECK(r == VFS_OK, "mkdir /rmd");
@@ -513,6 +571,18 @@ int main(int argc, char **argv)
 
     r = mnt.fs->stat(&mnt, "/otherdir/moved/d059", &st);
     CHECK(r == VFS_OK && (st.attrs & VFS_ATTR_DIR), "last-created subdirectory survives remount");
+    {   /* blocks the cleaner moved: there after a remount too */
+        static uint8_t want[128 * 1024], got_b[128 * 1024];
+        for (uint32_t k = 0; k < sizeof want; k++) want[k] = (uint8_t)(1 + k * 3);
+        void *rf = NULL; uint32_t tot = 0, got = 0;
+        if (mnt.fs->open(&mnt, "/g001.dat", O_RDONLY, &rf) == VFS_OK) {
+            while (tot < sizeof got_b && mnt.fs->read(&mnt, rf, got_b + tot, sizeof got_b - tot, &got) == VFS_OK && got) tot += got;
+            mnt.fs->close(&mnt, rf);
+        }
+        CHECK(tot == sizeof want && !memcmp(got_b, want, sizeof want), "a file the cleaner moved reads back the same after remount");
+        r = mnt.fs->stat(&mnt, "/big1.dat", &st);
+        CHECK(r == VFS_OK && st.size == (4u << 20), "and the one written after cleaning (%u)", (unsigned)st.size);
+    }
 
     mnt.fs->unmount(&mnt);
     close(fd);

@@ -317,4 +317,26 @@ struct f2fs_dentry_block {
 #define F2FS_DEF_DIR  0x41EDu  /* S_IFDIR | 0755 */
 #define F2FS_DEF_REG  0x81A4u  /* S_IFREG | 0644 */
 
+/* ── Segment summary area (SSA): one block a main segment, who owns each of its blocks ── */
+#define ENTRIES_IN_SUM    512
+#define SUMMARY_SIZE      7
+#define SUM_FOOTER_SIZE   5
+#define SUM_JOURNAL_SIZE  (F2FS_BLKSIZE - SUM_FOOTER_SIZE - SUMMARY_SIZE * ENTRIES_IN_SUM)
+#define SUM_TYPE_NODE     1
+#define SUM_TYPE_DATA     0
+struct f2fs_summary {
+    uint32_t nid;              /* data: its node (an inode, or a direct node); node: itself */
+    uint8_t  version;
+    uint16_t ofs_in_node;      /* data: its slot in that node */
+} __attribute__((packed));
+struct summary_footer {
+    uint8_t  entry_type;       /* SUM_TYPE_NODE / SUM_TYPE_DATA */
+    uint32_t check_sum;
+} __attribute__((packed));
+struct f2fs_summary_block {
+    struct f2fs_summary   entries[ENTRIES_IN_SUM];
+    uint8_t               journal[SUM_JOURNAL_SIZE];
+    struct summary_footer footer;
+} __attribute__((packed));
+
 #endif /* F2FS_DISK_H */

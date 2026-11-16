@@ -521,6 +521,7 @@ static int f2fs_read(vfs_mount_t *vmnt, void *fpriv, void *buf, uint32_t len, ui
     if (!f) { *actual = 0; return VFS_ERR_BADFD; }
 
     uint32_t got = 0;
+    if (f2fs_read_inode(f->mnt, f->ino, &f->inode) != VFS_OK) { *actual = 0; return VFS_ERR_IO; }   /* (the cleaner moves blocks) */
     int r = f2fs_inode_pread(f->mnt, &f->inode, f->pos, buf, len, &got);
     f->pos += got;
     *actual = got;
@@ -574,6 +575,7 @@ static int f2fs_readdir(vfs_mount_t *vmnt, void *dpriv, vfs_dirent_t *ent)
     uint32_t ino;
     uint8_t type;
     int name_len;
+    if (f2fs_read_inode(d->mnt, d->dir_file->ino, &d->dir_file->inode) != VFS_OK) return VFS_ERR_IO;
     int r = f2fs_readdir_step(d->mnt, &d->dir_file->inode, &d->pos, &ino, &type, ent->name, &name_len);
     return r;
 }
