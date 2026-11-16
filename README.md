@@ -396,15 +396,20 @@ blkdev (GPT, MBR)  ←  virtio-blk  ·  USB mass storage (xHCI)  ·  SD (boards)
 |---|---|---|---|
 | **HPFS** (`fs/hpfs`) | the USB stick, D: | yes | yes: files (extents in the fnode or anodes) and directories; clean/dirty marking, and a full check (`AUTOCHECK`, `CHKDSK`) before a dirty volume is mounted read-write |
 | **FAT16/FAT32** (`kernel/src/fat32.c`) | `MOUNT`ed volumes, the BOOT partition, SD cards | yes | create, write, mkdir, delete, rename |
-| **ext4** (`fs/ext4`) | C: on the test disk | yes | create, write, truncate, delete, mkdir, rename (not with `metadata_csum`/`uninit_bg`: read-only then); checked against `e2fsck` by `scripts/test_ext4_driver.sh` |
+| **ext4** (`fs/ext4`) | C: on the test disk, or `MOUNT`ed | yes | create, write, truncate, delete, mkdir, rmdir, rename (not with `metadata_csum`/`uninit_bg`: read-only then); checked against `e2fsck` by `scripts/test_ext4_driver.sh` |
 | **btrfs** (`fs/btrfs`) | C: on the test disk (`C_FS=btrfs`) | yes | copy-on-write with checksummed nodes, but no extent or checksum tree: written volumes are for this system only |
-| **f2fs** (`fs/f2fs`) | not mounted at boot | yes | yes, self-checked only (`scripts/test_f2fs_driver.sh`) |
+| **f2fs** (`fs/f2fs`) | C: when it's f2fs, or `MOUNT`ed | yes | create, write, truncate, delete, mkdir, rmdir, rename; segments whose blocks were all superseded are reused (no cleaner for half-used ones); self-checked only (`scripts/test_f2fs_driver.sh`, whose `--format` makes an empty volume) |
 | **ramfs** (`kernel/src/ramfs.c`) | `/tmp` | | |
 
 The stick (`userland/make-stick.sh`, built by `scripts/mkhpfs.py`) holds
 the desktop and its programs in a hidden `\OS2` folder, and is UNIXROOT
 (`SET UNIXROOT=D:` in `CONFIG.SYS`). Linux programs see its `/usr`,
 `/etc`, `/bin` and `/var`, so installed packages stay there.
+
+`MOUNT device \dir` takes any of these (by their superblocks), and
+virtio disks after the first are `disk1`, `disk2`, ... (their MBR
+partitions `disk1p1`, ...), for volumes to try out:
+`-drive if=none,id=x,file=vol.img,format=raw -device virtio-blk-device,drive=x`.
 
 C: in QEMU is a GPT disk image (`scripts/mktestdisk.sh`: a FAT16 BOOT
 partition and an ext4 or btrfs C: partition), given to the kernel as a
@@ -616,7 +621,7 @@ QEMU only.
 
 Not there yet:
 
-- **Storage**: the btrfs extent and checksum trees, f2fs mounted at boot.
+- **Storage**: the btrfs extent and checksum trees, an f2fs segment cleaner.
 - **The kernel**: finer-grained locking than the one big kernel lock (system
   calls from different CPUs wait for each other); glibc-linked programs
   (musl's dynamic linker only).

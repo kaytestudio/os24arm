@@ -5741,7 +5741,7 @@ static s64 linux_syscall(linux_tf_t *tf)
         int r = user_path((int)a0, a1, p);
         if (r) return r;
         vfs_stat_t vs;
-        if (vfs_stat(p, &vs) == VFS_OK) return -EEXIST;
+        if (streq(p, "/") || vfs_stat(p, &vs) == VFS_OK) return -EEXIST;   /* (the root: there, mounted or not - mkdir -p) */
         r = vfs_mkdir(p);
         return r == VFS_OK ? 0 : verr(r);
     }

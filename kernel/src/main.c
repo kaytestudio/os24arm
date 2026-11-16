@@ -5,6 +5,7 @@
 #include "ifs_loader.h"
 #include "../../fs/ext4/ext4.h"
 #include "../../fs/btrfs/btrfs.h"
+#include "../../fs/f2fs/f2fs.h"
 #include "fat32.h"
 #include "hpfs.h"
 #include "linux_abi.h"
@@ -581,7 +582,16 @@ static void cmd_mount(int argc, char **argv)
     if (slot < 0) { kprintf("\nMOUNT: too many mounts (max %d)\n", USER_MOUNTS); return; }
 
     int hpfs = hpfs_probe(dev), r;
-    if (hpfs) {                                       /* HPFS: superblock at LSN 16 */
+    const char *other = 0;                            /* ext4, btrfs, f2fs: by their superblocks */
+    vfs_fs_t *ofs = 0;
+    if (!hpfs) {
+        if (ext4_probe(dev)) { other = "ext4"; ofs = ext4_get_fs(); }
+        else if (btrfs_probe(dev)) { other = "btrfs"; ofs = btrfs_get_fs(); }
+        else if (f2fs_probe(dev)) { other = "f2fs"; ofs = f2fs_get_fs(); }
+    }
+    if (other) {
+        r = vfs_mount(path, ofs, dev);
+    } else if (hpfs) {                                /* HPFS: superblock at LSN 16 */
         kmemset(&user_hpfs[slot], 0, sizeof(user_hpfs[slot]));
         user_hpfs[slot].dev = dev;
         r = vfs_mount(path, &vfs_hpfs_fs, &user_hpfs[slot]);
@@ -593,7 +603,7 @@ static void cmd_mount(int argc, char **argv)
     }
     if (r != VFS_OK) {
         kprintf("\nMOUNT: %s at %s failed (%d)%s\n", dev->name, path, r,
-                r == VFS_ERR_INVAL ? " - already mounted?" : " - not HPFS/FAT16/FAT32?");
+                r == VFS_ERR_INVAL ? " - already mounted?" : " - not HPFS/FAT/ext4/btrfs/f2fs?");
         return;
     }
     kstrncpy(user_mnt_path[slot], path, sizeof user_mnt_path[slot]);
@@ -603,7 +613,7 @@ static void cmd_mount(int argc, char **argv)
     extern void DosDisplayPath(const char *vfs_path, char *out, uint32_t out_size);
     DosDisplayPath(path, drv, sizeof drv);
     kprintf("\n%s is drive %c: (%s%s)\n", dev->name, drv[0],
-            hpfs ? (hpfs_is_rw(&user_hpfs[slot]) ? "HPFS" : "HPFS, read-only") : "FAT",
+            other ? other : hpfs ? (hpfs_is_rw(&user_hpfs[slot]) ? "HPFS" : "HPFS, read-only") : "FAT",
             (!hpfs && (dev->flags & BLKDEV_READONLY)) ? ", read-only" : "");
     /* UNIXROOT's drive (CONFIG.SYS SET UNIXROOT=D:): its tree, for the
      * programs (and the package database) */
@@ -1102,6 +1112,8 @@ void kernel_main(void)
     } else {
         uart_puts("[IFS]    ERROR: Failed to register btrfs driver\r\n");
     }
+    if (ifs_register_builtin("F2FS", f2fs_init, f2fs_get_fs()) != 0)
+        uart_puts("[IFS]    ERROR: Failed to register f2fs driver\r\n");
 
     /* RAMFS has nothing to probe: Linux programs get it on /tmp. */
     if (ifs_register_builtin("RAMFS", ramfs_ifs_init, &vfs_ramfs) != 0)
@@ -1114,7 +1126,12 @@ void kernel_main(void)
     uart_puts("[IFS]    Loading drivers with default parameters...\r\n");
     fat32_init(NULL);
     ext4_init("/CACHE:1024");
-    btrfs_init(NULL);
+    {                                   /* (C: may be f2fs: then btrfs needn't try) */
+        blkdev_t *c = blkdev_get_by_name("disk0p2");
+        if (!c) c = blkdev_get_by_name("C");
+        if (c && f2fs_probe(c)) f2fs_init(NULL);
+        else btrfs_init(NULL);
+    }
     hpfs_init("/CACHE:1024");   /* any HPFS volume -> /HPFS */
 
     /* ── CONFIG.SYS / UNIXROOT ────────────────────────────────────────────
