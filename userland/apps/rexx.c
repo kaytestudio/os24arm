@@ -16,7 +16,9 @@
  * (abuttal, blank, ||), comparisons (normal and strict), logic. About 60
  * built-in functions, LINEIN/LINEOUT/LINES/CHARIN/CHAROUT/STREAM for files,
  * RexxUtil's common functions (OS/2 paths through /dev/os2cmd; SysIni: OS/2's
- * binary .INI profiles, os2x86's USER/SYSTEM ones). Conditions:
+ * binary .INI profiles, os2x86's USER/SYSTEM ones). Strings are C strings:
+ * one ends at its first NUL byte ('00'x, a binary value's zero bytes).
+ * Conditions:
  * SIGNAL ON ERROR/FAILURE/HALT/NOVALUE/SYNTAX/NOTREADY [NAME label] and CALL
  * ON ERROR/FAILURE/HALT (DELAY while the handler runs); RC, SIGL,
  * CONDITION(), ERRORTEXT(), SOURCELINE(). External routines: NAME.CMD in the

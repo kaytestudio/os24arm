@@ -631,7 +631,9 @@ Not there yet:
   help files, and
   the rest of OS/2's API (the help manager, multimedia, ...).
 - **Other**: DEBUG's assembler, disassembler and breakpoints; REXX's
-  RexxUtil's less used functions (extended attributes, WPS objects).
+  RexxUtil's less used functions (extended attributes, WPS objects), and
+  REXX strings holding NUL bytes (they're C strings: `'00'x`, and binary
+  .INI values with a zero byte, end at the first NUL).
 
 ---
 
