@@ -2,11 +2,13 @@
  * (truncation, zero-length datagrams, MSG_PEEK, MSG_TRUNC, SCM_RIGHTS, the
  * other end closing), named sockets (sendto/recvfrom with the sender's
  * name, a reply, connect + send, getpeername), non-blocking reads, poll,
- * a child sending across fork. */
+ * a child sending across fork; SOCK_SEQPACKET (connect/accept, messages over
+ * the connection, a socketpair, the other end closing). */
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <signal.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
@@ -108,6 +110,32 @@ int main(void)
     waitpid(ch, 0, 0);
     CHECK(ok, "five datagrams from a child, in order");
     close(srv); close(cli);
+
+    /* SOCK_SEQPACKET: a connection, carrying messages */
+    struct sockaddr_un qa;
+    socklen_t ql = addr(&qa, "/tmp/seq-server");
+    int ls = socket(AF_UNIX, SOCK_SEQPACKET, 0), cs = socket(AF_UNIX, SOCK_SEQPACKET, 0);
+    type = 0; tl = sizeof type;
+    getsockopt(ls, SOL_SOCKET, SO_TYPE, &type, &tl);
+    CHECK(type == SOCK_SEQPACKET && bind(ls, (struct sockaddr *)&qa, ql) == 0 && listen(ls, 4) == 0, "SOCK_SEQPACKET: bind, listen");
+    int ds = socket(AF_UNIX, SOCK_DGRAM, 0);
+    CHECK(connect(ds, (struct sockaddr *)&qa, ql) < 0 && errno == EPROTOTYPE, "a datagram socket can't connect to it: EPROTOTYPE");
+    close(ds);
+    CHECK(send(cs, "x", 1, 0) < 0 && errno == ENOTCONN, "not connected: ENOTCONN");
+    CHECK(connect(cs, (struct sockaddr *)&qa, ql) == 0, "connect");
+    int as = accept(ls, 0, 0);
+    CHECK(as >= 0, "accept");
+    send(cs, "one", 3, 0); send(cs, "second", 6, 0); send(as, "back", 4, 0);
+    ssize_t q1 = recv(as, b, sizeof b, 0), q2 = recv(as, b, 3, 0), q3 = recv(cs, b, sizeof b, 0);
+    CHECK(q1 == 3 && q2 == 3 && !memcmp(b, "back", 4) && q3 == 4, "messages both ways, whole (%zd %zd %zd)", q1, q2, q3);
+    int qp[2];
+    CHECK(socketpair(AF_UNIX, SOCK_SEQPACKET, 0, qp) == 0 && send(qp[0], "pp", 2, 0) == 2 && recv(qp[1], b, sizeof b, 0) == 2, "a SEQPACKET socketpair");
+    close(qp[0]); close(qp[1]);
+    close(cs);
+    CHECK(recv(as, b, sizeof b, 0) == 0, "the other end closed: 0");
+    signal(SIGPIPE, SIG_IGN);
+    CHECK(send(as, "z", 1, 0) < 0 && errno == EPIPE, "send to it: EPIPE");
+    close(as); close(ls);
     printf(fails ? "dgram: %d FAILED\n" : "dgram: all ok\n", fails);
     return fails != 0;
 }
