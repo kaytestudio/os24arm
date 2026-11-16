@@ -1,6 +1,7 @@
 /* dos/a64.h - an AArch64 (A64) disassembler and assembler for DEBUG's U and A
- * commands (dos/a64.c). The integer instruction set and the FP/SIMD loads
- * and stores; anything else disassembles as ".inst 0x...". Output follows
+ * commands (dos/a64.c): the integer instruction set, floating point and
+ * Advanced SIMD (dos/a64_simd.inc; FP16 and the newest extensions partly);
+ * anything else disassembles as ".inst 0x...". Output follows
  * LLVM's (llvm-objdump) spelling: its aliases (mov, cmp, lsl, cset, ...),
  * hex immediates, absolute branch targets. */
 #ifndef A64_H

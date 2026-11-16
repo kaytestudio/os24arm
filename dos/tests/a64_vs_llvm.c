@@ -1,6 +1,7 @@
 /* dos/tests/a64_vs_llvm.c - dos/a64.c's disassembly of every instruction
  * llvm-objdump printed (its output on stdin: "addr: word \tmnemonic\toperands")
- * against LLVM's own text, LLVM's "<symbol>" and "// comment" left out. */
+ * against LLVM's own text, LLVM's "<symbol>" and "// comment" left out;
+ * how many of them FP/SIMD. */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,7 +42,7 @@ int main(int argc, char **argv)
         total++;
         a64_disasm(w, addr, mine, sizeof mine);
         norm(mine);
-        if (is_simd_dp(w)) { simd++; continue; }
+        if (is_simd_dp(w)) simd++;
         if (!strcmp(mine, theirs)) { same++; continue; }
         char mnem[24]; int k = 0;
         while (theirs[k] && theirs[k] != '\t' && k < 23) { mnem[k] = theirs[k]; k++; }
@@ -53,8 +54,8 @@ int main(int argc, char **argv)
         if (verbose) printf("%08x  llvm: %-40s a64: %s\n", w, theirs, mine);
     }
     long cmp = total - simd;
-    printf("integer and load/store: %ld of %ld the same (%.2f%%); FP/SIMD data processing (not covered): %ld\n",
-           same, cmp, cmp ? 100.0 * same / cmp : 0.0, simd);
+    printf("all: %ld of %ld the same (%.2f%%); FP/SIMD among them: %ld\n", same, total, total ? 100.0 * same / total : 0.0, simd);
+    cmp = total;
     for (int a = 0; a < nbad; a++) for (int c = a + 1; c < nbad; c++) if (bad[c].n > bad[a].n) { __typeof__(bad[0]) t = bad[a]; bad[a] = bad[c]; bad[c] = t; }
     for (int a = 0; a < nbad && a < (getenv("TOP") ? atoi(getenv("TOP")) : 40); a++) printf("%6ld %-10s %s\n", bad[a].n, bad[a].mn, bad[a].ex);
     return same == cmp ? 0 : 1;

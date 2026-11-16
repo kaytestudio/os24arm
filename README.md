@@ -542,11 +542,12 @@ RUN
 **DEBUG** is a memory monitor in the style of DEBUG.COM. It has dump,
 enter, fill, compare, move, search and hex arithmetic over the flat 64-bit
 address space, shows the AArch64 registers, and has `U` (unassemble) and
-`A` (assemble) for AArch64 (`dos/a64.c`: the integer instructions and the
-FP/SIMD loads and stores, in LLVM's syntax - immediates take `#`, a bare
-number is a hex address). The disassembler gives llvm-objdump's text for
-every instruction of the kernel, busybox and musl, and assembling its
-output gives each word back (`dos/tests/test_a64.sh`). `G [=address]
+`A` (assemble) for AArch64 (`dos/a64.c`: the integer instructions,
+floating point and Advanced SIMD, in LLVM's syntax - immediates take `#`,
+a bare number is a hex address). The disassembler gives llvm-objdump's
+text for every instruction of the kernel, busybox and musl, FP/SIMD
+included, and assembling its output gives each word back
+(`dos/tests/test_a64.sh`). `G [=address]
 [breakpoints]`, `T [=address] [count]` and `P` run code at EL1 with a
 register set of their own (`R` shows it, `R x0 1234` sets one): the
 processor's hardware breakpoints (in read-only code too), single steps,
@@ -640,7 +641,8 @@ Not there yet:
 - **os2x86**: PM drag and drop between programs (within one works), IPF
   help files, and
   the rest of OS/2's API (the help manager, multimedia, ...).
-- **Other**: FP/SIMD data processing in DEBUG's U and A; REXX's
+- **Other**: SVE/SME and ARMv8.3+'s complex-number and dot-product forms in
+  DEBUG's U and A; REXX's
   RexxUtil's less used functions (extended attributes, WPS objects), and
   REXX strings holding NUL bytes (they're C strings: `'00'x`, and binary
   .INI values with a zero byte, end at the first NUL).

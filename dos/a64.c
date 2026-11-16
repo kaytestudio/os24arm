@@ -11,10 +11,16 @@
  * wide, bitfield and extract, conditional compare and select, data
  * processing (1, 2, 3 sources), and loads/stores (unsigned offset,
  * unscaled, pre/post index, register offset, literal, pairs, exclusive and
- * acquire/release), the FP/SIMD registers' too. LLVM's alias rules decide
- * the spelling (mov, cmp, cmn, tst, neg, mvn, lsl/lsr/asr, ubfx, sxtw,
- * cset, cinc, mul, ...). The rest of FP/SIMD, SVE, LSE atomics, pointer
- * authentication: ".inst 0x...". */
+ * acquire/release), the FP/SIMD registers' too, LSE atomics, pointer
+ * authentication; floating point and Advanced SIMD (a64_simd.inc). LLVM's
+ * alias rules decide the spelling (mov, cmp, cmn, tst, neg, mvn,
+ * lsl/lsr/asr, ubfx, sxtw, cset, cinc, mul, ...). SVE, SME, ARMv8.9's
+ * 128-bit system instructions: ".inst 0x...".
+ *
+ * The assembler encodes the integer instructions and scalar floating point
+ * directly; FP/SIMD's other forms by search: a group's varying bits tried,
+ * with the registers in their fields, until the disassembly of one is the
+ * line's instruction (the disassembler being exact, that's its encoding). */
 #include "a64.h"
 
 #include "a64_sysregs.inc"
@@ -335,6 +341,7 @@ static int branch_sys(a64_u32 i, a64_u64 pc, buf_t *b)
 }
 
 /* ── loads and stores ── */
+static int simd_ldst(a64_u32 i, buf_t *b);
 static void vreg(buf_t *b, int r, int scale)                    /* an FP/SIMD register: b h s d q */
 {
     putc1(b, "bhsdq"[scale]); putdec(b, (a64_u64)r);
@@ -393,6 +400,7 @@ static int ldst_atomic(a64_u32 i, buf_t *b)
 static int ldst(a64_u32 i, a64_u64 pc, buf_t *b)
 {
     int rt = bits(i, 4, 0), rn = bits(i, 9, 5), v = bits(i, 26, 26);
+    if (v && bits(i, 29, 27) == 1) return simd_ldst(i, b);           /* (structures: a64_simd.inc) */
     /* load literal */
     if (bits(i, 29, 27) == 3 && bits(i, 25, 24) == 0) {
         int opc = bits(i, 31, 30);
@@ -643,6 +651,8 @@ static int dp_reg(a64_u32 i, buf_t *b)
     return 0;
 }
 
+#include "a64_simd.inc"
+
 int a64_disasm(a64_u32 insn, a64_u64 pc, char *out, unsigned size)
 {
     buf_t b = { out, 0, size };
@@ -654,6 +664,7 @@ int a64_disasm(a64_u32 insn, a64_u64 pc, char *out, unsigned size)
     else if ((op0 & 0xe) == 0xa) ok = branch_sys(insn, pc, &b);
     else if ((op0 & 0x5) == 0x4) ok = ldst(insn, pc, &b);
     else if ((op0 & 0x7) == 0x5) ok = dp_reg(insn, &b);
+    else if ((op0 & 0x7) == 0x7) ok = simd_dp(insn, pc, &b);
     if (ok) return 1;
     b.n = 0; out[0] = 0;
     put(&b, ".inst\t"); puthex(&b, insn);
@@ -672,9 +683,10 @@ typedef struct {
     int base, mode;                 /* memory: base register; mode 0 offset, 1 pre, 2 post, 3 register */
     a64_s64 off;
     int idx, idx_sf, ext, ext_amt, ext_has;   /* register offset */
+    int arr, cnt, eidx;             /* vector: arrangement (size*2+q); list: how many; element/list: index (-1 none) */
     char name[32];
 } opnd_t;
-enum { O_REG = 1, O_VREG, O_IMM, O_MEM, O_SHIFT, O_EXT, O_COND, O_NAME };
+enum { O_REG = 1, O_VREG, O_IMM, O_MEM, O_SHIFT, O_EXT, O_COND, O_NAME, O_VEC, O_VELEM, O_VLIST, O_FIMM };
 
 static int lower(int c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
 static int streq_ci(const char *a, const char *b) { while (*a && lower(*a) == lower(*b)) { a++; b++; } return !*a && !*b; }
@@ -747,6 +759,7 @@ static int parse_shift_ext(const char *s, opnd_t *o)
     while (s[n] && !is_sp(s[n]) && s[n] != '#' && n < 7) { w[n] = (char)lower(s[n]); n++; }
     w[n] = 0;
     int sh = find_name(shifts, 4, w), ex = find_name(extends, 8, w);
+    if (streq_ci(w, "msl")) sh = 4;                          /* (msl: movi's shifting ones) */
     if (sh < 0 && ex < 0) return 0;
     const char *p = s + n;
     skipsp(&p);
@@ -756,9 +769,102 @@ static int parse_shift_ext(const char *s, opnd_t *o)
     o->kind = O_EXT; o->sh = ex; o->amt = (int)v; o->has_amt = has;
     return 1;
 }
+/* v<n>.<arrangement> or v<n>.<b|h|s|d>[<index>] (after: what follows) */
+static int parse_vec(const char *s, opnd_t *o, const char **after)
+{
+    if (lower(s[0]) != 'v') return 0;
+    int r = 0, d = 0; const char *p = s + 1;
+    while (*p >= '0' && *p <= '9') { r = r * 10 + (*p - '0'); p++; d++; }
+    if (!d || r > 31 || *p != '.') return 0;
+    p++;
+    o->r = r;
+    char t[4]; int n = 0;
+    while (*p && *p != '[' && *p != ',' && *p != ' ' && *p != '}' && n < 3) t[n++] = (char)lower(*p++);
+    t[n] = 0;
+    if (*p == '[') {                                             /* an element */
+        int es = t[0] == 'b' ? 0 : t[0] == 'h' ? 1 : t[0] == 's' ? 2 : t[0] == 'd' ? 3 : -1;
+        if (es < 0 || t[1]) return 0;
+        p++;
+        int ix = 0, dd = 0;
+        while (*p >= '0' && *p <= '9') { ix = ix * 10 + (*p - '0'); p++; dd++; }
+        if (!dd || *p != ']') return 0;
+        p++;
+        o->kind = O_VELEM; o->vscale = es; o->eidx = ix;
+        *after = p; return 1;
+    }
+    static const char *const an[8] = { "8b", "16b", "4h", "8h", "2s", "4s", "1d", "2d" };
+    int a = -1;
+    for (int k = 0; k < 8; k++) { const char *x = an[k], *y = t; while (*x && *x == *y) { x++; y++; } if (!*x && !*y) a = k; }
+    if (t[0] == '1' && t[1] == 'q' && !t[2]) a = 8;              /* (pmull's 128-bit result) */
+    if (a < 0) {                                                 /* (in a single-structure list: v0.s, no lanes) */
+        int es = !t[1] ? (t[0] == 'b' ? 0 : t[0] == 'h' ? 1 : t[0] == 's' ? 2 : t[0] == 'd' ? 3 : -1) : -1;
+        if (es < 0) return 0;
+        o->kind = O_VELEM; o->vscale = es; o->eidx = -1;
+        *after = p; return 1;
+    }
+    o->kind = O_VEC; o->arr = a;
+    *after = p; return 1;
+}
+/* "#1.25", "#-0.328125": the value * 10^8 (exact for every FP8 immediate) */
+static int parse_fimm(const char *s, a64_s64 *v)
+{
+    if (*s != '#') return 0;
+    s++;
+    int neg = 0; if (*s == '-') { neg = 1; s++; }
+    a64_s64 ip = 0, fp = 0; int nd = 0, dig = 0;
+    while (*s >= '0' && *s <= '9') { ip = ip * 10 + (*s - '0'); s++; dig = 1; }
+    if (*s != '.') return 0;
+    s++;
+    while (*s >= '0' && *s <= '9') { if (nd < 8) { fp = fp * 10 + (*s - '0'); nd++; } s++; dig = 1; }
+    while (*s == ' ') s++;
+    if (*s || !dig) return 0;
+    while (nd < 8) { fp *= 10; nd++; }
+    *v = (ip * 100000000 + fp) * (neg ? -1 : 1);
+    return 1;
+}
 static int parse_operand(const char *s, opnd_t *o, char *err, unsigned es)
 {
     for (unsigned k = 0; k < sizeof *o; k++) ((char *)o)[k] = 0;
+    o->eidx = -1;
+    if (*s == '{') {                                             /* a register list */
+        const char *p = s + 1;
+        opnd_t first;
+        int n = 0;
+        for (;;) {
+            while (*p == ' ') p++;
+            opnd_t v; const char *a;
+            for (unsigned k = 0; k < sizeof v; k++) ((char *)&v)[k] = 0;
+            if (!parse_vec(p, &v, &a)) { seterr(err, es, "a register list: { v0.16b, v1.16b }"); return 0; }
+            if (!n) first = v;
+            else if (v.r != ((first.r + n) & 31) || v.kind != first.kind || v.arr != first.arr || v.vscale != first.vscale) { seterr(err, es, "a list's registers: one after another, alike"); return 0; }
+            n++;
+            p = a;
+            while (*p == ' ') p++;
+            if (*p == ',') { p++; continue; }
+            if (*p == '}') { p++; break; }
+            seterr(err, es, "a register list: { v0.16b, v1.16b }"); return 0;
+        }
+        if (n > 4) { seterr(err, es, "at most four registers in a list"); return 0; }
+        o->kind = O_VLIST; o->r = first.r; o->cnt = n; o->arr = first.kind == O_VEC ? first.arr : -1; o->vscale = first.vscale;
+        while (*p == ' ') p++;
+        if (*p == '[') {
+            p++; int ix = 0, d = 0;
+            while (*p >= '0' && *p <= '9') { ix = ix * 10 + (*p - '0'); p++; d++; }
+            if (!d || *p != ']') { seterr(err, es, "a bad [index]"); return 0; }
+            p++; o->eidx = ix;
+        }
+        while (*p == ' ') p++;
+        if (*p) { seterr(err, es, "something after the list"); return 0; }
+        return 1;
+    }
+    {
+        const char *a;
+        if (lower(s[0]) == 'v' && parse_vec(s, o, &a)) {
+            if (*a) { seterr(err, es, "something after the register"); return 0; }
+            return 1;
+        }
+    }
+    if (s[0] == '#') { a64_s64 fv; if (parse_fimm(s, &fv)) { o->kind = O_FIMM; o->imm = fv; return 1; } }
     if (*s == '[') {                                             /* memory */
         o->kind = O_MEM;
         char in[64]; int n = 0;
@@ -1290,6 +1396,63 @@ static int assemble(const char *m, opnd_t *o, int n, a64_u64 pc, a64_u32 *out, c
             *out = 0xd5080000u | ((a64_u32)l << 21) | ((a64_u32)f[0].imm << 16) | ((a64_u32)cn << 12) | ((a64_u32)cm << 8) | ((a64_u32)f[3].imm << 5) | R(rt); return 1;
         }
     }
+    /* ── scalar floating point ── */
+    #define VR(k) (n > (k) && o[k].kind == O_VREG && o[k].vscale >= 1 && o[k].vscale <= 3)
+    #define FTYPE(k) (o[k].vscale == 2 ? 0u : o[k].vscale == 3 ? 1u : 3u)
+    {
+        static const char *const f2[] = { "fmul", "fdiv", "fadd", "fsub", "fmax", "fmin", "fmaxnm", "fminnm", "fnmul" };
+        int k = find_name(f2, 9, m);
+        if (k >= 0 && n == 3 && VR(0) && VR(1) && VR(2)) {
+            if (o[1].vscale != o[0].vscale || o[2].vscale != o[0].vscale) E("registers of one precision (h, s or d)");
+            *out = 0x1e200800u | (FTYPE(0) << 22) | (R(o[2].r) << 16) | ((a64_u32)k << 12) | (R(o[1].r) << 5) | R(o[0].r); return 1;
+        }
+        static const char *const f3[] = { "fmadd", "fmsub", "fnmadd", "fnmsub" };
+        k = find_name(f3, 4, m);
+        if (k >= 0 && n == 4 && VR(0) && VR(1) && VR(2) && VR(3)) {
+            if (o[1].vscale != o[0].vscale || o[2].vscale != o[0].vscale || o[3].vscale != o[0].vscale) E("registers of one precision");
+            *out = 0x1f000000u | (FTYPE(0) << 22) | ((a64_u32)(k >> 1) << 21) | (R(o[2].r) << 16) | ((a64_u32)(k & 1) << 15) | (R(o[3].r) << 10) | (R(o[1].r) << 5) | R(o[0].r); return 1;
+        }
+        static const char *const f1[] = { "fmov", "fabs", "fneg", "fsqrt", 0, 0, 0, 0, "frintn", "frintp", "frintm", "frintz", "frinta", 0, "frintx", "frinti" };
+        k = find_name(f1, 16, m);
+        if (k >= 0 && n == 2 && VR(0) && VR(1)) {
+            if (o[1].vscale != o[0].vscale) E("registers of one precision (fcvt changes it)");
+            *out = 0x1e204000u | (FTYPE(0) << 22) | ((a64_u32)k << 15) | (R(o[1].r) << 5) | R(o[0].r); return 1;
+        }
+        if (IS("fcvt") && n == 2 && VR(0) && VR(1) && o[0].vscale != o[1].vscale) {
+            *out = 0x1e204000u | (FTYPE(1) << 22) | ((4u | FTYPE(0)) << 15) | (R(o[1].r) << 5) | R(o[0].r); return 1;
+        }
+        if (IS("fmov") && n == 2 && ((VR(0) && REGN(1)) || (REGN(0) && VR(1)))) {     /* to/from a general register */
+            int tofp = VR(0), g = tofp ? 1 : 0, f = tofp ? 0 : 1;
+            if (o[f].vscale == 1 ? 0 : (o[f].vscale == 3) != o[g].sf) E("fmov: w with s (or h), x with d (or h)");
+            *out = ((a64_u32)o[g].sf << 31) | 0x1e260000u | (FTYPE(f) << 22) | ((a64_u32)tofp << 16) | (R(o[1].r) << 5) | R(o[0].r); return 1;
+        }
+        static const char *const cv[] = { "scvtf", "ucvtf", "fcvtzs", "fcvtzu", "fcvtns", "fcvtnu", "fcvtps", "fcvtpu", "fcvtms", "fcvtmu", "fcvtas", "fcvtau" };
+        k = find_name(cv, 12, m);
+        if (k >= 0 && n == 2) {
+            if (k < 2) {
+                if (!(VR(0) && REGN(1))) E("scvtf/ucvtf: an FP register, then a general one");
+                *out = ((a64_u32)o[1].sf << 31) | 0x1e220000u | (FTYPE(0) << 22) | ((a64_u32)k << 16) | (R(o[1].r) << 5) | R(o[0].r); return 1;
+            }
+            if (!(REGN(0) && VR(1))) E("a general register, then an FP one");
+            static const unsigned rm_op[12][2] = { { 0, 0 }, { 0, 0 }, { 3, 0 }, { 3, 1 }, { 0, 0 }, { 0, 1 }, { 1, 0 }, { 1, 1 }, { 2, 0 }, { 2, 1 }, { 0, 4 }, { 0, 5 } };
+            *out = ((a64_u32)o[0].sf << 31) | 0x1e200000u | (FTYPE(1) << 22) | (rm_op[k][0] << 19) | (rm_op[k][1] << 16) | (R(o[1].r) << 5) | R(o[0].r); return 1;
+        }
+        if ((IS("fcmp") || IS("fcmpe")) && n == 2 && VR(0)) {
+            a64_u32 e = IS("fcmpe") ? 0x10 : 0;
+            if ((o[1].kind == O_IMM || o[1].kind == O_FIMM) && o[1].imm == 0) { *out = 0x1e202008u | (FTYPE(0) << 22) | (R(o[0].r) << 5) | e; return 1; }
+            if (VR(1)) { *out = 0x1e202000u | (FTYPE(0) << 22) | (R(o[1].r) << 16) | (R(o[0].r) << 5) | e; return 1; }
+            E("fcmp: two FP registers, or one and #0.0");
+        }
+        if ((IS("fccmp") || IS("fccmpe")) && n == 4 && VR(0) && VR(1) && o[2].kind == O_IMM && o[3].kind == O_COND) {
+            if (o[2].imm < 0 || o[2].imm > 15) E("nzcv: #0-15");
+            *out = 0x1e200400u | (FTYPE(0) << 22) | (R(o[1].r) << 16) | ((a64_u32)o[3].imm << 12) | (R(o[0].r) << 5) | (IS("fccmpe") ? 0x10u : 0) | (a64_u32)o[2].imm; return 1;
+        }
+        if (IS("fcsel") && n == 4 && VR(0) && VR(1) && VR(2) && o[3].kind == O_COND) {
+            *out = 0x1e200c00u | (FTYPE(0) << 22) | (R(o[2].r) << 16) | ((a64_u32)o[3].imm << 12) | (R(o[1].r) << 5) | R(o[0].r); return 1;
+        }
+    }
+    #undef VR
+    #undef FTYPE
     /* ── loads and stores ── */
     {
         static const char *const ls[] = { "strb", "ldrb", "ldrsb", "strh", "ldrh", "ldrsh", "str", "ldr", "ldrsw", "prfm" };
@@ -1386,22 +1549,14 @@ static int assemble(const char *m, opnd_t *o, int n, a64_u64 pc, a64_u32 *out, c
     #undef REGN
 }
 
-int a64_asm(const char *line, a64_u64 pc, a64_u32 *insn, char *err, unsigned errsize)
+/* the operands of a line (after its mnemonic), split at commas outside [] and {} ("[xn], #imm": one) */
+static int parse_operands(const char *p, opnd_t *o, int *nout, char *err, unsigned errsize)
 {
-    char m[24]; int k = 0;
-    const char *p = line;
-    if (errsize) err[0] = 0;
-    skipsp(&p);
-    while (*p && !is_sp(*p) && k < 23) m[k++] = *p++;
-    m[k] = 0;
-    if (!k) { seterr(err, errsize, "an empty line"); return 0; }
-    skipsp(&p);
-    /* the operands, split at commas outside [] */
-    opnd_t o[6]; int n = 0;
+    int n = 0;
     char tok[80];
     while (*p && n < 6) {
         int t = 0, depth = 0;
-        while (*p && (depth || *p != ',') && t < 79) { if (*p == '[') depth++; else if (*p == ']') depth--; tok[t++] = *p++; }
+        while (*p && (depth || *p != ',') && t < 79) { if (*p == '[' || *p == '{') depth++; else if (*p == ']' || *p == '}') depth--; tok[t++] = *p++; }
         while (t && is_sp(tok[t - 1])) t--;
         tok[t] = 0;
         if (*p == ',') p++;
@@ -1415,5 +1570,110 @@ int a64_asm(const char *line, a64_u64 pc, a64_u32 *insn, char *err, unsigned err
         n++;
     }
     if (*p) { seterr(err, errsize, "too many operands"); return 0; }
-    return assemble(m, o, n, pc, insn, err, errsize);
+    *nout = n;
+    return 1;
+}
+
+/* ── FP/SIMD by search: the disassembler being exact, a candidate encoding whose disassembly is the same
+ * instruction - mnemonic, operands compared as values - is the encoding. Each group: the bits that are always
+ * set, the bits to try, and where the registers go. ── */
+static int same_opnd(const opnd_t *a, const opnd_t *b)
+{
+    if (a->kind != b->kind) return 0;
+    switch (a->kind) {
+    case O_REG: return a->r == b->r && a->sf == b->sf && a->sp == b->sp && a->zr == b->zr;
+    case O_VREG: return a->r == b->r && a->vscale == b->vscale;
+    case O_IMM: case O_FIMM: case O_COND: return a->imm == b->imm;
+    case O_VEC: return a->r == b->r && a->arr == b->arr;
+    case O_VELEM: return a->r == b->r && a->vscale == b->vscale && a->eidx == b->eidx;
+    case O_VLIST: return a->r == b->r && a->cnt == b->cnt && a->arr == b->arr && a->vscale == b->vscale && a->eidx == b->eidx;
+    case O_MEM: return a->base == b->base && a->mode == b->mode && a->off == b->off && (a->mode != 3 || (a->idx == b->idx && a->ext == b->ext && a->ext_amt == b->ext_amt));
+    case O_SHIFT: return a->sh == b->sh && a->amt == b->amt;
+    case O_EXT: return a->sh == b->sh && a->amt == b->amt;
+    case O_NAME: return streq_ci(a->name, b->name);
+    }
+    return 0;
+}
+static int candidate_is(a64_u32 w, a64_u64 pc, const char *m, const opnd_t *o, int n)
+{
+    char t[160], err[8];
+    if (!a64_disasm(w, pc, t, sizeof t)) return 0;
+    int k = 0;
+    while (t[k] && t[k] != '\t' && m[k] && lower(t[k]) == lower(m[k])) k++;
+    if (m[k] || (t[k] && t[k] != '\t')) return 0;
+    opnd_t c[6]; int nc = 0;
+    if (!parse_operands(t[k] ? t + k + 1 : t + k, c, &nc, err, sizeof err) || nc != n) return 0;
+    for (int j = 0; j < n; j++) if (!same_opnd(&c[j], &o[j])) return 0;
+    return 1;
+}
+static int simd_search(const char *m, opnd_t *o, int n, a64_u64 pc, a64_u32 *out)
+{
+    /* registers in order (a list's first, a memory operand's base); a structure post-index register */
+    int r[4] = { 0, 0, 0, 0 }, nr = 0, base = -1, post = 0;
+    for (int j = 0; j < n; j++) {
+        int k = o[j].kind;
+        if ((k == O_REG || k == O_VREG || k == O_VEC || k == O_VELEM || k == O_VLIST) && nr < 4) {
+            if (k == O_REG && j > 0 && o[j - 1].kind == O_MEM) post = o[j].r; else r[nr++] = o[j].r;
+        }
+        if (k == O_MEM) { base = o[j].base; if (o[j].mode == 2) post = 31; }
+    }
+    if (nr == 2) r[2] = r[1];                                    /* (mov v0.16b, v1.16b: orr's rm is rn) */
+    static const struct { a64_u32 base, vary; int layout; } g[] = {   /* layout: 0 d,n,m; 1 d,n,m(4 bits); 2 d; 3 t,base,post; 4 d,n */
+        { 0x0e200400u, 0x60c0f800u, 0 }, { 0x0e400400u, 0x60803800u, 0 }, { 0x0e008400u, 0x60c07800u, 0 },
+        { 0x0e200000u, 0x60c0f000u, 0 }, { 0x0e200800u, 0x60c1f000u, 4 }, { 0x0e300800u, 0x60c1f000u, 4 },
+        { 0x0e000800u, 0x40c07000u, 0 }, { 0x0e000400u, 0x601f7800u, 4 }, { 0x0f000400u, 0x6007fbe0u, 2 },
+        { 0x0f000400u, 0x607ff800u, 4 }, { 0x0f000000u, 0x60f0f800u, 1 }, { 0x2e000000u, 0x40007800u, 0 },
+        { 0x0e000000u, 0x40007000u, 0 },
+        { 0x5e200400u, 0x20c0f800u, 0 }, { 0x5e200800u, 0x20c1f000u, 4 }, { 0x5e300800u, 0x20c1f000u, 4 },
+        { 0x5f000400u, 0x207ff800u, 4 }, { 0x5f000000u, 0x20f0f800u, 1 }, { 0x5e000400u, 0x001f0000u, 4 },
+        { 0x5e200000u, 0x20c0f000u, 0 }, { 0x5e400400u, 0x20803800u, 0 }, { 0x5e008400u, 0x20c07800u, 0 },
+        { 0x0c000000u, 0x40c0fc00u, 3 }, { 0x0d000000u, 0x40e0fc00u, 3 },
+        { 0x1e201000u, 0x00dfe000u, 2 }, { 0x1e000000u, 0x80dffc00u, 4 }, { 0x9eae0000u, 0x00010000u, 4 },
+    };
+    for (unsigned gi = 0; gi < sizeof g / sizeof g[0]; gi++) {
+        a64_u32 w0 = g[gi].base, v = g[gi].vary, regs;
+        switch (g[gi].layout) {
+        case 0: regs = R(r[0]) | (R(r[1]) << 5) | (R(r[2]) << 16); break;
+        case 1: regs = R(r[0]) | (R(r[1]) << 5) | ((R(r[2]) & 15) << 16); v |= 1u << 20; break;
+        case 2: regs = R(r[0]); break;
+        case 3: if (base < 0) continue; regs = R(r[0]) | (R(base) << 5) | (R(post) << 16); break;
+        default: regs = R(r[0]) | (R(r[1]) << 5); break;
+        }
+        if (g[gi].layout == 1 && (r[2] & 16)) w0 |= 1u << 20, v &= ~(1u << 20);
+        /* every subset of the varying bits */
+        a64_u32 sub = 0;
+        do {
+            a64_u32 w = (w0 | regs | sub) & ~(v & ~sub);
+            if ((w & ~v) == ((w0 | regs) & ~v) && candidate_is(w, pc, m, o, n)) { *out = w; return 1; }
+            sub = (sub - v) & v;
+        } while (sub);
+    }
+    return 0;
+}
+
+int a64_asm(const char *line, a64_u64 pc, a64_u32 *insn, char *err, unsigned errsize)
+{
+    char m[24]; int k = 0;
+    const char *p = line;
+    if (errsize) err[0] = 0;
+    skipsp(&p);
+    while (*p && !is_sp(*p) && k < 23) m[k++] = *p++;
+    m[k] = 0;
+    if (!k) { seterr(err, errsize, "an empty line"); return 0; }
+    skipsp(&p);
+    opnd_t o[6]; int n = 0;
+    if (!parse_operands(p, o, &n, err, errsize)) return 0;
+    int vec = 0, fp = 0;
+    for (int j = 0; j < n; j++) {
+        if (o[j].kind == O_VEC || o[j].kind == O_VELEM || o[j].kind == O_VLIST) vec = 1;
+        if (o[j].kind == O_VREG || o[j].kind == O_FIMM) fp = 1;
+    }
+    if (vec) {                                                   /* (vector operands: the search) */
+        if (simd_search(m, o, n, pc, insn)) return 1;
+        seterr(err, errsize, "not an instruction (or form) this assembler can make");
+        return 0;
+    }
+    if (assemble(m, o, n, pc, insn, err, errsize)) return 1;
+    if (fp && simd_search(m, o, n, pc, insn)) return 1;          /* (scalar SIMD: d0, s1, ...) */
+    return 0;
 }
