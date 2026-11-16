@@ -108,7 +108,8 @@ platform-specific are new code.
    (console input, Ctrl-D, Ctrl-C), `preempt` (children spinning without
    system calls don't starve the parent), `threads` (pthreads: mutexes,
    condition variables, TLS, join, exit/execve/signals with threads),
-   `smp` (the CPUs: N spinning threads in parallel - the speed-up it
+   `dgram` (AF_UNIX datagrams: boundaries, truncation, SCM_RIGHTS,
+   names, connect, poll, fork), `smp` (the CPUs: N spinning threads in parallel - the speed-up it
    prints -, mmap/munmap and a futex mutex from all of them at once, fork +
    waitpid from several threads). Dynamic linking (`build-dynamic.sh`, `tests/dyn`):
    `dyntest` (fixed address), `dyntest-pie` (position-independent) - both

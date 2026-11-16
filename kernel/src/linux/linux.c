@@ -65,7 +65,7 @@
  * /H/... for MOUNTed volumes, /tmp is a RAM file system), the console
  * (the first process's fds 0-2), /dev/null, /dev/zero, /dev/urandom,
  * pipes, eventfd, timerfd, signalfd, epoll, memfd and POSIX shared memory
- * (/dev/shm/<name>, shm_open; both shareable with mmap(MAP_SHARED)), AF_UNIX stream sockets (bind/listen/accept/connect,
+ * (/dev/shm/<name>, shm_open; both shareable with mmap(MAP_SHARED)), AF_UNIX stream and datagram sockets (bind/listen/accept/connect,
  * socketpair, SCM_RIGHTS fd passing, SO_PEERCRED). Open files are shared
  * objects with reference counts (fork and dup share them).
  *
@@ -158,6 +158,7 @@ extern int       usbmouse_poll(usbmouse_ev_t *ev) __attribute__((weak));
 #define SOCK_FDQ        16                     /* SCM_RIGHTS messages in flight */
 #define SCM_MAX         28                     /* fds per message (Linux: 253) */
 #define BACKLOG         8
+#define DGRAM_Q         32                     /* SOCK_DGRAM: datagrams queued */
 #define NSIG            64
 
 /* errno */
@@ -201,6 +202,8 @@ extern int       usbmouse_poll(usbmouse_ev_t *ev) __attribute__((weak));
 #define ECONNRESET 104
 #define EISCONN 106
 #define ENOTCONN 107
+#define EMSGSIZE 90
+#define EDESTADDRREQ 89
 #define ECONNREFUSED 111
 #define EINPROGRESS 115
 
@@ -263,6 +266,7 @@ extern int       usbmouse_poll(usbmouse_ev_t *ev) __attribute__((weak));
 /* socket flags */
 #define MSG_PEEK      0x2
 #define MSG_CTRUNC    0x8
+#define MSG_TRUNC     0x20
 #define MSG_DONTWAIT  0x40
 #define MSG_NOSIGNAL  0x4000
 #define MSG_CMSG_CLOEXEC 0x40000000
@@ -339,6 +343,12 @@ typedef struct sock {
     int      nbacklog;
     int      cred_pid;                /* peer's pid (SO_PEERCRED) */
     int      own_pid;
+    /* SOCK_DGRAM: messages, each its bytes in buf (from rd, in order) and who sent it; connect()'s destination
+     * (one-way: cleared when it goes - socketpair's are peer, both ways) */
+    int      dgram;
+    struct sock *dpeer;
+    int      ndq;
+    struct { uint32_t len, from_len; char from[108]; } dq[DGRAM_Q];
 } sock_t;
 
 typedef struct file {
@@ -3400,7 +3410,7 @@ static s64 sys_signalfd4(s64 fd, lx_u64 umask, lx_u64 size, lx_u64 flags)
     return r;
 }
 
-/* ── AF_UNIX stream sockets ───────────────────────────────────────────── */
+/* ── AF_UNIX sockets: streams, and datagrams (SOCK_DGRAM: dgram_send/recv) ── */
 static sock_t *sock_new(void)
 {
     for (int i = 0; i < MAX_SOCKS; i++)
@@ -3425,6 +3435,7 @@ static void sock_free(sock_t *s)
         sock_free(c);
     }
     s->nbacklog = 0;
+    for (int i = 0; i < MAX_SOCKS; i++) if (socks[i].dpeer == s) socks[i].dpeer = 0;
     if (s->buf) mmu_frames_free(s->buf, SOCK_BUF_PAGES);
     s->buf = 0;
     s->used = 0;
@@ -3632,10 +3643,11 @@ static s64 sys_socket(lx_u64 domain, lx_u64 type, lx_u64 proto)
     if (domain == 2 || domain == 10)                    /* AF_INET, AF_INET6: TCP, UDP, ICMP */
         return inet_socket(domain == 10, type, proto);
     if (domain != 1) return -EAFNOSUPPORT;              /* AF_UNIX, AF_INET(6) */
-    if ((type & 0xF) != 1) return -EPROTOTYPE;          /* SOCK_STREAM only (for now) */
+    if ((type & 0xF) != 1 && (type & 0xF) != 2) return -EPROTOTYPE;   /* SOCK_STREAM, SOCK_DGRAM */
     if (proto) return -EPROTONOSUPPORT;
     sock_t *s = sock_new();
     if (!s) return -ENFILE;
+    s->dgram = (type & 0xF) == 2;
     file_t *f = sock_file(s, type);
     if (!f) { sock_free(s); return -ENFILE; }
     return fd_new(f, (type & L_O_CLOEXEC) != 0);
@@ -3644,11 +3656,12 @@ static s64 sys_socket(lx_u64 domain, lx_u64 type, lx_u64 proto)
 static s64 sys_socketpair(lx_u64 domain, lx_u64 type, lx_u64 proto, lx_u64 usv)
 {
     if (domain != 1) return -EAFNOSUPPORT;
-    if ((type & 0xF) != 1) return -EPROTOTYPE;
+    if ((type & 0xF) != 1 && (type & 0xF) != 2) return -EPROTOTYPE;
     if (proto) return -EPROTONOSUPPORT;
     if (!uok(usv, 8, 1)) return -EFAULT;
     sock_t *a = sock_new(), *b = a ? sock_new() : 0;
     if (!b) { if (a) sock_free(a); return -ENFILE; }
+    a->dgram = b->dgram = (type & 0xF) == 2;
     a->state = b->state = S_CONN;
     a->peer = b; b->peer = a;
     a->cred_pid = b->cred_pid = cur->g->pid;
@@ -3751,14 +3764,24 @@ static s64 sys_connect(lx_u64 fd, lx_u64 uaddr, lx_u64 len)
     s64 err;
     sock_t *s = fd_sock(fd, &err);
     if (!s) return err;
-    if (s->state == S_CONN) return -EISCONN;
-    if (s->state != S_NEW && s->state != S_BOUND) return -EINVAL;
+    if (s->state == S_CONN && !s->dgram) return -EISCONN;
+    if (s->state != S_NEW && s->state != S_BOUND && !s->dgram) return -EINVAL;
     char name[108];
     uint32_t nlen;
+    if (s->dgram && len >= 2 && uok(uaddr, 2, 0) && *(const uint16_t *)(uintptr_t)uaddr == 0) {
+        s->dpeer = 0;                                   /* AF_UNSPEC: no destination again */
+        return 0;
+    }
     int r = sun_name(uaddr, len, name, &nlen);
     if (r) return r;
     sock_t *l = sock_by_name(name, nlen);
     if (!l) return -ENOENT;
+    if (s->dgram) {                                     /* a datagram socket: its default destination */
+        if (!l->dgram) return -EPROTOTYPE;
+        s->dpeer = l;
+        return 0;
+    }
+    if (l->dgram) return -EPROTOTYPE;
     if (l->state != S_LISTEN) return -ECONNREFUSED;
     if (l->nbacklog >= BACKLOG) return -EAGAIN;
     sock_t *srv = sock_new();
@@ -3815,11 +3838,12 @@ static s64 sys_sockname(lx_u64 fd, lx_u64 uaddr, lx_u64 ulen, int peer)
     s64 err;
     sock_t *s = fd_sock(fd, &err);
     if (!s) return err;
-    if (peer && !s->peer) return -ENOTCONN;
+    if (peer && !s->peer && !s->dpeer) return -ENOTCONN;
     if (!uok(ulen, 4, 1)) return -EFAULT;
     uint32_t room = *(uint32_t *)(uintptr_t)ulen;
     if (!uok(uaddr, room, 1)) return -EFAULT;
-    sock_t *n = peer ? (s->peer->state == S_PENDING || s->peer->namelen ? s->peer : 0) : s;
+    sock_t *pp = s->peer ? s->peer : s->dpeer;
+    sock_t *n = peer ? (pp->state == S_PENDING || pp->namelen ? pp : 0) : s;
     uint8_t a[110];
     kmemset(a, 0, sizeof a);
     *(uint16_t *)a = 1;
@@ -3848,7 +3872,7 @@ static s64 sys_getsockopt(lx_u64 fd, lx_u64 level, lx_u64 opt, lx_u64 uval, lx_u
     case 17:                                            /* SO_PEERCRED: pid, uid, gid */
         if (!s->peer && s->state != S_CONN) return -ENOTCONN;
         v[0] = s->cred_pid; n = 12; break;
-    case 3: v[0] = 1; break;                            /* SO_TYPE: SOCK_STREAM */
+    case 3: v[0] = s->dgram ? 2 : 1; break;             /* SO_TYPE: SOCK_STREAM, SOCK_DGRAM */
     case 4: v[0] = 0; break;                            /* SO_ERROR */
     case 7: case 8: v[0] = SOCK_BUF; break;             /* SO_SNDBUF, SO_RCVBUF */
     case 39: v[0] = 1; break;                           /* SO_DOMAIN: AF_UNIX */
@@ -3877,10 +3901,110 @@ static s64 sys_shutdown(lx_u64 fd, lx_u64 how)
     return 0;
 }
 
+/* ── SOCK_DGRAM: whole messages, to a name (sendto) or connect()'s destination (or socketpair's peer) ── */
+static s64 dgram_send(file_t *f, const uint8_t *buf, lx_u64 n, file_t **fds, int nf, lx_u64 flags,
+                      const char *to, uint32_t tolen)
+{
+    sock_t *s = f->sock;
+    int nonblock = (f->flags & L_O_NONBLOCK) || (flags & MSG_DONTWAIT);
+    if (n > SOCK_BUF) return -EMSGSIZE;
+    for (;;) {
+        sock_t *d;
+        if (to) {
+            if (!(d = sock_by_name(to, tolen))) return -ENOENT;            /* (nothing bound to it) */
+            if (!d->dgram) return -EPROTOTYPE;
+        } else {
+            d = s->peer ? s->peer : s->dpeer;
+            if (!d) {
+                if (s->peer_gone) {
+                    if (!(flags & MSG_NOSIGNAL)) send_sig(cur, SIGPIPE, cur->g->pid);
+                    return -EPIPE;
+                }
+                return s->state == S_CONN ? -ECONNREFUSED : -ENOTCONN;
+            }
+        }
+        if (s->shut_wr) {
+            if (!(flags & MSG_NOSIGNAL)) send_sig(cur, SIGPIPE, cur->g->pid);
+            return -EPIPE;
+        }
+        if (SOCK_BUF - (d->wr - d->rd) < n || d->ndq >= DGRAM_Q || (nf && d->nfdq >= SOCK_FDQ)) {
+            if (nonblock) return -EAGAIN;
+            if (sig_interrupt()) return -EINTR;
+            sleep_on(d);                                 /* (its reader wakes it: room again) */
+            continue;
+        }
+        if (nf) {
+            fdmsg_t *m = &d->fdq[d->nfdq++];
+            m->start = d->wr;
+            m->end = d->wr + n;
+            m->n = nf;
+            for (int i = 0; i < nf; i++) { m->f[i] = fds[i]; fds[i]->refs++; }
+        }
+        for (lx_u64 i = 0; i < n; i++) d->buf[(d->wr + i) % SOCK_BUF] = buf[i];
+        d->wr += n;
+        d->dq[d->ndq].len = (uint32_t)n;
+        d->dq[d->ndq].from_len = s->namelen;
+        kmemcpy(d->dq[d->ndq].from, s->name, s->namelen);
+        d->ndq++;
+        wakeup(d);
+        return (s64)n;
+    }
+}
+
+/* One message: up to n bytes of it (the rest dropped; *full its length), its sender's name, its files. */
+static s64 dgram_recv(file_t *f, uint8_t *buf, lx_u64 n, file_t **fds, int maxf, int *nf, int *trunc,
+                      lx_u64 flags, char *from, uint32_t *from_len, lx_u64 *full)
+{
+    sock_t *s = f->sock;
+    int nonblock = (f->flags & L_O_NONBLOCK) || (flags & MSG_DONTWAIT);
+    *nf = 0; *trunc = 0;
+    while (!s->ndq) {
+        if (s->state == S_CONN && (s->peer_gone || !s->peer)) return 0;   /* socketpair: the other end gone */
+        if (nonblock) return -EAGAIN;
+        if (sig_interrupt()) return -EINTR;
+        sleep_on(s);
+    }
+    lx_u64 len = s->dq[0].len, c = n < len ? n : len;
+    for (lx_u64 i = 0; i < c; i++) buf[i] = s->buf[(s->rd + i) % SOCK_BUF];
+    if (from) { *from_len = s->dq[0].from_len; kmemcpy(from, s->dq[0].from, s->dq[0].from_len); }
+    if (full) *full = len;
+    if (flags & MSG_PEEK) return (s64)((flags & MSG_TRUNC) ? len : c);
+    if (s->nfdq && s->fdq[0].start == s->rd) {
+        fdmsg_t *m = &s->fdq[0];
+        for (int i = 0; i < m->n; i++) {
+            if (*nf < maxf) fds[(*nf)++] = m->f[i];
+            else { file_put(m->f[i]); *trunc = 1; }
+        }
+        for (int i = 1; i < s->nfdq; i++) s->fdq[i - 1] = s->fdq[i];
+        s->nfdq--;
+    }
+    s->rd += len;
+    for (int i = 1; i < s->ndq; i++) s->dq[i - 1] = s->dq[i];
+    s->ndq--;
+    wakeup(s);                                           /* senders waiting for room */
+    return (s64)((flags & MSG_TRUNC) ? len : c);
+}
+
+/* struct sockaddr_un for a name (sun_family 1, the path NUL-terminated) to uaddr, its length to *ulen32 */
+static void sun_put(lx_u64 uaddr, lx_u64 ulen32, const char *name, uint32_t nlen)
+{
+    if (!uaddr || !ulen32 || !uok(ulen32, 4, 1)) return;
+    uint32_t room = *(uint32_t *)(uintptr_t)ulen32;
+    uint8_t a[112];
+    kmemset(a, 0, sizeof a);
+    *(uint16_t *)a = 1;
+    kmemcpy(a + 2, name, nlen);
+    uint32_t len = 2 + nlen + (nlen && name[0] ? 1 : 0);
+    uint32_t c = room < len ? room : len;
+    if (uok(uaddr, c, 1)) kmemcpy((void *)(uintptr_t)uaddr, a, c);
+    *(uint32_t *)(uintptr_t)ulen32 = len;
+}
+
 /* Send n bytes (and nf files, attached to the first byte sent). */
 static s64 sock_send(file_t *f, const uint8_t *buf, lx_u64 n, file_t **fds, int nf, lx_u64 flags)
 {
     sock_t *s = f->sock;
+    if (s->dgram) return dgram_send(f, buf, n, fds, nf, flags, 0, 0);
     int nonblock = (f->flags & L_O_NONBLOCK) || (flags & MSG_DONTWAIT);
     if (s->state != S_CONN) return -ENOTCONN;
     lx_u64 k = 0;
@@ -3924,6 +4048,7 @@ static s64 sock_recv(file_t *f, uint8_t *buf, lx_u64 n, file_t **fds, int maxf, 
                      int *trunc, lx_u64 flags)
 {
     sock_t *s = f->sock;
+    if (s->dgram) return dgram_recv(f, buf, n, fds, maxf, nf, trunc, flags, 0, 0, 0);
     int nonblock = (f->flags & L_O_NONBLOCK) || (flags & MSG_DONTWAIT);
     *nf = 0;
     *trunc = 0;
@@ -4014,6 +4139,20 @@ static s64 sys_sendmsg(lx_u64 fd, lx_u64 umsg, lx_u64 flags)
             off += (clen + 7) & ~7UL;
         }
     }
+    if (f->sock->dgram) {                                /* one message, gathered; msg_name its destination */
+        static uint8_t kb[SOCK_BUF];
+        lx_u64 n = 0;
+        for (lx_u64 i = 0; i < iovlen; i++) {
+            lx_u64 base = ((const lx_u64 *)(uintptr_t)iov)[2 * i], len = ((const lx_u64 *)(uintptr_t)iov)[2 * i + 1];
+            if (n + len > sizeof kb) return -EMSGSIZE;
+            if (len && !uok(base, len, 0)) return -EFAULT;
+            kmemcpy(kb + n, (const void *)(uintptr_t)base, len);
+            n += len;
+        }
+        char to[108]; uint32_t tolen = 0;
+        if (mh[0] && (uint32_t)mh[1]) { int r = sun_name(mh[0], (uint32_t)mh[1], to, &tolen); if (r) return r; }
+        return dgram_send(f, kb, n, fds, nf, flags, tolen ? to : 0, tolen);
+    }
     s64 total = 0;
     for (lx_u64 i = 0; i < iovlen; i++) {
         lx_u64 base = ((const lx_u64 *)(uintptr_t)iov)[2 * i];
@@ -4095,7 +4234,10 @@ static s64 sys_recvmsg(lx_u64 fd, lx_u64 umsg, lx_u64 flags)
     if (want > SOCK_BUF) want = SOCK_BUF;
     file_t *fds[SCM_MAX];
     int nf, trunc;
-    s64 r = sock_recv(f, kbuf, want, fds, maxf, &nf, &trunc, flags);
+    char from[108]; uint32_t from_len = 0;
+    lx_u64 full = 0;
+    s64 r = f->sock->dgram ? dgram_recv(f, kbuf, want, fds, maxf, &nf, &trunc, flags & ~(lx_u64)MSG_TRUNC, from, &from_len, &full)
+                           : sock_recv(f, kbuf, want, fds, maxf, &nf, &trunc, flags);
     if (r < 0) return r;
     lx_u64 done = 0;
     for (lx_u64 i = 0; i < iovlen && done < (lx_u64)r; i++) {
@@ -4123,8 +4265,11 @@ static s64 sys_recvmsg(lx_u64 fd, lx_u64 umsg, lx_u64 flags)
     } else {
         mh[5] = 0;
     }
-    mh[1] = 0;                                           /* msg_namelen */
+    if (f->sock->dgram && mh[0] && (uint32_t)mh[1]) sun_put(mh[0], umsg + 8, from, from_len);   /* msg_name: the sender */
+    else mh[1] = 0;                                      /* msg_namelen */
+    if (f->sock->dgram && full > (lx_u64)r) mflags |= MSG_TRUNC;
     ((int32_t *)(uintptr_t)umsg)[12] = mflags;           /* msg_flags (+48) */
+    if (f->sock->dgram && (flags & MSG_TRUNC)) return (s64)full;
     return r;
 }
 
@@ -4171,6 +4316,13 @@ static uint32_t f_poll(file_t *f, int depth)
         return nsock_poll(f->ns);                       /* (its bits are poll's) */
     case F_SOCK: {
         sock_t *s = f->sock;
+        if (s->dgram) {
+            uint32_t m = s->ndq ? PIN : 0;
+            sock_t *d = s->peer ? s->peer : s->dpeer;
+            if (s->state == S_CONN && (s->peer_gone || !s->peer)) m |= PIN | PHUP;
+            if (!d || (SOCK_BUF - (d->wr - d->rd) > 0 && d->ndq < DGRAM_Q)) m |= POUT;
+            return m;
+        }
         if (s->state == S_LISTEN) return s->nbacklog ? PIN : 0;
         if (s->state != S_CONN) return POUT | PHUP;
         uint32_t m = 0;
@@ -5414,7 +5566,8 @@ static s64 sys_ioctl(lx_u64 fd, lx_u64 req, lx_u64 arg)
         if (!uok(arg, 4, 1)) return -EFAULT;
         int32_t v = 0;
         if (f->kind == F_PIPE_R) v = (int32_t)f->pipe->count;
-        else if (f->kind == F_SOCK) v = (int32_t)(f->sock->wr - f->sock->rd);
+        else if (f->kind == F_SOCK) v = f->sock->dgram ? (int32_t)(f->sock->ndq ? f->sock->dq[0].len : 0)
+                                                       : (int32_t)(f->sock->wr - f->sock->rd);
         else if (f->kind == F_INET) v = (int32_t)nsock_unread(f->ns);
         else if (f->kind == F_CONSOLE || f->kind == F_PTMX) return tty_ioctl(f, f->tty, req, arg);
         else return -ENOTTY;
@@ -5951,7 +6104,7 @@ static s64 linux_syscall(linux_tf_t *tf)
     case 203: return sys_connect(a0, a1, a2);
     case 204: return sys_sockname(a0, a1, a2, 0);
     case 205: return sys_sockname(a0, a1, a2, 1);
-    case 206: {                                         /* sendto (AF_UNIX: the address ignored, connected) */
+    case 206: {                                         /* sendto (AF_UNIX streams: the address ignored) */
         file_t *f = fd_get(a0);
         if (!f) return -EBADF;
         if (f->kind == F_INET) {
@@ -5962,6 +6115,12 @@ static s64 linux_syscall(linux_tf_t *tf)
         }
         if (f->kind != F_SOCK) return -ENOTSOCK;
         if (!uok(a1, a2, 0)) return -EFAULT;
+        if (f->sock->dgram && a4 && a5) {               /* a datagram to that name */
+            char to[108]; uint32_t tolen;
+            int r = sun_name(a4, a5, to, &tolen);
+            if (r) return r;
+            return dgram_send(f, (const uint8_t *)(uintptr_t)a1, a2, 0, 0, a3, to, tolen);
+        }
         return sock_send(f, (const uint8_t *)(uintptr_t)a1, a2, 0, 0, a3);
     }
     case 207: {                                         /* recvfrom */
@@ -5976,8 +6135,14 @@ static s64 linux_syscall(linux_tf_t *tf)
         }
         if (f->kind != F_SOCK) return -ENOTSOCK;
         if (!uok(a1, a2, 1)) return -EFAULT;
-        if (a4 && a5 && uok(a5, 4, 1)) *(uint32_t *)(uintptr_t)a5 = 0;
         int nf, tr;
+        if (f->sock->dgram) {                           /* the sender's name too */
+            char from[108]; uint32_t fl = 0;
+            s64 r = dgram_recv(f, (uint8_t *)(uintptr_t)a1, a2, 0, 0, &nf, &tr, a3, from, &fl, 0);
+            if (r >= 0 && a4 && a5) sun_put(a4, a5, from, fl);
+            return r;
+        }
+        if (a4 && a5 && uok(a5, 4, 1)) *(uint32_t *)(uintptr_t)a5 = 0;
         return sock_recv(f, (uint8_t *)(uintptr_t)a1, a2, 0, 0, &nf, &tr, a3);
     }
     case 208: {                                         /* setsockopt: accepted (TCP_NODELAY: done) */

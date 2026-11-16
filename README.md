@@ -315,7 +315,9 @@ Linux system calls itself (`kernel/src/linux/linux.c`). It provides:
 - **Signals**: Linux-layout signal frames, `SA_RESTART`, process groups and
   sessions.
 - **Events and IPC**: `poll`/`ppoll`/`pselect6`, `epoll`, `eventfd`,
-  `timerfd`, `signalfd`, pipes, `AF_UNIX` sockets with `SCM_RIGHTS`.
+  `timerfd`, `signalfd`, pipes, `AF_UNIX` sockets with `SCM_RIGHTS` -
+  streams and datagrams (`sendto`/`recvfrom` by name, `connect`,
+  socketpairs; busybox's `syslogd -L` and `logger` over `/dev/log`).
 - **Shared memory**: `memfd_create` and `MAP_SHARED`, `/dev/shm`.
 - **Terminals**: the console and pseudo-terminals, with termios.
 - **`/proc`**: enough for busybox's `ps`, `top`, `free` and `df`.
@@ -616,8 +618,8 @@ Not there yet:
 
 - **Storage**: the btrfs extent and checksum trees, f2fs mounted at boot.
 - **The kernel**: finer-grained locking than the one big kernel lock (system
-  calls from different CPUs wait for each other), datagram Unix sockets;
-  glibc-linked programs (musl's dynamic linker only).
+  calls from different CPUs wait for each other), `SOCK_SEQPACKET` Unix
+  sockets; glibc-linked programs (musl's dynamic linker only).
 - **Graphics**: GPU acceleration (the desktop renders with pixman).
 - **os2x86**: PM drag and drop between programs (within one works), IPF
   help files, and
