@@ -25,7 +25,7 @@ jobs:
       - name: Build os2warp.img and os2warp-arm64.iso
         run: ci/scripts/build-qemu.sh build
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: os24arm-qemu
           path: |
@@ -47,7 +47,7 @@ jobs:
       - name: Build kernel8.img
         run: ci/scripts/build-rpi.sh build-rpi
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: os24arm-rpi3
           path: build-rpi/kernel8.img
@@ -94,7 +94,7 @@ jobs:
       - name: Build ${{ matrix.image }}
         run: ci/scripts/build-beagle.sh ${{ matrix.platform }} ${{ matrix.build_dir }}
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.files }}
