@@ -1,6 +1,6 @@
 /**
  * @file ai.c
- * @brief On-box "AI" assistant command - see kernel/include/ai.h
+ * @brief The AI command: command usage and tips (see kernel/include/ai.h)
  */
 
 #include "ai.h"
@@ -11,9 +11,8 @@
 
 extern void mem_get_stats(uintptr_t *used, uintptr_t *total);
 
-/* ── Known commands, with a one-line tip for each ───────────────────────────
- * AI, HELP, CHKDSK, FORMAT and EXIT are left out on purpose: AI/HELP aren't
- * worth "try me"-ing, and CHKDSK/FORMAT/EXIT don't need discovery tips. */
+/* Commands with a tip. AI, HELP, CHKDSK, FORMAT and EXIT are left out: nobody
+ * needs a tip for those. */
 typedef struct {
     const char *name;
     const char *tip;
@@ -41,13 +40,11 @@ static const known_cmd_t known_commands[] = {
 };
 #define NUM_KNOWN_COMMANDS (int)(sizeof(known_commands) / sizeof(known_commands[0]))
 
-/* Tips shown once every known command has been tried at least once. */
+/* Shown once every command above has been used. */
 static const char *generic_tips[] = {
-    "You've tried every built-in command at least once - nice.",
-    "The heap here is a simple bump allocator - mem_free() doesn't actually reclaim space, so long sessions only grow. Check it with MEM.",
-    "In the GUI, Cmd+Escape cycles between the 4 workplaces.",
-    "CHKDSK and FORMAT are stubbed out - the ext4/btrfs drivers in this build are read-only.",
-    "RUN loads a real OS/2 LX .EXE, e.g. RUN CMD.EXE for the standalone command interpreter.",
+    "The kernel heap is a bump allocator and never shrinks. MEM shows how full it is.",
+    "In the GUI, Cmd+Escape switches between the 4 workplaces.",
+    "RUN runs an OS/2 LX .EXE, e.g. RUN CMD.EXE for the standalone command interpreter.",
 };
 #define NUM_GENERIC_TIPS (int)(sizeof(generic_tips) / sizeof(generic_tips[0]))
 
@@ -56,10 +53,8 @@ static const char *generic_tips[] = {
 #define MAX_TRACKED 24
 
 typedef struct {
-    const char *name; /* == some known_commands[i].name; a static string
-                        * literal, unlike argv[0] which points into the
-                        * shell's reused line buffer and gets overwritten
-                        * on the next command. */
+    const char *name; /* points at known_commands[i].name, not argv[0],
+                        * which the shell overwrites on the next line */
     uint32_t    count;
 } tracked_cmd_t;
 
@@ -106,8 +101,7 @@ static uint32_t tracked_count_for(const char *name)
     return 0;
 }
 
-/* Picks the next thing worth telling the user: an untried command first
- * (in known_commands order), then a round-robin generic tip. */
+/* An unused command's tip first, then the generic tips in turn. */
 static const char *next_tip(void)
 {
     for (int i = 0; i < NUM_KNOWN_COMMANDS; i++) {
@@ -125,17 +119,14 @@ static const char *next_tip(void)
 static void ai_help(void)
 {
     uart_puts("\r\n");
-    uart_puts("AI - on-box assistant (no network stack here, so no real LLM -\r\n");
-    uart_puts("     this just watches what you type this session and learns from it)\r\n");
+    uart_puts("AI - which commands you've used this session, and tips\r\n");
     uart_puts("\r\n");
-    uart_puts("Usage:\r\n");
     uart_puts("  AI STATUS  - session summary and a suggestion\r\n");
-    uart_puts("  AI STATS   - command usage counts this session\r\n");
-    uart_puts("  AI TIP     - a tip, prioritizing commands you haven't tried yet\r\n");
+    uart_puts("  AI STATS   - how often each command was used\r\n");
+    uart_puts("  AI TIP     - a tip, starting with commands you haven't used\r\n");
     uart_puts("  AI HELP    - this text\r\n");
     uart_puts("\r\n");
-    uart_puts("Note: this resets on reboot - the filesystem drivers in this build\r\n");
-    uart_puts("are read-only, so there's nowhere durable to persist it yet.\r\n");
+    uart_puts("The counts start over at each boot.\r\n");
     uart_puts("\r\n");
 }
 
@@ -155,7 +146,7 @@ static void ai_status(void)
     }
 
     uart_puts("\r\n");
-    uart_puts("AI Assistant - session summary\r\n");
+    uart_puts("Session summary\r\n");
     uart_puts("\r\n");
     kprintf("  Commands run:            %u\r\n", total_commands);
     kprintf("  Distinct commands tried: %d / %d known\r\n", tracked_count, NUM_KNOWN_COMMANDS);
@@ -164,10 +155,10 @@ static void ai_status(void)
     if (top_name) {
         uart_puts("  Most-used command:       ");
         uart_puts(top_name);
-        kprintf(" (%u times)\r\n", top_count);
+        kprintf(top_count == 1 ? " (once)\r\n" : " (%u times)\r\n", top_count);
     }
     uart_puts("\r\n");
-    uart_puts("  Suggestion: ");
+    uart_puts("  Tip: ");
     uart_puts(next_tip());
     uart_puts("\r\n\r\n");
 }
@@ -176,11 +167,11 @@ static void ai_stats(void)
 {
     uart_puts("\r\n");
     if (tracked_count == 0) {
-        uart_puts("No commands tracked yet this session.\r\n\r\n");
+        uart_puts("No commands used yet.\r\n\r\n");
         return;
     }
 
-    /* Small N (<= MAX_TRACKED) - a plain insertion sort by count is fine. */
+    /* at most MAX_TRACKED entries: insertion sort by count */
     tracked_cmd_t sorted[MAX_TRACKED];
     memcpy(sorted, tracked, sizeof(tracked_cmd_t) * (size_t)tracked_count);
     for (int i = 1; i < tracked_count; i++) {

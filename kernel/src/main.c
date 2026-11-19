@@ -321,7 +321,7 @@ static void cmd_help(void)
     uart_puts("  RUNTEST   - Run the embedded HELLO.EXE loader self-test\r\n");
 #endif
     uart_puts("  BASIC     - Start BASIC interpreter\r\n");
-    uart_puts("  AI        - On-box assistant (AI STATUS/STATS/TIP/HELP)\r\n");
+    uart_puts("  AI        - Command usage and tips (AI STATUS/STATS/TIP/HELP)\r\n");
     uart_puts("  DEBUG     - DEBUG.COM-style memory monitor (type ? inside it)\r\n");
     uart_puts("  VM        - EL2 hypervisor (VM STATUS, VM TEST runs a hello guest)\r\n");
     uart_puts("  EXIT      - Exit to idle loop\r\n");

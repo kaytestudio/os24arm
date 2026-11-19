@@ -555,9 +555,9 @@ and a return to DEBUG when the code returns; a fault says what it was. The
 2 MB block the code is in is made executable first, if it wasn't. `?`
 lists its commands; the x86-only ones say so.
 
-**AI** is a small on-box assistant. It is not a language model; it
-watches the commands you use. `AI STATUS` summarises the session, `AI
-STATS` counts commands, and `AI TIP` suggests a command you haven't used.
+**AI** counts the commands you use in a session. `AI STATUS` summarises
+the session, `AI STATS` lists the counts, and `AI TIP` suggests a command
+you haven't used yet.
 
 ---
 

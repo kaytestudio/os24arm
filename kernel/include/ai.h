@@ -1,24 +1,19 @@
 /**
  * @file ai.h
- * @brief On-box "AI" assistant command
+ * @brief The AI command: command usage and tips
  *
- * Not a real LLM - there is no network stack in this kernel to reach one.
- * This is a small heuristic assistant that watches which built-in commands
- * get typed at the shell during the current session and uses that to
- * surface usage stats and suggest commands the user hasn't tried yet.
- * State lives in RAM only: the ext4/btrfs drivers in this build are
- * read-only (see fs/ext4/ext4.c, fs/btrfs/btrfs.c), so there's nowhere
- * durable to persist it across reboots yet.
+ * Counts which built-in shell commands are used during the session, shows
+ * the counts, and suggests commands that haven't been used yet. Nothing is
+ * saved; the counts start over at each boot.
  */
 
 #ifndef AI_H
 #define AI_H
 
 /**
- * @brief Note that a command was typed at the shell, for AI STATS/TIP.
+ * @brief Count a command typed at the shell (for AI STATS/TIP).
  *
- * Safe to call for every command line the shell dispatches, recognized or
- * not - names that aren't in the AI's known-command list are ignored.
+ * Called for every command line; names it doesn't know are ignored.
  *
  * @param[in] name  Command name (argv[0]), already upper-cased.
  */
