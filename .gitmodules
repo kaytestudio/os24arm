@@ -1,0 +1,3 @@
+[submodule "tools/kcc"]
+	path = tools/kcc
+	url = https://github.com/ringsce/kcc.git
