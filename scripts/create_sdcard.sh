@@ -6,9 +6,7 @@ set -e
 BUILD_DIR="$1"
 SD_PREP_DIR="$BUILD_DIR/sdcard_files"
 
-echo "════════════════════════════════════════════════════════════"
 echo "Preparing SD Card Files for Raspberry Pi 3+"
-echo "════════════════════════════════════════════════════════════"
 echo ""
 
 # Create output directory
@@ -113,9 +111,7 @@ Terminal command:
 For more information, see RPI_BOOT_GUIDE.md
 EOF
 
-echo "════════════════════════════════════════════════════════════"
 echo "SD Card Files Ready."
-echo "════════════════════════════════════════════════════════════"
 echo ""
 echo "Files prepared in: $SD_PREP_DIR"
 echo ""
@@ -133,4 +129,3 @@ echo "     diskutil eject /dev/diskX"
 echo ""
 echo "  4. Insert into Pi and boot!"
 echo ""
-echo "════════════════════════════════════════════════════════════"

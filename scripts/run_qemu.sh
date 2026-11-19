@@ -1,10 +1,8 @@
 #!/bin/bash
-# ═══════════════════════════════════════════════════════════════
 # run_qemu.sh — OS/2 Warp 4.52 ARM64 QEMU Launcher
 #
 # Launches OS/2 Warp in QEMU AArch64 virtual machine
 # Compatible with Linux, macOS, and ODROID devices
-# ═══════════════════════════════════════════════════════════════
 
 set -e
 
@@ -61,14 +59,12 @@ if [ "$OS" = "Linux" ] && [ -f /proc/device-tree/model ]; then
 fi
 
 # Print header
-echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo -e "${CYAN}  OS/2 Warp 4.52 ARM64 — QEMU Launcher${NC}"
 echo -e "${CYAN}  Platform: $OS ($HOST_ARCH)${NC}"
 if [ -n "$ODROID_BOARD" ]; then
     echo -e "${MAGENTA}  Hardware: $ODROID_BOARD${NC}"
     echo -e "${MAGENTA}  SoC:      $ODROID_SOC${NC}"
 fi
-echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo
 
 # Check arguments
@@ -400,12 +396,10 @@ echo -e "${CYAN}[5/5]${NC} Launching QEMU..."
 echo
 
 if [ -n "$GDB_OPT" ]; then
-    echo -e "${YELLOW}═══════════════════════════════════════════════════════════════${NC}"
     echo -e "${YELLOW}  GDB mode enabled - waiting for debugger connection${NC}"
     echo -e "${YELLOW}  Connect with: aarch64-elf-gdb build/kernel/kernel_elf${NC}"
     echo -e "${YELLOW}                (gdb) target remote :1234${NC}"
     echo -e "${YELLOW}                (gdb) continue${NC}"
-    echo -e "${YELLOW}═══════════════════════════════════════════════════════════════${NC}"
     echo
 fi
 

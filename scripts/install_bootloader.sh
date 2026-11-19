@@ -1,9 +1,7 @@
 #!/bin/bash
-# ═══════════════════════════════════════════════════════════════
 # install_bootloader.sh — Install OS/2 Bootloader to Disk Image
 #
 # Installs BOOTAA64.EFI to the EFI System Partition
-# ═══════════════════════════════════════════════════════════════
 
 set -e
 
@@ -44,10 +42,8 @@ case "$OS_TYPE" in
     *)          OS="Unknown";;
 esac
 
-echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo -e "${CYAN}  Installing OS/2 Bootloader to Disk Image${NC}"
 echo -e "${CYAN}  Platform: $OS${NC}"
-echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo
 
 # Check for sudo
@@ -123,9 +119,7 @@ echo -e "${GREEN}${NC} Unmounted and cleaned up"
 
 # Summary
 echo
-echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo -e "${GREEN}Bootloader successfully installed!${NC}"
-echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo
 echo -e "${CYAN}Disk image:${NC}   $IMAGE"
 echo -e "${CYAN}Bootloader:${NC}   $BOOTLOADER"
@@ -138,4 +132,3 @@ echo
 echo -e "${YELLOW}Note: The bootloader will look for the kernel on the EFI partition.${NC}"
 echo -e "${YELLOW}      Make sure to also install the kernel image if needed.${NC}"
 echo
-echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"

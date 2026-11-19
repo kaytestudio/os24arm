@@ -1,5 +1,4 @@
 #!/bin/bash
-# ═══════════════════════════════════════════════════════════════
 # create_placeholder_bootloader.sh
 #
 # Creates a minimal placeholder BOOTAA64.EFI file so the build
@@ -8,7 +7,6 @@
 #
 # For a real bootloader, you'll need to implement the actual
 # UEFI boot code.
-# ═══════════════════════════════════════════════════════════════
 
 set -e
 
@@ -18,9 +16,7 @@ CYAN='\033[0;36m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-echo -e "${CYAN}═══════════════════════════════════════════════════════════${NC}"
 echo -e "${CYAN}  Creating Placeholder Bootloader${NC}"
-echo -e "${CYAN}═══════════════════════════════════════════════════════════${NC}"
 echo
 
 # Create bootloader directory if it doesn't exist
@@ -74,4 +70,3 @@ echo -e "  • Or: ${GREEN}sudo apt install gnu-efi${NC} (Linux)"
 echo -e "  • Implement bootloader code in C"
 echo -e "  • Compile to UEFI PE32+ format"
 echo
-echo -e "${CYAN}═══════════════════════════════════════════════════════════${NC}"

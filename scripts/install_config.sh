@@ -1,9 +1,7 @@
 #!/bin/bash
-# ═══════════════════════════════════════════════════════════════
 # install_config.sh — Install CONFIG.SYS to OS/2 Disk Image
 #
 # Mounts the EXT4 root partition and copies CONFIG.SYS to /etc
-# ═══════════════════════════════════════════════════════════════
 
 set -e
 
@@ -42,10 +40,8 @@ case "$OS_TYPE" in
     *)          OS="Unknown";;
 esac
 
-echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo -e "${CYAN}  Installing CONFIG.SYS to OS/2 Disk Image${NC}"
 echo -e "${CYAN}  Platform: $OS${NC}"
-echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo
 
 # Check for sudo
@@ -140,9 +136,7 @@ echo -e "${GREEN}${NC} Unmounted and cleaned up"
 
 # Summary
 echo
-echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo -e "${GREEN}CONFIG.SYS successfully installed!${NC}"
-echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo
 echo -e "${CYAN}Disk image:${NC}    $IMAGE"
 echo -e "${CYAN}CONFIG.SYS:${NC}    $CONFIG_SYS"
@@ -152,4 +146,3 @@ echo -e "${CYAN}Next step:${NC}"
 echo -e "  Run in QEMU:  ${YELLOW}make run${NC}"
 echo -e "  or:           ${YELLOW}./scripts/run_qemu.sh $IMAGE${NC}"
 echo
-echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"

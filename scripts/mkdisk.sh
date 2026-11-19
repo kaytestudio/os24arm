@@ -1,5 +1,4 @@
 #!/bin/bash
-# ═══════════════════════════════════════════════════════════════
 # mkdisk.sh — OS/2 Warp 4.52 ARM64 Disk Image Creator
 #
 # Creates a 6 GiB GPT disk image with 4 partitions:
@@ -9,9 +8,8 @@
 #   P4: EXFATUSB (exFAT, 1 GiB)  → /mnt/exfat
 #
 # Compatible with Linux, macOS, and ODROID devices
-# ═══════════════════════════════════════════════════════════════
 
-set -e  # Exit on error
+set -e
 
 # Colors for output
 RED='\033[0;31m'
@@ -19,7 +17,7 @@ GREEN='\033[0;32m'
 CYAN='\033[0;36m'
 YELLOW='\033[1;33m'
 MAGENTA='\033[0;35m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 # Detect OS
 OS_TYPE="$(uname -s)"
@@ -42,13 +40,11 @@ if [ "$OS" = "Linux" ] && [ -f /proc/device-tree/model ]; then
 fi
 
 # Print header
-echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo -e "${CYAN}  OS/2 Warp 4.52 ARM64 — Disk Image Creator${NC}"
 echo -e "${CYAN}  Platform: $OS${NC}"
 if [ -n "$ODROID_BOARD" ]; then
     echo -e "${MAGENTA}  Hardware: $ODROID_BOARD${NC}"
 fi
-echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo
 
 # Check arguments
@@ -402,9 +398,7 @@ fi
 
 # Final summary
 echo
-echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo -e "${GREEN}Disk image created successfully!${NC}"
-echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo
 echo -e "${CYAN}Image:${NC}      $IMAGE"
 echo -e "${CYAN}Size:${NC}       6 GiB (6,442,450,944 bytes)"
@@ -448,13 +442,10 @@ elif [ "$OS" = "macOS" ]; then
 fi
 if [ -n "$ODROID_BOARD" ]; then
     echo
-    echo -e "${MAGENTA}═══════════════════════════════════════════════════════════════${NC}"
     echo -e "${MAGENTA}  ODROID Hardware Detected: $ODROID_BOARD${NC}"
-    echo -e "${MAGENTA}═══════════════════════════════════════════════════════════════${NC}"
     echo -e "${MAGENTA}To write to eMMC:${NC}"
     echo -e "  ${YELLOW}sudo dd if=$IMAGE of=/dev/mmcblk1 bs=4M status=progress${NC}"
     echo -e "${MAGENTA}To write to SD card:${NC}"
     echo -e "  ${YELLOW}sudo dd if=$IMAGE of=/dev/mmcblk0 bs=4M status=progress${NC}"
 fi
 echo
-echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"

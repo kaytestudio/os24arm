@@ -1,9 +1,7 @@
 #!/bin/bash
 # Quick diagnostic for e2fsprogs on macOS
 
-echo "═══════════════════════════════════════════════════════════════"
 echo "  e2fsprogs Diagnostic Tool"
-echo "═══════════════════════════════════════════════════════════════"
 echo
 
 # Check Homebrew
@@ -86,9 +84,7 @@ fi
 echo
 
 # Summary
-echo "═══════════════════════════════════════════════════════════════"
 echo "  SUMMARY"
-echo "═══════════════════════════════════════════════════════════════"
 echo
 echo "e2fsprogs path: $MKFS_EXT4"
 echo
@@ -98,4 +94,3 @@ echo "  1. brew link e2fsprogs"
 echo "  2. brew reinstall e2fsprogs"
 echo "  3. Re-run make mkdisk"
 echo
-echo "═══════════════════════════════════════════════════════════════"

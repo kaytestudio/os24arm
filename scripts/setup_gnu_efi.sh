@@ -1,12 +1,10 @@
 #!/bin/bash
-# ═══════════════════════════════════════════════════════════════
 # setup_gnu_efi.sh — Clone and Build gnu-efi from GitHub
 #
 # This script:
 # - Clones gnu-efi from GitHub
 # - Builds it for ARM64
 # - Installs it locally in the project
-# ═══════════════════════════════════════════════════════════════
 
 set -e
 
@@ -22,9 +20,7 @@ GNUEFI_REPO="https://github.com/ncroxon/gnu-efi.git"
 GNUEFI_DIR="external/gnu-efi"
 INSTALL_PREFIX="$(pwd)/external/gnu-efi-install"
 
-echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo -e "${CYAN}  Setting up gnu-efi from GitHub${NC}"
-echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo
 
 # Check prerequisites
@@ -236,9 +232,7 @@ chmod +x external/gnu-efi-env.sh
 
 # Summary
 echo
-echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo -e "${GREEN}gnu-efi setup complete!${NC}"
-echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo
 echo -e "${CYAN}Installation:${NC}"
 echo -e "  Location: ${GREEN}$INSTALL_PREFIX${NC}"
@@ -266,4 +260,3 @@ echo
 echo -e "${CYAN}The bootloader build system will automatically detect and use${NC}"
 echo -e "${CYAN}the local gnu-efi installation.${NC}"
 echo
-echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"

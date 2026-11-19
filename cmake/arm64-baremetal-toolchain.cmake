@@ -1,7 +1,5 @@
-# ============================================================================
 # arm64-gcc-toolchain.cmake - ARM64 GCC Cross-Compilation (macOS + Linux)
 # Uses: aarch64-none-elf-gcc (or aarch64-elf-gcc)
-# ============================================================================
 
 set(CMAKE_SYSTEM_NAME Generic)
 set(CMAKE_SYSTEM_PROCESSOR aarch64)
