@@ -1,22 +1,20 @@
-/* ── IPF help (pm.inc): the help manager (HELPMGR: WinCreateHelpInstance,
- * help tables - HELPTABLE and HELPSUBTABLE resources, or the program's
- * own - the HM_ messages, F1 as WM_HELP) and its window, which shows the
- * panels of .HLP and .INF files (IPF's compiled form, as IBM's IPFC and
- * OpenWatcom's wipfc write it): the text in its styles (:hp1.-:hp9.),
- * colours and fonts, margins (lists, definitions), examples and lines kept
- * as they are, links (to panels, to footnotes; "inform" to the program as
- * HM_INFORM), Contents and Index made from the file's tables, Previous.
- * Not shown: pictures (a [picture] in their place), split windows (one
- * panel at a time), searching. "os2x86 --view FILE.INF [topic]": VIEW's
- * job, the file on its own. ── */
+/* IPF help, included by pm.inc.
+ *
+ * Two parts: the help manager (WinCreateHelpInstance, help tables, the HM_
+ * messages, F1 sent as WM_HELP), and a viewer for .HLP/.INF files as IPFC
+ * and wipfc produce them. The viewer handles text styles, colours, fonts,
+ * margins, :xmp. and :lines. blocks, links (panels, footnotes, inform,
+ * launch of view.exe), and builds Contents and Index from the file.
+ * Not supported yet: pictures (shown as [picture]), split windows, search.
+ * "os2x86 --view FILE.INF [topic]" runs the viewer on its own, like VIEW. */
 
-enum { HS_ITALIC = 1, HS_BOLD = 2, HS_UNDER = 4 };   /* :hp1.-:hp7. combine these */
+enum { HS_ITALIC = 1, HS_BOLD = 2, HS_UNDER = 4 };   /* :hp1.-:hp7. are combinations of these */
 /* help window layout */
-enum { HV_W = 600, HV_H = 440, HV_BAR = 40, HV_MARGIN = 8, HV_BTN_W = 96, HV_BTN_H = 28, HV_BTN_GAP = 8, HV_HIST = 64, HV_INDENT = 3 };   /* HV_INDENT: characters per level */
+enum { HV_W = 600, HV_H = 440, HV_BAR = 40, HV_MARGIN = 8, HV_BTN_W = 96, HV_BTN_H = 28, HV_BTN_GAP = 8, HV_HIST = 64, HV_INDENT = 3 };   /* indent per level, in characters */
 #define HV_LINK    0x0000C0
 #define HV_PICTURE C_DARK
 enum { HV_PREVIOUS = 1, HV_CONTENTS, HV_INDEX };   /* button ids */
-enum { HV_PG_CONTENTS = -1, HV_PG_INDEX = -2 };       /* pages that aren't in the file */
+enum { HV_PG_CONTENTS = -1, HV_PG_INDEX = -2 };       /* built here, not read from the file */
 enum { LINES_LEFT = 1, LINES_RIGHT = 2, LINES_CENTER = 4 };      /* :lines align= */
 enum { HL_PANEL, HL_INFORM, HL_LAUNCH };              /* link targets */
 
@@ -46,7 +44,7 @@ enum { HI_RETURNCODE = 4, HI_HELPTABLE = 12, HI_HELPTABLEMOD = 16, HI_TITLE = 32
 enum { HT_APPWINDOW = 0, HT_SUBTABLE = 2, HT_EXTPANEL = 6, HT_SIZE = 8 };
 enum { HT_SCAN = 64, HST_SCAN = 128 };                 /* scan limit for tables in program memory */
 
-/* IPF's words are code page 850; the fonts here, Latin-1 */
+/* IPF text is code page 850; our fonts are Latin-1 */
 static const uint8_t cp850_l1[256] = {
     0x00, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0xb7, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
     0x3e, 0x3c, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20, 0x5e, 0x76, 0x3e, 0x3c, 0x20, 0x20, 0x5e, 0x76,
@@ -70,9 +68,9 @@ typedef struct {
     uint32_t n;
     uint32_t ntoc, tocstart, nres, resstart, nname, namestart, nindex, indexstart, indexlen;
     uint32_t nslots, slotsstart, ndict, dictstart, dictlen, nfont, fontstart;
-    char **word;                        /* the dictionary, in Latin-1 */
+    char **word;                        /* dictionary, converted to Latin-1 */
     char title[64];
-    char dir[PATH_MAX];                 /* (where it is: books it links to are looked for there first) */
+    char dir[PATH_MAX];                 /* linked books are searched here first */
 } inf_t;
 #define INF_FITS(f, o, len) ((uint64_t)(o) + (uint64_t)(len) <= (f)->n)
 static uint32_t inf16(inf_t *f, uint64_t o) { return o + 2 <= f->n ? (uint32_t)f->d[o] | (uint32_t)f->d[o + 1] << 8 : 0; }
@@ -130,7 +128,7 @@ static inf_t *inf_load(const char *host)
     }
     return f;
 }
-/* a panel's entry in the table of contents: its level (0: a footnote's), flags, slots, title */
+/* one table-of-contents entry; level 0 means a footnote */
 typedef struct { int level, flags, nslot; uint32_t slots; char title[256]; } inftoc_t;
 static int inf_toc(inf_t *f, uint32_t i, inftoc_t *t)
 {
@@ -140,7 +138,7 @@ static int inf_toc(inf_t *f, uint32_t i, inftoc_t *t)
     uint32_t len = f->d[o + TOC_LEN], end = o + len, q = o + TOC_HEADER;
     if (len < TOC_HEADER || end > f->n) return 0;
     t->flags = f->d[o + TOC_FLAGS]; t->level = t->flags & TOC_LEVEL; t->nslot = f->d[o + TOC_NSLOT];
-    if (t->flags & TOC_EXTENDED) {                                   /* (its window's: origin, size, style, group, control area) */
+    if (t->flags & TOC_EXTENDED) {                                   /* skip the window position/size/style fields */
         if (q + 2 > end) return 0;
         int w1 = f->d[q], w2 = f->d[q + 1];
         q += 2;
@@ -156,13 +154,13 @@ static int inf_toc(inf_t *f, uint32_t i, inftoc_t *t)
     inf_l1(t->title, sizeof t->title, f->d + q, end - q);
     return 1;
 }
-static int inf_res(inf_t *f, uint32_t res)                   /* res= : its panel */
+static int inf_res(inf_t *f, uint32_t res)                   /* panel for a res= number, or -1 */
 {
     for (uint32_t i = 0; i < f->nres; i++)
         if (inf16(f, f->resstart + 2ull * i) == res) return (int)inf16(f, f->resstart + 2ull * f->nres + 2ull * i);
     return -1;
 }
-static int inf_name(inf_t *f, const char *name)              /* name= or id= : its panel */
+static int inf_name(inf_t *f, const char *name)              /* panel for a name= or id=, or -1 */
 {
     for (uint32_t i = 0; i < f->nname; i++) {
         uint32_t w = inf16(f, f->namestart + 2ull * i);
@@ -183,7 +181,7 @@ static int inf_index(inf_t *f, uint32_t *p, char *s, size_t sn, int *toc, int *f
     return 1;
 }
 
-/* a topic: a panel's number, its name, a word of its title, of the index's; -1: none */
+/* find a topic by res= number, name, title or index text; -1 if not found */
 static int inf_find(inf_t *f, const char *topic)
 {
     char *e;
@@ -206,7 +204,7 @@ static inf_t *book_open(const char *name, const char *dir)
     char host[PATH_MAX], dirs[8192], nm[300];
     inf_t *f = inf_load(name);
     if (!f && strpbrk(name, "\\:") && !os2_to_host(name, host, sizeof host, 0)) f = inf_load(host);
-    const char *base = strrchr(name, '\\') ? strrchr(name, '\\') + 1 : name;   /* (C:\BOOKS\X.INF: X.INF) */
+    const char *base = strrchr(name, '\\') ? strrchr(name, '\\') + 1 : name;   /* C:\BOOKS\X.INF -> X.INF */
     snprintf(nm, sizeof nm, "%s", base);
     const char *bs = getenv("BOOKSHELF"), *hp = getenv("HELP");
     snprintf(dirs, sizeof dirs, "%s;%s;%s;.", dir ? dir : "", bs ? bs : "", hp ? hp : "");
@@ -230,23 +228,23 @@ static inf_t *book_open(const char *name, const char *dir)
     return f;
 }
 
-/* ── the help window: a panel laid out as words (each where it goes), links ── */
-typedef struct { int x, y, w, style, mono, link; uint32_t rgb; char *s; } hitem_t;   /* y: its line's top, from the panel's top */
-typedef struct { int kind, target; char *s; } hlink_t;      /* HL_PANEL: target its TOC entry; HL_INFORM: a resource number; HL_LAUNCH: s */
+/* ── the help viewer window ── */
+typedef struct { int x, y, w, style, mono, link; uint32_t rgb; char *s; } hitem_t;   /* one laid-out word; y is its line's top */
+typedef struct { int kind, target; char *s; } hlink_t;      /* target: TOC entry (HL_PANEL) or res number (HL_INFORM); s: command (HL_LAUNCH) */
 typedef struct helpi helpi_t;
 typedef struct {
     inf_t *f;
-    int page;                                                /* a TOC entry; HV_PG_CONTENTS, HV_PG_INDEX */
+    int page;                                                /* TOC entry, or HV_PG_CONTENTS / HV_PG_INDEX */
     int hist[HV_HIST], nhist;
     hitem_t *it; int nit, cap;
     hlink_t *lk; int nlk, lkcap;
     int laid_w, doc_h, top, sel, lineh;
     char title[128];
-    uint32_t frame, client, sb, inform;                      /* (inform: the program's window, for HM_INFORM) */
-    int owns, quit;                                          /* its book's its own (to free); the last of these gone: WM_QUIT */
+    uint32_t frame, client, sb, inform;                      /* inform: where HM_INFORM goes */
+    int owns, quit;                                          /* owns: free f on close; quit: WM_QUIT when the last one closes */
     helpi_t *hi;
 } hview_t;
-typedef struct { uint16_t app, ext; int nsub; uint16_t (*sub)[2]; } helptab_t;   /* sub: (window, panel) */
+typedef struct { uint16_t app, ext; int nsub; uint16_t (*sub)[2]; } helptab_t;   /* sub: (control id, panel) pairs */
 struct helpi {
     uint32_t hwnd;
     hview_t *view;
@@ -254,7 +252,7 @@ struct helpi {
     inf_t *f;
     int tried;
     helptab_t *tab; int ntab;
-    uint32_t active, app;                                    /* HM_SET_ACTIVE_WINDOW's; the window help is for now */
+    uint32_t active, app;                                    /* active: from HM_SET_ACTIVE_WINDOW; app: window being helped */
 };
 typedef struct {                                             /* layout state for one panel */
     hview_t *v;
@@ -304,7 +302,7 @@ static void lay_word(hlay_t *L, const char *s)
     int n = (int)strlen(s), w = text_w(s, n);
     pmf = save;
     if (!L->mono && L->x + w > L->width - L->rm && L->x > L->lm) {
-        int from = L->run > L->line0 ? L->run : v->nit;      /* (words with no space between: to the next line together) */
+        int from = L->run > L->line0 ? L->run : v->nit;      /* words with no space between them wrap together */
         int dx = (from < v->nit ? v->it[from].x : 0) - L->lm;
         lay_nl(L);
         for (int i = from; i < v->nit; i++) { v->it[i].x -= dx; v->it[i].y = L->y; }
@@ -319,7 +317,7 @@ static void lay_word(hlay_t *L, const char *s)
     L->any = 1;
     if (L->spacing && !L->mono) { L->x += L->space; L->run = -1; }
 }
-static void lay_text(hlay_t *L, const char *s)              /* (words of ours: Contents, Index) */
+static void lay_text(hlay_t *L, const char *s)              /* lay out our own text (Contents, Index) */
 {
     char b[300];
     snprintf(b, sizeof b, "%s", s);
@@ -340,17 +338,17 @@ static void lay_esc(hlay_t *L, int code, const uint8_t *a, uint32_t n)
     inf_t *f = L->v->f;
     uint32_t a16 = n >= 2 ? (uint32_t)a[0] | (uint32_t)a[1] << 8 : 0;
     switch (code) {
-    case ESC_LMARGIN: if (n >= 1) lay_margin(L, a[0]); break;   /* (in characters) */
+    case ESC_LMARGIN: if (n >= 1) lay_margin(L, a[0]); break;
     case ESC_RMARGIN: if (n >= 1) L->rm = HV_MARGIN + a[0] * L->cw; break;
     case ESC_MARGINHERE: L->lm = L->x; break;
     case ESC_STYLE: if (n >= 1) L->style = a[0] & (HS_ITALIC | HS_BOLD | HS_UNDER); break;   /* :hp1.-:hp3., :hp5.-:hp7. */
-    case ESC_HPCOLOR: if (n >= 1) L->rgb = a[0] < 4 ? ipf_rgb[a[0]] : 0; break;   /* :hp4. blue, 8 red, 9 pink */
+    case ESC_HPCOLOR: if (n >= 1) L->rgb = a[0] < 4 ? ipf_rgb[a[0]] : 0; break;   /* :hp4. blue, :hp8. red, :hp9. pink */
     case ESC_COLOR: if (n >= 1) L->rgb = a[0] < sizeof ipf_rgb / sizeof *ipf_rgb ? ipf_rgb[a[0]] : 0; break;  /* :color fc= */
     case ESC_LINK: case ESC_LINK2: case ESC_FOOTNOTE:
         if (n >= 2) L->link = hv_link(L->v, HL_PANEL, (int)a16);
         break;
     case ESC_INFORM: if (n >= 2) L->link = hv_link(L->v, HL_INFORM, (int)a16); break;   /* reftype=inform */
-    case ESC_LAUNCH:                                         /* (a byte, then "object data") */
+    case ESC_LAUNCH:                                         /* one byte, then the command line */
         if (n >= 2) {
             char s[256];
             inf_l1(s, sizeof s, a + 1, n - 1);
@@ -359,11 +357,11 @@ static void lay_esc(hlay_t *L, int code, const uint8_t *a, uint32_t n)
         }
         break;
     case ESC_ENDLINK: L->link = -1; break;
-    case ESC_MONO: lay_para(L); L->save_spacing = L->spacing; L->spacing = 0; L->mono = 1; break;   /* :xmp., :cgraphic.: a block, as it is */
+    case ESC_MONO: lay_para(L); L->save_spacing = L->spacing; L->spacing = 0; L->mono = 1; break;   /* :xmp. / :cgraphic.: no reflow */
     case ESC_ENDMONO: if (L->mono) { L->spacing = L->save_spacing; L->mono = 0; } if (L->x > L->lm) lay_nl(L); break;
     case ESC_LINES: if (n >= 1) L->align = a[0]; break;
     case ESC_ENDLINES: L->align = 0; break;
-    case ESC_FONT:                                           /* the file's fonts; a fixed one's, mono */
+    case ESC_FONT:                                           /* a fixed-pitch font from the file means mono */
         L->fmono = 0;
         if (n >= 1 && a[0] && a[0] < f->nfont) {
             char face[INF_FACELEN + 1];
@@ -372,7 +370,7 @@ static void lay_esc(hlay_t *L, int code, const uint8_t *a, uint32_t n)
             L->fmono = strcasestr(face, "courier") || strcasestr(face, "mono") || strcasestr(face, "vio");
         }
         break;
-    case ESC_HIDE: L->hide = 1; break;                           /* :hide. (shown with a key we don't have) */
+    case ESC_HIDE: L->hide = 1; break;                           /* :hide. - we never have the key */
     case ESC_ENDHIDE: L->hide = 0; break;
     case ESC_ARTWORK: {
         uint32_t c = L->rgb;
@@ -398,7 +396,7 @@ static void lay_slot(hlay_t *L, uint32_t slot)
         if (b < lmn) { uint32_t w = inf16(f, lmo + 2ull * b); if (w < f->ndict) lay_word(L, f->word[w]); continue; }
         switch (b) {
         case TX_PARA: lay_para(L); break;
-        case TX_SPACING: L->spacing = !L->spacing; break;    /* words with spaces after them, or not */
+        case TX_SPACING: L->spacing = !L->spacing; break;    /* toggle spaces between words */
         case TX_NEWLINE: if (!L->hide) lay_nl(L); break;
         case TX_SPACE: if (!L->hide) { L->x += L->space; L->run = -1; } break;
         case TX_ESCAPE: {
@@ -428,7 +426,7 @@ static void hv_layout(hview_t *v, int width)
     inftoc_t t;
     if (v->page >= 0 && inf_toc(f, (uint32_t)v->page, &t))
         for (int k = 0; k < t.nslot; k++) lay_slot(&L, inf16(f, t.slots + 2ull * k));
-    else if (v->page == HV_PG_CONTENTS) {                                /* Contents: the panels with headings, by level */
+    else if (v->page == HV_PG_CONTENTS) {                                /* Contents: every titled panel, indented by level */
         for (uint32_t i = 0; i < f->ntoc; i++) {
             if (!inf_toc(f, i, &t) || !t.level || (t.flags & TOC_HIDDEN) || !t.title[0]) continue;
             lay_margin(&L, 1 + (t.level - 1) * HV_INDENT); L.x = L.lm;
@@ -437,7 +435,7 @@ static void hv_layout(hview_t *v, int width)
             L.link = -1;
             lay_nl(&L);
         }
-    } else if (v->page == HV_PG_INDEX) {                              /* Index: :i1. and :i2. entries, as the file has them (sorted) */
+    } else if (v->page == HV_PG_INDEX) {                              /* Index: :i1./:i2. entries in file order (already sorted) */
         char s[300];
         uint32_t p = f->indexstart;
         int toc, fl;
@@ -476,7 +474,7 @@ static void hv_titles(hview_t *v)
     pmwin_t *fr = win(v->frame);
     if (!fr) return;
     inftoc_t t;
-    const char *pt = "";                                     /* the page's */
+    const char *pt = "";                                     /* page title */
     if (v->page == HV_PG_CONTENTS) pt = "Contents";
     else if (v->page == HV_PG_INDEX) pt = "Index";
     else if (inf_toc(v->f, (uint32_t)v->page, &t)) pt = t.level ? t.title : "Footnote";
@@ -503,7 +501,7 @@ static void hv_follow(hview_t *v, int l)
     hlink_t *k = &v->lk[l];
     if (k->kind == HL_PANEL) hv_go(v, k->target, 1);
     else if (k->kind == HL_INFORM) { if (win(v->inform)) post(win(v->inform), v->inform, HM_INFORM, (uint32_t)k->target, 0); }
-    else if (k->s) {                                         /* "view.exe BOOK topic": that book, in a window of its own */
+    else if (k->s) {                                         /* "view.exe BOOK topic": open it in a new window */
         char s[256], *p = s;
         snprintf(s, sizeof s, "%s", k->s);
         char *prog = strtok_r(p, " ", &p), *book = prog ? strtok_r(0, " ", &p) : 0;
@@ -511,7 +509,7 @@ static void hv_follow(hview_t *v, int l)
         while (p && *p == ' ') p++;
         if (!book || (strcasecmp(pb, "view.exe") && strcasecmp(pb, "view"))) { if (trace) fprintf(stderr, "[help] launch \"%s\": not done\n", k->s); return; }
         char *plus = strchr(book, '+');
-        if (plus) *plus = 0;                                 /* (books joined: the first) */
+        if (plus) *plus = 0;                                 /* BOOK1+BOOK2: just the first */
         inf_t *b = book_open(book, v->f->dir);
         if (!b) { char t[400]; snprintf(t, sizeof t, "The book %s can't be found.", book); pm_msgbox(t, "Help", MB_INFORMATION | MB_MOVEABLE); return; }
         int page = p && *p ? inf_find(b, p) : 0;
@@ -547,7 +545,7 @@ static uint32_t hv_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
             }
             text_at(w, it->x, base, it->s, (int)strlen(it->s), rgb);
             int ux = i + 1 < v->nit && v->it[i + 1].y == it->y && ((it->link >= 0 && v->it[i + 1].link == it->link) ||
-                     (it->link < 0 && (it->style & HS_UNDER) && (v->it[i + 1].style & HS_UNDER))) ? v->it[i + 1].x : it->x + it->w;   /* (across the space, to the next word of it) */
+                     (it->link < 0 && (it->style & HS_UNDER) && (v->it[i + 1].style & HS_UNDER))) ? v->it[i + 1].x : it->x + it->w;   /* underline runs on to the next word of the same link */
             if (it->link >= 0 || (it->style & HS_UNDER)) line(w, it->x, base - 2, ux, base - 2, rgb);
         }
         pmf = save;
@@ -584,7 +582,7 @@ static uint32_t hv_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
         else if (vk == VK_PAGEDOWN) hv_scroll(v, w, v->top + page);
         else if (vk == VK_HOME && (mp1 & KC_CTRL)) hv_scroll(v, w, 0);
         else if (vk == VK_END && (mp1 & KC_CTRL)) hv_scroll(v, w, INT_MAX);
-        else if (vk == VK_TAB || ch == '\t' || vk == VK_BACKTAB) {   /* Tab, Shift+Tab: the next link, the one before */
+        else if (vk == VK_TAB || ch == '\t' || vk == VK_BACKTAB) {   /* Tab / Shift+Tab: next / previous link */
             if (!v->nlk) return 1;
             int back = vk == VK_BACKTAB || (mp1 & KC_SHIFT);
             v->sel = v->sel < 0 ? (back ? v->nlk - 1 : 0) : (v->sel + (back ? v->nlk - 1 : 1)) % v->nlk;
@@ -598,8 +596,8 @@ static uint32_t hv_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
             invalidate(w);
             return 1;
         } else if (ch == '\r' || vk == VK_NEWLINE || vk == VK_ENTER) { hv_follow(v, v->sel); return 1; }
-        else if (vk == VK_BACKSPACE || ch == '\b') { hv_back(v); return 1; }   /* the panel before */
-        else if (vk == VK_ESC || ch == '\033') {                   /* Esc: the panel before; on the first, away */
+        else if (vk == VK_BACKSPACE || ch == '\b') { hv_back(v); return 1; }   /* back */
+        else if (vk == VK_ESC || ch == '\033') {                   /* Esc: back, or close on the first panel */
             if (v->nhist) hv_back(v);
             else post(w, w->hwnd, WM_CLOSE, 0, 0);
             return 1;
@@ -618,7 +616,7 @@ static uint32_t hv_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
         pmwin_t *fr = win(v->frame);
         int quit = v->quit;
         if (fr) win_destroy(fr);
-        for (int i = 0; quit && i < MAXWIN; i++)             /* (VIEW's last window: the end) */
+        for (int i = 0; quit && i < MAXWIN; i++)             /* standalone VIEW quits with its last window */
             if (pmwins[i].used && pmwins[i].iproc == hv_proc && pmwins[i].ctl && ((hview_t *)pmwins[i].ctl)->quit) quit = 0;
         if (quit) post(0, 0, WM_QUIT, 0, 0);
         return 0;
@@ -658,13 +656,13 @@ static hview_t *hv_open(inf_t *f, const char *title, int page)
     return v;
 }
 
-/* ── the help manager: an instance (a window of its own, "#help", HM_
- * messages to it), its library, its help table: for a frame or dialog (by
- * its id), the panel of each window in it (by the focus's id), the extended
- * help panel. A window's instance: its helpi (WinAssociateHelpInstance) ── */
+/* ── help manager ──
+ * Each instance is a hidden "#help" window that takes the HM_ messages.
+ * A help table maps a frame or dialog id to its controls' panels and an
+ * extended help panel. Windows point at their instance through w->helpi. */
 static helpi_t *helpi_of(uint32_t hwnd) { pmwin_t *w = win(hwnd); return w && !strcmp(w->cls, "#help") ? w->ctl : 0; }
 static uint32_t desktop_helpi;                               /* HWND_DESKTOP's instance, the fallback */
-static void help_subtab(helptab_t *t, uint32_t a, uint32_t end)   /* HELPSUBTABLE: the words an item, then items (window, panel, ...) up to a 0 */
+static void help_subtab(helptab_t *t, uint32_t a, uint32_t end)   /* HELPSUBTABLE: item size in words, then items up to a 0 */
 {
     uint32_t size = g16(a);
     if (size < 2) size = 2;
@@ -704,14 +702,14 @@ static inf_t *help_inf(helpi_t *h)
     if (trace) fprintf(stderr, "[help] library \"%s\": %s\n", h->lib, h->f ? "loaded" : "not there");
     return h->f;
 }
-static uint32_t help_app_win(helpi_t *h)                     /* the program's window, for HM_ messages to it */
+static uint32_t help_app_win(helpi_t *h)                     /* the app window HM_ notifications go to */
 {
     uint32_t a = h->active ? h->active : h->app;
     for (int i = 0; !a && i < MAXWIN; i++) if (pmwins[i].used && pmwins[i].helpi == h->hwnd) a = pmwins[i].hwnd;
     pmwin_t *w = win(a);
     return w && w->client ? w->client->hwnd : a;
 }
-static uint32_t help_show(helpi_t *h, int page)              /* a panel (a TOC entry; HV_PG_CONTENTS, HV_PG_INDEX); 0, else an HMERR_ */
+static uint32_t help_show(helpi_t *h, int page)              /* show a panel; returns 0 or an HMERR_ code */
 {
     inf_t *f = help_inf(h);
     if (!f) {
@@ -735,7 +733,7 @@ static uint32_t help_show(helpi_t *h, int page)              /* a panel (a TOC e
     h->view->inform = help_app_win(h);
     return 0;
 }
-static uint32_t help_res(helpi_t *h, uint32_t res)           /* a panel by its res= */
+static uint32_t help_res(helpi_t *h, uint32_t res)           /* show the panel with this res= number */
 {
     inf_t *f = help_inf(h);
     if (!f) return help_show(h, 0);
@@ -753,14 +751,14 @@ static helptab_t *help_entry(helpi_t *h, uint32_t app)
     for (int i = 0; i < h->ntab; i++) if (h->tab[i].app == app) return &h->tab[i];
     return 0;
 }
-static void help_ext(helpi_t *h, pmwin_t *top)               /* the extended help of the window help is for */
+static void help_ext(helpi_t *h, pmwin_t *top)               /* extended help for the current window */
 {
     helptab_t *t = top ? help_entry(h, top->id & 0xFFFF) : 0;
     if (t && t->ext) { help_res(h, t->ext); return; }
     pmwin_t *a = win(help_app_win(h));
     if (a) pm_send(a, HM_EXT_HELP_UNDEFINED, 0, 0);
 }
-/* F1 (WM_HELP, at the frame or dialog): the focus's panel, else HM_HELPSUBITEM_NOT_FOUND, else the extended help */
+/* F1: the focused control's panel, else HM_HELPSUBITEM_NOT_FOUND, else extended help */
 static helpi_t *help_for(pmwin_t *w)
 {
     for (; w; w = w->parent ? w->parent : w->owner) if (w->helpi) return helpi_of(w->helpi);
@@ -777,7 +775,7 @@ static void help_request(pmwin_t *top, uint32_t id)
     if (trace) fprintf(stderr, "[help] F1: window %u, item %u: %s\n", top->id & 0xFFFF, id & 0xFFFF, t ? "in the table" : "not in it");
     if (t) for (int i = 0; i < t->nsub; i++) if (t->sub[i][0] == (id & 0xFFFF)) { help_res(h, t->sub[i][1]); return; }
     pmwin_t *a = win(help_app_win(h));
-    if (a && pm_send(a, HM_HELPSUBITEM_NOT_FOUND, HLPM_WINDOW, (top->id & 0xFFFF) | (id & 0xFFFF) << 16)) return;   /* (the program's) */
+    if (a && pm_send(a, HM_HELPSUBITEM_NOT_FOUND, HLPM_WINDOW, (top->id & 0xFFFF) | (id & 0xFFFF) << 16)) return;   /* the app handled it */
     help_ext(h, top);
 }
 static uint32_t help_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
@@ -785,19 +783,19 @@ static uint32_t help_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
     helpi_t *h = helpi_of(w->hwnd);
     if (!h) return 0;
     switch (msg) {
-    case HM_DISPLAY_HELP:                                    /* (a panel's res= | its name, HM_RESOURCEID | HM_PANELNAME) */
+    case HM_DISPLAY_HELP:                                    /* mp1: res number or name, mp2: HM_RESOURCEID / HM_PANELNAME */
         if (mp2 == HM_PANELNAME) {
             char *n = gs(mp1);
             inf_t *f = help_inf(h);
             int t = f && n ? inf_name(f, n) : -1;
             return t >= 0 ? help_show(h, t) : f ? HMERR_PANEL_NOT_FOUND : help_show(h, 0);
         }
-        if (!(mp1 & 0xFFFF)) return help_show(h, HV_PG_CONTENTS);   /* (none: help for help - the contents, here) */
+        if (!(mp1 & 0xFFFF)) return help_show(h, HV_PG_CONTENTS);   /* no panel given: show Contents */
         return help_res(h, mp1 & 0xFFFF);
     case HM_EXT_HELP: help_ext(h, frame_of(win(help_app_win(h)))); return 0;
     case HM_HELP_INDEX: return help_show(h, HV_PG_INDEX);
     case HM_HELP_CONTENTS: return help_show(h, HV_PG_CONTENTS);
-    case HM_KEYS_HELP: {                                     /* (the program says which) */
+    case HM_KEYS_HELP: {                                     /* ask the app which panel */
         pmwin_t *a = win(help_app_win(h));
         uint32_t r = a ? pm_send(a, HM_QUERY_KEYS_HELP, 0, 0) : 0;
         return r ? help_res(h, r & 0xFFFF) : 0;
@@ -844,7 +842,7 @@ static uint32_t api_WinCreateHelpInstance(void)     /* (hab, pHelpInit) */
         snprintf(h->title, sizeof h->title, "%s", t ? t : "");
         snprintf(h->lib, sizeof h->lib, "%s", l ? l : "");
         help_table(h, g32(hi + HI_HELPTABLE), g32(hi + HI_HELPTABLEMOD));
-        p32(hi + HI_RETURNCODE, 0);                          /* none */
+        p32(hi + HI_RETURNCODE, 0);
     }
     return w->hwnd;
 }
@@ -854,7 +852,7 @@ static uint32_t api_WinDestroyHelpInstance(void)
     win_destroy(win(A(0)));
     return 1;
 }
-static uint32_t api_WinAssociateHelpInstance(void)  /* (hwndHelpInstance, hwndApp): 0 - the association goes */
+static uint32_t api_WinAssociateHelpInstance(void)  /* (hwndHelpInstance, hwndApp); instance 0 removes it */
 {
     pmwin_t *w = win(A(1));
     if (A(1) == HWND_DESKTOP_) desktop_helpi = A(0);
@@ -874,7 +872,7 @@ static uint32_t api_WinCreateHelpTable(void)        /* (hwndHelpInstance, phtHel
     if (h) help_table(h, A(1), 0);
     return h != 0;
 }
-/* F1, as the system's accelerator makes it: WM_HELP to the focus (a control of ours: to the window it's in) */
+/* F1: post WM_HELP to the window that should handle it (our controls pass it up) */
 static int help_key(pmwin_t *f)
 {
     pmwin_t *w = win(pm_focus);
@@ -882,10 +880,10 @@ static int help_key(pmwin_t *f)
     uint32_t id = w->id & 0xFFFF;
     while (w && !w->top && w->iproc && !w->proc) w = w->owner ? w->owner : w->parent;
     if (!w) return 0;
-    post(w, w->hwnd, WM_HELP, id, CMDSRC_ACCELERATOR);    /* (usCmd, its source) */
+    post(w, w->hwnd, WM_HELP, id, CMDSRC_ACCELERATOR);
     return 1;
 }
-/* VIEW: a file on its own; the topic a panel's number, its name, a word of its title, of the index */
+/* os2x86 --view: show a file; topic is a res number, name, title or index word */
 static int help_view_main(const char *file, const char *topic)
 {
     inf_t *f = book_open(file, 0);
