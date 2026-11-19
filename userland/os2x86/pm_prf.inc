@@ -1,23 +1,21 @@
-/* userland/os2x86/pm_prf.inc - profiles (PMSHAPI's Prf calls: the user's
- * OS2.INI, the system's OS2SYS.INI, a program's own .INI files) and the
- * help manager's calls (HELPMGR). Included at the end of pm.inc.
+/* userland/os2x86/pm_prf.inc - profiles: PMSHAPI's Prf calls on the user's OS2.INI,
+ * the system's OS2SYS.INI and a program's own .INI files. Included at the
+ * end of pm.inc.
  *
- * Profiles are kept in OS/2's own binary format, so a program's .INI
- * files from OS/2 read as they are; each change is written back at once.
- * The user's and the system's are USER_INI and SYSTEM_INI (OS/2 file
- * names, as on OS/2), else OS2.INI and OS2SYS.INI in $OS2X86_HOME, else
- * $HOME/.os2x86.
+ * Profiles use OS/2's binary format, so .INI files from OS/2 work as is.
+ * Every change is written back immediately. The user and system files come
+ * from USER_INI / SYSTEM_INI (OS/2 paths), else OS2.INI / OS2SYS.INI in
+ * $OS2X86_HOME, else in $HOME/.os2x86.
  *
- * The format: a header { 0xFFFFFFFF, the first application's offset, the
- * file's size, 0, 0 }; applications { next, first key, 0, name length
- * (with its NUL) twice, name offset }; keys { next, 0, name length twice,
- * name offset, data length twice, data offset }; all offsets from the
- * start, 0 ending a list. */
+ * File layout (all offsets from the start, 0 ends a list):
+ *   header: 0xFFFFFFFF, first app offset, file size, 0, 0
+ *   app:    next, first key, 0, name length (with NUL) twice, name offset
+ *   key:    next, 0, name length twice, name offset, data length twice, data offset */
 
 typedef struct { char *name; uint8_t *data; uint32_t len; } prfkey_t;
 typedef struct { char *name; prfkey_t *k; int nk; } prfapp_t;
 typedef struct { int used; char path[1024]; prfapp_t *a; int na; } prf_t;
-static prf_t prfs[16];                          /* (0: the user's, 1: the system's; then PrfOpenProfile's) */
+static prf_t prfs[16];                          /* 0: user, 1: system, then PrfOpenProfile's */
 
 static void prf_clear(prf_t *p)
 {
@@ -121,7 +119,7 @@ static void prf_save(prf_t *p)
     }
     free(d);
 }
-/* the user's (0) or the system's (1): where they are, loaded the first time */
+/* user (0) or system (1) profile, loaded on first use */
 static prf_t *prf_std(int which)
 {
     prf_t *p = &prfs[which];
@@ -140,7 +138,7 @@ static prf_t *prf_std(int which)
     prf_load(p);
     return p;
 }
-/* HINI: 0 (HINI_PROFILE: the user's, then the system's), -1 the user's, -2 the system's, ours from PrfOpenProfile */
+/* HINI: 0 = HINI_PROFILE (user, then system), -1 user, -2 system, else one from PrfOpenProfile */
 static prf_t *prf_get(uint32_t h, int *both)
 {
     if (both) *both = h == 0;
@@ -158,7 +156,7 @@ static prfkey_t *prf_find(uint32_t h, const char *app, const char *key)
     if (!k && both && (a = prf_app(prf_std(1), app, 0))) k = prf_key(a, key, 0);
     return k;
 }
-/* the names, NUL after each and one more at the end: applications (app 0) or an application's keys */
+/* NUL-separated names with an extra NUL at the end: the apps (app 0), or one app's keys */
 static uint32_t prf_names(uint32_t h, const char *app, uint32_t buf, uint32_t max)
 {
     prf_t *p = prf_get(h, 0);
@@ -187,7 +185,7 @@ static uint32_t api_PrfOpenProfile(void)            /* (hab, pszFileName) */
             prfs[i].used = 1;
             snprintf(prfs[i].path, sizeof prfs[i].path, "%s", path);
             prf_load(&prfs[i]);
-            if (!prfs[i].na) prf_save(&prfs[i]);              /* (a new one: made now, as OS/2 does) */
+            if (!prfs[i].na) prf_save(&prfs[i]);              /* a new file is created right away, like OS/2 does */
             return 0x5100 + (uint32_t)i;
         }
     return 0;
@@ -200,7 +198,7 @@ static uint32_t api_PrfCloseProfile(void)
     prfs[h].used = 0;
     return 1;
 }
-static uint32_t api_PrfQueryProfileString(void)     /* (hini, pszApp, pszKey, pszDefault, pBuffer, cchBufferMax): bytes, with the NUL */
+static uint32_t api_PrfQueryProfileString(void)     /* (hini, pszApp, pszKey, pszDefault, pBuffer, cchBufferMax); returns bytes incl. the NUL */
 {
     char *app = A(1) ? gs(A(1)) : 0, *key = A(2) ? gs(A(2)) : 0;
     uint32_t buf = A(4), max = A(5);
@@ -210,14 +208,14 @@ static uint32_t api_PrfQueryProfileString(void)     /* (hini, pszApp, pszKey, ps
     if (!k && !def) return 0;
     const char *v = k ? (const char *)k->data : def;
     uint32_t len = k ? k->len : (uint32_t)strlen(def) + 1;
-    if (k && (!len || k->data[len - 1])) len++;               /* (data without its NUL: one added) */
+    if (k && (!len || k->data[len - 1])) len++;               /* data stored without a NUL gets one */
     if (!max || !ok(buf, max)) return 0;
     uint32_t c = len > max ? max : len;
     memcpy(C.mem + buf, v, c - 1);
     C.mem[buf + c - 1] = 0;
     return c;
 }
-static uint32_t api_PrfWriteProfileString(void)     /* (hini, pszApp, pszKey, pszData): no key - the application goes; no data - the key */
+static uint32_t api_PrfWriteProfileString(void)     /* (hini, pszApp, pszKey, pszData); no key deletes the app, no data deletes the key */
 {
     prf_t *p = prf_get(A(0), 0);
     char *app = A(1) ? gs(A(1)) : 0;
@@ -279,14 +277,14 @@ static uint32_t api_PrfQueryProfileData(void)       /* (hini, pszApp, pszKey, pB
     uint32_t n = k->len < max ? k->len : max;
     if (n && ok(A(3), n)) memcpy(C.mem + A(3), k->data, n);
     if (A(4)) p32(A(4), n);
-    return k->len <= max;                                    /* (too small: what fits, and FALSE) */
+    return k->len <= max;                                    /* buffer too small: copy what fits and return FALSE */
 }
 static uint32_t api_PrfWriteProfileData(void)       /* (hini, pszApp, pszKey, pData, cchDataLen) */
 {
     prf_t *p = prf_get(A(0), 0);
     char *app = A(1) ? gs(A(1)) : 0, *key = A(2) ? gs(A(2)) : 0;
     if (!p || !app) return 0;
-    if (!key || !A(3)) return api_PrfWriteProfileString();  /* (deletions: the same) */
+    if (!key || !A(3)) return api_PrfWriteProfileString();  /* deletes work the same way */
     uint32_t n = A(4);
     if (n > 0xFFFF || !ok(A(3), n)) return 0;
     prfkey_t *k = prf_key(prf_app(p, app, 1), key, 1);
@@ -299,6 +297,3 @@ static uint32_t api_PrfWriteProfileData(void)       /* (hini, pszApp, pszKey, pD
 }
 static uint32_t api_PrfReset(void) { return 1; }
 static uint32_t api_PrfQueryProfile(void) { return 0; }
-
-/* ── the help manager: an instance the program can talk to; help itself
- * (the .HLP files' panels) isn't shown yet: a message says so ── */

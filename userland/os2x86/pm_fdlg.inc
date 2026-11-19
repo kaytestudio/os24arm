@@ -1,19 +1,20 @@
-/* userland/os2x86/pm_fdlg.inc - the standard file dialog (PMCTLS:
- * WinFileDlg; included at the end of pm.inc): a dialog of our own built
- * from the usual controls - the file name, the directory, its
- * subdirectories and the drives, the files that match the filter - run
- * modally as WinDlgBox's are. Open: the file must be there; Save as: a
- * name will do. The result in FILEDLG's szFullFile, lReturn DID_OK or
- * DID_CANCEL. Not yet: FDS_CUSTOM templates, a dialog procedure of the
- * program's, several files (FDS_MULTIPLESEL), modeless. */
+/* userland/os2x86/pm_fdlg.inc - the standard file and font dialogs (PMCTLS
+ * WinFileDlg, WinFontDlg), included at the end of pm.inc.
+ *
+ * The file dialog is built from ordinary controls: file name, directory,
+ * subdirectories and drives, and the files matching the filter. It runs
+ * modally like WinDlgBox. Open needs an existing file; Save As takes any
+ * name. The result goes to FILEDLG's szFullFile, lReturn DID_OK or
+ * DID_CANCEL. Not done: FDS_CUSTOM templates, a program dialog procedure,
+ * FDS_MULTIPLESEL, modeless. */
 #include <dirent.h>
 #include <fnmatch.h>
 
 enum { FD_W = 440, FD_H = 340, FD_NAME = 258, FD_DIRTXT = 263, FD_DIRS = 264, FD_FILES = 266 };
-typedef struct { uint32_t fd; char dir[PATH_MAX], pat[64]; int save; } fdlg_t;   /* (dir: OS/2's, "C:\DOCS") */
+typedef struct { uint32_t fd; char dir[PATH_MAX], pat[64]; int save; } fdlg_t;   /* dir is an OS/2 path, "C:\DOCS" */
 static fdlg_t fdlg;
 
-static void fd_settext(pmwin_t *e, const char *s)     /* (the entry field: the text, the cursor after it) */
+static void fd_settext(pmwin_t *e, const char *s)     /* set an entry field's text and put the cursor at the end */
 {
     snprintf(e->text, sizeof e->text, "%s", s);
     if (e->ctl) ef(e)->cur = ef(e)->an = -1;
@@ -27,7 +28,7 @@ static void fd_add(pmwin_t *lbw, const char *s)
     list_proc(lbw, LM_INSERTITEM, (uint16_t)LIT_END, g);
 }
 static int fd_cmp(const void *a, const void *b) { return strcasecmp(*(char *const *)a, *(char *const *)b); }
-/* the lists again: the directory's subdirectories (and the drives), its files that match */
+/* refill the lists: subdirectories (and drives) and matching files */
 static void fd_fill(pmwin_t *dlg)
 {
     pmwin_t *dl = win_child(dlg, FD_DIRS), *fl = win_child(dlg, FD_FILES), *dt = win_child(dlg, FD_DIRTXT);
@@ -35,7 +36,7 @@ static void fd_fill(pmwin_t *dlg)
     list_proc(dl, LM_DELETEALL, 0, 0); list_proc(fl, LM_DELETEALL, 0, 0);
     char host[PATH_MAX];
     int drv;
-    if (dt) {                                                /* (too long: its start left out) */
+    if (dt) {                                                /* too long: cut from the start */
         const char *p = fdlg.dir;
         snprintf(dt->text, sizeof dt->text, "Directory: %s", p);
         while (text_w(dt->text, (int)strlen(dt->text)) > dt->cx - 8 && (p = strchr(p + 1, '\\')))
@@ -68,7 +69,7 @@ static void fd_fill(pmwin_t *dlg)
     for (int k = 0; k < 26; k++) if (droot[k][0]) { char s[8]; snprintf(s, sizeof s, "[%c:]", 'A' + k); fd_add(dl, s); }
     dl->invalid = fl->invalid = 1;
 }
-/* into a directory: "..", a name, "[D:]", or a path */
+/* change directory: "..", a name, "[D:]", or a path */
 static void fd_chdir(pmwin_t *dlg, const char *s)
 {
     char nd[PATH_MAX];
@@ -93,7 +94,7 @@ static void fd_chdir(pmwin_t *dlg, const char *s)
     snprintf(fdlg.dir, sizeof fdlg.dir, "%s", nd);
     fd_fill(dlg);
 }
-/* the name typed (or chosen): a filter, a directory, or the file - 1 when it's done */
+/* handle the typed or selected name: a filter, a directory, or the file; 1 when done */
 static int fd_accept(pmwin_t *dlg)
 {
     pmwin_t *e = win_child(dlg, FD_NAME);
@@ -106,7 +107,7 @@ static int fd_accept(pmwin_t *dlg)
     if (s[1] == ':' || s[0] == '\\') { if (s[0] == '\\') snprintf(full, sizeof full, "%c:%s", fdlg.dir[0], s); else snprintf(full, sizeof full, "%s", s); }
     else snprintf(full, sizeof full, "%s%s%s", fdlg.dir, fdlg.dir[strlen(fdlg.dir) - 1] == '\\' ? "" : "\\", s);
     char *last = strrchr(full, '\\');
-    if (strpbrk(last ? last : full, "*?")) {                  /* a filter: its directory, its pattern */
+    if (strpbrk(last ? last : full, "*?")) {                  /* a filter: split into directory and pattern */
         if (last) { *last = 0; if (strlen(full) == 2) strcat(full, "\\"); fd_chdir(dlg, full); snprintf(fdlg.pat, sizeof fdlg.pat, "%s", last + 1); }
         fd_fill(dlg);
         return 0;
@@ -137,12 +138,12 @@ static uint32_t fdlg_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
         pmwin_t *c = win_child(w, id);
         lb_t *l = c && c->ctl && (id == FD_DIRS || id == FD_FILES) ? c->ctl : 0;
         const char *sel = l && l->sel >= 0 && l->sel < l->n ? l->it[l->sel].text : 0;
-        if (id == FD_FILES && sel && code == LN_SELECT) {             /* the name, typed for you */
+        if (id == FD_FILES && sel && code == LN_SELECT) {             /* selecting a file fills in the name */
             pmwin_t *e = win_child(w, FD_NAME);
             if (e) fd_settext(e, sel);
         }
-        if (id == FD_FILES && sel && code == LN_ENTER) { pmwin_t *e = win_child(w, FD_NAME); if (e) fd_settext(e, sel); if (fd_accept(w)) { w->dlg_done = 1; w->dlg_result = 1; } }   /* that one */
-        if (id == FD_DIRS && sel && code == LN_ENTER) { char s[300]; snprintf(s, sizeof s, "%s", sel); fd_chdir(w, s); }   /* into it */
+        if (id == FD_FILES && sel && code == LN_ENTER) { pmwin_t *e = win_child(w, FD_NAME); if (e) fd_settext(e, sel); if (fd_accept(w)) { w->dlg_done = 1; w->dlg_result = 1; } }   /* Enter on a file: take it */
+        if (id == FD_DIRS && sel && code == LN_ENTER) { char s[300]; snprintf(s, sizeof s, "%s", sel); fd_chdir(w, s); }   /* Enter on a directory: go into it */
         return 0;
     }
     }
@@ -159,7 +160,7 @@ static pmwin_t *fd_ctl(pmwin_t *dlg, const char *cls, uint32_t style, uint32_t i
     pm_send(c, WM_CREATE, 0, 0);
     return c;
 }
-static uint32_t api_WinFileDlg(void)                /* (hwndParent, hwndOwner, pfild): the dialog's handle (gone by now), 0 when it can't */
+static uint32_t api_WinFileDlg(void)                /* (hwndParent, hwndOwner, pfild); returns the dialog handle (already gone), 0 on failure */
 {
     uint32_t fd = A(2);
     if (!pm_start() || !ok(fd, 328) || g32(fd) < 328) return 0;
@@ -190,7 +191,7 @@ static uint32_t api_WinFileDlg(void)                /* (hwndParent, hwndOwner, p
     fd_ctl(dlg, "#7", WS_TABSTOP_, FD_FILES, 228, 52, 200, FD_H - 164, "");
     fd_ctl(dlg, "#3", BS_DEFAULT | WS_TABSTOP_, 1, 12, 12, 96, 30, okb && *okb ? okb : fdlg.save ? "Save" : "OK");
     fd_ctl(dlg, "#3", WS_TABSTOP_, 2, 116, 12, 96, 30, "Cancel");
-    /* the program's starting name: a directory, a filter, a file (its directory first) */
+    /* the program's initial name: a directory, a filter, or a file (its directory first) */
     if (init[0]) {
         char *b = strrchr(init, '\\');
         if (!b && init[1] == ':') b = init + 1;
@@ -212,20 +213,20 @@ static uint32_t api_WinFileDlg(void)                /* (hwndParent, hwndOwner, p
     uint32_t hwnd = dlg->hwnd;
     uint32_t r = dlg_process(hwnd);
     if (win(hwnd)) win_destroy(win(hwnd));
-    p32(fd + 12, r == DID_OK ? DID_OK : DID_CANCEL);          /* (lReturn) */
-    p32(fd + 16, FDS_SUCCESSFUL);                            /* (lSRC) */
+    p32(fd + 12, r == DID_OK ? DID_OK : DID_CANCEL);          /* lReturn */
+    p32(fd + 16, FDS_SUCCESSFUL);                            /* lSRC */
     p32(fd + 316, r == 1 ? 1 : 0);                           /* ulFQFCount */
     return hwnd;
 }
 static uint32_t api_WinDefFileDlgProc(void) { pmwin_t *w = win(A(0)); return w ? fdlg_proc(w, A(1), A(2), A(3)) : 0; }
 static uint32_t api_WinFreeFileDlgList(void) { return 1; }
 
-/* ── the standard font dialog (PMCTLS: WinFontDlg): the families (those
- * GpiQueryFonts tells of), the sizes (the program's list, or ours), bold
- * and italic, underline and strikeout, a preview of the program's text;
- * the choice back in FONTDLG - the family, fxPointSize, flType, usWeight
- * and an FATTRS ready for GpiCreateLogFont (an outline font, sized by
- * GpiSetCharBox). (No italic face here: italic is chosen, not shown.) ── */
+/* ── font dialog (WinFontDlg) ──
+ * Lists the families GpiQueryFonts knows, the sizes (the program's list or
+ * ours), bold, italic, underline, strikeout, and a preview of the program's
+ * text. Returns the family, fxPointSize, flType, usWeight and an FATTRS for
+ * GpiCreateLogFont (outline font, sized with GpiSetCharBox). There's no
+ * italic face, so italic is returned but not previewed. */
 enum { FN_W = 460, FN_H = 330, FN_NAMES = 301, FN_SIZES = 305, FN_BOLD = 310, FN_ITALIC = 311, FN_UNDER = 312, FN_STRIKE = 313, FN_PREV = 320 };
 static struct { uint32_t fd; char fam[64], prev[128]; int pt, bold, italic, under, strike; } fndlg;
 static int fn_mono(const char *fam) { return strcasestr(fam, "courier") || strcasestr(fam, "mono") || strcasestr(fam, "vio"); }
@@ -248,7 +249,7 @@ static uint32_t fnprev_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2
     present(w);
     return 0;
 }
-static void fn_sync(pmwin_t *dlg)                    /* (the choices from the controls; the preview again) */
+static void fn_sync(pmwin_t *dlg)                    /* read the controls and redraw the preview */
 {
     pmwin_t *n = win_child(dlg, FN_NAMES), *s = win_child(dlg, FN_SIZES), *c;
     lb_t *l;
@@ -266,7 +267,7 @@ static uint32_t fndlg_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
     case WM_COMMAND: w->dlg_done = 1; w->dlg_result = (mp1 & 0xFFFF) == 1 ? 1 : 2; return 0;
     case WM_CONTROL:
         fn_sync(w);
-        if ((mp1 >> 16) == LN_ENTER && ((mp1 & 0xFFFF) == FN_NAMES || (mp1 & 0xFFFF) == FN_SIZES)) { w->dlg_done = 1; w->dlg_result = 1; }   /* (Enter: OK) */
+        if ((mp1 >> 16) == LN_ENTER && ((mp1 & 0xFFFF) == FN_NAMES || (mp1 & 0xFFFF) == FN_SIZES)) { w->dlg_done = 1; w->dlg_result = 1; }   /* Enter in either list means OK */
         return 0;
     }
     return def_dlg_proc(w, msg, mp1, mp2);
@@ -281,7 +282,7 @@ static uint32_t api_WinFontDlg(void)                /* (hwndParent, hwndOwner, p
     fndlg.fd = fd;
     char *fam = g32(fd + 28) ? gs(g32(fd + 28)) : 0, *prev = g32(fd + 16) ? gs(g32(fd + 16)) : 0, *sizes = g32(fd + 20) ? gs(g32(fd + 20)) : 0;
     snprintf(fndlg.fam, sizeof fndlg.fam, "%s", fam && *fam ? fam : "Helvetica");
-    if ((fl & FNTS_INITFROMFATTRS) && C.mem[fd + 96 + 8]) {  /* its face */
+    if ((fl & FNTS_INITFROMFATTRS) && C.mem[fd + 96 + 8]) {  /* take the face from the FATTRS */
         snprintf(fndlg.fam, sizeof fndlg.fam, "%.32s", (char *)C.mem + fd + 96 + 8);
         char *b = strcasestr(fndlg.fam, " bold");
         if (b) { *b = 0; fndlg.bold = 1; }
@@ -293,8 +294,8 @@ static uint32_t api_WinFontDlg(void)                /* (hwndParent, hwndOwner, p
     }
     fndlg.pt = (int)((int32_t)g32(fd + 32) >> 16);
     if (fndlg.pt <= 0) fndlg.pt = 10;
-    if (g16(fd + 154) >= FWEIGHT_BOLD) fndlg.bold = 1;        /* (usWeight) */
-    if (g32(fd + 44) & FTYPE_ITALIC) fndlg.italic = 1;       /* (flType) */
+    if (g16(fd + 154) >= FWEIGHT_BOLD) fndlg.bold = 1;        /* usWeight */
+    if (g32(fd + 44) & FTYPE_ITALIC) fndlg.italic = 1;       /* flType */
     snprintf(fndlg.prev, sizeof fndlg.prev, "%s", prev && *prev ? prev : "abcdABCD");
     pmwin_t *dlg = win_new(0, "#dialog", 0, 300);
     if (!dlg) return 0;
@@ -316,7 +317,7 @@ static uint32_t api_WinFontDlg(void)                /* (hwndParent, hwndOwner, p
     if (pv) pv->iproc = fnprev_proc;
     fd_ctl(dlg, "#3", BS_DEFAULT | WS_TABSTOP_, 1, 12, 12, 96, 30, "OK");
     fd_ctl(dlg, "#3", WS_TABSTOP_, 2, 116, 12, 96, 30, "Cancel");
-    /* the families: the faces' families, those the flags allow (FIXEDWIDTHONLY, PROPORTIONALONLY, BITMAPONLY, VECTORONLY) */
+    /* families, filtered by FIXEDWIDTHONLY, PROPORTIONALONLY, BITMAPONLY, VECTORONLY */
     int seln = -1, sels = -1, k = 0;
     for (int i = 0; i < NFONTLIST; i++) {
         int dup = 0;
@@ -327,7 +328,7 @@ static uint32_t api_WinFontDlg(void)                /* (hwndParent, hwndOwner, p
         if (!strcasecmp(font_list[i].family, fndlg.fam)) seln = k;
         k++;
     }
-    /* the sizes: the program's ("8 10 12"), or these */
+    /* sizes: the program's ("8 10 12") or these */
     char sz[256];
     snprintf(sz, sizeof sz, "%s", sizes && *sizes ? sizes : "6 8 9 10 11 12 14 16 18 20 24 28 36 48 72");
     k = 0;
@@ -350,14 +351,14 @@ static uint32_t api_WinFontDlg(void)                /* (hwndParent, hwndOwner, p
     p32(fd + 72, r == 1 ? 1 : 2);                             /* lReturn */
     p32(fd + 76, 0);                                         /* lSRC */
     if (r != 1) return hwnd;
-    /* the choice */
+    /* the result */
     uint32_t fb = g32(fd + 28), fbl = g16(fd + 164);
     if (fb && fbl && ok(fb, fbl)) snprintf((char *)C.mem + fb, fbl, "%s", fndlg.fam);   /* pszFamilyname */
     p32(fd + 32, (uint32_t)fndlg.pt << 16);                 /* fxPointSize */
-    p32(fd + 44, fndlg.italic ? FTYPE_ITALIC : 0);           /* (flType) */
+    p32(fd + 44, fndlg.italic ? FTYPE_ITALIC : 0);           /* flType */
     p16(fd + 152, (uint16_t)(fndlg.pt * 10));                /* sNominalPointSize */
-    p16(fd + 154, fndlg.bold ? FWEIGHT_BOLD : FWEIGHT_NORMAL);   /* (usWeight) */
-    p16(fd + 156, FWIDTH_NORMAL);                            /* (usWidth) */
+    p16(fd + 154, fndlg.bold ? FWEIGHT_BOLD : FWEIGHT_NORMAL);   /* usWeight */
+    p16(fd + 156, FWIDTH_NORMAL);                            /* usWidth */
     int px = fndlg.pt * 3 / 2;
     p32(fd + 80, (uint32_t)px); p32(fd + 84, (uint32_t)(px / 2)); p32(fd + 88, 0);   /* lEmHeight, lXHeight, lExternalLeading */
     uint32_t fa = fd + 96;                                   /* FATTRS */
@@ -365,7 +366,7 @@ static uint32_t api_WinFontDlg(void)                /* (hwndParent, hwndOwner, p
     p16(fa, 56);
     p16(fa + 2, (uint16_t)((fndlg.italic ? 1 : 0) | (fndlg.under ? 2 : 0) | (fndlg.strike ? 0x10 : 0) | (fndlg.bold ? 0x20 : 0)));
     snprintf((char *)C.mem + fa + 8, 32, "%s%s", fndlg.fam, fndlg.bold ? " Bold" : "");
-    p16(fa + 54, FATTR_FONTUSE_OUTLINE | FATTR_FONTUSE_TRANSFORMABLE);   /* (fsFontUse) */
+    p16(fa + 54, FATTR_FONTUSE_OUTLINE | FATTR_FONTUSE_TRANSFORMABLE);   /* fsFontUse */
     return hwnd;
 }
 static uint32_t api_WinDefFontDlgProc(void) { pmwin_t *w = win(A(0)); return w ? fndlg_proc(w, A(1), A(2), A(3)) : 0; }

@@ -1,18 +1,18 @@
-/* userland/os2x86/pm.inc - Presentation Manager for x86 OS/2 programs:
- * PMWIN (windows, classes, message queues, painting, timers, message
- * boxes) and the start of PMGPI (text, lines, boxes, colours). Included
- * by os2x86.c (it uses its guest memory, callbacks and lock).
+/* userland/os2x86/pm.inc - Presentation Manager for x86 OS/2 programs: PMWIN
+ * (windows, classes, message queues, painting, timers, message boxes) and part
+ * of PMGPI (text, lines, boxes, colours). Included by os2x86.c, whose guest
+ * memory, callbacks and lock it uses.
  *
- * A frame window (WinCreateStdWindow) is a top-level window of the
- * desktop: the compositor draws its OS/2 frame (title bar, buttons,
- * border), PM here the inside, the client and its children, into the
- * frame's pixels (PM's coordinates: y up, from the bottom left). The
- * pixels go to a backend: Wayland (pm_wl.inc: an xdg-shell toplevel per
- * frame, its pointer and keys as PM's messages) or, OS2X86_PM=headless,
- * none, with OS2X86_PM_SCRIPT feeding it input ("click X Y; key abc;
- * close; shot FILE.ppm; size W H", top-left pixels) whenever the
- * program waits - run-tests.sh does so. Without either, WinInitialize
- * fails as before (and WinMessageBox, for console programs, prints). */
+ * A frame window (WinCreateStdWindow) is a top-level desktop window. The
+ * compositor draws the OS/2 frame (title bar, buttons, border); we draw the
+ * inside, the client and its children, into the frame's pixels using PM
+ * coordinates (y up from the bottom left). The pixels go to a backend:
+ * Wayland (pm_wl.inc: an xdg-shell toplevel per frame, pointer and keys as PM
+ * messages), or with OS2X86_PM=headless none at all, with OS2X86_PM_SCRIPT
+ * supplying input whenever the program waits ("click X Y; key abc; close;
+ * shot FILE.ppm; size W H", top-left pixel coordinates) - run-tests.sh uses
+ * this. With neither, WinInitialize fails, and WinMessageBox in console
+ * programs just prints. */
 
 #if defined(__clang__)
 #pragma clang diagnostic push
@@ -32,9 +32,10 @@
 
 #include "pm_api.inc"
 
-/* ── fonts: DejaVu Sans, Sans Bold, Sans Mono, Sans Mono Bold (\OS2\fonts)
- * at the sizes asked, OS/2's faces mapped onto them; pmf: the one text is
- * drawn and measured with now (a PS's, a window's, else the default) */
+/* ── fonts: DejaVu Sans, Sans Bold, Sans Mono, Sans Mono Bold (\OS2\fonts) ──
+ * loaded at the sizes asked for, with OS/2's faces mapped onto them. pmf is
+ * the font text is drawn and measured with right now (a PS's, a window's,
+ * or the default). */
 typedef struct { uint8_t *bm; int w, h, xo, yo, adv, done; } glyph_t;
 typedef struct { int face, px, ok, ascent, descent, lineh; float scale; glyph_t g[256]; } pmfont_t;
 static stbtt_fontinfo faces[4];
@@ -48,7 +49,7 @@ static pmfont_t *pmf = &font_none, *pm_deffont = &font_none;
 #define pm_lineh (pmf->lineh)
 #define pm_font_ok (pmf->ok)
 
-static pmfont_t *font_get(int face, int px)              /* (face: 0 sans, 1 bold, 2 mono, 3 mono bold) */
+static pmfont_t *font_get(int face, int px)              /* face: 0 sans, 1 bold, 2 mono, 3 mono bold */
 {
     if (px < 4) px = 4;
     if (px > 200) px = 200;
@@ -77,7 +78,7 @@ static void font_init(void)
     static const char *const files[4] = { "DejaVuSans.ttf", "DejaVuSans-Bold.ttf", "DejaVuSansMono.ttf", "DejaVuSansMono-Bold.ttf" };
     char dirs[4][PATH_MAX + 32];
     int nd = 0;
-    const char *env = getenv("OS2X86_FONT");                 /* (a file: its directory has the others) */
+    const char *env = getenv("OS2X86_FONT");                 /* a font file; the others are looked for in its directory */
     if (env) { snprintf(dirs[nd], sizeof dirs[nd], "%s", env); char *sl = strrchr(dirs[nd], '/'); if (sl) *sl = 0; else strcpy(dirs[nd], "."); nd++; }
     snprintf(dirs[nd++], sizeof dirs[0], "/h/OS2/fonts");
     snprintf(dirs[nd++], sizeof dirs[0], "%s/fonts", exe_dir);
@@ -111,7 +112,7 @@ static glyph_t *glyph(unsigned char ch)
     g->bm = stbtt_GetCodepointBitmap(&faces[pmf->face], 0, pmf->scale, ch, &g->w, &g->h, &g->xo, &g->yo);
     return g;
 }
-/* "10.Helv", "8.Helv Bold", "9.Courier", "10.System VIO": a font (points: pixels at 1.5 a point, as the default) */
+/* parse "10.Helv", "8.Helv Bold", "9.Courier", "10.System VIO" (1.5 pixels per point, like the default) */
 static pmfont_t *font_named(const char *s, int bold)
 {
     int pt = atoi(s);
@@ -131,44 +132,44 @@ static int text_w(const char *s, int n)
 /* ── windows ─────────────────────────────────────────────────────────── */
 typedef struct pmwin pmwin_t;
 typedef uint32_t (*pmproc_t)(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2);
-typedef struct { char name[64]; uint32_t proc, style, cb; int p16; } pmclass_t;   /* (p16: a 16-bit program's: proc a far 16:16 one) */
+typedef struct { char name[64]; uint32_t proc, style, cb; int p16; } pmclass_t;   /* p16: a 16-bit program's class, proc is a far 16:16 pointer */
 struct pmwin {
     int used;
     uint32_t hwnd, id, style, tid, proc;
-    int p16;                            /* (proc: a 16-bit program's, far Pascal - pm16.inc) */
-    pmproc_t iproc;                     /* the frame's, a message box's: here */
+    int p16;                            /* proc belongs to a 16-bit program (far Pascal, pm16.inc) */
+    pmproc_t iproc;                     /* built-in procedure (frames, message boxes, controls) */
     pmwin_t *parent, *owner, *client;
-    int x, y, cx, cy;                   /* in its parent, PM's way up */
+    int x, y, cx, cy;                   /* position in the parent, y up */
     char text[256], cls[64];
-    uint8_t *words;                     /* the window words */
+    uint8_t *words;                     /* window words */
     uint32_t nwords;
-    int visible, invalid, top;          /* top: a frame of the desktop's */
-    uint32_t *px;                       /* top: its pixels, top left first */
+    int visible, invalid, top;          /* top: a top-level frame */
+    uint32_t *px;                       /* top only: its pixels, top-left first */
     int pw, ph;
-    void *bk;                           /* the backend's */
-    int mb_result;                      /* a message box's answer */
+    void *bk;                           /* backend data */
+    int mb_result;                      /* message box result */
     uint32_t mb_style;
     char mb_caption[128];
-    void *ctl;                          /* a control's, a menu's state (pm_ctl.inc) */
-    int fixed;                          /* a top window that keeps its size (dialogs, message boxes) */
-    int overlay;                        /* a menu's drop-down: painted last, clicked first */
-    pmwin_t *drop;                      /* a frame: its open drop-down */
-    int dlg_done;                       /* a dialog: WinDismissDlg'd, with dlg_result */
-    pmwin_t *prev_shown;                /* a top window: the one shown before it (the script's, the focus's) */
-    uint32_t haccel;                    /* a frame's accelerator table */
-    pmfont_t *font;                     /* presentation parameters: its font (PP_FONTNAMESIZE), */
+    void *ctl;                          /* control or menu state (pm_ctl.inc) */
+    int fixed;                          /* top-level window with a fixed size (dialogs, message boxes) */
+    int overlay;                        /* menu drop-down: painted last, hit-tested first */
+    pmwin_t *drop;                      /* frame: its open drop-down */
+    int dlg_done;                       /* dialog: dismissed (WinDismissDlg), see dlg_result */
+    pmwin_t *prev_shown;                /* top-level window shown before this one (for the script and focus) */
+    uint32_t haccel;                    /* frame's accelerator table */
+    pmfont_t *font;                     /* presentation parameters: font (PP_FONTNAMESIZE), */
     char font_name[48];
-    int has_fg, has_bg;                 /* ... its colours (PP_FOREGROUNDCOLOR, PP_BACKGROUNDCOLOR) */
+    int has_fg, has_bg;                 /* and colours (PP_FOREGROUNDCOLOR, PP_BACKGROUNDCOLOR) */
     uint32_t pp_fg, pp_bg;
     uint32_t dlg_result;
     uint32_t helpi;                     /* WinAssociateHelpInstance */
 };
-#define MAXWIN 1024                     /* (windows, controls, and bitmaps: they're hidden windows) */
+#define MAXWIN 1024                     /* windows, controls and bitmaps (bitmaps are hidden windows) */
 static pmwin_t pmwins[MAXWIN];
 static pmclass_t pmclasses[64];
 static int npmclasses;
 static uint32_t pm_focus;
-static uint32_t pm_capture;             /* the window that has the mouse (a scroll bar's thumb, dragged) */
+static uint32_t pm_capture;             /* window that has the mouse captured (e.g. a dragged scroll bar thumb) */
 static int pm_inited;
 static pmwin_t *pm_last_shown;
 static const char *win_title(pmwin_t *f) { return f->mb_caption[0] ? f->mb_caption : f->text; }
@@ -184,8 +185,8 @@ static pmwin_t *win_child(pmwin_t *p, uint32_t id)
     return 0;
 }
 static pmwin_t *frame_of(pmwin_t *w) { while (w && !w->top) w = w->parent; return w; }
-static int shown(pmwin_t *w) { for (; w && !w->top; w = w->parent) if (!w->visible) return 0; return w != 0; }   /* (it and every parent up to its frame) */
-static void win_abs(pmwin_t *w, int *x, int *y)         /* its bottom left, in its frame */
+static int shown(pmwin_t *w) { for (; w && !w->top; w = w->parent) if (!w->visible) return 0; return w != 0; }   /* visible along with every parent up to its frame */
+static void win_abs(pmwin_t *w, int *x, int *y)         /* bottom left of w within its frame */
 {
     *x = *y = 0;
     for (; w && !w->top; w = w->parent) { *x += w->x; *y += w->y; }
@@ -196,14 +197,14 @@ typedef struct {
     void (*show)(pmwin_t *f, int on);
     void (*present)(pmwin_t *f);
     void (*title)(pmwin_t *f);
-    int  (*idle)(struct timespec *dl);   /* nothing to do: wait (0: nothing will ever come) */
-    void (*clip_set)(const char *text);  /* the desktop's clipboard: ours now (text, LF lines, Latin-1) */
-    char *(*clip_get)(void);             /* ... its text, when it's another program's (malloc'd, or 0) */
-    void (*cursor)(pmwin_t *ptr);        /* the pointer's shape, over our windows */
+    int  (*idle)(struct timespec *dl);   /* nothing to do: wait (returns 0 if nothing will ever arrive) */
+    void (*clip_set)(const char *text);  /* we own the desktop clipboard now (text, LF lines, Latin-1) */
+    char *(*clip_get)(void);             /* text of another program's clipboard (malloc'd, or 0) */
+    void (*cursor)(pmwin_t *ptr);        /* pointer shape over our windows */
 } pmback_t;
 static const pmback_t *pmb;
 
-/* message queues: one a thread */
+/* message queues, one per thread */
 typedef struct { uint32_t hwnd, msg, mp1, mp2, time; int32_t x, y; } pmmsg_t;
 typedef struct { int used; uint32_t tid; pmmsg_t m[512]; int n; } pmq_t;
 static pmq_t pmqs[MAXTHR];
@@ -218,9 +219,9 @@ static void post(pmwin_t *w, uint32_t hwnd, uint32_t msg, uint32_t mp1, uint32_t
     pthread_cond_broadcast(&gcv);
 }
 
-static pmfont_t *win_font(pmwin_t *w) { for (; w; w = w->parent) if (w->font) return w->font; return pm_deffont; }   /* (a parent's goes to its children) */
+static pmfont_t *win_font(pmwin_t *w) { for (; w; w = w->parent) if (w->font) return w->font; return pm_deffont; }   /* inherited from the parent */
 static uint32_t guest_call16(uint32_t fp, uint32_t hwnd, uint32_t msg, uint32_t mp1, uint32_t mp2);
-static int pm_dlg16;                        /* (a dialog being made for a 16-bit program: its procedure 16-bit) */
+static int pm_dlg16;                        /* creating a dialog for a 16-bit program: its procedure is 16-bit */
 static uint32_t pm_send(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
 {
     if (!w) return 0;
@@ -228,7 +229,7 @@ static uint32_t pm_send(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
         pmfont_t *save = pmf;
         pmf = win_font(w);
         uint32_t r = w->iproc(w, msg, mp1, mp2);
-        if (!r && (msg == WM_BUTTON1DBLCLK || msg == WM_BUTTON2DBLCLK || msg == WM_BUTTON3DBLCLK))   /* (a double-click a control doesn't take: one more press) */
+        if (!r && (msg == WM_BUTTON1DBLCLK || msg == WM_BUTTON2DBLCLK || msg == WM_BUTTON3DBLCLK))   /* a double-click the control doesn't handle counts as another press */
             r = w->iproc(w, msg == WM_BUTTON1DBLCLK ? WM_BUTTON1DOWN : msg == WM_BUTTON2DBLCLK ? WM_BUTTON2DOWN : WM_BUTTON3DOWN, mp1, mp2);
         pmf = save;
         return r;
@@ -271,17 +272,17 @@ static uint32_t pm_rgb(int32_t c, int rgbmode, int back)
     case SYSCLR_BACKGROUND: return C_DESKTOP;
     case SYSCLR_HILITEFOREGROUND: case SYSCLR_BUTTONLIGHT: return C_LIGHT;
     case SYSCLR_BUTTONDARK: return C_DARK;
-    default: return C_FACE;                  /* (button middle, dialogs, menus, ...) */
+    default: return C_FACE;                  /* button middle, dialogs, menus, ... */
     }
 }
 
 typedef struct { int face, px, outline, used; } lfont_t;
 typedef struct { int used; uint32_t hwnd; int32_t color, back; int rgb, x, y, painting;
-                 pmfont_t *font; int lcid, boxpx; lfont_t *lf; void *geo; } pmps_t;   /* (geo: pm_geo.inc's) */   /* (font: GpiSetCharSet's; lf: its logical fonts, 255) */
+                 pmfont_t *font; int lcid, boxpx; lfont_t *lf; void *geo; } pmps_t;   /* font: from GpiSetCharSet; lf: its 255 logical fonts; geo: pm_geo.inc */
 static pmps_t pmpss[64];
 static pmps_t *ps_get(uint32_t h) { h -= 0xA000; return h < 64 && pmpss[h].used ? &pmpss[h] : 0; }
 
-/* a pixel of a PS's window, in its coordinates (clipped to the window) */
+/* pixel in a PS's window, in its coordinates, clipped to the window */
 static void pel(pmwin_t *w, int x, int y, uint32_t rgb)
 {
     if (!w || x < 0 || y < 0 || x >= w->cx || y >= w->cy) return;
@@ -363,7 +364,7 @@ static void button_frame(pmwin_t *w, int x0, int y0, int x1, int y1, int down, i
 static void present(pmwin_t *w)
 {
     pmwin_t *f = frame_of(w);
-    if (f && f->drop && w != f->drop) f->drop->invalid = 1;      /* (the drop-down again, over it) */
+    if (f && f->drop && w != f->drop) f->drop->invalid = 1;      /* repaint the drop-down on top */
     if (f && f->visible && pmb && pmb->present) pmb->present(f);
 }
 
@@ -450,13 +451,13 @@ static void win_destroy(pmwin_t *w)
     w->ctl = 0;
     w->used = 0;
 }
-/* the deepest visible window under (x, y) of frame f (its pixels, PM's way up) */
+/* deepest visible window at (x, y) in frame f (frame pixels, y up) */
 static pmwin_t *win_at(pmwin_t *f, int x, int y)
 {
     if (f->drop && f->drop->visible && x >= f->drop->x && y >= f->drop->y && x < f->drop->x + f->drop->cx && y < f->drop->y + f->drop->cy)
         return f->drop;
     pmwin_t *best = f->client ? f->client : f;
-    for (int i = 0; i < MAXWIN; i++) {                 /* (the frame's controls - menu bar, scroll bars - beside the client) */
+    for (int i = 0; i < MAXWIN; i++) {                 /* the frame's own controls (menu bar, scroll bars) next to the client */
         pmwin_t *c = &pmwins[i];
         if (c->used && c->parent == f && c->visible && c != f->client && f->client && !c->overlay &&
             x >= c->x && y >= c->y && x < c->x + c->cx && y < c->y + c->cy) { best = c; break; }
@@ -464,7 +465,7 @@ static pmwin_t *win_at(pmwin_t *f, int x, int y)
     for (int again = 1; again; ) {
         again = 0;
         pmwin_t *hit = 0;
-        for (int i = 0; i < MAXWIN; i++) {               /* (the last created is on top: a group box's under its buttons) */
+        for (int i = 0; i < MAXWIN; i++) {               /* the last created is on top (a group box sits under its buttons) */
             pmwin_t *c = &pmwins[i];
             if (!c->used || c->parent != best || !c->visible || c->overlay) continue;
             int ax, ay;
@@ -477,11 +478,11 @@ static pmwin_t *win_at(pmwin_t *f, int x, int y)
 }
 
 static void menu_close(pmwin_t *f);
-static int pm_kc;                                            /* the Shift, Ctrl and Alt keys held now (KC_*) */
-static uint32_t pm_mouse_frame;             /* the frame the pointer was last over */
-static uint32_t pm_b2_hwnd;                                  /* button 2 down in it, at (pm_b2_x, pm_b2_y) of its frame: a drag, when it moves */
+static int pm_kc;                                            /* Shift, Ctrl and Alt currently held (KC_*) */
+static uint32_t pm_mouse_frame;             /* frame the pointer was last over */
+static uint32_t pm_b2_hwnd;                                  /* button 2 went down here at (pm_b2_x, pm_b2_y); moving starts a drag */
 static int pm_b2_x, pm_b2_y, pm_b2_began;
-/* the backends' input, frame pixels top left: as PM messages */
+/* backend input (frame pixels, top left) turned into PM messages */
 static void pm_mouse(pmwin_t *f, int px, int py, int button, int down)
 {
     int x = px, y = f->ph - 1 - py;
@@ -491,9 +492,9 @@ static void pm_mouse(pmwin_t *f, int px, int py, int button, int down)
     int ax, ay;
     win_abs(w, &ax, &ay);
     uint32_t mp1 = (uint32_t)((x - ax) & 0xFFFF) | (uint32_t)((y - ay) & 0xFFFF) << 16;
-    uint32_t mp2 = (uint32_t)pm_kc << 16;                    /* (hit test, the keys held) */
+    uint32_t mp2 = (uint32_t)pm_kc << 16;                    /* hit test, keys held */
     if (!button) {
-        if (pm_b2_hwnd && !pm_b2_began && (abs(x - pm_b2_x) > 3 || abs(y - pm_b2_y) > 3)) {   /* button 2 held, moved: a drag starts */
+        if (pm_b2_hwnd && !pm_b2_began && (abs(x - pm_b2_x) > 3 || abs(y - pm_b2_y) > 3)) {   /* button 2 held and moved: start a drag */
             pmwin_t *s = win(pm_b2_hwnd);
             pm_b2_began = 1;
             if (s) { int sx, sy; win_abs(s, &sx, &sy); post(s, s->hwnd, WM_BEGINDRAG, 1, (uint32_t)((pm_b2_x - sx) & 0xFFFF) | (uint32_t)((pm_b2_y - sy) & 0xFFFF) << 16); }
@@ -509,7 +510,7 @@ static void pm_mouse(pmwin_t *f, int px, int py, int button, int down)
     static int last_b, last_x, last_y;
     static uint32_t last_w;
     uint32_t msgdown = dn[button - 1];
-    if (down) {                                              /* (a second press, soon and near: a double-click) */
+    if (down) {                                              /* a second press soon and close by: double-click */
         uint64_t now = ms_now();
         if (last_b == button && last_w == w->hwnd && now - last_t < 500 && abs(x - last_x) < 5 && abs(y - last_y) < 5) {
             msgdown = button == 1 ? WM_BUTTON1DBLCLK : button == 2 ? WM_BUTTON2DBLCLK : WM_BUTTON3DBLCLK;
@@ -524,7 +525,7 @@ static int key_hook(pmwin_t *f, int ch, int vk, int scan, int kc);
 static void pm_key(pmwin_t *f, int ch, int vk, int scan, int kc)
 {
     kc |= pm_kc & (KC_SHIFT | KC_CTRL | KC_ALT);
-    if ((kc & KC_CTRL) && ch >= 1 && ch <= 26) ch = 'a' + ch - 1;     /* (Ctrl+D: 'd', with KC_CTRL, as PM says it) */
+    if ((kc & KC_CTRL) && ch >= 1 && ch <= 26) ch = 'a' + ch - 1;     /* Ctrl+D arrives as 'd' with KC_CTRL, like PM */
     if (key_hook(f, ch, vk, scan, kc)) return;
     pmwin_t *w = win(pm_focus);
     if (!w || frame_of(w) != f) w = f->client ? f->client : f;
@@ -549,7 +550,7 @@ static void pm_resize(pmwin_t *f, int cx, int cy)
     invalidate(f);
 }
 
-/* ── the headless backend: a script for its input ───────────────────── */
+/* ── headless backend: input from a script ── */
 static char *pm_script;
 static void hl_shot(const char *file)
 {
@@ -563,7 +564,7 @@ static void hl_shot(const char *file)
 }
 static int hl_idle(struct timespec *dl)
 {
-    /* the next step of the script, while there's one */
+    /* run the script's next step, if any */
     while (pm_script && *pm_script) {
         char *s = pm_script, *e = strchr(s, ';');
         if (e) *e = 0;
@@ -575,14 +576,14 @@ static int hl_idle(struct timespec *dl)
         if (!*s) continue;
         if (trace) fprintf(stderr, "[pm] script: %s\n", s);
         pm_kc = 0;
-        if (!strncmp(s, "shift ", 6)) { pm_kc = KC_SHIFT; s += 6; }   /* (shift vkey left, shift click X Y) */
+        if (!strncmp(s, "shift ", 6)) { pm_kc = KC_SHIFT; s += 6; }   /* shift vkey left, shift click X Y */
         if (sscanf(s, "shot %255s", a) == 1) { hl_shot(a); continue; }
         if (!f) { fprintf(stderr, "[pm] %s: no window\n", s); continue; }
         if (sscanf(s, "click %d %d", &x, &y) == 2) { pm_mouse(f, x, y, 1, 1); pm_mouse(f, x, y, 1, 0); return 1; }
         if (sscanf(s, "altclick %d %d", &x, &y) == 2) { pm_kc = KC_ALT; pm_mouse(f, x, y, 1, 1); pm_mouse(f, x, y, 1, 0); return 1; }
         if (sscanf(s, "rdown %d %d", &x, &y) == 2) { pm_mouse(f, x, y, 2, 1); return 1; }
         if (sscanf(s, "rup %d %d", &x, &y) == 2) { pm_mouse(f, x, y, 2, 0); return 1; }
-        if (!strncmp(s, "ctrl+", 5)) { pm_kc = KC_CTRL; s += 5; }   /* (ctrl+rdrag ...: with Ctrl held) */
+        if (!strncmp(s, "ctrl+", 5)) { pm_kc = KC_CTRL; s += 5; }   /* ctrl+rdrag ...: with Ctrl held */
         if (sscanf(s, "rclick %d %d", &x, &y) == 2) { pm_mouse(f, x, y, 2, 1); pm_mouse(f, x, y, 2, 0); return 1; }
         if (sscanf(s, "move %d %d", &x, &y) == 2) { pm_mouse(f, x, y, 0, 0); return 1; }
         if (sscanf(s, "size %d %d", &x, &y) == 2) { pm_resize(f, x, y); return 1; }
@@ -607,7 +608,7 @@ static int hl_idle(struct timespec *dl)
             if (vk) { pm_key(f, ch, vk, 0, 0); return 1; }
         }
         int x2, y2;
-        if (sscanf(s, "rdrag %d %d %d %d", &x, &y, &x2, &y2) == 4) {   /* button 2: PM's dragging */
+        if (sscanf(s, "rdrag %d %d %d %d", &x, &y, &x2, &y2) == 4) {   /* button 2 drag, PM style */
             pm_mouse(f, x, y, 2, 1); pm_mouse(f, (x + x2) / 2, (y + y2) / 2, 0, 0); pm_mouse(f, x2, y2, 0, 0); pm_mouse(f, x2, y2, 2, 0);
             return 1;
         }
@@ -659,15 +660,15 @@ static int pm_take_raw(pmq_t *q, uint32_t filt, uint32_t first, uint32_t last, i
         if (remove) { memmove(q->m + i, q->m + i + 1, (size_t)(q->n - i - 1) * sizeof *q->m); q->n--; }
         return 1;
     }
-    /* then the windows to paint, then the timers that are due */
+    /* then windows to paint, then timers that are due */
     for (int pass = 0; pass < 2; pass++)
     for (int i = 0; i < MAXWIN; i++) {
         pmwin_t *w = &pmwins[i];
         if (!w->used || !w->invalid || w->tid != me->tid || !w->visible || (filt && w->hwnd != filt)) continue;
         if (w->overlay != pass) continue;
-        if (!w->top && !shown(w)) continue;                /* (a hidden parent's: not painted) */
+        if (!w->top && !shown(w)) continue;                /* child of a hidden parent: skip */
         if (!frame_of(w) || !frame_of(w)->visible) continue;
-        if (w->iproc == frame_proc) { w->invalid = 0; continue; }       /* (a frame: its client paints) */
+        if (w->iproc == frame_proc) { w->invalid = 0; continue; }       /* frames: the client paints */
         if (remove) w->invalid = 0;
         *out = (pmmsg_t){ w->hwnd, WM_PAINT, 0, 0, (uint32_t)ms_now(), 0, 0 };
         return 1;
@@ -688,8 +689,8 @@ static void put_qmsg(uint32_t p, const pmmsg_t *m)
     p32(p, m->hwnd); p32(p + 4, m->msg); p32(p + 8, m->mp1); p32(p + 12, m->mp2);
     p32(p + 16, m->time); p32(p + 20, (uint32_t)m->x); p32(p + 24, (uint32_t)m->y); p32(p + 28, 0);
 }
-/* the next message, waiting for one */
-/* the keys' and buttons' state as of the message the program has taken (PM's WinGetKeyState is synchronous with its queue) */
+/* next message, waiting if needed */
+/* key and button state as of the message the program last took (WinGetKeyState is synchronous with the queue) */
 static int pm_sync_kc, pm_sync_buttons;
 static int pm_take(pmq_t *q, uint32_t filt, uint32_t first, uint32_t last, int remove, pmmsg_t *out)
 {
@@ -761,7 +762,7 @@ static uint32_t accel_new(uint32_t t);
 static void help_request(pmwin_t *top, uint32_t id);
 static uint32_t frame_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
 {
-    if (msg == WM_HELP) { help_request(w, mp1); return 0; }   /* (the help manager's) */
+    if (msg == WM_HELP) { help_request(w, mp1); return 0; }   /* for the help manager */
     if (msg == WM_COMMAND && w->client) { post(w->client, w->client->hwnd, msg, mp1, mp2); return 0; }
     if ((msg == WM_VSCROLL || msg == WM_HSCROLL || msg == WM_CONTROL) && w->client) return pm_send(w->client, msg, mp1, mp2);
     if (msg == WM_CLOSE) { if (w->client) post(w->client, w->client->hwnd, WM_CLOSE, 0, 0); else post(w, 0, WM_QUIT, 0, 0); }
@@ -770,7 +771,7 @@ static uint32_t frame_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
 /* a hidden standard frame with the FCF_ parts asked for */
 static pmwin_t *frame_new(uint32_t style, uint32_t id, const char *title, int cx, int cy, uint32_t fcf, uint32_t hmod)
 {
-    pmwin_t *f = win_new(0, "#1", style & ~WS_VISIBLE_, id);   /* (its id: idResources, as help tables know it) */
+    pmwin_t *f = win_new(0, "#1", style & ~WS_VISIBLE_, id);   /* its id is idResources, which help tables refer to */
     if (!f) return 0;
     f->top = 1;
     f->iproc = frame_proc;
@@ -827,7 +828,7 @@ static uint32_t api_WinCreateWindow(void)
     w->owner = win(A(8));
     char *t = A(2) ? gs(A(2)) : 0;
     snprintf(w->text, sizeof w->text, "%s", t ? t : "");
-    if (!p) {                                /* a child of the desktop: a frame of its own */
+    if (!p) {                                /* child of the desktop: make it a frame */
         w->top = 1;
         frame_pixels(w, w->cx > 0 ? w->cx : 200, w->cy > 0 ? w->cy : 100);
         if (pmb->title) pmb->title(w);
@@ -863,7 +864,7 @@ static uint32_t api_WinPeekMsg(void)          /* (hab, pqmsg, hwndFilter, msgFir
     if (!q) return 0;
     pmmsg_t m;
     if (!pm_take(q, A(2), A(3), A(4), A(5) & 1, &m)) {
-        pmb->idle(0);                        /* (the script's next step, if any) */
+        pmb->idle(0);                        /* run the script's next step, if any */
         return 0;
     }
     put_qmsg(A(1), &m);
@@ -903,12 +904,12 @@ static uint32_t def_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
     switch (msg) {
     case WM_CLOSE: post(w, 0, WM_QUIT, 0, 0); return 0;
     case WM_PAINT: w->invalid = 0; return 0;
-    case WM_CHAR: return !w->top && w->owner ? pm_send(w->owner, msg, mp1, mp2) : 0;   /* (a key nobody took: up to the owner) */
-    case WM_HELP:                                            /* up to the frame, the help manager's there */
+    case WM_CHAR: return !w->top && w->owner ? pm_send(w->owner, msg, mp1, mp2) : 0;   /* unhandled key: pass it to the owner */
+    case WM_HELP:                                            /* pass up to the frame, where the help manager is */
         if (w->top) help_request(w, mp1);
         else if (w->owner ? w->owner : w->parent) pm_send(w->owner ? w->owner : w->parent, msg, mp1, mp2);
         return 0;
-    case WM_MOUSEMOVE: pm_set_pointer(sys_pointer(SPTR_ARROW)); return 1;               /* (as PM's) */
+    case WM_MOUSEMOVE: pm_set_pointer(sys_pointer(SPTR_ARROW)); return 1;               /* like PM */
     case WM_ERASEBACKGROUND: return 0;
     }
     return 0;
@@ -1164,8 +1165,8 @@ static uint32_t api_WinStopTimer(void)
 
 static uint32_t sys_pointer(uint32_t id);
 static void ptr_draw(pmwin_t *t, int x, int y, pmwin_t *p, uint32_t fs);
-/* message boxes: a frame of their own, modal (the program's other
- * windows still get their messages meanwhile) */
+/* message boxes: their own modal frame (the program's other windows still
+ * get messages meanwhile) */
 static const char *const mb_labels[9][3] = {
     { "OK" }, { "OK", "Cancel" }, { "Retry", "Cancel" }, { "Abort", "Retry", "Ignore" }, { "Yes", "No" },
     { "Yes", "No", "Cancel" }, { "Cancel" }, { "Enter" }, { "Enter", "Cancel" },
@@ -1242,7 +1243,7 @@ static uint32_t pm_msgbox(const char *text, const char *cap, uint32_t style)
     int k = (int)(style & 15) < 9 ? (int)(style & 15) : 0;
     int def = (int)((style >> 8) & 3);
     if (def >= mb_count(k)) def = 0;
-    if (!pmb || !myq()) {                    /* no PM: on stderr, the default answer */
+    if (!pmb || !myq()) {                    /* no PM: print to stderr and return the default */
         fprintf(stderr, "%s: %s\n", cap ? cap : "Error", text ? text : "");
         return (uint32_t)mb_ids[k][def];
     }
@@ -1253,7 +1254,7 @@ static uint32_t pm_msgbox(const char *text, const char *cap, uint32_t style)
     w->iproc = mb_proc;
     w->mb_style = style;
     snprintf(w->text, sizeof w->text, "%s", text ? text : "");
-    /* the size: the longest line, the lines */
+    /* size: the longest line, the number of lines */
     int lines = 1, widest = 0;
     for (const char *s = w->text; ; ) {
         const char *e = strchr(s, '\n');
@@ -1264,7 +1265,7 @@ static uint32_t pm_msgbox(const char *text, const char *cap, uint32_t style)
         s = e + 1;
     }
     int cx = widest + 36, cy = lines * pm_lineh + 72;
-    if ((style >> 4) & 7) { cx += 40; if (cy < 32 + 28 + 48) cy = 32 + 28 + 48; }   /* (the icon's room) */
+    if ((style >> 4) & 7) { cx += 40; if (cy < 32 + 28 + 48) cy = 32 + 28 + 48; }   /* room for the icon */
     if (cx < 3 * 92 + 24) cx = 3 * 92 + 24;
     frame_pixels(w, cx, cy);
     snprintf(w->mb_caption, sizeof w->mb_caption, "%s", cap && *cap ? cap : "Message");
@@ -1278,7 +1279,7 @@ static uint32_t pm_msgbox(const char *text, const char *cap, uint32_t style)
     while (!w->mb_result) {
         pmmsg_t m;
         pm_wait_msg(q, 0, 0, 0, &m);
-        if (m.msg == WM_QUIT) { post(0, 0, WM_QUIT, 0, 0); w->mb_result = 0xFFFF; break; }   /* (again, for the loop outside) */
+        if (m.msg == WM_QUIT) { post(0, 0, WM_QUIT, 0, 0); w->mb_result = 0xFFFF; break; }   /* repost it for the outer loop */
         pmwin_t *t = win(m.hwnd);
         if (t) pm_send(t, m.msg, m.mp1, m.mp2);
         if (!win(hwnd)) break;
@@ -1322,9 +1323,9 @@ static uint32_t char_string(pmps_t *ps, int n, uint32_t ps_str)
     pmfont_t *save = pmf;
     pmf = ps_font(ps);
     int dpm = ps_dpm(ps);
-    if (!ps->font && dpm != 3780) pmf = font_get(pmf->face, (int)lround(15.0 * dpm / 3780));   /* (a printer's: the default font at its resolution) */
+    if (!ps->font && dpm != 3780) pmf = font_get(pmf->face, (int)lround(15.0 * dpm / 3780));   /* printer PS: default font at its resolution */
     int dx, dy, wx, wy;
-    ps_to_dev(ps, ps->x, ps->y, &dx, &dy);                   /* (the world's position on the device; the end back in the world's) */
+    ps_to_dev(ps, ps->x, ps->y, &dx, &dy);                   /* world position to device; the end comes back in world coordinates */
     dx = text_at(w, dx, dy, s, n, pm_rgb(ps->color, ps->rgb, 0));
     ps_from_dev(ps, dx, dy, &wx, &wy);
     ps->x = wx; ps->y = wy;
@@ -1354,7 +1355,7 @@ static uint32_t api_GpiCreateLogColorTable(void)   /* (hps, flOptions, lFormat, 
     ps->rgb = A(2) == LCOLF_RGB;             /* colours are RGB */
     return 1;
 }
-/* a font's FONTMETRICS (n bytes at p) */
+/* fill in a FONTMETRICS (n bytes at p) */
 static void put_metrics(uint32_t p, uint32_t n, pmfont_t *f, const char *family, const char *face, int outline, int pt, uint32_t match)
 {
     uint8_t fm[228] = { 0 };
@@ -1405,7 +1406,7 @@ static uint32_t api_GpiQueryTextBox(void)     /* (hps, lCount1, pchString, lCoun
 #include "pm_gpi.inc"
 
 /* ── logical fonts, presentation parameters ─────────────────────────── */
-/* OS/2's faces here: (family, face, ours, outline, points) */
+/* OS/2 faces we have: (family, face, ours, outline, points) */
 static const struct { const char *family, *face; int ours, outline, pt; } font_list[] = {
     { "Helvetica", "Helvetica", 0, 1, 12 }, { "Helvetica", "Helvetica Bold", 1, 1, 12 },
     { "Courier", "Courier", 2, 1, 12 }, { "Courier", "Courier Bold", 3, 1, 12 },
@@ -1418,7 +1419,7 @@ static const struct { const char *family, *face; int ours, outline, pt; } font_l
     { "Tms Rmn", "Tms Rmn", 0, 0, 10 }, { "Tms Rmn", "Tms Rmn", 0, 0, 12 },
 };
 #define NFONTLIST ((int)(sizeof font_list / sizeof *font_list))
-static uint32_t api_GpiQueryFonts(void)       /* (hps, flOptions, pszFacename, plReqFonts, lMetricsLength, afmMetrics): those not returned */
+static uint32_t api_GpiQueryFonts(void)       /* (hps, flOptions, pszFacename, plReqFonts, lMetricsLength, afmMetrics); returns how many weren't returned */
 {
     char *want = A(2) ? gs(A(2)) : 0;
     uint32_t pn = A(3), len = A(4), arr = A(5);
@@ -1446,7 +1447,7 @@ static uint32_t api_GpiCreateLogFont(void)    /* (hps, pName, lLcid, pfat): FONT
     uint32_t sel = g16(fa + 2), use = g16(fa + 54), match = g32(fa + 4);
     int32_t mbe = (int32_t)g32(fa + 44);
     int k = -1;
-    if (match >= 1 && (int)match <= NFONTLIST && !strcasecmp(face, font_list[match - 1].face)) k = (int)match - 1;   /* (lMatch: GpiQueryFonts's) */
+    if (match >= 1 && (int)match <= NFONTLIST && !strcasecmp(face, font_list[match - 1].face)) k = (int)match - 1;   /* lMatch from GpiQueryFonts */
     pmfont_t *nf = font_named(face, (sel & 0x20) != 0);
     lfont_t *l = &ps->lf[id];
     l->used = 1;
@@ -1515,13 +1516,13 @@ static void pp_set(pmwin_t *w, uint32_t id, uint32_t cb, uint32_t pv)
         w->font = font_named(w->font_name, 0);
     } else if ((id == PP_FOREGROUNDCOLOR || id == PP_BACKGROUNDCOLOR) && cb >= 4) {   /* RGB */
         if (id == 1) { w->pp_fg = g32(pv) & 0xFFFFFF; w->has_fg = 1; } else { w->pp_bg = g32(pv) & 0xFFFFFF; w->has_bg = 1; }
-    } else if ((id == 2 || id == 4) && cb >= 4) {   /* ... the INDEX ones */
+    } else if ((id == 2 || id == 4) && cb >= 4) {   /* the INDEX versions */
         uint32_t c = pm_rgb((int32_t)g32(pv), 0, id == 4);
         if (id == 2) { w->pp_fg = c; w->has_fg = 1; } else { w->pp_bg = c; w->has_bg = 1; }
     }
     invalidate(w);
 }
-static void pp_apply(pmwin_t *w, uint32_t pp)       /* a PRESPARAMS: cb, then (id, cb, value)s */
+static void pp_apply(pmwin_t *w, uint32_t pp)       /* apply a PRESPARAMS: cb, then (id, cb, value) entries */
 {
     if (!pp || !ok(pp, 4)) return;
     uint32_t cb = g32(pp), p = pp + 4, end = pp + 4 + cb;
@@ -1532,7 +1533,7 @@ static void pp_apply(pmwin_t *w, uint32_t pp)       /* a PRESPARAMS: cb, then (i
     }
 }
 static uint32_t api_WinSetPresParam(void) { pmwin_t *w = win(A(0)); if (!w) return 0; pp_set(w, A(1), A(2), A(3)); return 1; }   /* (hwnd, id, cbParam, pbParam) */
-static uint32_t api_WinQueryPresParam(void)   /* (hwnd, id1, id2, pulId, cbBuf, pbBuf, fs): bytes */
+static uint32_t api_WinQueryPresParam(void)   /* (hwnd, id1, id2, pulId, cbBuf, pbBuf, fs); returns bytes */
 {
     pmwin_t *w = win(A(0));
     uint32_t ids[2] = { A(1), A(2) }, cb = A(4), b = A(5);
@@ -1574,12 +1575,13 @@ static pmwin_t *ptr_get(uint32_t h);
 #include "pm_help.inc"
 #include "pm_print.inc"
 
-/* ── the clipboard (WinOpenClipbrd & co.): CF_TEXT, CF_BITMAP; on the
- * desktop the Wayland one (pm_wl.inc), so text goes between programs ── */
-static char *clip_text;                    /* (the program's form: CR LF lines, 8-bit characters) */
+/* ── clipboard (WinOpenClipbrd etc.): CF_TEXT, CF_BITMAP ──
+ * On the desktop this is the Wayland clipboard (pm_wl.inc), so text moves
+ * between programs. */
+static char *clip_text;                    /* in the program's form: CR LF lines, 8-bit characters */
 static int clip_ours;
 static uint32_t clip_bitmap;
-static void clip_put(const char *s)        /* (s: as programs have it) */
+static void clip_put(const char *s)        /* s in the program's form */
 {
     free(clip_text);
     clip_text = strdup(s);
@@ -1593,11 +1595,11 @@ static void clip_put(const char *s)        /* (s: as programs have it) */
         free(lf);
     }
 }
-static const char *clip_take(void)         /* the clipboard's text, the program's form, or 0 */
+static const char *clip_take(void)         /* clipboard text in the program's form, or 0 */
 {
     if (!clip_ours && pmb && pmb->clip_get) {
         char *t = pmb->clip_get();
-        if (t) {                                 /* (LF lines: CR LF, as OS/2's) */
+        if (t) {                                 /* LF lines to CR LF, like OS/2 */
             size_t n = strlen(t), k = 0;
             char *c = malloc(2 * n + 1);
             for (size_t i = 0; i < n; i++) { if (t[i] == '\n' && (i == 0 || t[i - 1] != '\r')) c[k++] = '\r'; c[k++] = t[i]; }
@@ -1609,7 +1611,7 @@ static const char *clip_take(void)         /* the clipboard's text, the program'
     }
     return clip_text;
 }
-static __attribute__((unused)) void clip_lost(void) { clip_ours = 0; }   /* (the backend: another program has it now) */
+static __attribute__((unused)) void clip_lost(void) { clip_ours = 0; }   /* backend: another program owns the clipboard now */
 static uint32_t api_WinOpenClipbrd(void) { return 1; }
 static uint32_t api_WinCloseClipbrd(void) { return 1; }
 static uint32_t api_WinEmptyClipbrd(void) { free(clip_text); clip_text = 0; clip_bitmap = 0; clip_ours = 1; return 1; }
@@ -1619,7 +1621,7 @@ static uint32_t api_WinSetClipbrdData(void)       /* (hab, ulData, fmt, rgfFmtIn
     if (A(2) == CF_BITMAP) { clip_bitmap = A(1); return 1; }                          /* a bitmap's handle */
     return 0;
 }
-static uint32_t api_WinQueryClipbrdData(void)     /* (hab, fmt): CF_TEXT's in our memory, for the program */
+static uint32_t api_WinQueryClipbrdData(void)     /* (hab, fmt): CF_TEXT copied into our memory for the program */
 {
     if (A(1) == 2) return clip_bitmap;
     if (A(1) != 1) return 0;
@@ -1636,7 +1638,7 @@ static uint32_t api_WinQueryClipbrdFmtInfo(void)  /* (hab, fmt, prgfFmtInfo) */
     if (have && A(2)) p32(A(2), A(1) == 1 ? CFI_POINTER : CFI_HANDLE);
     return (uint32_t)have;
 }
-static uint32_t api_WinEnumClipbrdFmts(void)      /* (hab, fmt): the next one there */
+static uint32_t api_WinEnumClipbrdFmts(void)      /* (hab, fmt): the next format */
 {
     if (A(1) < 1 && clip_take()) return 1;
     if (A(1) < 2 && clip_bitmap) return 2;
@@ -1645,7 +1647,7 @@ static uint32_t api_WinEnumClipbrdFmts(void)      /* (hab, fmt): the next one th
 static uint32_t api_WinSetClipbrdOwner(void) { return 1; }
 static uint32_t api_WinQueryClipbrdOwner(void) { return 0; }
 
-/* the pointer over our windows (WinSetPointer) */
+/* pointer shape over our windows (WinSetPointer) */
 static void pm_set_pointer(uint32_t hptr)
 {
     pmwin_t *p = ptr_get(hptr);
@@ -1654,15 +1656,15 @@ static void pm_set_pointer(uint32_t hptr)
     if (pmb && pmb->cursor) pmb->cursor(p);
 }
 
-/* ── the pointer, the keys' state, points between windows ── */
-static void desk_xy(pmwin_t *w, int *x, int *y)            /* w's bottom left on the desktop */
+/* ── pointer, key state, mapping points between windows ── */
+static void desk_xy(pmwin_t *w, int *x, int *y)            /* bottom left of w on the desktop */
 {
     int ax = 0, ay = 0;
     pmwin_t *f = w ? frame_of(w) : 0;
     if (w) win_abs(w, &ax, &ay);
     *x = ax + (f ? f->x : 0); *y = ay + (f ? f->y : 0);
 }
-static uint32_t api_WinGetKeyState(void)          /* (hwndDesktop, vk): 0x8000 down, as of the message being handled */
+static uint32_t api_WinGetKeyState(void)          /* (hwndDesktop, vk): 0x8000 if down, as of the message being handled */
 {
     switch (A(1)) {
     case VK_BUTTON1: case VK_BUTTON2: case VK_BUTTON3: return pm_sync_buttons & (1 << (A(1) - 1)) ? 0x8000 : 0;
@@ -1673,16 +1675,16 @@ static uint32_t api_WinGetKeyState(void)          /* (hwndDesktop, vk): 0x8000 d
     return 0;
 }
 static uint32_t api_WinGetPhysKeyState(void) { return 0; }
-static uint32_t api_WinQueryPointerPos(void)      /* (hwndDesktop, pptl): on the desktop */
+static uint32_t api_WinQueryPointerPos(void)      /* (hwndDesktop, pptl): desktop coordinates */
 {
     int fx, fy;
     desk_xy(win(pm_mouse_frame), &fx, &fy);
     p32(A(1), (uint32_t)(fx + mouse_x)); p32(A(1) + 4, (uint32_t)(fy + mouse_y));
     return 1;
 }
-static uint32_t api_WinSetPointerPos(void) { return 1; }  /* (the desktop's pointer: the compositor's to move) */
+static uint32_t api_WinSetPointerPos(void) { return 1; }  /* the compositor owns the pointer position */
 static uint32_t api_WinShowPointer(void) { return 1; }
-/* WinMapWindowPoints (from, to, aptl, count): from one window's coordinates to another's (HWND_DESKTOP: the desktop's) */
+/* WinMapWindowPoints (from, to, aptl, count): between window coordinates (HWND_DESKTOP: desktop coordinates) */
 static uint32_t api_WinMapWindowPoints(void)
 {
     int fx = 0, fy = 0, tx = 0, ty = 0;
@@ -1696,12 +1698,12 @@ static uint32_t api_WinMapWindowPoints(void)
     }
     return 1;
 }
-/* WinWindowFromPoint (parent, pptl in its coordinates, fChildren): the child there (and its children's, when asked) */
+/* WinWindowFromPoint (parent, pptl in its coordinates, fChildren): the child there (and its children's, if asked) */
 static uint32_t api_WinWindowFromPoint(void)
 {
     if (!ok(A(1), 8)) return 0;
     int x = (int32_t)g32(A(1)), y = (int32_t)g32(A(1) + 4);
-    if (A(0) == HWND_DESKTOP_) {                                 /* (a frame of ours there; the topmost-ish: the last made) */
+    if (A(0) == HWND_DESKTOP_) {                                 /* one of our frames: the most recently created one that's there */
         for (int i = MAXWIN - 1; i >= 0; i--) {
             pmwin_t *f = &pmwins[i];
             if (f->used && f->top && f->visible && x >= f->x && y >= f->y && x < f->x + f->cx && y < f->y + f->cy) {
@@ -1725,7 +1727,7 @@ static uint32_t api_WinWindowFromPoint(void)
         x -= hit->x; y -= hit->y; cur = hit;
     }
 }
-static uint32_t api_WinQueryClassName(void)        /* (hwnd, cchMax, pch): its length */
+static uint32_t api_WinQueryClassName(void)        /* (hwnd, cchMax, pch); returns the length */
 {
     pmwin_t *w = win(A(0));
     if (!w || !A(1) || !ok(A(2), A(1))) return 0;
@@ -1733,7 +1735,7 @@ static uint32_t api_WinQueryClassName(void)        /* (hwnd, cchMax, pch): its l
     return (uint32_t)strlen((char *)C.mem + A(2));
 }
 static uint32_t api_WinQueryCapture(void) { return pm_capture; }
-static uint32_t api_WinSetCapture(void) { pm_capture = A(1) && win(A(1)) ? A(1) : 0; return 1; }   /* (hwndDesktop, hwnd; 0: none) */
+static uint32_t api_WinSetCapture(void) { pm_capture = A(1) && win(A(1)) ? A(1) : 0; return 1; }   /* (hwndDesktop, hwnd); 0 releases */
 static uint32_t api_WinIsChild(void) { for (pmwin_t *w = win(A(0)); w; w = w->parent) if (w->hwnd == A(1)) return 1; return 0; }
 static uint32_t api_WinQueryWindowProcess(void)    /* (hwnd, ppid, ptid) */
 {

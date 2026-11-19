@@ -1,31 +1,30 @@
-/* userland/os2x86/pm_geo.inc - GPI's geometry (included at the end of
- * pm.inc): lines with their types, widths and mixes; arcs (GpiFullArc,
- * GpiPartialArc, GpiPointArc, with GpiSetArcParams' transform), GpiBox
- * with rounded corners, polylines, fillets, splines, polygons; areas
- * (GpiBeginArea ... GpiEndArea) and paths (GpiBeginPath ... GpiFillPath,
- * GpiStrokePath) filled - alternate or winding - with the pattern;
- * markers; a clip rectangle (GpiIntersectClipRectangle).
+/* userland/os2x86/pm_geo.inc - GPI geometry, included at the end of pm.inc:
+ * lines with types, widths and mixes; arcs (GpiFullArc, GpiPartialArc,
+ * GpiPointArc, with GpiSetArcParams' transform); GpiBox with rounded corners;
+ * polylines, fillets, splines, polygons; areas (GpiBeginArea .. GpiEndArea)
+ * and paths (GpiBeginPath .. GpiFillPath, GpiStrokePath) filled alternate or
+ * winding with the pattern; markers; a clip rectangle.
  *
- * Every primitive comes down to geo_to(): a segment from the current
- * position. Outside an area or a path it's drawn at once; inside one it
- * adds a point to the current figure, and a move starts another figure. */
+ * Everything ends up in geo_to(), a segment from the current position. Outside
+ * an area or path it's drawn straight away; inside one it adds a point to the
+ * current figure, and a move starts a new figure. */
 #include <math.h>
 
-typedef struct { int n, cap; int32_t *p; } geofig_t;    /* (x, y pairs) */
+typedef struct { int n, cap; int32_t *p; } geofig_t;    /* x, y pairs */
 typedef struct {
     int32_t ap, aq, ar, as;                  /* GpiSetArcParams: P, Q, R, S */
     int ltype, lwidth, gwidth, pattern, mix, bmix, marker;
-    int area, area_fl, path, path_done;      /* (in an area: its BA_ options; in a path; a path ended, kept to fill or stroke) */
+    int area, area_fl, path, path_done;      /* area: inside one, with its BA_ options; path: inside one; path_done: ended, kept for fill/stroke */
     geofig_t *fig; int nfig;
     int clip, cx0, cy0, cx1, cy1;            /* GpiIntersectClipRectangle: [cx0, cx1) x [cy0, cy1) */
-    int lpos;                                /* (the line type's place along what's being drawn) */
-    /* world to device: model (and viewing) transform, then the default view, then page units / the page viewport */
-    double model[6], view[6], seg[6], page[6];                   /* (a, b, c, d, e, f: x' = a x + c y + e, y' = b x + d y + f) */
-    double m[6], inv[6];                                         /* (all of them, combined; its inverse) */
+    int lpos;                                /* position along the line type's pattern */
+    /* world to device: model (and viewing) transform, default view, then page units / page viewport */
+    double model[6], view[6], seg[6], page[6];                   /* a, b, c, d, e, f: x' = a x + c y + e, y' = b x + d y + f */
+    double m[6], inv[6];                                         /* combined, and its inverse */
     int ident, units, pagecx, pagecy, dpm;
 } geo_t;
 static const double IDM[6] = { 1, 0, 0, 1, 0, 0 };
-static void mat_mul(double *r, const double *p, const double *q)   /* r = p then q */
+static void mat_mul(double *r, const double *p, const double *q)   /* r = p, then q */
 {
     double t[6] = { p[0] * q[0] + p[1] * q[2], p[0] * q[1] + p[1] * q[3], p[2] * q[0] + p[3] * q[2], p[2] * q[1] + p[3] * q[3],
                     p[4] * q[0] + p[5] * q[2] + q[4], p[4] * q[1] + p[5] * q[3] + q[5] };
@@ -43,7 +42,7 @@ static void geo_combine(geo_t *g)
     g->inv[4] = -(g->m[4] * g->inv[0] + g->m[5] * g->inv[2]); g->inv[5] = -(g->m[4] * g->inv[1] + g->m[5] * g->inv[3]);
     g->ident = !memcmp(g->m, IDM, sizeof IDM);
 }
-/* page units: device pels per unit (3780 pels a metre, as DevQueryCaps says) */
+/* device pels per page unit (3780 pels per metre, as DevQueryCaps says) */
 static double unit_pels(int u)
 {
     switch (u) {
@@ -52,7 +51,7 @@ static double unit_pels(int u)
     case PU_LOENGLISH: return 3780.0 * 0.000254;      /* 0.01 inch */
     case PU_HIENGLISH: return 3780.0 * 0.0000254;     /* 0.001 inch */
     case PU_TWIPS: return 3780.0 * 0.0254 / 1440;
-    default: return 1;                        /* PU_PELS, PU_ARBITRARY (until a page viewport says) */
+    default: return 1;                        /* PU_PELS, PU_ARBITRARY (until a page viewport is set) */
     }
 }
 static geo_t *geo(pmps_t *ps)
@@ -67,7 +66,7 @@ static geo_t *geo(pmps_t *ps)
     }
     return ps->geo;
 }
-/* a world point to the device's, and back */
+/* world point to device and back */
 static void ps_to_dev(pmps_t *ps, double x, double y, int *dx, int *dy)
 {
     geo_t *g = ps->geo;
@@ -101,7 +100,7 @@ static void geo_fig_add(geo_t *g, int x, int y)
     f->p[2 * f->n] = x; f->p[2 * f->n + 1] = y; f->n++;
 }
 
-/* a pixel with the PS's mix (FM_OVERPAINT, XOR, INVERT, OR, AND, LEAVEALONE ...) and clip */
+/* set a pixel with the PS's mix (FM_OVERPAINT, XOR, INVERT, OR, AND, LEAVEALONE ...) and clip */
 static void geo_pel(pmps_t *ps, pmwin_t *w, int x, int y, uint32_t c, int mix)
 {
     geo_t *g = ps->geo;
@@ -120,7 +119,7 @@ static void geo_pel(pmps_t *ps, pmwin_t *w, int x, int y, uint32_t c, int mix)
 }
 static uint32_t geo_color(pmps_t *ps) { return pm_rgb(ps->color, ps->rgb, 0); }
 static int geo_mix(geo_t *g) { return g->mix ? g->mix : 2; }
-/* the line types: their on/off runs */
+/* line types as on/off runs */
 static int geo_dash(geo_t *g)
 {
     static const char *const pat[] = { 0, "1100", "11110000", "1111111100110000", "1010000000", "1111111111110000",
@@ -130,7 +129,7 @@ static int geo_dash(geo_t *g)
     g->lpos++;
     return on;
 }
-static void geo_line(pmps_t *ps, pmwin_t *w, int x0, int y0, int x1, int y1, int width)   /* (world points) */
+static void geo_line(pmps_t *ps, pmwin_t *w, int x0, int y0, int x1, int y1, int width)   /* world coordinates */
 {
     geo_t *g = geo(ps);
     ps_to_dev(ps, x0, y0, &x0, &y0);
@@ -148,10 +147,10 @@ static void geo_line(pmps_t *ps, pmwin_t *w, int x0, int y0, int x1, int y1, int
         if (e2 <= dx) { e += dx; y0 += sy; }
     }
 }
-/* the pattern's pixels: 1 where the foreground goes */
+/* is the pattern's pixel at (x, y) foreground? */
 static int geo_pat(geo_t *g, int x, int y)
 {
-    static const uint8_t dense[9] = { 0, 15, 14, 12, 10, 8, 6, 4, 2 };   /* (of 16: PATSYM_DENSE1 .. DENSE8) */
+    static const uint8_t dense[9] = { 0, 15, 14, 12, 10, 8, 6, 4, 2 };   /* out of 16: PATSYM_DENSE1 .. DENSE8 */
     static const uint8_t bayer[16] = { 0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5 };
     switch (g->pattern) {
     case 0: case 16: return 1;                                           /* DEFAULT, SOLID */
@@ -168,7 +167,7 @@ static int geo_pat(geo_t *g, int x, int y)
 }
 /* the figures, filled: scan lines, alternate (even-odd) or winding */
 static void geo_fill_dev(pmps_t *ps, pmwin_t *w, geo_t *g, int winding);
-static void geo_fill(pmps_t *ps, pmwin_t *w, geo_t *g, int winding)   /* (world figures: to the device's, then filled) */
+static void geo_fill(pmps_t *ps, pmwin_t *w, geo_t *g, int winding)   /* world figures, converted to device and filled */
 {
     if (!ps->geo || ((geo_t *)ps->geo)->ident) { geo_fill_dev(ps, w, g, winding); return; }
     geo_t d = *g;
@@ -208,7 +207,7 @@ static void geo_fill_dev(pmps_t *ps, pmwin_t *w, geo_t *g, int winding)
                 dir[n++] = y1 > y0 ? 1 : -1;
             }
         }
-        for (int a = 1; a < n; a++) for (int k = a; k > 0 && xs[k - 1] > xs[k]; k--) {   /* (sorted by x) */
+        for (int a = 1; a < n; a++) for (int k = a; k > 0 && xs[k - 1] > xs[k]; k--) {   /* sort by x */
             int t = xs[k]; xs[k] = xs[k - 1]; xs[k - 1] = t; t = dir[k]; dir[k] = dir[k - 1]; dir[k - 1] = t;
         }
         int wn = 0;
@@ -218,7 +217,7 @@ static void geo_fill_dev(pmps_t *ps, pmwin_t *w, geo_t *g, int winding)
             if (!in) continue;
             for (int x = xs[k]; x < xs[k + 1]; x++) {
                 if (geo_pat(g, x, y)) geo_pel(ps, w, x, y, c, geo_mix(g));
-                else if (g->bmix == BM_OVERPAINT) geo_pel(ps, w, x, y, b, FM_OVERPAINT);   /* (the background between) */
+                else if (g->bmix == BM_OVERPAINT) geo_pel(ps, w, x, y, b, FM_OVERPAINT);   /* fill the background between */
             }
         }
     }
@@ -234,7 +233,7 @@ static void geo_stroke(pmps_t *ps, pmwin_t *w, geo_t *g, int closed, int width)
     }
 }
 
-/* the one way down: a segment from the current position to (x, y) */
+/* the single drawing primitive: a segment from the current position to (x, y) */
 static void geo_to(pmps_t *ps, int x, int y)
 {
     geo_t *g = geo(ps);
@@ -248,10 +247,10 @@ static void geo_to(pmps_t *ps, int x, int y)
 static void geo_move(pmps_t *ps, int x, int y)
 {
     geo_t *g = geo(ps);
-    if ((g->area || g->path) && g->nfig && g->fig[g->nfig - 1].n) geo_fig_new(g);   /* (a move: the figure's end) */
+    if ((g->area || g->path) && g->nfig && g->fig[g->nfig - 1].n) geo_fig_new(g);   /* a move ends the current figure */
     ps->x = x; ps->y = y;
 }
-/* a closed shape of its own (a full arc, a box) - filled, outlined, or a figure of the area or path */
+/* a closed shape on its own (full arc, box): filled, outlined, or added to the current area/path */
 static void geo_shape(pmps_t *ps, const int32_t *p, int n, uint32_t control)
 {
     geo_t *g = geo(ps);
@@ -269,7 +268,7 @@ static void geo_shape(pmps_t *ps, const int32_t *p, int n, uint32_t control)
     if (control & DRO_FILL) geo_fill(ps, w, &tmp, 0);
     if ((control & DRO_OUTLINE) || !control) geo_stroke(ps, w, &tmp, 1, g->lwidth);
 }
-/* points along the transformed arc: centre (cx, cy), multiplier m, from a0 by sweep (radians, anticlockwise) */
+/* points along the transformed arc: centre (cx, cy), multiplier m, from a0 through sweep radians anticlockwise */
 static int geo_arc_pts(geo_t *g, double cx, double cy, double m, double a0, double sweep, int32_t *out, int max)
 {
     double rx = m * hypot(g->ap, g->as), ry = m * hypot(g->ar, g->aq), r = rx > ry ? rx : ry;
@@ -311,7 +310,7 @@ static uint32_t api_GpiQueryArcParams(void)
     p32(A(1), (uint32_t)g->ap); p32(A(1) + 4, (uint32_t)g->aq); p32(A(1) + 8, (uint32_t)g->ar); p32(A(1) + 12, (uint32_t)g->as);
     return 1;
 }
-static uint32_t api_GpiFullArc(void)                /* (hps, flControl, fxMultiplier): round the current position */
+static uint32_t api_GpiFullArc(void)                /* (hps, flControl, fxMultiplier): around the current position */
 {
     GEO_PS;
     static int32_t p[2 * 720];
@@ -327,22 +326,22 @@ static uint32_t api_GpiPartialArc(void)             /* (hps, pptlCenter, fxMulti
     double a0 = (int32_t)A(3) / 65536.0 * M_PI / 180, sw = (int32_t)A(4) / 65536.0 * M_PI / 180;
     int n = geo_arc_pts(g, (int32_t)g32(A(1)), (int32_t)g32(A(1) + 4), (int32_t)A(2) / 65536.0, a0, sw, p, 720);
     g->lpos = 0;
-    for (int k = 0; k < n; k++) geo_to(ps, p[2 * k], p[2 * k + 1]);   /* (a line to its start, then the arc) */
+    for (int k = 0; k < n; k++) geo_to(ps, p[2 * k], p[2 * k + 1]);   /* line to its start, then the arc */
     return 1;
 }
-static uint32_t api_GpiPointArc(void)               /* (hps, aptl[2]): from the current position through the first to the second */
+static uint32_t api_GpiPointArc(void)               /* (hps, aptl[2]): from the current position through the first point to the second */
 {
     GEO_PS;
     if (!ok(A(1), 16)) return 0;
     double x0 = ps->x, y0 = ps->y, x1 = (int32_t)g32(A(1)), y1 = (int32_t)g32(A(1) + 4), x2 = (int32_t)g32(A(1) + 8), y2 = (int32_t)g32(A(1) + 12);
     double d = 2 * (x0 * (y1 - y2) + x1 * (y2 - y0) + x2 * (y0 - y1));
     g->lpos = 0;
-    if (fabs(d) < 1e-9) { geo_to(ps, (int)x1, (int)y1); geo_to(ps, (int)x2, (int)y2); return 1; }   /* (in a line: lines) */
+    if (fabs(d) < 1e-9) { geo_to(ps, (int)x1, (int)y1); geo_to(ps, (int)x2, (int)y2); return 1; }   /* collinear: just lines */
     double ux = ((x0 * x0 + y0 * y0) * (y1 - y2) + (x1 * x1 + y1 * y1) * (y2 - y0) + (x2 * x2 + y2 * y2) * (y0 - y1)) / d;
     double uy = ((x0 * x0 + y0 * y0) * (x2 - x1) + (x1 * x1 + y1 * y1) * (x0 - x2) + (x2 * x2 + y2 * y2) * (x1 - x0)) / d;
     double r = hypot(x0 - ux, y0 - uy), a0 = atan2(y0 - uy, x0 - ux), a1 = atan2(y1 - uy, x1 - ux), a2 = atan2(y2 - uy, x2 - ux);
     double s1 = fmod(a1 - a0 + 4 * M_PI, 2 * M_PI), s2 = fmod(a2 - a0 + 4 * M_PI, 2 * M_PI);
-    double sweep = s1 <= s2 ? s2 : s2 - 2 * M_PI;            /* (the way that passes the middle point) */
+    double sweep = s1 <= s2 ? s2 : s2 - 2 * M_PI;            /* the direction that goes through the middle point */
     int n = (int)(fabs(sweep) * (r > 4 ? sqrt(r) * 2 : 4) / (2 * M_PI) * 8) + 2;
     for (int i = 1; i < n; i++) geo_to(ps, (int)lround(ux + r * cos(a0 + sweep * i / (n - 1))), (int)lround(uy + r * sin(a0 + sweep * i / (n - 1))));
     geo_to(ps, (int)x2, (int)y2);
@@ -369,7 +368,7 @@ static uint32_t api_GpiPolySpline(void)             /* (hps, lCount, aptl): cubi
     }
     return 1;
 }
-static uint32_t api_GpiPolyFillet(void)             /* (hps, lCount, aptl): a curve the lines between the points are tangents to */
+static uint32_t api_GpiPolyFillet(void)             /* (hps, lCount, aptl): a curve tangent to the lines between the points */
 {
     GEO_PS;
     int n = (int)A(1);
@@ -377,7 +376,7 @@ static uint32_t api_GpiPolyFillet(void)             /* (hps, lCount, aptl): a cu
     g->lpos = 0;
     if (n == 1) { geo_to(ps, (int32_t)g32(A(2)), (int32_t)g32(A(2) + 4)); return 1; }
     double sx = ps->x, sy = ps->y;
-    for (int k = 0; k + 1 < n; k++) {                        /* (quadratic pieces: each point a control, the middles the joins) */
+    for (int k = 0; k + 1 < n; k++) {                        /* quadratic pieces: each point is a control point, the midpoints are the joins */
         double cx = (int32_t)g32(A(2) + 8u * (uint32_t)k), cy = (int32_t)g32(A(2) + 8u * (uint32_t)k + 4);
         double nx = (int32_t)g32(A(2) + 8u * (uint32_t)(k + 1)), ny = (int32_t)g32(A(2) + 8u * (uint32_t)(k + 1) + 4);
         double ex = k + 2 == n ? nx : (cx + nx) / 2, ey = k + 2 == n ? ny : (cy + ny) / 2;
@@ -393,11 +392,11 @@ static uint32_t api_GpiBox(void)                    /* (hps, lControl, pptlPoint
     int x0 = ps->x, y0 = ps->y, x1 = (int32_t)g32(A(2)), y1 = (int32_t)g32(A(2) + 4);
     if (x0 > x1) { int t = x0; x0 = x1; x1 = t; }
     if (y0 > y1) { int t = y0; y0 = y1; y1 = t; }
-    int hr = (int)A(3) / 2, vr = (int)A(4) / 2;               /* (the corners' ellipse: its axes, halved) */
+    int hr = (int)A(3) / 2, vr = (int)A(4) / 2;               /* corner ellipse axes, halved */
     if (hr > (x1 - x0) / 2) hr = (x1 - x0) / 2;
     if (vr > (y1 - y0) / 2) vr = (y1 - y0) / 2;
     if (!hr || !vr) {
-        if (!g->area && !g->path && (A(1) & 1) && !g->clip && g->pattern % 16 == 0 && geo_mix(g) == 2 && ps_win(ps) && g->ident) {   /* (the usual: quick) */
+        if (!g->area && !g->path && (A(1) & 1) && !g->clip && g->pattern % 16 == 0 && geo_mix(g) == 2 && ps_win(ps) && g->ident) {   /* common case: fast path */
             fill(ps_win(ps), x0, y0, x1 + 1, y1 + 1, geo_color(ps));
             if (A(1) & 2) { int32_t p[8] = { x0, y0, x1, y0, x1, y1, x0, y1 }; geo_shape(ps, p, 4, 2); }
             return 1;
@@ -426,7 +425,7 @@ static uint32_t api_GpiPolygons(void)               /* (hps, ulCount, aplgn {ulP
     if (!ok(A(2), 8 * cnt) || !w) return 0;
     geo_t tmp = *g;
     tmp.fig = 0; tmp.nfig = 0;
-    for (uint32_t i = 0; i < cnt; i++) {                      /* (the first starts at the current position) */
+    for (uint32_t i = 0; i < cnt; i++) {                      /* the first one starts at the current position */
         uint32_t np = g32(A(2) + 8 * i), pts = g32(A(2) + 8 * i + 4);
         if (!ok(pts, 8 * np)) continue;
         geo_fig_new(&tmp);
@@ -453,7 +452,7 @@ static uint32_t api_GpiEndArea(void)
     geo_figs_clear(g);
     return 1;
 }
-/* paths (one: id 1) */
+/* paths (only id 1) */
 static uint32_t api_GpiBeginPath(void) { GEO_PS; geo_figs_clear(g); g->path = 1; g->path_done = 0; return 1; }
 static uint32_t api_GpiEndPath(void) { GEO_PS; if (!g->path) return 0; g->path = 0; g->path_done = 1; return 1; }
 static uint32_t api_GpiCloseFigure(void)
@@ -473,7 +472,7 @@ static uint32_t api_GpiFillPath(void)               /* (hps, lPath, lOptions: FP
     geo_figs_clear(g); g->path_done = 0;
     return 1;
 }
-static uint32_t api_GpiStrokePath(void)             /* (hps, lPath, flOptions): with the geometric width */
+static uint32_t api_GpiStrokePath(void)             /* (hps, lPath, flOptions): uses the geometric width */
 {
     GEO_PS;
     pmwin_t *w = ps_win(ps);
@@ -491,7 +490,7 @@ static uint32_t api_GpiOutlinePath(void)
     geo_figs_clear(g); g->path_done = 0;
     return 1;
 }
-static uint32_t api_GpiModifyPath(void) { return 1; }  /* (MPATH_STROKE: kept as it is; StrokePath widens it) */
+static uint32_t api_GpiModifyPath(void) { return 1; }  /* MPATH_STROKE: left as is; GpiStrokePath widens it */
 /* attributes */
 static uint32_t api_GpiSetLineType(void) { GEO_PS; g->ltype = (int)A(1); return 1; }
 static uint32_t api_GpiQueryLineType(void) { GEO_PS; return (uint32_t)g->ltype; }
@@ -555,13 +554,13 @@ static uint32_t api_GpiPolyMarker(void)
     for (int k = 0; k < n; k++) geo_marker(ps, (int32_t)g32(A(2) + 8u * (uint32_t)k), (int32_t)g32(A(2) + 8u * (uint32_t)k + 4));
     return 1;
 }
-/* clipping: a rectangle (the intersection of those given) */
+/* clipping: one rectangle, the intersection of those given */
 static uint32_t api_GpiIntersectClipRectangle(void) /* (hps, prcl): RGN_RECT */
 {
     GEO_PS;
     if (!ok(A(1), 16)) return 0;
     int x0 = (int32_t)g32(A(1)), y0 = (int32_t)g32(A(1) + 4), x1 = (int32_t)g32(A(1) + 8), y1 = (int32_t)g32(A(1) + 12);
-    ps_to_dev(ps, x0, y0, &x0, &y0); ps_to_dev(ps, x1, y1, &x1, &y1);   /* (world to device: an upright rectangle) */
+    ps_to_dev(ps, x0, y0, &x0, &y0); ps_to_dev(ps, x1, y1, &x1, &y1);   /* world to device: an upright rectangle */
     if (x0 > x1) { int t = x0; x0 = x1; x1 = t; }
     if (y0 > y1) { int t = y0; y0 = y1; y1 = t; }
     if (!g->clip) { g->clip = 1; g->cx0 = x0; g->cy0 = y0; g->cx1 = x1; g->cy1 = y1; }
@@ -579,7 +578,7 @@ static uint32_t api_GpiPtVisible(void)              /* (hps, pptl): PVIS_VISIBLE
 }
 
 /* ── transforms: MATRIXLF (fxM11, fxM12, lM13, fxM21, fxM22, lM23, lM31, lM32, lM33) ── */
-static void mat_get(uint32_t p, uint32_t n, double *m)     /* (the first n elements given; the rest the identity's) */
+static void mat_get(uint32_t p, uint32_t n, double *m)     /* the first n elements given, the rest from the identity */
 {
     memcpy(m, IDM, sizeof IDM);
     if (!p) return;
@@ -596,7 +595,7 @@ static void mat_put(uint32_t p, uint32_t n, const double *m)
                      (int32_t)lround(m[3] * 65536), 0, (int32_t)lround(m[4]), (int32_t)lround(m[5]), 1 };
     for (uint32_t i = 0; i < n && i < 9; i++) p32(p + 4 * i, (uint32_t)v[i]);
 }
-/* REPLACE: it; ADD: after the one there; PREEMPT: before it */
+/* REPLACE: use it; ADD: apply after the current one; PREEMPT: before it */
 static void mat_apply(double *cur, const double *m, uint32_t opt)
 {
     if (opt == 1) mat_mul(cur, cur, m);
@@ -628,7 +627,7 @@ static uint32_t api_GpiQueryDefaultViewMatrix(void) { return gpi_querymat(1); }
 static uint32_t api_GpiSetViewingTransformMatrix(void) { return gpi_setmat(0, 2); }
 static uint32_t api_GpiQueryViewingTransformMatrix(void) { return gpi_querymat(2); }
 /* GpiTranslate (hps, pmatlf, lOptions, pptl), GpiScale (hps, pmatlf, lOptions, afxScale[2], pptlCenter), GpiRotate (hps,
- * pmatlf, lOptions, fxAngle, pptlCenter): build a matrix into pmatlf - REPLACE, or ADD after the one there */
+ * pmatlf, lOptions, fxAngle, pptlCenter): build a matrix into pmatlf, replacing it or added after the existing one */
 static uint32_t gpi_build(const double *m)
 {
     if (!ok(A(1), 36)) return 0;
@@ -660,7 +659,7 @@ static uint32_t api_GpiRotate(void)
     return gpi_build(m);
 }
 /* GpiConvert (hps, lSrc, lTarg, lCount, aptl): CVTC_WORLD 1, MODEL 2, DEFAULTPAGE 3, PAGE 4, DEVICE 5 */
-static void geo_to_space(geo_t *g, int space, double *m)  /* (world to that space) */
+static void geo_to_space(geo_t *g, int space, double *m)  /* world to that space */
 {
     memcpy(m, IDM, sizeof IDM);
     if (space >= 2) mat_mul(m, m, g->model);
@@ -681,7 +680,7 @@ static uint32_t api_GpiConvert(void)
     inv[0] = from[3] / det; inv[1] = -from[1] / det; inv[2] = -from[2] / det; inv[3] = from[0] / det;
     inv[4] = -(from[4] * inv[0] + from[5] * inv[2]); inv[5] = -(from[4] * inv[1] + from[5] * inv[3]);
     double t[6];
-    mat_mul(t, inv, to);                                         /* (back to world, then to the target) */
+    mat_mul(t, inv, to);                                         /* back to world, then to the target */
     for (int32_t i = 0; i < n; i++) {
         uint32_t p = A(4) + 8u * (uint32_t)i;
         double x = (int32_t)g32(p), y = (int32_t)g32(p + 4);
@@ -689,7 +688,7 @@ static uint32_t api_GpiConvert(void)
     }
     return 1;
 }
-/* the page: its units (GpiCreatePS), its viewport (GpiSetPageViewport: the page's size in units onto that device rectangle) */
+/* the page: units (from GpiCreatePS) and viewport (GpiSetPageViewport maps the page, in units, onto a device rectangle) */
 static void geo_set_units(pmps_t *ps, uint32_t opts, uint32_t psizl, int dpm)
 {
     geo_t *g = geo(ps);
@@ -697,7 +696,7 @@ static void geo_set_units(pmps_t *ps, uint32_t opts, uint32_t psizl, int dpm)
     if (!g->units) g->units = 8;
     g->pagecx = psizl && ok(psizl, 8) ? (int32_t)g32(psizl) : 0;
     g->pagecy = psizl && ok(psizl, 8) ? (int32_t)g32(psizl + 4) : 0;
-    double u = g->units == 8 || g->units == 4 ? 1 : unit_pels(g->units) * dpm / 3780.0;   /* (pels, arbitrary: the device's own) */
+    double u = g->units == 8 || g->units == 4 ? 1 : unit_pels(g->units) * dpm / 3780.0;   /* pels and arbitrary units: the device's own */
     g->dpm = dpm;
     double m[6] = { u, 0, 0, u, 0, 0 };
     memcpy(g->page, m, sizeof m);
@@ -725,7 +724,7 @@ static uint32_t api_GpiQueryPageViewport(void)
     p32(A(1) + 8, (uint32_t)(int32_t)lround(g->page[4] + g->page[0] * pcx)); p32(A(1) + 12, (uint32_t)(int32_t)lround(g->page[5] + g->page[3] * pcy));
     return 1;
 }
-static uint32_t gpi_query_ps(pmps_t *ps, uint32_t psizl)  /* GpiQueryPS: the units (and the page's size) */
+static uint32_t gpi_query_ps(pmps_t *ps, uint32_t psizl)  /* GpiQueryPS: the units (and page size) */
 {
     geo_t *g = geo(ps);
     if (psizl && ok(psizl, 8)) { p32(psizl, (uint32_t)g->pagecx); p32(psizl + 4, (uint32_t)g->pagecy); }

@@ -1,16 +1,15 @@
-/* userland/os2x86/pm16.inc - 16-bit Presentation Manager (OS/2 1.x PM
- * programs, NE; included by os2x86.c after ne16.inc).
+/* userland/os2x86/pm16.inc - 16-bit Presentation Manager for OS/2 1.x programs
+ * (NE). Included by os2x86.c after ne16.inc.
  *
- * Their calls (PMWIN, PMGPI - far, Pascal) go to the 32-bit ones: most
- * through one wrapper that reads the arguments by a format (L a long or a
- * handle, W an unsigned word, S a signed one, P a far pointer made flat;
- * WC_ atoms - 0xFFFF:n - kept), the result back in DX:AX; the messages'
- * QMSG (hwnd, USHORT msg, mp1, mp2, time, ptl: 26 bytes) converted. A
- * window class a 16-bit program registers keeps its 16-bit window
- * procedure: PM calls it far, Pascal (hwnd, msg, mp1, mp2), on the
- * program's stack, its MRESULT from DX:AX; WM_CREATE's pointers made
- * 16:16 for it. Not yet: resources from an NE (menus, dialogs, strings),
- * the controls' pointer messages in 16:16. */
+ * Their PMWIN/PMGPI calls (far, Pascal) are forwarded to the 32-bit ones,
+ * mostly through one wrapper driven by an argument format string: L long or
+ * handle, W unsigned word, S signed word, P far pointer (made flat; WC_ atoms,
+ * 0xFFFF:n, kept). Results go back in DX:AX. QMSG (26 bytes in 16-bit) is
+ * converted both ways. A class registered by a 16-bit program keeps its 16-bit
+ * window procedure: PM calls it far Pascal on the program's stack and reads
+ * the MRESULT from DX:AX; WM_CREATE's pointers are made 16:16 for it.
+ * Not done yet: NE resources (menus, dialogs, strings), and controls' pointer
+ * messages in 16:16. */
 
 typedef struct { int lib; uint16_t ord; const char *fmt; api_fn fn; } pm16spec_t;
 static const pm16spec_t pm16specs[] = {
@@ -109,7 +108,7 @@ static uint32_t d16_gen(void)
     uint32_t a[16], total = 0;
     int n = (int)strlen(sp->fmt);
     for (int i = 0; i < n; i++) total += sp->fmt[i] == 'L' || sp->fmt[i] == 'P' ? 4 : 2;
-    uint32_t off = total;                                    /* (Pascal: the first argument highest) */
+    uint32_t off = total;                                    /* Pascal pushes the first argument first, so it's highest */
     for (int i = 0; i < n && i < 16; i++) {
         char f = sp->fmt[i];
         off -= f == 'L' || f == 'P' ? 4 : 2;
@@ -117,11 +116,11 @@ static uint32_t d16_gen(void)
     }
     return call32(sp->fn, n, a);
 }
-/* the window procedure: far Pascal (HWND, USHORT msg, MPARAM, MPARAM), on the program's stack; MRESULT in DX:AX */
+/* call a 16-bit window procedure: far Pascal (HWND, USHORT msg, MPARAM, MPARAM) on the program's stack, MRESULT in DX:AX */
 static uint32_t guest_call16(uint32_t fp, uint32_t hwnd, uint32_t msg, uint32_t mp1, uint32_t mp2)
 {
     if (msg == WM_CREATE) { mp1 = to_far16(mp1); mp2 = to_far16(mp2); }
-    if (msg == WM_INITDLG) mp2 = to_far16(mp2);              /* (its create parameters) */
+    if (msg == WM_INITDLG) mp2 = to_far16(mp2);              /* create parameters */
     uint32_t r[8], eip = C.eip, fl = C.eflags;
     uint16_t sr[6];
     for (int i = 0; i < 6; i++) sr[i] = C.sreg[i];
@@ -135,14 +134,14 @@ static uint32_t guest_call16(uint32_t fp, uint32_t hwnd, uint32_t msg, uint32_t 
     C.r[ESP] = (esp & 0xFFFF0000) | sp;
     cpu_load_seg(&C, 1, (uint16_t)(fp >> 16));
     C.eip = fp & 0xFFFF;
-    run(1);                                                  /* (its own calls nest below ours: call32's levels) */
+    run(1);                                                  /* calls it makes nest below ours (call32 levels) */
     uint32_t ret = (C.r[EAX] & 0xFFFF) | (C.r[EDX] & 0xFFFF) << 16;
     memcpy(C.r, r, sizeof r);
     for (int i = 5; i >= 0; i--) if (i != 4) cpu_load_seg(&C, i, sr[i]);
     C.eip = eip; C.eflags = fl;
     return ret;
 }
-/* WinRegisterClass (HAB, PSZ, PFNWP, ULONG style, USHORT cb): the class, its procedure 16-bit */
+/* WinRegisterClass (HAB, PSZ, PFNWP, ULONG style, USHORT cb): the class keeps a 16-bit procedure */
 static uint32_t d16_WinRegisterClass(void)
 {
     uint32_t a[] = { L(14), to_flat16(L(10)), L(6), L(2), W(0) }, r = call32(api_WinRegisterClass, 5, a);
@@ -153,7 +152,7 @@ static uint32_t d16_WinRegisterClass(void)
     }
     return r;
 }
-/* QMSG: 16-bit (hwnd, USHORT msg, mp1, mp2, time, ptl) from the 32-bit one (hwnd, msg, mp1, mp2, time, ptl, reserved) */
+/* build a 16-bit QMSG (hwnd, USHORT msg, mp1, mp2, time, ptl) from the 32-bit one */
 static void q16_from32(uint32_t q16, uint32_t q32)
 {
     p32(q16, g32(q32)); p16(q16 + 4, (uint16_t)g32(q32 + 4)); p32(q16 + 6, g32(q32 + 8)); p32(q16 + 10, g32(q32 + 12));
@@ -184,7 +183,7 @@ static uint32_t d16_WinDispatchMsg(void)                  /* (HAB, PQMSG) */
     return call32(api_WinDispatchMsg, 2, a);
 }
 
-/* dialogs: their procedures 16-bit */
+/* dialogs with 16-bit procedures */
 static uint32_t d16_dlg(api_fn fn, const char *fmt)
 {
     uint32_t a[8], total = 0;
@@ -201,16 +200,16 @@ static uint32_t d16_dlg(api_fn fn, const char *fmt)
 static uint32_t d16_WinDlgBox(void) { return d16_dlg(api_WinDlgBox, "LLLWWP"); }     /* (parent, owner, proc, hmod, id, create params) */
 static uint32_t d16_WinLoadDlg(void) { return d16_dlg(api_WinLoadDlg, "LLLWWP"); }
 static uint32_t d16_WinCreateDlg(void) { return d16_dlg(api_WinCreateDlg, "LLLPP"); }  /* (parent, owner, proc, template, create params) */
-/* messages to the built-in controls whose parameters are pointers: 16:16 made flat (list boxes' and menus' text, items) */
+/* control messages with pointer parameters: make the 16:16 pointers flat (list and menu text and items) */
 static void ptr_params16(uint32_t hwnd, uint32_t msg, uint32_t *mp1, uint32_t *mp2)
 {
     pmwin_t *w = win(hwnd);
     if (!w || !w->iproc) return;
     switch (msg) {
     case LM_INSERTITEM: case LM_QUERYITEMTEXT: case LM_SETITEMTEXT: case LM_SEARCHSTRING:
-    case MM_SETITEMTEXT: case MM_QUERYITEMTEXT: case MM_QUERYITEM: case MM_SETITEM:      /* (MENUITEM: the same both ways) */
+    case MM_SETITEMTEXT: case MM_QUERYITEMTEXT: case MM_QUERYITEM: case MM_SETITEM:      /* MENUITEM, both directions */
         *mp2 = to_flat16(*mp2); break;
-    case MM_INSERTITEM: *mp1 = to_flat16(*mp1); *mp2 = to_flat16(*mp2); break;   /* the MENUITEM, the text */
+    case MM_INSERTITEM: *mp1 = to_flat16(*mp1); *mp2 = to_flat16(*mp2); break;   /* MENUITEM and text */
     }
 }
 static uint32_t d16_WinSendMsg(void)                       /* (hwnd, USHORT msg, mp1, mp2) */

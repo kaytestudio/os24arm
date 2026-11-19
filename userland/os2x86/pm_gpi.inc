@@ -1,14 +1,13 @@
-/* userland/os2x86/pm_gpi.inc - Presentation Manager's bitmaps (included
- * at the end of pm.inc): bitmap resources and files (OS/2 1.x and 2.x
- * BMPs, bitmap arrays; 1, 4, 8, 24 and 32 bits a pixel), GpiCreateBitmap
- * and its bits, WinDrawBitmap, GpiBitBlt and GpiWCBitBlt (the usual
- * ROPs, stretching), memory device contexts (DevOpenDC, GpiCreatePS,
- * GpiSetBitmap). A bitmap here is a window that's never shown: its
- * pixels are the bitmap's, so everything that draws into windows draws
- * into bitmaps (a memory PS is a PS of that window). */
+/* userland/os2x86/pm_gpi.inc - bitmaps, included at the end of pm.inc: bitmap
+ * resources and files (OS/2 1.x and 2.x BMPs, bitmap arrays; 1, 4, 8, 24 and
+ * 32 bpp), GpiCreateBitmap and its bits, WinDrawBitmap, GpiBitBlt and
+ * GpiWCBitBlt (the usual ROPs, stretching), and memory DCs (DevOpenDC,
+ * GpiCreatePS, GpiSetBitmap). A bitmap is a window that's never shown, so
+ * anything that draws into windows also draws into bitmaps; a memory PS is
+ * just a PS on that window. */
 
-/* a bitmap's pixels (bottom-up rows, as the file has them) from bits at b,
- * its info header at info (cbFix 12: OS/2 1.x, else 2.x), palette after it */
+/* decode bits at b into px (bottom-up rows, as in the file). The info header
+ * is at info (cbFix 12 means OS/2 1.x, else 2.x), with the palette after it. */
 static int bits_decode(const uint8_t *b, size_t bn, const uint8_t *info, size_t in, int w, int h, uint32_t *px, int pw, int row0)
 {
     if (in < 16) return -1;
@@ -16,7 +15,7 @@ static int bits_decode(const uint8_t *b, size_t bn, const uint8_t *info, size_t 
     int old = cbfix == 12, bpp = old ? (info[10] | info[11] << 8) : (info[14] | info[15] << 8);
     uint32_t comp = !old && cbfix >= 20 ? (uint32_t)(info[16] | info[17] << 8 | info[18] << 16 | (uint32_t)info[19] << 24) : 0;
     uint32_t nclr = !old && cbfix >= 36 ? (uint32_t)(info[32] | info[33] << 8 | info[34] << 16 | (uint32_t)info[35] << 24) : 0;
-    if (comp) return -1;                                       /* (BCA_UNCOMP only, for now) */
+    if (comp) return -1;                                       /* only BCA_UNCOMP for now */
     if (bpp <= 8 && !nclr) nclr = 1u << bpp;
     const uint8_t *pal = info + cbfix;
     int pe = old ? 3 : 4;
@@ -24,7 +23,7 @@ static int bits_decode(const uint8_t *b, size_t bn, const uint8_t *info, size_t 
     for (int r = 0; r < h; r++) {
         if ((size_t)(r + 1) * rowb > bn) break;
         const uint8_t *s = b + (size_t)r * rowb;
-        int y = row0 + r;                                      /* (from the bottom) */
+        int y = row0 + r;                                      /* from the bottom */
         if (y < 0) continue;
         uint32_t *d = px + (size_t)y * (size_t)pw;
         for (int x = 0; x < w && x < pw; x++) {
@@ -49,7 +48,7 @@ static uint32_t pal_size(const uint8_t *info)
     return bpp <= 8 ? nclr * (old ? 3u : 4u) : 0;
 }
 
-/* a bitmap: a hidden "window" of w x h pixels (rows top-down there) */
+/* a bitmap: a hidden w x h "window" (rows top-down) */
 static pmwin_t *bmp_new(int w, int h)
 {
     pmwin_t *b = win_new(0, "#bitmap", 0, 0);
@@ -60,11 +59,11 @@ static pmwin_t *bmp_new(int w, int h)
     return b;
 }
 static pmwin_t *bmp_get(uint32_t h) { pmwin_t *b = win(h); return b && !strcmp(b->cls, "#bitmap") ? b : 0; }
-/* a BMP file's (or a bitmap array's first) image, as a bitmap */
+/* the image of a BMP file, or the first one of a bitmap array */
 static pmwin_t *bmp_from_file(const uint8_t *d, size_t n)
 {
     size_t o = 0;
-    if (n >= 14 && d[0] == 'B' && d[1] == 'A') o = 14;      /* BFT_BITMAPARRAY: its first element */
+    if (n >= 14 && d[0] == 'B' && d[1] == 'A') o = 14;      /* BFT_BITMAPARRAY: use its first element */
     if (o + 14 + 16 > n || d[o] != 'B' || d[o + 1] != 'M') return 0;
     uint32_t off = d[o + 10] | d[o + 11] << 8 | d[o + 12] << 16 | (uint32_t)d[o + 13] << 24;
     const uint8_t *info = d + o + 14;
@@ -80,7 +79,7 @@ static pmwin_t *bmp_from_file(const uint8_t *d, size_t n)
     free(tmp);
     return b;
 }
-static uint32_t getpel(pmwin_t *w, int x, int y)          /* a window's (or a bitmap's) pixel, PM's way up */
+static uint32_t getpel(pmwin_t *w, int x, int y)          /* pixel of a window or bitmap, y counting up like PM */
 {
     pmwin_t *f = frame_of(w);
     if (!f || !f->px || x < 0 || y < 0 || x >= w->cx || y >= w->cy) return 0;
@@ -111,7 +110,7 @@ static uint32_t rop(uint32_t r, uint32_t s, uint32_t d, uint32_t p)
     }
     return s;
 }
-/* [tx0, tx1) x [ty0, ty1) of t from [sx0, sx1) x [sy0, sy1) of s (stretched) */
+/* copy [sx0, sx1) x [sy0, sy1) of s to [tx0, tx1) x [ty0, ty1) of t, stretching */
 static void blit(pmwin_t *t, int tx0, int ty0, int tx1, int ty1, pmwin_t *s, int sx0, int sy0, int sx1, int sy1, uint32_t r, uint32_t pat)
 {
     if (tx1 < tx0) { int k = tx0; tx0 = tx1; tx1 = k; }
@@ -132,7 +131,7 @@ static uint32_t api_GpiLoadBitmap(void)           /* (hps, hmod, idBitmap, lWidt
     pmwin_t *b = bmp_from_file(C.mem + a, n);
     if (!b) return 0;
     int w = (int32_t)A(3), h = (int32_t)A(4);
-    if (w > 0 && h > 0 && (w != b->cx || h != b->cy)) {      /* stretched to the size asked */
+    if (w > 0 && h > 0 && (w != b->cx || h != b->cy)) {      /* stretch to the requested size */
         pmwin_t *s = bmp_new(w, h);
         if (s) { blit(s, 0, 0, w, h, b, 0, 0, b->cx, b->cy, ROP_SRCCOPY, 0); win_destroy(b); b = s; }
     }
@@ -176,9 +175,8 @@ static uint32_t api_GpiCreateBitmap(void)     /* (hps, pbmpNew, flOptions, pbIni
     return b->hwnd;
 }
 
-/* device contexts: memory ones (a PS of theirs draws into the bitmap
- * selected), a window's */
-typedef struct { int used, memory; uint32_t hwnd; int printer; } pmdc_t;   /* (printer: hwnd its page - pm_print.inc) */
+/* device contexts: memory DCs (a PS on one draws into its selected bitmap) and window DCs */
+typedef struct { int used, memory; uint32_t hwnd; int printer; } pmdc_t;   /* printer: hwnd is its page (pm_print.inc) */
 static pmdc_t pmdcs[64];
 static pmdc_t *dc_get(uint32_t h) { h -= 0xD000; return h < 64 && pmdcs[h].used ? &pmdcs[h] : 0; }
 static uint32_t dc_new(int memory, uint32_t hwnd)
@@ -186,12 +184,12 @@ static uint32_t dc_new(int memory, uint32_t hwnd)
     for (int i = 0; i < 64; i++) if (!pmdcs[i].used) { pmdcs[i] = (pmdc_t){ 1, memory, hwnd, 0 }; return 0xD000 + (uint32_t)i; }
     return 0;
 }
-static uint32_t api_DevOpenDC(void)               /* (hab, lType: OD_MEMORY; OD_QUEUED, OD_DIRECT, OD_INFO - the printer, a page; ...) */
+static uint32_t api_DevOpenDC(void)               /* (hab, lType, ...): OD_MEMORY, or OD_QUEUED / OD_DIRECT / OD_INFO for the printer page */
 {
     uint32_t h = dc_new(A(1) == 8, 0);
     pmdc_t *d = dc_get(h);
     if (d && (A(1) == 2 || A(1) == 5 || A(1) == 6)) {
-        pmwin_t *b = bmp_new(1240, 1754);                    /* (pm_print.inc's PR_W, PR_H) */
+        pmwin_t *b = bmp_new(1240, 1754);                    /* PR_W x PR_H from pm_print.inc */
         if (!b) { d->used = 0; return 0; }
         for (int i = 0; i < b->pw * b->ph; i++) b->px[i] = 0xFFFFFFFFu;
         d->printer = 1; d->hwnd = b->hwnd;
@@ -220,7 +218,7 @@ static uint32_t api_DevQueryCaps(void)            /* (hdc, lStart, lCount, alArr
         case CAPS_TECHNOLOGY: v = pr ? CAPS_TECH_RASTER_PRINTER : CAPS_TECH_RASTER_DISPLAY; break;
         case CAPS_WIDTH: v = pr ? 1240 : 1920; break;
         case CAPS_HEIGHT: v = pr ? 1754 : 1080; break;
-        case CAPS_HORIZONTAL_RESOLUTION: case CAPS_VERTICAL_RESOLUTION: v = pr ? 5906 : 3780; break;   /* (pels a metre) */
+        case CAPS_HORIZONTAL_RESOLUTION: case CAPS_VERTICAL_RESOLUTION: v = pr ? 5906 : 3780; break;   /* pels per metre */
         case CAPS_COLORS: v = 16777216; break;
         case CAPS_COLOR_PLANES: v = 1; break;
         case CAPS_COLOR_BITCOUNT: v = 24; break;
@@ -237,7 +235,7 @@ static uint32_t api_GpiCreatePS(void)             /* (hab, hdc, psizlSize, flOpt
         if (!pmpss[i].used) {
             geo_free(&pmpss[i]);
             pmpss[i] = (pmps_t){ 1, d && !d->memory ? d->hwnd : 0, -3, -3, 0, 0, 0, 3, 0, 0, 0, 0, 0 };
-            geo_set_units(&pmpss[i], A(3), A(2), d && d->printer ? 5906 : 3780);   /* (its page units at its resolution; its page's size) */
+            geo_set_units(&pmpss[i], A(3), A(2), d && d->printer ? 5906 : 3780);   /* page units at the DC's resolution, and its page size */
             return 0xA000 + (uint32_t)i;
         }
     return 0;
@@ -251,7 +249,7 @@ static uint32_t api_GpiAssociate(void)
     if (d && !d->memory) ps->hwnd = d->hwnd;
     return 1;
 }
-static uint32_t api_GpiSetBitmap(void)            /* (hps, hbm): the one before */
+static uint32_t api_GpiSetBitmap(void)            /* (hps, hbm); returns the previous one */
 {
     pmps_t *ps = ps_get(A(0));
     if (!ps) return (uint32_t)HBM_ERROR;
@@ -260,7 +258,7 @@ static uint32_t api_GpiSetBitmap(void)            /* (hps, hbm): the one before 
     return old;
 }
 static uint32_t gpi_query_ps(pmps_t *ps, uint32_t psizl);
-static uint32_t api_GpiQueryPS(void) { pmps_t *ps = ps_get(A(0)); if (!ps) return 0; return gpi_query_ps(ps, A(1)); }   /* (hps, psizl): its units */
+static uint32_t api_GpiQueryPS(void) { pmps_t *ps = ps_get(A(0)); if (!ps) return 0; return gpi_query_ps(ps, A(1)); }   /* (hps, psizl); returns its units */
 static uint32_t api_GpiResetPS(void) { pmps_t *ps = ps_get(A(0)); if (ps) { ps->color = ps->back = -3; ps->x = ps->y = 0; geo_free(ps); } return 1; }
 static uint32_t api_WinGetScreenPS(void)
 {
@@ -286,7 +284,7 @@ static uint32_t api_GpiSetBitmapBits(void)        /* (hps, lScanStart, lScans, p
     free(tmp);
     return (uint32_t)n;
 }
-static uint32_t api_GpiQueryBitmapBits(void)      /* (hps, lScanStart, lScans, pbBuffer, pbmiInfoTable): 24 or 32 bits */
+static uint32_t api_GpiQueryBitmapBits(void)      /* (hps, lScanStart, lScans, pbBuffer, pbmiInfoTable): 24 or 32 bpp */
 {
     pmps_t *ps = ps_get(A(0));
     pmwin_t *b = ps ? bmp_get(ps->hwnd) : 0;
@@ -322,7 +320,7 @@ static uint32_t api_WinDrawBitmap(void)       /* (hpsDst, hbm, pwrcSrc, pptlDst,
     int sx0 = 0, sy0 = 0, sx1 = b->cx, sy1 = b->cy;
     if (src && ok(src, 16)) { sx0 = (int32_t)g32(src); sy0 = (int32_t)g32(src + 4); sx1 = (int32_t)g32(src + 8); sy1 = (int32_t)g32(src + 12); }
     int tx0 = (int32_t)g32(dst), ty0 = (int32_t)g32(dst + 4), tx1, ty1;
-    if ((fl & DBM_STRETCH) && ok(dst, 16)) { tx1 = (int32_t)g32(dst + 8); ty1 = (int32_t)g32(dst + 12); }   /* a rectangle */
+    if ((fl & DBM_STRETCH) && ok(dst, 16)) { tx1 = (int32_t)g32(dst + 8); ty1 = (int32_t)g32(dst + 12); }   /* a target rectangle */
     else { tx1 = tx0 + (sx1 - sx0); ty1 = ty0 + (sy1 - sy0); }
     blit(t, tx0, ty0, tx1, ty1, b, sx0, sy0, sx1, sy1, (fl & DBM_INVERT) ? ROP_NOTSRCCOPY : ROP_SRCCOPY, 0);
     present(t);
@@ -349,15 +347,14 @@ static uint32_t api_GpiBitBlt(void)           /* (hpsTarget, hpsSource, lCount, 
 }
 static uint32_t api_GpiWCBitBlt(void) { return bitblt(ps_get(A(0)), bmp_get(A(1)), A(2), A(3), A(4)); }   /* (hpsTarget, hbmSource, ...) */
 
-/* ── icons and pointers ──────────────────────────────────────────────────
- * From ICON/POINTER resources: a bitmap array (BA) of them, the device-
- * independent one taken (cxDisplay 0); each a 1-bit mask twice as high -
- * the AND mask its first half, the XOR mask the second - and, for colour
- * ones (CI, CP), a colour image after it. Drawn: AND 0 the image (black or
- * white by XOR for a monochrome one), AND 1 XOR 0 transparent, AND 1 XOR 1
- * the screen inverted. A pointer here: a hidden window, its pixels the
- * image, the masks beside. */
-typedef struct { uint8_t *andm, *xorm; int mono, hotx, hoty; } ptr_t;   /* (hot: from the top left) */
+/* ── icons and pointers ──
+ * ICON/POINTER resources are bitmap arrays (BA); we take the device-
+ * independent one (cxDisplay 0). Each has a 1-bit mask twice as tall (AND
+ * mask first, XOR mask second), and colour ones (CI, CP) a colour image
+ * after it. AND 0 shows the image (for mono: black or white by XOR), AND 1
+ * XOR 0 is transparent, AND 1 XOR 1 inverts the screen. A pointer is a
+ * hidden window holding the image, with the masks next to it. */
+typedef struct { uint8_t *andm, *xorm; int mono, hotx, hoty; } ptr_t;   /* hot spot from the top left */
 static pmwin_t *ptr_get(uint32_t h) { pmwin_t *p = win(h); return p && !strcmp(p->cls, "#pointer") ? p : 0; }
 static pmwin_t *ptr_new(int w, int h, int mono)
 {
@@ -372,7 +369,7 @@ static pmwin_t *ptr_new(int w, int h, int mono)
     p->ctl = t;
     return p;
 }
-/* as ARGB pixels (the desktop's pointer): what's inverted on the screen, a shadow */
+/* as ARGB for the desktop pointer: inverted parts become a shadow */
 static __attribute__((unused)) void ptr_argb(pmwin_t *p, uint32_t *out, int *hx, int *hy)
 {
     ptr_t *m = p->ctl;
@@ -393,7 +390,7 @@ static uint32_t rd32le(const uint8_t *d) { return d[0] | d[1] << 8 | d[2] << 16 
 static pmwin_t *ptr_from_file(const uint8_t *d, size_t n)
 {
     size_t h = 0;
-    if (n >= 14 && d[0] == 'B' && d[1] == 'A') {             /* an array: the device-independent one, else the first */
+    if (n >= 14 && d[0] == 'B' && d[1] == 'A') {             /* an array: take the device-independent image, else the first */
         size_t o = 0, pick = 14;
         for (int k = 0; k < 16 && o + 14 <= n; k++) {
             if (d[o] != 'B' || d[o + 1] != 'A') break;
@@ -418,14 +415,14 @@ static pmwin_t *ptr_from_file(const uint8_t *d, size_t n)
     if (!p) return 0;
     ptr_t *t = p->ctl;
     t->hotx = (int16_t)(d[h + 6] | d[h + 7] << 8);
-    t->hoty = ih - 1 - (int16_t)(d[h + 8] | d[h + 9] << 8);   /* (the file's: from the bottom) */
-    for (int r = 0; r < ih; r++)                              /* (r: from the bottom) */
+    t->hoty = ih - 1 - (int16_t)(d[h + 8] | d[h + 9] << 8);   /* the file counts from the bottom */
+    for (int r = 0; r < ih; r++)                              /* r counts from the bottom */
         for (int x = 0; x < w; x++) {
             int ty = ih - 1 - r;
             t->andm[ty * w + x] = (d[moff + (uint32_t)r * mrow + (uint32_t)x / 8] >> (7 - (x & 7))) & 1;
             t->xorm[ty * w + x] = (d[moff + (uint32_t)(r + ih) * mrow + (uint32_t)x / 8] >> (7 - (x & 7))) & 1;
         }
-    if (color) {                                              /* the colour image: its header after the mask's */
+    if (color) {                                              /* colour image: its header follows the mask's */
         size_t ch = h + 14 + mfix + 2 * (mfix == 12 ? 3 : 4);
         if (ch + 14 + 12 <= n) {
             uint32_t coff = rd32le(d + ch + 10);
@@ -438,7 +435,7 @@ static pmwin_t *ptr_from_file(const uint8_t *d, size_t n)
     }
     return p;
 }
-/* the pointer at (x, y) - its bottom left - of window t; half its size for DP_MINI */
+/* draw pointer p at (x, y), its bottom left, in window t; half size for DP_MINI */
 static void ptr_draw(pmwin_t *t, int x, int y, pmwin_t *p, uint32_t fs)
 {
     ptr_t *m = p->ctl;
@@ -449,14 +446,14 @@ static void ptr_draw(pmwin_t *t, int x, int y, pmwin_t *p, uint32_t fs)
             int a = m->andm[i], xo = m->xorm[i];
             uint32_t c;
             if (a && !xo) continue;                                         /* transparent */
-            if (a && xo) c = ~getpel(t, px, py) & 0xFFFFFF;                 /* the screen, inverted */
+            if (a && xo) c = ~getpel(t, px, py) & 0xFFFFFF;                 /* invert the screen */
             else c = m->mono ? (xo ? 0xFFFFFF : 0) : p->px[i] & 0xFFFFFF;
             if ((fs & DP_INVERTED) && !(a && xo)) c = ~c & 0xFFFFFF;
             if ((fs & DP_HALFTONED) && ((px + py) & 1)) continue;
             pel(t, px, py, c);
         }
 }
-static void disc(pmwin_t *p, int cx, int cy, int r, uint32_t c, ptr_t *m)   /* (a pointer's: opaque there) */
+static void disc(pmwin_t *p, int cx, int cy, int r, uint32_t c, ptr_t *m)   /* filled circle, marked opaque in the pointer's mask */
 {
     for (int y = 0; y < p->cy; y++)
         for (int x = 0; x < p->cx; x++) {
@@ -464,7 +461,7 @@ static void disc(pmwin_t *p, int cx, int cy, int r, uint32_t c, ptr_t *m)   /* (
             if (dx * dx + dy * dy <= 4 * r * r) { p->px[y * p->cx + x] = 0xFF000000u | c; if (m) m->andm[y * p->cx + x] = 0; }
         }
 }
-/* the system's: drawn here (SPTR_ICONINFORMATION ... ICONWARNING, the arrow) */
+/* system pointers, drawn here (SPTR_ICONINFORMATION .. ICONWARNING, the arrow) */
 static uint32_t sys_ptrs[32];
 static uint32_t sys_pointer(uint32_t id)
 {
@@ -473,14 +470,14 @@ static uint32_t sys_pointer(uint32_t id)
     pmwin_t *p = ptr_new(32, 32, 0);
     if (!p) return 0;
     ptr_t *m = p->ctl;
-    memset(m->andm, 1, 32 * 32);                               /* (all transparent, then the shape) */
+    memset(m->andm, 1, 32 * 32);                               /* start all transparent, then draw the shape */
     const char *mark = 0;
     uint32_t bg = 0, fg = 0xFFFFFF;
     switch (id) {
     case SPTR_ICONINFORMATION: bg = 0x2050C0; mark = "i"; break;
     case SPTR_ICONQUESTION: bg = 0x2050C0; mark = "?"; break;
     case SPTR_ICONERROR: bg = 0xC02020; mark = "X"; break;
-    case SPTR_ILLEGAL:                                         /* a red ring, struck through */
+    case SPTR_ILLEGAL:                                         /* red ring with a bar through it */
         for (int y = 0; y < 32; y++) for (int x = 0; x < 32; x++) {
             int dx = 2 * x + 1 - 32, dy = 2 * y + 1 - 32, d2 = dx * dx + dy * dy, slash = abs(dx + dy) <= 5;
             if (d2 <= 26 * 26 && (d2 >= 18 * 18 || slash)) { p->px[y * 32 + x] = 0xFFD02020u; m->andm[y * 32 + x] = 0; }
@@ -488,7 +485,7 @@ static uint32_t sys_pointer(uint32_t id)
         }
         m->hotx = m->hoty = 16;
         break;
-    case SPTR_FILE: case SPTR_MULTFILE:                        /* a page, its corner folded */
+    case SPTR_FILE: case SPTR_MULTFILE:                        /* a page with a folded corner */
         for (int y = 2; y < 30; y++) for (int x = 7; x < 25; x++) {
             int edge = x == 7 || x == 24 || y == 2 || y == 29, corner = x > 18 && y < 8 && x - 18 > y - 2;
             if (corner) continue;
@@ -508,7 +505,7 @@ static uint32_t sys_pointer(uint32_t id)
         for (int y = 2; y < 30; y++) for (int x = 16 - (y - 2) / 2 - 1; x <= 16 + (y - 2) / 2; x++)
             if (x >= 0 && x < 32) { p->px[y * 32 + x] = 0xFFF0C800u; m->andm[y * 32 + x] = 0; }
         mark = "!"; fg = 0; break;
-    default: {                                                 /* the arrow (the others too, for now) */
+    default: {                                                 /* the arrow, also used for the rest for now */
         static const char *const arrow[] = {
             "X", "XX", "X.X", "X..X", "X...X", "X....X", "X.....X", "X......X", "X.......X", "X........X",
             "X.....XXXXX", "X..X..X", "X.X X..X", "XX  X..X", "X    X..X", "     X..X", "      X..X", "      XXX" };
@@ -519,7 +516,7 @@ static uint32_t sys_pointer(uint32_t id)
     }
     }
     if (bg) disc(p, 16, 16, 15, bg, m);
-    if (mark) {                                                /* (its pixels: the mask stays as the shape made it) */
+    if (mark) {                                                /* the mask stays as the shape left it */
         int tw = text_w(mark, 1);
         text_at(p, 16 - tw / 2, 10, mark, 1, fg);
     }
@@ -537,7 +534,7 @@ static uint32_t api_WinDestroyPointer(void)
 {
     pmwin_t *p = ptr_get(A(0));
     if (!p) return 0;
-    for (int i = 0; i < 32; i++) if (sys_ptrs[i] == p->hwnd) return 1;  /* (the system's stay) */
+    for (int i = 0; i < 32; i++) if (sys_ptrs[i] == p->hwnd) return 1;  /* system pointers are never destroyed */
     ptr_free(p);
     return 1;
 }

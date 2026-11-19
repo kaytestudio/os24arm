@@ -1,9 +1,8 @@
-/* userland/os2x86/pm_wl.inc - Presentation Manager on Wayland (pm.inc's
- * backend on the desktop): each PM frame window an xdg-shell toplevel
- * (the Workplace Shell draws its OS/2 frame), its pixels a wl_shm buffer;
- * the pointer and the keyboard (xkbcommon) become PM's messages. The
- * Wayland events are read by a thread of their own, which takes the lock
- * (gil) for what it changes in PM. Built when the sysroot has
+/* userland/os2x86/pm_wl.inc - the Wayland backend for pm.inc on the desktop.
+ * Each PM frame window is an xdg-shell toplevel (the Workplace Shell draws
+ * the OS/2 frame) with a wl_shm buffer; pointer and keyboard (xkbcommon)
+ * events become PM messages. Wayland events are read on their own thread,
+ * which takes the gil before touching PM state. Built when the sysroot has
  * wayland-client and xkbcommon (userland/build-tests.sh). */
 #include <wayland-client.h>
 #include <xkbcommon/xkbcommon.h>
@@ -21,7 +20,7 @@ static struct xkb_keymap *xkb_map;
 static struct xkb_state *xkb_st;
 static pmwin_t *wl_ptr_frame, *wl_kbd_frame;
 static int wl_px, wl_py;
-static uint32_t wl_serial, wl_enter_serial;   /* (the last input's: for the selection; the pointer's enter: its shape) */
+static uint32_t wl_serial, wl_enter_serial;   /* serial of the last input (for the selection) and of pointer enter (for the cursor) */
 static struct wl_data_device_manager *wl_ddm;
 static struct wl_data_device *wl_dd;
 static void clip_lost(void);
@@ -44,7 +43,7 @@ static pmwin_t *wl_frame_of(struct wl_surface *s)
 static void wl_buf_release(void *d, struct wl_buffer *b) { (void)d; wl_buffer_destroy(b); }
 static const struct wl_buffer_listener wl_buf_l = { wl_buf_release };
 
-/* the frame's pixels to the compositor (gil held) */
+/* send the frame's pixels to the compositor (gil held) */
 static void wl_present(pmwin_t *f)
 {
     wlwin_t *k = f->bk;
@@ -89,7 +88,7 @@ static void tl_configure(void *d, struct xdg_toplevel *t, int32_t w, int32_t h, 
     pmwin_t *f = d;
     if (w <= 0 || h <= 0) return;
     pthread_mutex_lock(&gil);
-    if (f->used && !f->fixed) pm_resize(f, w, h);     /* (dialogs, message boxes keep their size) */
+    if (f->used && !f->fixed) pm_resize(f, w, h);     /* dialogs and message boxes keep their size */
     pthread_mutex_unlock(&gil);
 }
 static void tl_close(void *d, struct xdg_toplevel *t)
@@ -143,14 +142,14 @@ static int wl_idle(struct timespec *dl)
     return 1;
 }
 
-/* ── the clipboard: the Wayland selection. Ours: a data source with the
- * text (UTF-8 for the others; the program's is Latin-1); another's: its
- * offer, read through a pipe when the program asks ── */
-static pthread_mutex_t wl_clip_mx = PTHREAD_MUTEX_INITIALIZER;   /* (not the gil: the source's sends come on the event thread) */
+/* ── clipboard: the Wayland selection ──
+ * Ours is a data source with the text (UTF-8 out; programs use Latin-1).
+ * Another client's is an offer we read through a pipe when asked. */
+static pthread_mutex_t wl_clip_mx = PTHREAD_MUTEX_INITIALIZER;   /* not the gil: source sends arrive on the event thread */
 static char *wl_clip_utf8;
 static struct wl_data_source *wl_src;
-static struct wl_data_offer *wl_sel;           /* the selection, another program's */
-static int wl_sel_text;                         /* ... it has text: 2 UTF-8, 1 plain */
+static struct wl_data_offer *wl_sel;           /* another client's selection */
+static int wl_sel_text;                         /* its text type: 2 UTF-8, 1 plain */
 static void src_target(void *d, struct wl_data_source *s, const char *m) { (void)d; (void)s; (void)m; }
 static void src_send(void *d, struct wl_data_source *s, const char *m, int32_t fd)
 {
@@ -191,7 +190,7 @@ static void wl_clip_set(const char *text)       /* (gil held) */
     free(wl_clip_utf8);
     wl_clip_utf8 = u;
     pthread_mutex_unlock(&wl_clip_mx);
-    if (!wl_serial) { wl_clip_pending = 1; return; }   /* (no input yet: the compositor wants an input's serial - offered at the first) */
+    if (!wl_serial) { wl_clip_pending = 1; return; }   /* no input yet: the compositor needs an input serial, so offer on the first one */
     wl_clip_offer();
 }
 static void wl_clip_offer(void)                 /* (gil held) */
@@ -203,10 +202,10 @@ static void wl_clip_offer(void)                 /* (gil held) */
     wl_data_source_offer(s, "UTF8_STRING");
     wl_data_source_offer(s, "text/plain");
     wl_data_device_set_selection(wl_dd, s, wl_serial);
-    wl_src = s;                                  /* (the old one: cancelled, by the compositor) */
+    wl_src = s;                                  /* the compositor cancels the old one */
     wl_display_flush(wld);
 }
-static char *wl_clip_get(void)                  /* (gil held: the offer stays) */
+static char *wl_clip_get(void)                  /* gil held; the offer stays */
 {
     if (!wl_sel || !wl_sel_text) return 0;
     int fd[2];
@@ -216,7 +215,7 @@ static char *wl_clip_get(void)                  /* (gil held: the offer stays) *
     wl_display_flush(wld);
     size_t n = 0, cap = 4096;
     char *b = malloc(cap);
-    for (;;) {                                   /* (a program that doesn't answer: two seconds) */
+    for (;;) {                                   /* give up after two seconds if the other side doesn't answer */
         struct pollfd pf = { fd[0], POLLIN, 0 };
         if (poll(&pf, 1, 2000) <= 0) break;
         if (n + 1024 > cap) b = realloc(b, cap *= 2);
@@ -226,7 +225,7 @@ static char *wl_clip_get(void)                  /* (gil held: the offer stays) *
     }
     close(fd[0]);
     b[n] = 0;
-    if (wl_sel_text == 2) {                      /* UTF-8: Latin-1 (the rest: '?') */
+    if (wl_sel_text == 2) {                      /* UTF-8 to Latin-1, '?' for the rest */
         size_t i = 0, k = 0;
         while (i < n) {
             uint8_t c = (uint8_t)b[i];
@@ -254,7 +253,7 @@ static void off_action(void *d, struct wl_data_offer *o, uint32_t a) { (void)d; 
 static const struct wl_data_offer_listener off_l = { off_offer, off_source_actions, off_action };
 static void dd_data_offer(void *d, struct wl_data_device *dd, struct wl_data_offer *o) { (void)d; (void)dd; wl_data_offer_add_listener(o, &off_l, 0); }
 static void dd_enter(void *d, struct wl_data_device *dd, uint32_t s, struct wl_surface *f, wl_fixed_t x, wl_fixed_t y, struct wl_data_offer *o)
-{ (void)d; (void)dd; (void)s; (void)f; (void)x; (void)y; if (o) wl_data_offer_destroy(o); }   /* (drag and drop: not yet) */
+{ (void)d; (void)dd; (void)s; (void)f; (void)x; (void)y; if (o) wl_data_offer_destroy(o); }   /* drag and drop: not yet */
 static void dd_leave(void *d, struct wl_data_device *dd) { (void)d; (void)dd; }
 static void dd_motion(void *d, struct wl_data_device *dd, uint32_t t, wl_fixed_t x, wl_fixed_t y) { (void)d; (void)dd; (void)t; (void)x; (void)y; }
 static void dd_drop(void *d, struct wl_data_device *dd) { (void)d; (void)dd; }
@@ -269,7 +268,7 @@ static void dd_selection(void *d, struct wl_data_device *dd, struct wl_data_offe
 }
 static const struct wl_data_device_listener dd_l = { dd_data_offer, dd_enter, dd_leave, dd_motion, dd_drop, dd_selection };
 
-/* ── the pointer's shape: a cursor surface ── */
+/* ── pointer shape: a cursor surface ── */
 static struct wl_surface *wl_cur;
 static pmwin_t *wl_cur_ptr;
 static void wl_cursor_apply(void)               /* (gil held) */
@@ -309,7 +308,7 @@ static void p_enter(void *d, struct wl_pointer *p, uint32_t serial, struct wl_su
     wl_ptr_frame = wl_frame_of(s);
     wl_px = wl_fixed_to_int(x); wl_py = wl_fixed_to_int(y);
     wl_enter_serial = serial;
-    if (wl_ptr_frame) wl_cursor_apply();         /* (the shape: set again, each time it comes in) */
+    if (wl_ptr_frame) wl_cursor_apply();         /* set the shape again on every enter */
     pthread_mutex_unlock(&gil);
 }
 static void p_leave(void *d, struct wl_pointer *p, uint32_t serial, struct wl_surface *s)
@@ -330,7 +329,7 @@ static void p_motion(void *d, struct wl_pointer *p, uint32_t t, wl_fixed_t x, wl
 static void p_button(void *d, struct wl_pointer *p, uint32_t serial, uint32_t t, uint32_t button, uint32_t state)
 {
     (void)d; (void)p; (void)t;
-    int b = button == 0x110 ? 1 : button == 0x111 ? 2 : button == 0x112 ? 3 : 0;     /* BTN_LEFT RIGHT MIDDLE */
+    int b = button == 0x110 ? 1 : button == 0x111 ? 2 : button == 0x112 ? 3 : 0;     /* evdev BTN_LEFT, BTN_RIGHT, BTN_MIDDLE */
     pthread_mutex_lock(&gil);
     wl_serial = serial;
     if (wl_clip_pending) wl_clip_offer();
@@ -375,7 +374,7 @@ static void k_enter(void *d, struct wl_keyboard *k, uint32_t serial, struct wl_s
     (void)d; (void)k; (void)keys;
     pthread_mutex_lock(&gil);
     wl_kbd_frame = wl_frame_of(s);
-    wl_serial = serial;                          /* (the focus's serial: good for the selection too) */
+    wl_serial = serial;                          /* focus serial works for the selection too */
     if (wl_clip_pending) wl_clip_offer();
     pthread_mutex_unlock(&gil);
 }
@@ -417,7 +416,7 @@ static void k_key(void *d, struct wl_keyboard *k, uint32_t serial, uint32_t t, u
         if (xkb_state_mod_name_is_active(xkb_st, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE) > 0) kc |= KC_SHIFT;
         if (xkb_state_mod_name_is_active(xkb_st, XKB_MOD_NAME_CTRL, XKB_STATE_MODS_EFFECTIVE) > 0) kc |= KC_CTRL;
         if (xkb_state_mod_name_is_active(xkb_st, XKB_MOD_NAME_ALT, XKB_STATE_MODS_EFFECTIVE) > 0) kc |= KC_ALT;
-        if (ch > 255) ch = '?';                  /* (PM's characters: a code page's, 8 bits) */
+        if (ch > 255) ch = '?';                  /* PM characters are 8-bit code page ones */
         if (ch || vk) pm_key(f, (int)ch, vk, (int)key, kc);
     }
     pthread_mutex_unlock(&gil);
@@ -464,12 +463,12 @@ static void *wl_events(void *a)
 {
     (void)a;
     while (wl_display_dispatch(wld) >= 0) { }
-    pthread_mutex_lock(&gil);                /* the desktop's gone: the program goes too */
+    pthread_mutex_lock(&gil);                /* the desktop went away: exit too */
     fprintf(stderr, "%s: the display went away\n", prog_name);
     do_exit(1);
 }
 
-/* gil held; the first dispatches before the thread starts */
+/* gil held; dispatches once before the thread starts */
 static int wl_start(void)
 {
     if (!(wld = wl_display_connect(0))) {

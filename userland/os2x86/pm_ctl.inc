@@ -1,46 +1,45 @@
-/* userland/os2x86/pm_ctl.inc - Presentation Manager's controls, menus,
- * dialogs and string tables (included at the end of pm.inc).
+/* userland/os2x86/pm_ctl.inc - PM's controls, menus, dialogs and string
+ * tables, included at the end of pm.inc.
  *
- * The controls are windows of PM's own classes, done here: WC_BUTTON (#3:
- * push buttons, check boxes, radio buttons), WC_STATIC (#5: text, group
- * boxes, rectangles), WC_ENTRYFIELD (#6), WC_LISTBOX (#7), each painting
- * itself and telling its owner (WM_COMMAND, WM_CONTROL). Menus (WC_MENU,
- * #4) come from a menu template (FCF_MENU, WinLoadMenu): a bar at the top
- * of the frame, a drop-down drawn over the client. Dialogs come from a
- * dialog template (WinDlgBox, WinLoadDlg, WinCreateDlg): a window of the
- * desktop of their own, its controls in dialog units (a quarter of a
- * character across, an eighth up). */
+ * Controls are windows of PM's own classes, implemented here: WC_BUTTON (#3:
+ * push buttons, check boxes, radio buttons), WC_STATIC (#5: text, group boxes,
+ * rectangles), WC_ENTRYFIELD (#6), WC_LISTBOX (#7) and others. Each paints
+ * itself and notifies its owner (WM_COMMAND, WM_CONTROL). Menus (WC_MENU, #4)
+ * come from a menu template (FCF_MENU, WinLoadMenu): a bar at the top of the
+ * frame, with drop-downs drawn over the client. Dialogs come from a dialog
+ * template (WinDlgBox, WinLoadDlg, WinCreateDlg): a top-level window with its
+ * controls placed in dialog units (1/4 character wide, 1/8 high). */
 
 #define MENU_H  22
 #define SS_TYPES 0x003f                 /* static type bits (SS_AUTOSIZE excluded) */
 #define SB_W    16                      /* scroll bar width */
 
-static int du_x(int v) { return v * 7 / 4; }            /* dialog units: pixels */
+static int du_x(int v) { return v * 7 / 4; }            /* dialog units to pixels */
 static int du_y(int v) { return v * 2; }
 
-/* text without its mnemonic marks ("~File": File) */
+/* text without mnemonic marks ("~File" -> "File") */
 static void plain(const char *s, char *out, size_t n)
 {
     size_t k = 0;
     for (; *s && k + 1 < n; s++) if (*s != '~') out[k++] = *s;
     out[k] = 0;
 }
-static void text_mid(pmwin_t *w, int x, int y0, int y1, const char *s, uint32_t rgb)   /* centred up and down */
+static void text_mid(pmwin_t *w, int x, int y0, int y1, const char *s, uint32_t rgb)   /* vertically centred */
 {
     char p[256];
     plain(s, p, sizeof p);
     text_at(w, x, y0 + (y1 - y0 - (pm_ascent + pm_descent)) / 2 + pm_descent, p, (int)strlen(p), rgb);
 }
 static int plain_w(const char *s) { char p[256]; plain(s, p, sizeof p); return text_w(p, (int)strlen(p)); }
-static void notify(pmwin_t *w, uint32_t code, uint32_t mp2)   /* WM_CONTROL to the owner */
+static void notify(pmwin_t *w, uint32_t code, uint32_t mp2)   /* send WM_CONTROL to the owner */
 {
     pmwin_t *o = w->owner ? w->owner : w->parent;
     if (o) pm_send(o, WM_CONTROL, (w->id & 0xFFFF) | code << 16, mp2 ? mp2 : w->hwnd);
 }
-/* owner drawing: WM_MEASUREITEM, WM_DRAWITEM to the owner, an OWNERITEM
- * (hwnd, hps, fsState, fsAttribute, fsStateOld, fsAttributeOld, rclItem,
- * idItem, hItem) in the program's memory and a PS of w for it. 1: the owner
- * drew it; out: the four states after (what's left for us to show) */
+/* owner drawing: send WM_MEASUREITEM / WM_DRAWITEM to the owner with an OWNERITEM
+ * (hwnd, hps, fsState, fsAttribute, fsStateOld, fsAttributeOld, rclItem, idItem,
+ * hItem) in program memory and a PS for w. Returns 1 if the owner drew it; out
+ * gets the four state fields afterwards (what's left for us to draw). */
 static uint32_t gscratch(uint32_t n);
 static uint32_t ps_new(pmwin_t *w, int painting);
 static pmps_t *ps_get(uint32_t h);
@@ -55,7 +54,7 @@ static int owner_draw(pmwin_t *w, uint32_t mp1, int x0, int y0, int x1, int y1, 
     p32(oi + 24, (uint32_t)x0); p32(oi + 28, (uint32_t)y0); p32(oi + 32, (uint32_t)x1); p32(oi + 36, (uint32_t)y1);
     p32(oi + 40, id); p32(oi + 44, h);
     uint32_t r = pm_send(o, WM_DRAWITEM, mp1, oi);
-    if (out) for (int k = 0; k < 4; k++) out[k] = g32(oi + 8 + 4 * (uint32_t)k);   /* (fsState, fsAttribute, fsStateOld, fsAttributeOld, as the owner left them) */
+    if (out) for (int k = 0; k < 4; k++) out[k] = g32(oi + 8 + 4 * (uint32_t)k);   /* fsState, fsAttribute, fsStateOld, fsAttributeOld as the owner left them */
     if (ps_get(ps)) ps_get(ps)->used = 0;
     return r != 0;
 }
@@ -81,7 +80,7 @@ typedef struct { int check, hilite, def; } btn_t;
 static btn_t *btn(pmwin_t *w) { if (!w->ctl) w->ctl = calloc(1, sizeof(btn_t)); return w->ctl; }
 static int btn_type(pmwin_t *w) { return (int)(w->style & BS_PRIMARYSTYLES); }
 static int is_radio(pmwin_t *w) { return w->iproc && (btn_type(w) == BS_RADIOBUTTON || btn_type(w) == BS_AUTORADIOBUTTON) && !strcmp(w->cls, "#3"); }
-/* the radio buttons of w's group: its siblings from the last WS_GROUP to the next */
+/* the radio buttons in w's group: siblings between WS_GROUP marks */
 static int radio_group(pmwin_t *w, pmwin_t **out, int max)
 {
     pmwin_t *sib[MAXWIN];
@@ -100,9 +99,9 @@ static void btn_click(pmwin_t *w)
     btn_t *b = btn(w);
     int t = btn_type(w);
     if (w->style & WS_DISABLED_) return;
-    if (t == BS_PUSHBUTTON || t == BS_USERBUTTON || t == BS_NOTEBOOKBUTTON) {   /* a command */
+    if (t == BS_PUSHBUTTON || t == BS_USERBUTTON || t == BS_NOTEBOOKBUTTON) {   /* sends a command */
         pmwin_t *o = w->owner ? w->owner : w->parent;
-        if (o) post(o, o->hwnd, WM_COMMAND, w->id & 0xFFFF, CMDSRC_PUSHBUTTON | 1u << 16);   /* (by the pointer) */
+        if (o) post(o, o->hwnd, WM_COMMAND, w->id & 0xFFFF, CMDSRC_PUSHBUTTON | 1u << 16);   /* by the pointer */
         return;
     }
     if (t == BS_AUTOCHECKBOX) b->check = !b->check;
@@ -192,7 +191,7 @@ static uint32_t static_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2
             fill(w, 6, ty - pm_ascent / 2 - 2, 10 + tw, w->cy, C_FACE);
             text_at(w, 8, w->cy - pm_ascent, p, (int)strlen(p), C_TEXT);
         }
-    } else if (t == SS_ICON || t == SS_BITMAP || t == SS_SYSICON) {   /* "#id" */
+    } else if (t == SS_ICON || t == SS_BITMAP || t == SS_SYSICON) {   /* text is "#id" */
         fill(w, 0, 0, w->cx, w->cy, C_FACE);
         uint32_t id = w->text[0] == '#' ? (uint32_t)atoi(w->text + 1) : (uint32_t)atoi(w->text);
         if (!w->ctl) {
@@ -210,7 +209,7 @@ static uint32_t static_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2
         uint32_t c = (t == SS_FGNDRECT || t == SS_FGNDFRAME) ? C_TEXT : (t == SS_HALFTONERECT || t == SS_HALFTONEFRAME) ? C_DARK : C_FACE;
         if (t <= SS_BKGNDRECT) fill(w, 0, 0, w->cx, w->cy, c);
         else bevel(w, 0, 0, w->cx, w->cy, 0);
-    } else {                                                    /* SS_TEXT (and what isn't here yet) */
+    } else {                                                    /* SS_TEXT, and anything not handled yet */
         fill(w, 0, 0, w->cx, w->cy, pp_bgc(w, C_FACE));
         char p[256];
         plain(w->text, p, sizeof p);
@@ -224,11 +223,11 @@ static uint32_t static_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2
 }
 
 /* ── WC_ENTRYFIELD ───────────────────────────────────────────────────── */
-typedef struct { int cur, an, limit, changed, ro, first, drag; } ef_t;   /* (the selection: from an to cur) */
+typedef struct { int cur, an, limit, changed, ro, first, drag; } ef_t;   /* selection runs from an to cur */
 static ef_t *ef(pmwin_t *w) { if (!w->ctl) { w->ctl = calloc(1, sizeof(ef_t)); ((ef_t *)w->ctl)->limit = 32; ((ef_t *)w->ctl)->cur = ((ef_t *)w->ctl)->an = -1; } return w->ctl; }
 static void clip_put(const char *s);
 static const char *clip_take(void);
-/* the clipboard's keys: 1 cut, 2 copy, 3 paste (Ctrl+X/C/V; PM's Shift+Del, Ctrl+Ins, Shift+Ins) */
+/* clipboard keys: 1 cut, 2 copy, 3 paste (Ctrl+X/C/V, or PM's Shift+Del, Ctrl+Ins, Shift+Ins) */
 static int clip_key(uint32_t mp1, uint32_t mp2)
 {
     int ch = (mp1 & KC_CHAR) ? (int)(mp2 & 0xFFFF) : 0, vk = (mp1 & KC_VIRTUALKEY) ? (int)(mp2 >> 16) : 0;
@@ -239,7 +238,7 @@ static int clip_key(uint32_t mp1, uint32_t mp2)
 }
 static int ef_lo(ef_t *e) { return e->an < e->cur ? e->an : e->cur; }
 static int ef_hi(ef_t *e) { return e->an < e->cur ? e->cur : e->an; }
-static int ef_del_sel(pmwin_t *w, ef_t *e)      /* the selection out of the text: 1 if there was one */
+static int ef_del_sel(pmwin_t *w, ef_t *e)      /* delete the selection; 1 if there was one */
 {
     int lo = ef_lo(e), hi = ef_hi(e), n = (int)strlen(w->text);
     if (hi <= lo) return 0;
@@ -247,7 +246,7 @@ static int ef_del_sel(pmwin_t *w, ef_t *e)      /* the selection out of the text
     e->cur = e->an = lo;
     return 1;
 }
-static int ef_at(pmwin_t *w, ef_t *e, int x)     /* the character boundary nearest x */
+static int ef_at(pmwin_t *w, ef_t *e, int x)     /* character boundary nearest to x */
 {
     int n = (int)strlen(w->text), k = e->first;
     x -= (w->style & ES_MARGIN) ? 5 : 3;
@@ -270,12 +269,12 @@ static uint32_t entry_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
         uint32_t bg = (w->style & WS_DISABLED_) ? C_FACE : w->has_bg ? w->pp_bg : C_LIGHT, fg = pp_fgc(w, C_TEXT);
         fill(w, 0, 0, w->cx, w->cy, bg);
         if (w->style & ES_MARGIN) { bevel(w, 0, 0, w->cx, w->cy, 0); bevel(w, 1, 1, w->cx - 1, w->cy - 1, 0); }
-        /* (scrolled so the cursor shows) */
+        /* scroll so the cursor is visible */
         if (e->first > e->cur) e->first = e->cur;
         while (e->first < e->cur && text_w(w->text + e->first, e->cur - e->first) > w->cx - 2 * m - 4) e->first++;
         int x = m + 2, y = (w->cy - (pm_ascent + pm_descent)) / 2 + pm_descent;
-        if (w->style & ES_UNREADABLE) { fg = bg; }              /* (not shown) */
-        /* the text in three parts: before the selection, it (white on blue), after */
+        if (w->style & ES_UNREADABLE) { fg = bg; }              /* hide the text */
+        /* draw in three parts: before the selection, the selection (white on blue), after */
         int lo = ef_lo(e) > e->first ? ef_lo(e) : e->first, hi = ef_hi(e);
         const char *s = w->text + e->first;
         if (hi > lo && pm_focus == w->hwnd) {
@@ -294,7 +293,7 @@ static uint32_t entry_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
     }
     case WM_BUTTON1DOWN:
         e->cur = ef_at(w, e, (int16_t)(mp1 & 0xFFFF));
-        if (!((mp2 >> 16) & KC_SHIFT)) e->an = e->cur;                 /* (Shift+click: to there) */
+        if (!((mp2 >> 16) & KC_SHIFT)) e->an = e->cur;                 /* Shift+click extends the selection */
         e->drag = 1; pm_capture = w->hwnd;
         repaint(w);
         return 1;
@@ -304,7 +303,7 @@ static uint32_t entry_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
     case WM_BUTTON1UP:
         if (e->drag) { e->drag = 0; pm_capture = 0; }
         return 1;
-    case WM_BUTTON1DBLCLK: {                                   /* the word */
+    case WM_BUTTON1DBLCLK: {                                   /* select the word */
         int k = ef_at(w, e, (int16_t)(mp1 & 0xFFFF)), a = k, b = k;
         while (a > 0 && w->text[a - 1] != ' ') a--;
         while (b < n && w->text[b] != ' ') b++;
@@ -322,7 +321,7 @@ static uint32_t entry_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
             switch (vk) {
             case VK_BACKSPACE: if (!e->ro) { if (ef_del_sel(w, e)) changed = 1; else if (e->cur > 0) { memmove(w->text + e->cur - 1, w->text + e->cur, (size_t)(n - e->cur + 1)); e->an = --e->cur; changed = 1; } } break;
             case VK_DELETE: if (!e->ro) { if (ef_del_sel(w, e)) changed = 1; else if (e->cur < n) { memmove(w->text + e->cur, w->text + e->cur + 1, (size_t)(n - e->cur)); changed = 1; } } break;
-            case VK_LEFT:                                          /* Left: a selection collapses to its start */
+            case VK_LEFT:                                          /* Left collapses a selection to its start */
                 moved = !shift && ef_hi(e) > ef_lo(e) ? ef_lo(e) : e->cur > 0 ? e->cur - 1 : 0;
                 if ((mp1 & KC_CTRL)) { int k = e->cur; while (k > 0 && w->text[k - 1] == ' ') k--; while (k > 0 && w->text[k - 1] != ' ') k--; moved = k; }
                 break;
@@ -336,7 +335,7 @@ static uint32_t entry_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
             }
         } else if ((mp1 & KC_CHAR) && ch >= 32 && ch != 127 && !(mp1 & (KC_CTRL | KC_ALT))) {
             if (!e->ro) {
-                if (ef_del_sel(w, e)) { changed = 1; n = (int)strlen(w->text); }   /* (typing replaces the selection) */
+                if (ef_del_sel(w, e)) { changed = 1; n = (int)strlen(w->text); }   /* typing replaces the selection */
                 if (n < e->limit && n + 1 < (int)sizeof w->text) {
                     memmove(w->text + e->cur + 1, w->text + e->cur, (size_t)(n - e->cur + 1));
                     w->text[e->cur++] = (char)ch;
@@ -347,7 +346,7 @@ static uint32_t entry_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
         } else if ((mp1 & KC_CHAR) && ch == 8) {
             if (!e->ro) { if (ef_del_sel(w, e)) changed = 1; else if (e->cur > 0) { memmove(w->text + e->cur - 1, w->text + e->cur, (size_t)(n - e->cur + 1)); e->an = --e->cur; changed = 1; } }
         } else done = 0;
-        if (!done) return pm_send(w->owner ? w->owner : w->parent, msg, mp1, mp2);   /* (Enter, Tab, Esc: the dialog's) */
+        if (!done) return pm_send(w->owner ? w->owner : w->parent, msg, mp1, mp2);   /* Enter, Tab and Esc go to the dialog */
         if (moved >= 0) { e->cur = moved; if (!shift) e->an = moved; }
         repaint(w);
         if (changed) { e->changed = 1; notify(w, EN_CHANGE, 0); }
@@ -355,7 +354,7 @@ static uint32_t entry_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
     }
     case EM_SETTEXTLIMIT: e->limit = (int)(mp1 & 0xFFFF); if (e->limit > 255) e->limit = 255; return 1;
     case EM_QUERYCHANGED: { int c = e->changed; e->changed = 0; return (uint32_t)c; }
-    case EM_QUERYSEL: return (uint32_t)ef_lo(e) | (uint32_t)ef_hi(e) << 16;                      /* (first, past the last) */
+    case EM_QUERYSEL: return (uint32_t)ef_lo(e) | (uint32_t)ef_hi(e) << 16;                      /* (first, one past the last) */
     case EM_SETSEL: {                                                                            /* (anchor, cursor) */
         int a = (int)(mp1 & 0xFFFF), b = (int)(mp1 >> 16);
         e->an = a > n ? n : a; e->cur = b > n ? n : b;
@@ -398,11 +397,11 @@ static uint32_t entry_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
 
 /* ── WC_LISTBOX ──────────────────────────────────────────────────────── */
 typedef struct { char *text; uint32_t handle; } lbitem_t;
-typedef struct { lbitem_t *it; int n, cap, sel, top, ih; } lb_t;   /* (ih: an item's height, the owner's for LS_OWNERDRAW) */
+typedef struct { lbitem_t *it; int n, cap, sel, top, ih; } lb_t;   /* ih: item height (the owner's, for LS_OWNERDRAW) */
 static lb_t *lb(pmwin_t *w) { if (!w->ctl) { w->ctl = calloc(1, sizeof(lb_t)); ((lb_t *)w->ctl)->sel = -1; } return w->ctl; }
 static int lb_ih(pmwin_t *w, lb_t *l)
 {
-    if (!l->ih && (w->style & LS_OWNERDRAW)) {                /* WM_MEASUREITEM (id, item): the height */
+    if (!l->ih && (w->style & LS_OWNERDRAW)) {                /* ask the owner for the height (WM_MEASUREITEM) */
         pmwin_t *o = w->owner ? w->owner : w->parent;
         l->ih = -1;
         int h = o ? (int)(pm_send(o, 0x0037, w->id & 0xFFFF, 0) & 0xFFFF) : 0;
@@ -434,7 +433,7 @@ static uint32_t list_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
         for (int r = 0; r < rows && l->top + r < l->n; r++) {
             int ih = lb_ih(w, l), k = l->top + r, y1 = w->cy - 2 - r * ih, y0 = y1 - ih;
             int on = k == l->sel;
-            if (w->style & LS_OWNERDRAW) {                      /* the owner's, else ours; selected and left to us: inverted */
+            if (w->style & LS_OWNERDRAW) {                      /* owner draws; if it leaves a selected item to us, we invert it */
                 uint32_t st[4];
                 if (owner_draw(w, w->id & 0xFFFF, 2, y0, w->cx - 2, y1, (uint32_t)k, l->it[k].handle, (uint32_t)on, (uint32_t)on, 0, 0, st)) {
                     if (st[0]) invert_rect(w, 2, y0, w->cx - 2, y1);
@@ -444,7 +443,7 @@ static uint32_t list_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
             if (on) fill(w, 2, y0, w->cx - 2, y1, C_HILITE);
             text_at(w, 5, y0 + (ih - pm_ascent - pm_descent) / 2 + pm_descent, l->it[k].text, (int)strlen(l->it[k].text), on ? C_LIGHT : C_TEXT);
         }
-        if (l->n > rows) {                                      /* (a scroll mark: there's more) */
+        if (l->n > rows) {                                      /* scroll mark: there's more below */
             int h = w->cy - 4, bh = h * rows / l->n, by = 2 + (h - bh) * (l->n - rows - l->top) / (l->n - rows);
             fill(w, w->cx - 6, by, w->cx - 3, by + bh, C_DARK);
         }
@@ -508,7 +507,7 @@ static uint32_t list_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
         else if (l->sel == i1) { l->sel = -1; repaint(w); }
         return 1;
     case LM_QUERYSELECTION: {
-        if (l->sel < 0 || (i1 != LIT_FIRST && l->sel <= i1)) return (uint32_t)LIT_NONE;  /* (from the first, else after mp1) */
+        if (l->sel < 0 || (i1 != LIT_FIRST && l->sel <= i1)) return (uint32_t)LIT_NONE;  /* from the first, else after mp1 */
         return (uint32_t)l->sel;
     }
     case LM_QUERYITEMTEXT: {                                              /* (index, cchMax), buffer */
@@ -556,10 +555,10 @@ static uint32_t list_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
 
 /* ── menus ───────────────────────────────────────────────────────────── */
 typedef struct menu menu_t;
-typedef struct { char text[64]; uint16_t id, style, attr; menu_t *sub; int ow, oh; } mitem_t;   /* (ow, oh: MIS_OWNERDRAW, as the owner measured it) */
-struct menu { mitem_t *it; int n, open; uint32_t id; };   /* (id: a pull-down's, its item's in the bar) */
+typedef struct { char text[64]; uint16_t id, style, attr; menu_t *sub; int ow, oh; } mitem_t;   /* ow, oh: size the owner gave for MIS_OWNERDRAW */
+struct menu { mitem_t *it; int n, open; uint32_t id; };   /* id: a pull-down's id, i.e. its item's in the bar */
 
-static menu_t *menu_parse(uint32_t t, uint32_t end)        /* a menu template at t */
+static menu_t *menu_parse(uint32_t t, uint32_t end)        /* parse a menu template at t */
 {
     menu_t *m = calloc(1, sizeof *m);
     if (!ok(t, 10)) return m;
@@ -570,8 +569,8 @@ static menu_t *menu_parse(uint32_t t, uint32_t end)        /* a menu template at
         mitem_t *it = &m->it[m->n++];
         it->style = g16(p); it->attr = g16(p + 2); it->id = g16(p + 4);
         p += 6;
-        if (it->style & MIS_SEPARATOR) continue;            /* (no text) */
-        {                                                   /* the text (bitmaps' "#id", owner-drawn items' too) */
+        if (it->style & MIS_SEPARATOR) continue;            /* separators have no text */
+        {                                                   /* the text (also "#id" for bitmaps and owner-drawn items) */
             char *s = gs(p);
             snprintf(it->text, sizeof it->text, "%s", s ? s : "");
             p += (uint32_t)strlen(s ? s : "") + 1;
@@ -599,13 +598,13 @@ static void menu_free(menu_t *m)
     free(m->it);
     free(m);
 }
-/* the menu bar's items, left to right */
+/* menu bar items, left to right */
 static int mbar_x(menu_t *m, int i) { int x = 4; for (int k = 0; k < i; k++) x += plain_w(m->it[k].text) + 16; return x; }
 static int drop_item_h(mitem_t *it) { return (it->style & MIS_SEPARATOR) ? 8 : (it->style & MIS_OWNERDRAW) && it->oh > 0 ? it->oh : pm_lineh + 4; }
 static void menu_close(pmwin_t *f)
 {
     if (!f || !f->drop) return;
-    if (f->drop->iproc == list_proc) {                      /* a combo box's list: hidden, kept */
+    if (f->drop->iproc == list_proc) {                      /* a combo box's list: hide it, keep it */
         pmwin_t *l = f->drop, *c = l->owner;
         l->visible = 0;
         f->drop = 0;
@@ -615,7 +614,7 @@ static void menu_close(pmwin_t *f)
     }
     pmwin_t *bar = win_child(f, FID_MENU);
     if (bar && bar->ctl) ((menu_t *)bar->ctl)->open = -1;
-    f->drop->ctl = 0;                                       /* (the bar's submenu: not the drop-down's to free) */
+    f->drop->ctl = 0;                                       /* the bar owns this submenu, the drop-down mustn't free it */
     win_destroy(f->drop);
     f->drop = 0;
     invalidate(f);
@@ -642,7 +641,7 @@ static uint32_t drop_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
             mitem_t *it = &m->it[i];
             int h = drop_item_h(it);
             if (it->style & MIS_SEPARATOR) { line(w, 4, y - h / 2, w->cx - 5, y - h / 2, C_DARK); line(w, 4, y - h / 2 - 1, w->cx - 5, y - h / 2 - 1, C_LIGHT); }
-            else if (it->style & MIS_OWNERDRAW) {               /* WM_DRAWITEM (MIA_HILITED in fsAttribute; a newly lit one inverted if the owner leaves it) */
+            else if (it->style & MIS_OWNERDRAW) {               /* WM_DRAWITEM (MIA_HILITED in fsAttribute; we invert a newly lit item if the owner leaves it) */
                 pmwin_t *f = frame_of(w);
                 pmwin_t *save = w->owner;
                 w->owner = f && f->client ? f->client : f;
@@ -653,7 +652,7 @@ static uint32_t drop_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
                 if (!drawn) text_mid(w, 20, y - h, y, it->text, C_TEXT);
             } else {
                 if (i == m->open) fill(w, 2, y - h, w->cx - 2, y, C_HILITE);
-                if (it->attr & MIA_CHECKED) { line(w, 6, y - h / 2, 9, y - h / 2 - 3, C_TEXT); line(w, 9, y - h / 2 - 3, 14, y - h / 2 + 3, C_TEXT); }   /* MIA_CHECKED */
+                if (it->attr & MIA_CHECKED) { line(w, 6, y - h / 2, 9, y - h / 2 - 3, C_TEXT); line(w, 9, y - h / 2 - 3, 14, y - h / 2 + 3, C_TEXT); }   /* check mark */
                 char lab[64];
                 snprintf(lab, sizeof lab, "%s", it->text);
                 char *tab = strchr(lab, '\t');
@@ -697,14 +696,14 @@ static void menu_open(pmwin_t *bar, menu_t *m, int i)
     pmwin_t *d = win_new(f, "#drop", 0, 0);
     if (!d) return;
     d->iproc = drop_proc;
-    d->ctl = sub;                                           /* (not d's: the bar's menu frees it) */
+    d->ctl = sub;                                           /* the bar's menu frees it, not d */
     sub->open = -1;
     d->overlay = 1;
     int wmax = 60, h = 4;
     sub->id = m->it[i].id;
     for (int k = 0; k < sub->n; k++) {
         mitem_t *it = &sub->it[k];
-        if ((it->style & MIS_OWNERDRAW) && !it->oh) {         /* WM_MEASUREITEM (menu id, OWNERITEM): its rclItem's width and height */
+        if ((it->style & MIS_OWNERDRAW) && !it->oh) {         /* WM_MEASUREITEM (menu id, OWNERITEM): width and height in rclItem */
             pmwin_t *o = f->client ? f->client : f;
             uint32_t oi = gscratch(48);
             it->oh = pm_lineh + 4; it->ow = 0;
@@ -887,7 +886,7 @@ static pmproc_t builtin_proc(const char *cls)
 
 /* ── dialogs ─────────────────────────────────────────────────────────── */
 static void dlg_paint_bg(pmwin_t *w) { w->invalid = 0; fill(w, 0, 0, w->cx, w->cy, pp_bgc(w, C_FACE)); present(w); }
-static pmwin_t *dlg_tab(pmwin_t *dlg, pmwin_t *from, int dir)  /* the next (or previous) control with WS_TABSTOP */
+static pmwin_t *dlg_tab(pmwin_t *dlg, pmwin_t *from, int dir)  /* next (or previous) control with WS_TABSTOP */
 {
     pmwin_t *list[MAXWIN];
     int n = 0, at = -1;
@@ -940,11 +939,11 @@ static int ctl_get_text(pmwin_t *w, char *out, int max);
 static int ctl_set_text(pmwin_t *w, const char *s);
 static uint32_t api_WinDefDlgProc(void) { pmwin_t *w = win(A(0)); return w ? def_dlg_proc(w, A(1), A(2), A(3)) : 0; }
 
-/* the template's items, from item i (and its children) under parent */
-static pmwin_t *dlg_host;                                   /* (dlg_create's: the window a dialog goes in, or none) */
+/* create the template's items from item i (with children) under parent */
+static pmwin_t *dlg_host;                                   /* set by dlg_create: the window the dialog goes into, or none */
 static int dlg_items(uint32_t t, int i, pmwin_t *parent, pmwin_t *dlg, uint32_t proc, uint32_t createp, pmwin_t **out)
 {
-    uint32_t it = t + g16(t + 6) + 30u * (uint32_t)i;      /* (a DLGTITEM: 30 bytes) */
+    uint32_t it = t + g16(t + 6) + 30u * (uint32_t)i;      /* DLGTITEM, 30 bytes each */
     uint32_t nkids = g16(it + 2), cch = g16(it + 4), offc = g16(it + 6), ccht = g16(it + 8), offt = g16(it + 10);
     uint32_t style = g32(it + 12), id = g16(it + 24), offpp = g16(it + 26), offctl = g16(it + 28);
     int x = du_x((int16_t)g16(it + 16)), y = du_y((int16_t)g16(it + 18)), cx = du_x((int16_t)g16(it + 20)), cy = du_y((int16_t)g16(it + 22));
@@ -953,7 +952,7 @@ static int dlg_items(uint32_t t, int i, pmwin_t *parent, pmwin_t *dlg, uint32_t 
     else snprintf(cls, sizeof cls, "#%u", offc);
     if (ccht && offt != 0xFFFF) { char *s = gp(t + offt, ccht); snprintf(text, sizeof text, "%.*s", (int)ccht, s ? s : ""); }
     pmwin_t *w;
-    if (!parent && dlg_host) {                              /* the dialog itself, in a window (a notebook's page) */
+    if (!parent && dlg_host) {                              /* the dialog itself, inside a window (a notebook page) */
         w = win_new(dlg_host, "#dialog", style & ~WS_VISIBLE_, id);
         if (!w) return -1;
         w->x = x; w->y = y; w->cx = cx; w->cy = cy;
@@ -965,7 +964,7 @@ static int dlg_items(uint32_t t, int i, pmwin_t *parent, pmwin_t *dlg, uint32_t 
         if (offpp != 0xFFFF && offpp) pp_apply(w, t + offpp);
         *out = w;
         dlg = w;
-    } else if (!parent) {                                   /* the dialog itself: a window of the desktop */
+    } else if (!parent) {                                   /* the dialog itself, as a top-level window */
         w = win_new(0, "#dialog", style & ~WS_VISIBLE_, id);
         if (!w) return -1;
         w->top = 1;
@@ -992,12 +991,12 @@ static int dlg_items(uint32_t t, int i, pmwin_t *parent, pmwin_t *dlg, uint32_t 
     for (uint32_t k = 0; k < nkids && next > 0; k++) next = dlg_items(t, next, w, dlg, proc, createp, out);
     return next;
 }
-/* parent: HWND_DESKTOP (a window of the desktop) or a window it goes in */
+/* parent: HWND_DESKTOP for a top-level dialog, or a window to put it in */
 static uint32_t dlg_create(uint32_t parent, uint32_t owner, uint32_t proc, uint32_t t, uint32_t createp)
 {
     if (!pm_start() || !ok(t, 14 + 30)) return 0;
     pmwin_t *dlg = 0;
-    dlg_host = parent > 4 ? win(parent) : 0;              /* (HWND_DESKTOP, _OBJECT, ...: on its own) */
+    dlg_host = parent > 4 ? win(parent) : 0;              /* HWND_DESKTOP, HWND_OBJECT, ...: top-level */
     int r = dlg_items(t, 0, 0, 0, proc, createp, &dlg);
     pmwin_t *host = dlg_host;
     dlg_host = 0;
@@ -1006,7 +1005,7 @@ static uint32_t dlg_create(uint32_t parent, uint32_t owner, uint32_t proc, uint3
     if (!host && pmb->title) pmb->title(dlg);
     pmwin_t *focus = dlg_tab(dlg, 0, 1);
     uint16_t ifocus = g16(t + 10);
-    if (ifocus != 0xFFFF) {                                 /* (iItemFocus: the template's item number) */
+    if (ifocus != 0xFFFF) {                                 /* iItemFocus is the template's item number */
         int k = 0;
         for (int i = 0; i < MAXWIN; i++) if (pmwins[i].used && pmwins[i].parent == dlg && ++k == ifocus) focus = &pmwins[i];
     }
@@ -1172,8 +1171,8 @@ static uint32_t api_WinLoadMenu(void)             /* (hwndFrame, hmod, idMenu) *
     return bar ? bar->hwnd : 0;
 }
 
-/* string tables: bundles of 16 (RT_STRING, name id / 16 + 1): a code page,
- * then 16 strings, each its length (with the NUL) and itself */
+/* string tables: bundles of 16 strings (RT_STRING, name id / 16 + 1): a code
+ * page, then 16 strings, each a length byte (with the NUL) and the text */
 static uint32_t load_string(uint32_t type, uint32_t hmod, uint32_t id, uint32_t cch, uint32_t buf)
 {
     uint32_t a, n;
@@ -1201,8 +1200,8 @@ static uint32_t api_WinLoadMessage(void) { return load_string(10, A(1), A(2), A(
 /* ── WC_SCROLLBAR ────────────────────────────────────────────────────── */
 typedef struct { int pos, lo, hi, vis, tot, drag, grab; } sb_t;
 static sb_t *sbs(pmwin_t *w) { if (!w->ctl) { w->ctl = calloc(1, sizeof(sb_t)); ((sb_t *)w->ctl)->hi = 100; } return w->ctl; }
-/* (pm_capture: the window that has the mouse - a scroll bar's thumb, dragged) */
-/* along the bar: its length, the arrows' size, the thumb's [t0, t1) from the start (left, or top) */
+/* pm_capture: the window that has the mouse (e.g. a dragged scroll bar thumb) */
+/* bar geometry: length, arrow size, and the thumb's [t0, t1) from the left or top */
 static void sb_geom(pmwin_t *w, sb_t *s, int *len, int *arrow, int *t0, int *t1)
 {
     int vert = w->style & SBS_VERT;
@@ -1221,7 +1220,7 @@ static void sb_notify(pmwin_t *w, int cmd, int pos)
     pmwin_t *o = w->owner ? w->owner : w->parent;
     if (o) pm_send(o, (w->style & SBS_VERT) ? WM_VSCROLL : WM_HSCROLL, w->id & 0xFFFF, (uint32_t)(pos & 0xFFFF) | (uint32_t)cmd << 16);
 }
-static void tri(pmwin_t *w, int cx, int cy, int dir)          /* a small arrow: 0 up, 1 down, 2 left, 3 right */
+static void tri(pmwin_t *w, int cx, int cy, int dir)          /* small arrow: 0 up, 1 down, 2 left, 3 right */
 {
     for (int k = 0; k < 4; k++)
         for (int j = -k; j <= k; j++) {
@@ -1252,7 +1251,7 @@ static uint32_t scroll_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2
         present(w);
         return 0;
     case WM_BUTTON1DOWN: {
-        int x = (int16_t)(mp1 & 0xFFFF), y = (int16_t)(mp1 >> 16), at = vert ? w->cy - 1 - y : x;   /* (from the top, or the left) */
+        int x = (int16_t)(mp1 & 0xFFFF), y = (int16_t)(mp1 >> 16), at = vert ? w->cy - 1 - y : x;   /* from the top, or from the left */
         if (s->hi <= s->lo) return 1;
         if (at < ar) sb_notify(w, SB_LINEUP, s->pos);                        /* (left) */
         else if (at >= len - ar) sb_notify(w, SB_LINEDOWN, s->pos);            /* (right) */
@@ -1288,7 +1287,7 @@ static uint32_t scroll_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2
     case SBM_QUERYPOS: return (uint32_t)(s->pos & 0xFFFF);
     case SBM_QUERYRANGE: return (uint32_t)(s->lo & 0xFFFF) | (uint32_t)(s->hi & 0xFFFF) << 16;
     case SBM_SETTHUMBSIZE: s->vis = (int)(mp1 & 0xFFFF); s->tot = (int)(mp1 >> 16); repaint(w); return 1;
-    case WM_CHAR: {                                                  /* the arrows, the page keys; the rest to the owner */
+    case WM_CHAR: {                                                  /* arrows and page keys; everything else goes to the owner */
         int vk = (mp1 & KC_VIRTUALKEY) ? (int)(mp2 >> 16) : 0, cmd = 0;
         if (!(mp1 & KC_KEYUP)) {
             if (vk == (vert ? 0x16 : 0x15)) cmd = 1;
@@ -1305,7 +1304,7 @@ static uint32_t scroll_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2
     return 0;
 }
 
-/* ── WC_COMBOBOX: an entry field, a list box that drops down ─────────── */
+/* ── WC_COMBOBOX: an entry field plus a drop-down list box ── */
 typedef struct { uint32_t ef, lb; int listh, type; } cb_t;
 static cb_t *cbx(pmwin_t *w) { if (!w->ctl) w->ctl = calloc(1, sizeof(cb_t)); return w->ctl; }
 static int cb_open(pmwin_t *w) { cb_t *c = cbx(w); pmwin_t *l = win(c->lb), *f = frame_of(w); return l && f && f->drop == l; }
@@ -1326,7 +1325,7 @@ static void cb_show(pmwin_t *w, int on)
     lb_show_sel(l, lb(l));
     notify(w, CBN_SHOWLIST, 0);
 }
-static void cb_settext(pmwin_t *w)                                   /* the combo's text into its entry field */
+static void cb_settext(pmwin_t *w)                                   /* copy the combo's text into its entry field */
 {
     pmwin_t *e = win(cbx(w)->ef);
     if (e) { snprintf(e->text, sizeof e->text, "%s", w->text); ef(e)->cur = ef(e)->an = -1; repaint(e); }
@@ -1346,7 +1345,7 @@ static uint32_t combo_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
         pmwin_t *e = win_new(w, "#6", ES_MARGIN | (c->type == CBS_DROPDOWNLIST ? ES_READONLY : 0), CBID_EDIT);
         if (e) { e->x = 0; e->y = 0; e->cx = w->cx - bw; e->cy = eh; e->owner = w; e->visible = 1; ef(e)->ro = c->type == 4; c->ef = e->hwnd; }
         pmwin_t *f = frame_of(w) ? frame_of(w) : w->parent;
-        pmwin_t *l = f ? win_new(f, "#7", 0, CBID_LIST) : 0;           /* over the rest, when it drops down */
+        pmwin_t *l = f ? win_new(f, "#7", 0, CBID_LIST) : 0;           /* drops down over the rest */
         if (l) { l->overlay = 1; l->visible = 0; l->owner = w; l->cx = w->cx; l->cy = c->listh; c->lb = l->hwnd; }
         return 0;
     }
@@ -1378,7 +1377,7 @@ static uint32_t combo_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
         if (mp1 & KC_KEYUP) return 1;
         int vk = (mp1 & KC_VIRTUALKEY) ? (int)(mp2 >> 16) : 0;
         pmwin_t *l = win(c->lb);
-        if ((vk == VK_DOWN || vk == VK_UP) && l) {                       /* Down, Up: the next, the previous */
+        if ((vk == VK_DOWN || vk == VK_UP) && l) {                       /* Down/Up: next/previous */
             if ((mp1 & KC_ALT) && vk == VK_DOWN) { cb_show(w, 1); return 1; }
             return list_proc(l, msg, mp1, mp2);
         }
@@ -1390,16 +1389,16 @@ static uint32_t combo_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
     case CBM_ISLISTSHOWING: return (uint32_t)cb_open(w);
     case CBM_HILITE: return 1;
     }
-    if (msg >= 0x0160 && msg <= 0x016f) { pmwin_t *l = win(c->lb); return l ? list_proc(l, msg, mp1, mp2) : 0; }   /* LM_*: the list's */
-    if (msg >= 0x0140 && msg <= 0x014f) { pmwin_t *e = win(c->ef); return e ? entry_proc(e, msg, mp1, mp2) : 0; }  /* EM_*: the entry's */
+    if (msg >= 0x0160 && msg <= 0x016f) { pmwin_t *l = win(c->lb); return l ? list_proc(l, msg, mp1, mp2) : 0; }   /* LM_* go to the list */
+    if (msg >= 0x0140 && msg <= 0x014f) { pmwin_t *e = win(c->ef); return e ? entry_proc(e, msg, mp1, mp2) : 0; }  /* EM_* go to the entry field */
     return 0;
 }
 
 /* ── accelerators ────────────────────────────────────────────────────── */
 typedef struct { int used; int n; uint16_t a[64][3]; } accel_t;     /* (fs, key, cmd) */
 static accel_t accels[32];
-static uint32_t q_accel[MAXTHR];                                     /* the queues' (WinSetAccelTable(hab, h, 0)) */
-static uint32_t accel_new(uint32_t t)                                /* from an ACCELTABLE at t */
+static uint32_t q_accel[MAXTHR];                                     /* per-queue tables (WinSetAccelTable(hab, h, 0)) */
+static uint32_t accel_new(uint32_t t)                                /* build one from an ACCELTABLE at t */
 {
     for (int i = 0; i < 32; i++)
         if (!accels[i].used) {
@@ -1412,7 +1411,7 @@ static uint32_t accel_new(uint32_t t)                                /* from an 
     return 0;
 }
 static accel_t *accel_get(uint32_t h) { h -= 0xB000; return h < 32 && accels[h].used ? &accels[h] : 0; }
-/* a key against a table: its command (0: none; AF_SYSCOMMAND's: | 0x10000) */
+/* look a key up in a table: its command, 0 if none; AF_SYSCOMMAND ones have 0x10000 set */
 static uint32_t accel_match(accel_t *a, int ch, int vk, int scan, int kc)
 {
     for (int k = 0; a && k < a->n; k++) {
@@ -1456,7 +1455,7 @@ static uint32_t api_WinTranslateAccel(void)       /* (hab, hwnd, haccel, pqmsg) 
     return 1;
 }
 
-/* ── the menu by the keyboard: Alt+letter, F10, the arrows, Enter, Esc ── */
+/* ── keyboard menus: Alt+letter, F10, arrows, Enter, Esc ── */
 static int mnemonic(const char *s) { const char *t = strchr(s, '~'); return t && t[1] ? tolower((unsigned char)t[1]) : 0; }
 static pmwin_t *menubar_of(pmwin_t *f)
 {
@@ -1467,7 +1466,7 @@ static void drop_hot(pmwin_t *d, int dir)
 {
     menu_t *m = d->ctl;
     if (!m || !m->n) return;
-    int h = m->open;                                                 /* (a drop-down's open: its highlighted item) */
+    int h = m->open;                                                 /* in an open drop-down: the highlighted item */
     for (int k = 0; k < m->n; k++) {
         h = (h + dir + m->n) % m->n;
         if (!(m->it[h].style & MIS_SEPARATOR)) break;
@@ -1475,7 +1474,7 @@ static void drop_hot(pmwin_t *d, int dir)
     m->open = h;
     repaint(d);
 }
-/* 1: the menu took the key */
+/* returns 1 if the menu took the key */
 static int menu_key(pmwin_t *f, int ch, int vk, int kc)
 {
     pmwin_t *bar = menubar_of(f);
@@ -1487,7 +1486,7 @@ static int menu_key(pmwin_t *f, int ch, int vk, int kc)
         if (vk == VK_ESC || ch == 27) { menu_close(f); return 1; }
         if (vk == VK_DOWN) { drop_hot(d, 1); return 1; }
         if (vk == VK_UP) { drop_hot(d, -1); return 1; }
-        if (vk == VK_LEFT || vk == VK_RIGHT) {                              /* Left, Right: the next menu */
+        if (vk == VK_LEFT || vk == VK_RIGHT) {                              /* Left/Right: next menu */
             int i = m->open;
             for (int k = 0; k < m->n; k++) { i = (i + (vk == VK_RIGHT ? 1 : -1) + m->n) % m->n; if (m->it[i].sub) break; }
             menu_open(bar, m, i);
@@ -1497,17 +1496,17 @@ static int menu_key(pmwin_t *f, int ch, int vk, int kc)
         if ((vk == VK_NEWLINE || vk == VK_ENTER || ch == '\r') && s && s->open >= 0 && s->open < s->n) { menu_command(f, &s->it[s->open]); return 1; }
         for (int k = 0; s && ch && k < s->n; k++)
             if (mnemonic(s->it[k].text) == tolower(ch)) { menu_command(f, &s->it[k]); return 1; }
-        return 1;                                                    /* (the menu has the keys while it's open) */
+        return 1;                                                    /* the menu gets all keys while it's open */
     }
     int top = -1;
     if ((kc & KC_ALT) && ch) for (int k = 0; k < m->n; k++) if (mnemonic(m->it[k].text) == tolower(ch)) top = k;
-    if (vk == VK_F10 && !(kc & (KC_ALT | KC_CTRL | KC_SHIFT))) top = 0;   /* F10 */
+    if (vk == VK_F10 && !(kc & (KC_ALT | KC_CTRL | KC_SHIFT))) top = 0;
     if (top < 0) return 0;
     if (m->it[top].sub) { menu_open(bar, m, top); if (f->drop) { ((menu_t *)f->drop->ctl)->open = -1; drop_hot(f->drop, 1); } }
     else menu_command(f, &m->it[top]);
     return 1;
 }
-/* before a key becomes WM_CHAR: the menu's, an accelerator's (pm_key) */
+/* before a key becomes WM_CHAR: menu keys and accelerators get it first (pm_key) */
 static int help_key(pmwin_t *f);
 static int key_hook(pmwin_t *f, int ch, int vk, int scan, int kc)
 {
@@ -1521,7 +1520,7 @@ static int key_hook(pmwin_t *f, int ch, int vk, int scan, int kc)
     return 1;
 }
 
-/* ── WC_MLE: text of many lines (LF inside; CR LF out, as MLFIE_CFTEXT) ─ */
+/* ── WC_MLE: multi-line text (LF inside; CR LF out, like MLFIE_CFTEXT) ── */
 typedef struct { char *t; int len, cap, cur, anchor, top, limit, ro, changed, fmt; uint32_t iebuf, iecb; uint32_t vsb; } mle_t;
 static mle_t *mle(pmwin_t *w)
 {
@@ -1538,7 +1537,7 @@ static int mle_line_start(mle_t *m, int line) { int at = 0; for (int l = 0; l < 
 static int mle_line_end(mle_t *m, int at) { while (at < m->len && m->t[at] != '\n') at++; return at; }
 static int mle_lines(mle_t *m) { return mle_line_of(m, m->len) + 1; }
 static int mle_rows(pmwin_t *w) { int r = (w->cy - 4) / pm_lineh; return r < 1 ? 1 : r; }
-/* text in, as a program gives it: CR LF and CR become LF */
+/* text coming in: CR LF and CR become LF */
 static int mle_insert(pmwin_t *w, int at, const char *s, int n)
 {
     mle_t *m = mle(w);
@@ -1578,7 +1577,7 @@ static int mle_del_sel(pmwin_t *w)
     m->cur = m->anchor = a;
     return 1;
 }
-/* out, as the format says: CR LF (MLFIE_CFTEXT, MLFIE_WINFMT) or as it is (MLFIE_NOTRANS) */
+/* text going out: CR LF (MLFIE_CFTEXT, MLFIE_WINFMT) or unchanged (MLFIE_NOTRANS) */
 static int mle_export(mle_t *m, int from, int n, char *out, int max)
 {
     int k = 0;
@@ -1607,7 +1606,7 @@ static uint32_t mle_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
     switch (msg) {
     case WM_CREATE:
         if (w->style & MLS_READONLY) m->ro = 1;
-        if (w->style & MLS_VSCROLL) {                         /* a scroll bar of its own */
+        if (w->style & MLS_VSCROLL) {                         /* has its own scroll bar */
             pmwin_t *s = win_new(w, "#8", 1, 0);
             if (s) { s->x = w->cx - SB_W; s->y = 0; s->cx = SB_W; s->cy = w->cy; s->owner = w; s->visible = 1; m->vsb = s->hwnd; }
         }
@@ -1652,7 +1651,7 @@ static uint32_t mle_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
         repaint(w);
         return 1;
     }
-    case WM_VSCROLL: {                                        /* (its scroll bar's) */
+    case WM_VSCROLL: {                                        /* from its scroll bar */
         int cmd = (int)(mp2 >> 16), rows = mle_rows(w), hi = mle_lines(m) - rows;
         if (hi < 0) hi = 0;
         if (cmd == 1) m->top--; else if (cmd == 2) m->top++; else if (cmd == 3) m->top -= rows; else if (cmd == 4) m->top += rows;
@@ -1689,11 +1688,11 @@ static uint32_t mle_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
         case VK_BACKSPACE: if (!m->ro && !mle_del_sel(w) && m->cur > 0) { mle_delete(w, m->cur - 1, 1); m->cur--; } m->anchor = m->cur; break;
         case VK_DELETE: if (!m->ro && !mle_del_sel(w)) mle_delete(w, m->cur, 1); m->anchor = m->cur; break;
         case VK_NEWLINE: case VK_ENTER: if (!m->ro) { mle_del_sel(w); m->cur += mle_insert(w, m->cur, "\n", 1); m->anchor = m->cur; } break;
-        case VK_TAB:                                            /* Tab: a tab, unless MLS_IGNORETAB */
+        case VK_TAB:                                            /* insert a tab unless MLS_IGNORETAB */
             if ((w->style & MLS_IGNORETAB) || m->ro) return pm_send(w->owner ? w->owner : w->parent, msg, mp1, mp2);
             mle_del_sel(w); m->cur += mle_insert(w, m->cur, "\t", 1); m->anchor = m->cur;
             break;
-        case VK_ESC: return pm_send(w->owner ? w->owner : w->parent, msg, mp1, mp2);   /* Esc: the dialog's */
+        case VK_ESC: return pm_send(w->owner ? w->owner : w->parent, msg, mp1, mp2);   /* Esc goes to the dialog */
         default:
             if (ch == '\r') { if (!m->ro) { mle_del_sel(w); m->cur += mle_insert(w, m->cur, "\n", 1); m->anchor = m->cur; } break; }
             if (ch == 8) { if (!m->ro && !mle_del_sel(w) && m->cur > 0) { mle_delete(w, m->cur - 1, 1); m->cur--; } m->anchor = m->cur; break; }
@@ -1789,7 +1788,7 @@ static uint32_t mle_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
     case MLM_QUERYFIRSTCHAR: return (uint32_t)mle_line_start(m, m->top);
     case MLM_SETFIRSTCHAR: m->top = mle_line_of(m, (int)mp1); repaint(w); return 1;
     case MLM_CLEAR: if (!m->ro) { mle_del_sel(w); repaint(w); } return 1;
-    case MLM_CUT: case MLM_COPY: {                                                   /* the selection, to the clipboard */
+    case MLM_CUT: case MLM_COPY: {                                                   /* copy the selection to the clipboard */
         int lo = m->anchor < m->cur ? m->anchor : m->cur, hi = m->anchor < m->cur ? m->cur : m->anchor;
         if (hi > lo) {
             char *b = malloc((size_t)(2 * (hi - lo) + 1));
@@ -1808,14 +1807,14 @@ static uint32_t mle_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
     }
     case MLM_DISABLEREFRESH: case MLM_ENABLEREFRESH: case MLM_RESETUNDO: case MLM_SETWRAP: case MLM_SETTABSTOP:
     case MLM_SETTEXTCOLOR: case MLM_SETBACKCOLOR: return 1;
-    case MLM_QUERYUNDO: case MLM_UNDO: return 0;                                     /* (no undo yet) */
+    case MLM_QUERYUNDO: case MLM_UNDO: return 0;                                     /* no undo yet */
     case MLM_QUERYWRAP: return (w->style & MLS_WORDWRAP) != 0;
     case MLM_QUERYTABSTOP: return 32;
     }
     return 0;
 }
 
-/* ── WC_SPINBUTTON: a number in a range, or one of an array ──────────── */
+/* ── WC_SPINBUTTON: a number in a range, or one of an array of strings ── */
 typedef struct { int32_t lo, hi, val; char **arr; int narr; } spb_t;
 static spb_t *spb(pmwin_t *w) { if (!w->ctl) { w->ctl = calloc(1, sizeof(spb_t)); ((spb_t *)w->ctl)->hi = 100; } return w->ctl; }
 static void spb_text(pmwin_t *w, spb_t *s)
@@ -1828,7 +1827,7 @@ static void spb_spin(pmwin_t *w, int by)
     spb_t *s = spb(w);
     int32_t lo = s->narr ? 0 : s->lo, hi = s->narr ? s->narr - 1 : s->hi;
     int32_t v = s->val + by;
-    if (v > hi) v = lo + (v - hi - 1);                        /* (around, as PM spins) */
+    if (v > hi) v = lo + (v - hi - 1);                        /* wrap around, like PM */
     if (v < lo) v = hi - (lo - v - 1);
     if (v != s->val) {
         s->val = v;
@@ -1875,7 +1874,7 @@ static uint32_t spin_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
         if (vk == VK_DOWN) { spb_spin(w, -1); return 1; }
         if (vk == VK_PAGEUP) { spb_spin(w, 10); return 1; }
         if (vk == VK_PAGEDOWN) { spb_spin(w, -10); return 1; }
-        if (!s->narr && !(w->style & SPBS_READONLY) && ((ch >= '0' && ch <= '9') || ch == '-' || ch == '\b')) {   /* (typed) */
+        if (!s->narr && !(w->style & SPBS_READONLY) && ((ch >= '0' && ch <= '9') || ch == '-' || ch == '\b')) {   /* typed digits */
             int n = (int)strlen(w->text);
             if (ch == 8) { if (n) w->text[n - 1] = 0; }
             else if (n < 11) { w->text[n] = (char)ch; w->text[n + 1] = 0; }
@@ -1921,8 +1920,8 @@ static uint32_t spin_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
     return 0;
 }
 
-/* the window text of the controls that keep theirs elsewhere (an MLE's
- * is longer than w->text): -1 for the others */
+/* window text for controls that keep it elsewhere (an MLE's can be longer than
+ * w->text); -1 for the rest */
 static int ctl_get_text(pmwin_t *w, char *out, int max)
 {
     if (strcmp(w->cls, "#10") || !w->ctl) return -1;
@@ -1942,11 +1941,11 @@ static int ctl_set_text(pmwin_t *w, const char *s)
     return 1;
 }
 
-/* ── WC_SLIDER: an arm along a shaft, in increments (SLDCDATA's) ──────── */
+/* ── WC_SLIDER: an arm along a shaft, in increments (from SLDCDATA) ── */
 typedef struct { int n, pos, drag; uint8_t tick[256]; char *text[256]; } sld_t;
 static sld_t *sld(pmwin_t *w) { if (!w->ctl) { w->ctl = calloc(1, sizeof(sld_t)); ((sld_t *)w->ctl)->n = 11; } return w->ctl; }
 static int sld_vert(pmwin_t *w) { return w->style & SLS_VERTICAL; }
-/* along the shaft (from the left, or the bottom): where it starts and ends, the buttons' room */
+/* along the shaft (from the left or bottom): where it starts and ends, leaving room for the buttons */
 enum { SLD_BTN = 16, SLD_BTNPAD = 2 };                    /* slider arrow buttons */
 static int sld_btn0(pmwin_t *w)                          /* offset of the arrow buttons, -1 if none */
 {
@@ -1959,7 +1958,7 @@ static void sld_geom(pmwin_t *w, int *a0, int *a1, int *mid)
     *a0 = 10 + ((w->style & SLS_BUTTONSBOTTOM) && !sld_vert(w) ? btn : 0);
     *a1 = len - 10 - ((w->style & SLS_BUTTONSTOP) || sld_vert(w) ? btn : 0);
     if (sld_vert(w) && (w->style & SLS_BUTTONSBOTTOM)) { *a0 = 10 + btn; *a1 = len - 10; }
-    *mid = sld_vert(w) ? across / 2 : across - 12;          /* (horizontal: near the top, the scale below) */
+    *mid = sld_vert(w) ? across / 2 : across - 12;          /* horizontal: near the top, with the scale below */
     if (*a1 <= *a0) *a1 = *a0 + 1;
 }
 static int sld_at(pmwin_t *w, sld_t *s, int i) { int a0, a1, m; sld_geom(w, &a0, &a1, &m); return s->n > 1 ? a0 + i * (a1 - a0) / (s->n - 1) : a0; }
@@ -1971,7 +1970,7 @@ static void sld_set(pmwin_t *w, int pos, int code)
     if (pos == s->pos && code == SLN_CHANGE) return;
     s->pos = pos;
     repaint(w);
-    notify(w, (uint32_t)code, (uint32_t)sld_at(w, s, pos));  /* (the arm's pixel) */
+    notify(w, (uint32_t)code, (uint32_t)sld_at(w, s, pos));  /* position in pixels */
 }
 static uint32_t slider_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
 {
@@ -1988,7 +1987,7 @@ static uint32_t slider_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2
         w->invalid = 0;
         fill(w, 0, 0, w->cx, w->cy, pp_bgc(w, C_FACE));
         uint32_t tc = pp_fgc(w, C_TEXT);
-        /* the shaft, the ribbon to the arm, the ticks and their text */
+        /* shaft, ribbon up to the arm, ticks and their labels */
         #define P(al, ac) (vert ? (ac) : (al)), (vert ? (al) : (ac))
         for (int k = a0; k <= a1; k++) { pel(w, P(k, mid + 2), C_DARK); pel(w, P(k, mid - 2), C_LIGHT); }
         for (int k = a0; k <= a1; k++) for (int j = -1; j <= 1; j++) pel(w, P(k, mid + j), (w->style & SLS_RIBBONSTRIP) && k <= sld_at(w, s, s->pos) ? C_HILITE : 0xE0E0E0);
@@ -2001,13 +2000,13 @@ static uint32_t slider_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2
                 else text_at(w, at - tw / 2, mid - 10 - s->tick[i] - pm_ascent, s->text[i], (int)strlen(s->text[i]), tc);
             }
         }
-        /* the arm */
+        /* arm */
         int at = sld_at(w, s, s->pos);
         int x0 = vert ? mid - 9 : at - 5, x1 = vert ? mid + 10 : at + 6, y0 = vert ? at - 5 : mid - 9, y1 = vert ? at + 6 : mid + 10;
         fill(w, x0, y0, x1, y1, C_FACE);
         bevel(w, x0, y0, x1, y1, 1);
         if (vert) line(w, x0 + 2, at, x1 - 3, at, C_DARK); else line(w, at, y0 + 2, at, y1 - 3, C_DARK);
-        /* the buttons */
+        /* buttons */
         int b0 = sld_btn0(w), h = SLD_BTN / 2;
         for (int k = 0; b0 >= 0 && k < 2; k++) {
             int s0 = b0 + SLD_BTN * k;
@@ -2022,7 +2021,7 @@ static uint32_t slider_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2
     case WM_BUTTON1DOWN: {
         if (w->style & SLS_READONLY) return 1;
         int x = (int16_t)(mp1 & 0xFFFF), y = (int16_t)(mp1 >> 16), al = vert ? y : x;
-        int b0 = sld_btn0(w);                                /* the buttons: one increment */
+        int b0 = sld_btn0(w);                                /* buttons step by one */
         if (b0 >= 0 && al >= b0 && al < b0 + 2 * SLD_BTN) { sld_set(w, s->pos + (al < b0 + SLD_BTN ? -1 : 1), SLN_CHANGE); return 1; }
         int at = sld_at(w, s, s->pos);
         if (abs(al - at) <= 6) { s->drag = 1; pm_capture = w->hwnd; return 1; }
@@ -2096,12 +2095,12 @@ static uint32_t slider_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2
         p32(mp2, (uint32_t)(vert ? mid : sld_at(w, s, t))); p32(mp2 + 4, (uint32_t)(vert ? sld_at(w, s, t) : mid));
         return 1;
     }
-    case SLM_ADDDETENT: case SLM_QUERYDETENTPOS: case SLM_REMOVEDETENT: return 0;   /* (detents: not yet) */
+    case SLM_ADDDETENT: case SLM_QUERYDETENTPOS: case SLM_REMOVEDETENT: return 0;   /* detents: not yet */
     }
     return 0;
 }
 
-/* ── WC_NOTEBOOK: pages, their tabs along the top, a status line ─────── */
+/* ── WC_NOTEBOOK: pages, tabs along the top, a status line ── */
 typedef struct { uint32_t id, hwnd, data; uint16_t style; char tab[64], status[128]; } nbpage_t;
 typedef struct { nbpage_t p[64]; int n, top; uint32_t next; } nb_t;
 static nb_t *nb(pmwin_t *w) { if (!w->ctl) { w->ctl = calloc(1, sizeof(nb_t)); ((nb_t *)w->ctl)->top = -1; ((nb_t *)w->ctl)->next = 0x100; } return w->ctl; }
@@ -2134,7 +2133,7 @@ static void nb_turn(pmwin_t *w, int to)
     nb_t *b = nb(w);
     if (to < 0 || to >= b->n || to == b->top) return;
     uint32_t cur = b->top >= 0 ? b->p[b->top].id : 0;
-    static uint32_t scratch;                              /* (PAGESELECTNOTIFY: the program reads it) */
+    static uint32_t scratch;                              /* PAGESELECTNOTIFY; the program reads it after the call */
     if (!scratch) scratch = mem_alloc(0x1000);
     if (scratch) { p32(scratch, w->hwnd); p32(scratch + 4, cur); p32(scratch + 8, b->p[to].id); }
     notify(w, BKN_PAGESELECTEDPENDING, scratch);
@@ -2145,7 +2144,7 @@ static void nb_turn(pmwin_t *w, int to)
     if (scratch) { p32(scratch, w->hwnd); p32(scratch + 4, cur); p32(scratch + 8, b->p[to].id); }
     notify(w, BKN_PAGESELECTED, scratch);
 }
-/* the major tabs: their x range, along the top */
+/* x range of the major tabs */
 static int nb_tab_x(pmwin_t *w, nb_t *b, int i, int *x1)
 {
     int x = 8;
@@ -2181,7 +2180,7 @@ static uint32_t notebook_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t m
             text_mid(w, x0 + 10, y0, w->cy - (on ? 1 : 3), b->p[i].tab, pp_fgc(w, C_TEXT));
         }
         if (b->top >= 0 && b->p[b->top].status[0]) text_mid(w, 8, 0, nb_stat_h(), b->p[b->top].status, pp_fgc(w, C_TEXT));
-        for (int k = 0; k < 2; k++) {                       /* the page arrows, bottom right */
+        for (int k = 0; k < 2; k++) {                       /* page arrows, bottom right */
             int x0 = w->cx - 40 + 20 * k;
             fill(w, x0, 3, x0 + 18, nb_stat_h() - 1, C_FACE); bevel(w, x0, 3, x0 + 18, nb_stat_h() - 1, 1);
             tri(w, x0 + 9, (nb_stat_h() + 2) / 2, k ? 3 : 2);
@@ -2265,7 +2264,7 @@ static uint32_t notebook_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t m
         return (uint32_t)strlen(s);
     }
     case BKM_TURNTOPAGE: { int i = nb_find(b, mp1); if (i < 0) return 0; nb_turn(w, i); return 1; }
-    case BKM_CALCPAGERECT: {                                /* prcl, fPage (TRUE: the notebook's into its page's) */
+    case BKM_CALCPAGERECT: {                                /* prcl, fPage (TRUE: notebook rect to page rect) */
         int x, y, cx, cy;
         nb_page_rect(w, &x, &y, &cx, &cy);
         if (!ok(mp1, 16)) return 0;

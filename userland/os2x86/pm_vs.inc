@@ -1,11 +1,9 @@
-/* userland/os2x86/pm_vs.inc - two of PM's controls (included by pm.inc,
- * after pm_ctl.inc):
- *   WC_VALUESET ("#39"): a grid of items - text, colours (RGB or a colour
- *     index), icons, bitmaps - one of them selected (VM_SETITEM,
- *     VM_SELECTITEM, VN_SELECT, VN_ENTER, ...);
- *   WC_CIRCULARSLIDER ("#65"): a dial, its value along an arc of 270
- *     degrees (or all of the circle), the - and + buttons below it
- *     (CSM_SETRANGE, CSM_SETVALUE, CSN_CHANGED, CSN_TRACKING, ...). */
+/* userland/os2x86/pm_vs.inc - two controls, included by pm.inc after pm_ctl.inc:
+ *   WC_VALUESET ("#39"): a grid of text, colour (RGB or index), icon or
+ *     bitmap items with one selected (VM_SETITEM, VM_SELECTITEM, VN_SELECT,
+ *     VN_ENTER, ...)
+ *   WC_CIRCULARSLIDER ("#65"): a dial over 270 degrees (or 360) with - and +
+ *     buttons below (CSM_SETRANGE, CSM_SETVALUE, CSN_CHANGED, CSN_TRACKING, ...) */
 #include <math.h>
 
 /* ── WC_VALUESET ──────────────────────────────────────────────────────── */
@@ -24,7 +22,7 @@ static vs_t *vsd(pmwin_t *w)
     return w->ctl;
 }
 static vsitem_t *vs_item(vs_t *v, int r, int c) { return r >= 1 && r <= v->rows && c >= 1 && c <= v->cols ? &v->it[(r - 1) * v->cols + (c - 1)] : 0; }
-/* the cell of (r, c): [x0, x1) x [y0, y1); rows from the top */
+/* cell (r, c) as [x0, x1) x [y0, y1); rows count from the top */
 static void vs_cell(pmwin_t *w, vs_t *v, int r, int c, int *x0, int *y0, int *x1, int *y1)
 {
     int b = (w->style & VS_BORDER) ? 3 : 1, iw = w->cx - 2 * b, ih = w->cy - 2 * b;
@@ -80,7 +78,7 @@ static uint32_t valueset_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t m
                 int x0, y0, x1, y1;
                 vs_cell(w, v, r, c, &x0, &y0, &x1, &y1);
                 int a = it->attr;
-                if ((a & VIA_OWNERDRAW) || (w->style & VS_OWNERDRAW))                                       /* the owner's */
+                if ((a & VIA_OWNERDRAW) || (w->style & VS_OWNERDRAW))                                       /* owner draws it */
                     owner_draw(w, w->id & 0xFFFF, x0 + 1, y0 + 1, x1 - 1, y1 - 1, vs_rc(r, c), it->val,
                                (uint32_t)(r == v->sr && c == v->sc), (uint32_t)(r == v->sr && c == v->sc), a, a, 0);
                 else if (a & VIA_RGB) fill(w, x0 + 2, y0 + 2, x1 - 2, y1 - 2, it->val & 0xFFFFFF);
@@ -103,13 +101,13 @@ static uint32_t valueset_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t m
                 }
                 if ((a & VIA_DISABLED) && !(a & VIA_TEXT)) for (int y = y0; y < y1; y++) for (int x = x0 + (y & 1); x < x1; x += 2) pel(w, x, y, C_FACE);
                 if (w->style & VS_ITEMBORDER) bevel(w, x0, y0, x1, y1, 0);
-                if (r == v->sr && c == v->sc) {                                                              /* the selection: a frame round it */
+                if (r == v->sr && c == v->sc) {                                                              /* frame around the selected item */
                     for (int k = 0; k < 2; k++) {
                         line(w, x0 + k, y0 + k, x1 - 1 - k, y0 + k, tc); line(w, x0 + k, y1 - 1 - k, x1 - 1 - k, y1 - 1 - k, tc);
                         line(w, x0 + k, y0 + k, x0 + k, y1 - 1 - k, tc); line(w, x1 - 1 - k, y0 + k, x1 - 1 - k, y1 - 1 - k, tc);
                     }
                 }
-                if (pm_focus == w->hwnd && r == v->cr && c == v->cc)                                         /* the cursor: dotted, inside */
+                if (pm_focus == w->hwnd && r == v->cr && c == v->cc)                                         /* dotted cursor inside the focused item */
                     for (int k = 0; k < (x1 - x0) - 6; k += 2) { pel(w, x0 + 3 + k, y0 + 3, tc); pel(w, x0 + 3 + k, y1 - 4, tc); }
             }
         present(w);
@@ -139,10 +137,10 @@ static uint32_t valueset_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t m
         else if (vk == VK_SPACE || ch == ' ') { vs_select(w, v, v->cr, v->cc, VN_SELECT); return 1; }
         else return pm_send(w->owner ? w->owner : w->parent, msg, mp1, mp2);
         if (r < 1 || r > v->rows || c < 1 || c > v->cols) return 1;
-        vs_select(w, v, r, c, VN_SELECT);                                                                          /* (the cursor keys select, as PM's) */
+        vs_select(w, v, r, c, VN_SELECT);                                                                          /* cursor keys select, like PM */
         return 1;
     }
-    case VM_SETITEM: {                                           /* (row, col), the value (text: copied) */
+    case VM_SETITEM: {                                           /* (row, col), value; text is copied */
         vsitem_t *it = vs_item(v, (int)(mp1 & 0xFFFF), (int)(mp1 >> 16));
         if (!it) return 0;
         it->val = mp2;
@@ -150,7 +148,7 @@ static uint32_t valueset_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t m
         repaint(w);
         return 1;
     }
-    case VM_QUERYITEM: {                                         /* (row, col), a VSTEXT for text */
+    case VM_QUERYITEM: {                                         /* (row, col), VSTEXT for text items */
         vsitem_t *it = vs_item(v, (int)(mp1 & 0xFFFF), (int)(mp1 >> 16));
         if (!it) return 0;
         if (it->attr & VIA_TEXT) {
@@ -165,14 +163,14 @@ static uint32_t valueset_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t m
     }
     case VM_SETITEMATTR: {                                       /* (row, col), (attributes, set or clear) */
         int r = (int)(mp1 & 0xFFFF), c = (int)(mp1 >> 16);
-        int all = r == 0 && c == 0;                              /* (0, 0: all of them) */
+        int all = r == 0 && c == 0;                              /* (0, 0) means all items */
         for (int i = 1; i <= v->rows; i++)
             for (int j = 1; j <= v->cols; j++) {
                 if (!all && (i != r || j != c)) continue;
                 vsitem_t *it = vs_item(v, i, j);
                 uint16_t at = (uint16_t)(mp2 & 0xFFFF);
                 if (mp2 >> 16) {
-                    if (at & 0x3F) it->attr &= (uint16_t)~0x3F;     /* (one kind of item at a time) */
+                    if (at & 0x3F) it->attr &= (uint16_t)~0x3F;     /* only one item type at a time */
                     it->attr |= at;
                 } else it->attr &= (uint16_t)~at;
             }
@@ -211,12 +209,12 @@ static cs_t *csd(pmwin_t *w)
     if (!w->ctl) { cs_t *s = calloc(1, sizeof *s); s->hi = 100; s->inc = 1; s->tick = 10; w->ctl = s; }
     return w->ctl;
 }
-/* the dial: its centre, its radius; the room for the buttons and the text below */
+/* dial centre and radius, leaving room for the buttons and text */
 enum { CS_BTN = 16, CS_BTNPAD = 2 };                      /* the - (k = 0) and + (k = 1) buttons */
 static int cs_btn_x(pmwin_t *w, int k) { return k ? w->cx - CS_BTNPAD - CS_BTN : CS_BTNPAD; }
 static void cs_geom(pmwin_t *w, int *cx, int *cy, int *r)
 {
-    int below = ((w->style & (CSS_NOBUTTON | CSS_NOTEXT)) == (CSS_NOBUTTON | CSS_NOTEXT) ? 0 : 20), top = (w->style & CSS_NONUMBER) ? 4 : pm_lineh + 2;   /* (the buttons, the text; the number above) */
+    int below = ((w->style & (CSS_NOBUTTON | CSS_NOTEXT)) == (CSS_NOBUTTON | CSS_NOTEXT) ? 0 : 20), top = (w->style & CSS_NONUMBER) ? 4 : pm_lineh + 2;   /* room for buttons/text below and the number above */
     int h = w->cy - below - top, wd = w->cx - 8;
     *r = (h < wd ? h : wd) / 2 - 6;
     if (*r < 6) *r = 6;
@@ -224,8 +222,8 @@ static void cs_geom(pmwin_t *w, int *cx, int *cy, int *r)
     *cy = below + h / 2;
 }
 static double cs_sweep(pmwin_t *w) { return (w->style & CSS_360) ? 2 * M_PI : 1.5 * M_PI; }
-static double cs_start(pmwin_t *w) { return (w->style & CSS_360) ? M_PI / 2 : 1.25 * M_PI; }    /* (the low end: the top, or down left) */
-static double cs_angle(pmwin_t *w, cs_t *s, int v)                                          /* (clockwise from the start) */
+static double cs_start(pmwin_t *w) { return (w->style & CSS_360) ? M_PI / 2 : 1.25 * M_PI; }    /* where the low end is: top, or bottom left */
+static double cs_angle(pmwin_t *w, cs_t *s, int v)                                          /* clockwise from the start */
 {
     double f = s->hi > s->lo ? (double)(v - s->lo) / (s->hi - s->lo) : 0;
     return cs_start(w) - f * cs_sweep(w);
@@ -240,15 +238,15 @@ static void cs_set(pmwin_t *w, int v, int code)
     repaint(w);
     if (code) notify(w, (uint32_t)code, (uint32_t)(uint16_t)v);
 }
-static int cs_value_at(pmwin_t *w, cs_t *s, int x, int y)    /* the value nearest the point's angle */
+static int cs_value_at(pmwin_t *w, cs_t *s, int x, int y)    /* value closest to the point's angle */
 {
     int cx, cy, r;
     cs_geom(w, &cx, &cy, &r);
-    double a = atan2(y - cy, x - cx), d = cs_start(w) - a;    /* (how far round, clockwise) */
+    double a = atan2(y - cy, x - cx), d = cs_start(w) - a;    /* how far round, clockwise */
     while (d < 0) d += 2 * M_PI;
     while (d >= 2 * M_PI) d -= 2 * M_PI;
     double sw = cs_sweep(w);
-    if (d > sw) d = d - sw < 2 * M_PI - d ? sw : 0;          /* (the gap at the bottom: the nearer end) */
+    if (d > sw) d = d - sw < 2 * M_PI - d ? sw : 0;          /* in the gap at the bottom: snap to the nearer end */
     int v = s->lo + (int)lround(d / sw * (s->hi - s->lo));
     if (s->inc > 1) v = s->lo + (v - s->lo + s->inc / 2) / s->inc * s->inc;
     return v;
@@ -264,7 +262,7 @@ static uint32_t circslider_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t
         w->invalid = 0;
         fill(w, 0, 0, w->cx, w->cy, pp_bgc(w, C_FACE));
         uint32_t tc = pp_fgc(w, C_TEXT);
-        /* the dial: a disc, lit from the top left */
+        /* the dial: a disc lit from the top left */
         for (int y = cy - r; y <= cy + r; y++)
             for (int x = cx - r; x <= cx + r; x++) {
                 int dx = x - cx, dy = y - cy, d2 = dx * dx + dy * dy;
@@ -272,7 +270,7 @@ static uint32_t circslider_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t
                 uint32_t c = d2 >= (r - 2) * (r - 2) ? (dy - dx > 0 ? C_LIGHT : C_DARK) : 0xD8D8D8;
                 pel(w, x, y, c);
             }
-        /* the ticks round it */
+        /* ticks */
         if (!(w->style & CSS_NOTICKS) && s->tick > 0 && s->hi > s->lo) {
             int n = (s->hi - s->lo) / s->tick;
             if (n > 360) n = 360;
@@ -283,13 +281,13 @@ static uint32_t circslider_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t
                 line(w, x0, y0, x1, y1, tc);
             }
         }
-        /* the value: a line out from the middle, a dot at its end */
+        /* value: a line from the centre with a dot at the end */
         double a = cs_angle(w, s, s->val);
         int ex = cx + (int)lround((r - 5) * cos(a)), ey = cy + (int)lround((r - 5) * sin(a));
         line(w, cx, cy, ex, ey, C_HILITE);
         line(w, cx + 1, cy, ex + 1, ey, C_HILITE);
         for (int y = -2; y <= 2; y++) for (int x = -2; x <= 2; x++) if (x * x + y * y <= 5) pel(w, ex + x, ey + y, C_HILITE);
-        /* the number above it, the text below; the buttons */
+        /* number above, text below, then the buttons */
         char num[16];
         snprintf(num, sizeof num, "%d", s->val);
         if (!(w->style & CSS_NONUMBER)) text_at(w, cx - text_w(num, (int)strlen(num)) / 2, w->cy - pm_ascent - 1, num, (int)strlen(num), tc);
@@ -330,7 +328,7 @@ static uint32_t circslider_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t
         if (s->drag) {
             s->drag = 0; pm_capture = 0;
             cs_set(w, cs_value_at(w, s, (int16_t)(mp1 & 0xFFFF), (int16_t)(mp1 >> 16)), CSN_TRACKING);
-            notify(w, CSN_CHANGED, (uint32_t)(uint16_t)s->val);     /* (the drag's end) */
+            notify(w, CSN_CHANGED, (uint32_t)(uint16_t)s->val);     /* end of drag */
         }
         return 1;
     case WM_CHAR: {
@@ -338,7 +336,7 @@ static uint32_t circslider_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t
         int vk = (mp1 & KC_VIRTUALKEY) ? (int)(mp2 >> 16) : 0;
         if (vk == VK_LEFT || vk == VK_DOWN) { cs_set(w, s->val - s->inc, CSN_CHANGED); return 1; }
         if (vk == VK_RIGHT || vk == VK_UP) { cs_set(w, s->val + s->inc, CSN_CHANGED); return 1; }
-        if (vk == VK_PAGEDOWN) { cs_set(w, s->val - s->tick, CSN_CHANGED); return 1; }    /* Page Down, Up: a tick */
+        if (vk == VK_PAGEDOWN) { cs_set(w, s->val - s->tick, CSN_CHANGED); return 1; }    /* Page Down/Up move a tick */
         if (vk == VK_PAGEUP) { cs_set(w, s->val + s->tick, CSN_CHANGED); return 1; }
         if (vk == VK_HOME) { cs_set(w, s->lo, CSN_CHANGED); return 1; }
         if (vk == VK_END) { cs_set(w, s->hi, CSN_CHANGED); return 1; }
@@ -355,9 +353,9 @@ static uint32_t circslider_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t
         if (mp1 && ok(mp1, 2)) p16(mp1, (uint16_t)s->lo);
         if (mp2 && ok(mp2, 2)) p16(mp2, (uint16_t)s->hi);
         return 1;
-    case CSM_SETVALUE: cs_set(w, (int16_t)mp1, 0); return 1;   /* (no notification: the program's own) */
+    case CSM_SETVALUE: cs_set(w, (int16_t)mp1, 0); return 1;   /* the program set it: no notification */
     case CSM_QUERYVALUE: if (mp1 && ok(mp1, 2)) p16(mp1, (uint16_t)s->val); return 1;
-    case CSM_SETINCREMENT:                                       /* the buttons', the ticks' */
+    case CSM_SETINCREMENT:                                       /* buttons and ticks */
         if ((int16_t)mp1 > 0) s->inc = (int16_t)mp1;
         if ((int16_t)mp2 > 0) s->tick = (int16_t)mp2;
         repaint(w);
@@ -367,7 +365,7 @@ static uint32_t circslider_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t
         if (mp2 && ok(mp2, 2)) p16(mp2, (uint16_t)s->tick);
         return 1;
     case CSM_QUERYRADIUS: if (mp1 && ok(mp1, 2)) p16(mp1, (uint16_t)r); return 1;
-    case CSM_SETBITMAPDATA: return 1;                            /* (our own buttons) */
+    case CSM_SETBITMAPDATA: return 1;                            /* we draw our own buttons */
     }
     return 0;
 }
