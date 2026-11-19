@@ -26,7 +26,7 @@ type
     // Identifiers
     tkIdentifier,     // Variable names, function names, etc.
 
-    // Keywords (basic set, expand as needed)
+    // Language keywords.
     tkKeyword,        // General keyword (e.g., PRINT, INPUT, DIM, IF, THEN, ELSE, WHILE, WEND, SUB, END, CALL, RETURN, SHOW, HIDE)
 
     // --- Specific Keywords for "Option Explicit On/Off" ---
@@ -34,7 +34,6 @@ type
     tkKeywordExplicit,// EXPLICIT
     tkKeywordOn,      // ON
     tkKeywordOff,     // OFF
-    // --- End Specific Keywords ---
 
     // Combined keywords for specific statements
     tkOptionExplicitOn, // OPTION EXPLICIT ON
@@ -60,10 +59,8 @@ type
     DocContent: String;   // Content of documentation comments (for tkDocComment)
   end;
 
-// Helper function to get a string representation of a token type (useful for error messages)
 function GetTokenTypeName(TokenType: TTokenType): String;
 
-// Array for easy lookup of token type names
 const
     TokenTypeName: array[TTokenType] of String = (
     'UNKNOWN',
@@ -71,7 +68,7 @@ const
     'END_OF_LINE',
     'COMMENT',
     'DOC_COMMENT',
-    'EOF',   // <-- added for tkEOF
+    'EOF',
     'INTEGER_LITERAL',
     'STRING_LITERAL',
     'BOOLEAN_LITERAL',

@@ -259,8 +259,7 @@ static void arm64_buf_patch(arm64_buffer_t *buf, size_t offset, uint32_t insn)
 /* ================================================================== */
 
 /*
- * Kayte VM opcodes (simplified set matching the documented PoC).
- * Extend this enum as the real bytecode grows.
+ * Opcodes supported by this translator. Add entries as bytecode support grows.
  */
 typedef enum {
     OP_HALT = 0x00,      /* end execution                              */
@@ -303,8 +302,7 @@ typedef enum {
 } kayte_opcode_t;
 
 /*
- * Bytecode instruction structure.
- * Real Kayte bytecode would be more compact; this is a clear intermediate.
+ * Internal instruction form used by the translator.
  */
 typedef struct {
     kayte_opcode_t op;
@@ -353,13 +351,7 @@ static void kc_pop(kayte_compiler_t *kc)
     if (kc->stack_depth > 0) kc->stack_depth--;
 }
 
-/* Map stack slots to ARM64 registers:
- *   x19 = stack[0] (top)
- *   x20 = stack[1]
- *   ...
- *   x27 = stack[8]
- * If stack_depth > 9, we'd spill to memory (not implemented here for simplicity).
- */
+/* Map the top nine stack slots to x19-x27; deeper stacks need spilling. */
 static uint8_t kc_stack_reg(int depth)
 {
     /* depth 0 = top of stack → x19, depth 1 → x20, etc. */
@@ -380,7 +372,7 @@ static void kc_compile_insn(kayte_compiler_t *kc, const kayte_insn_t *insn)
 
     /* ---- HALT ---------------------------------------------------- */
     case OP_HALT:
-        /* Exit by calling exit(0).  In a real app, return to runtime. */
+        /* Exit the process with status 0. */
         arm64_buf_emit(buf, arm64_movz(0, 0, 0));      /* x0 = 0       */
         arm64_buf_emit(buf, arm64_movz(16, 1, 0));     /* x16 = 1 (exit syscall) */
         arm64_buf_emit(buf, 0xd4000001);               /* SVC #0       */
@@ -507,15 +499,13 @@ static void kc_compile_insn(kayte_compiler_t *kc, const kayte_insn_t *insn)
 
     /* ---- CALL_NATIVE <index> ------------------------------------- */
     case OP_CALL_NATIVE:
-        /* Placeholder: would call kayte_ffi_call.
-         * For now, just emit a BRK for demonstration. */
+        /* TODO: Call kayte_ffi_call once native calls are wired up. */
         arm64_buf_emit(buf, arm64_brk((uint16_t)insn->arg));
         break;
 
     /* ---- PRINT (debug helper) ------------------------------------ */
     case OP_PRINT:
-        /* Pop top of stack and print (would call printf via FFI).
-         * For demonstration, just BRK. */
+        /* TODO: Print the popped value through the runtime. */
         kc_pop(kc);
         arm64_buf_emit(buf, arm64_brk(0x70));
         break;

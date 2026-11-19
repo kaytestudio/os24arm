@@ -75,13 +75,10 @@ type
     constructor Create;
     destructor Destroy; override;
 
-    // Add a variable and return its index
     function AddVariable(const VarName: string): Integer;
 
-    // Add a string constant and return its index
     function AddStringConstant(const Literal: string): Integer;
 
-    // Add an integer literal and return its index
     function AddIntegerConstant(const Value: Int64): Integer;
 
     // File I/O
@@ -135,14 +132,12 @@ end;
 
 function TByteCodeProgram.AddVariable(const VarName: string): Integer;
 begin
-  // Check if variable already exists
   if FVariableMap.IndexOf(VarName) >= 0 then
   begin
     Result := FVariableMap.KeyData[VarName];
     Exit;
   end;
 
-  // Add new variable
   Result := FVariables.Add(VarName);
   FVariableMap.Add(VarName, Result);
 end;
@@ -154,7 +149,6 @@ begin
   if Result >= 0 then
     Exit;
 
-  // Add new string constant
   Result := FStringLiterals.Add(Literal);
 
   // Also add to StringConstants for consistency
@@ -188,17 +182,14 @@ begin
   try
     Rewrite(F, 1);
 
-    // Write magic number for file validation
     BlockWrite(F, MagicNumber, 4);
 
-    // Write program title
     TempStr := AnsiString(FProgramTitle);
     StrLen := Length(TempStr);
     BlockWrite(F, StrLen, SizeOf(Integer));
     if StrLen > 0 then
       BlockWrite(F, TempStr[1], StrLen);
 
-    // Write instructions
     InstrCount := Length(FInstructions);
     BlockWrite(F, InstrCount, SizeOf(Integer));
     if InstrCount > 0 then
@@ -212,7 +203,6 @@ begin
       end;
     end;
 
-    // Write variables
     VarCount := FVariables.Count;
     BlockWrite(F, VarCount, SizeOf(Integer));
     for I := 0 to VarCount - 1 do
@@ -224,7 +214,6 @@ begin
         BlockWrite(F, TempStr[1], StrLen);
     end;
 
-    // Write string constants
     ConstCount := FStringLiterals.Count;
     BlockWrite(F, ConstCount, SizeOf(Integer));
     for I := 0 to ConstCount - 1 do
@@ -260,12 +249,10 @@ begin
   try
     Reset(F, 1);
 
-    // Read and validate magic number
     BlockRead(F, Magic, 4);
     if (Magic[0] <> 'K') or (Magic[1] <> 'B') or (Magic[2] <> 'C') or (Magic[3] <> 'F') then
       raise Exception.Create('Invalid bytecode file format');
 
-    // Read program title
     BlockRead(F, StrLen, SizeOf(Integer));
     if StrLen > 0 then
     begin
@@ -274,7 +261,6 @@ begin
       FProgramTitle := String(TempStr);
     end;
 
-    // Read instructions
     BlockRead(F, InstrCount, SizeOf(Integer));
     SetLength(TempInstructions, InstrCount);
     for I := 0 to InstrCount - 1 do
@@ -287,7 +273,6 @@ begin
     end;
     FInstructions := TempInstructions;
 
-    // Read variables
     BlockRead(F, VarCount, SizeOf(Integer));
     FVariables.Clear;
     FVariableMap.Clear;
@@ -303,7 +288,6 @@ begin
       end;
     end;
 
-    // Read string constants
     BlockRead(F, ConstCount, SizeOf(Integer));
     FStringLiterals.Clear;
     FStringConstants.Clear;

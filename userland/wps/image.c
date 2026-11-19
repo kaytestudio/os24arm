@@ -20,6 +20,7 @@ uint32_t *image_decode(const unsigned char *data, int len, int max_w, int max_h,
     int sw, sh, n;
     unsigned char *px = stbi_load_from_memory(data, len, &sw, &sh, &n, 4);
     if (!px) return NULL;
+    if (sw <= 0 || sh <= 0) { stbi_image_free(px); return NULL; }   /* stb_image lets a BMP be 0 wide */
     int dw = sw, dh = sh;
     if (max_w > 0 && dw > max_w) { dh = (int)((long)dh * max_w / dw); dw = max_w; }
     if (max_h > 0 && dh > max_h) { dw = (int)((long)dw * max_h / dh); dh = max_h; }

@@ -39,7 +39,7 @@ constructor TKfrmRuntime.Create(AEventRouter: TEventRouter);
 begin
   inherited Create;
   FKfrmParser   := TKfrmParser.Create;
-  FKfrmRenderer := TKfrmRenderer.Create; // This line needs TKfrmRenderer to be known in implementation
+  FKfrmRenderer := TKfrmRenderer.Create;
   FEventRouter  := AEventRouter;
   FLoadedForms  := TObjectList.Create(True);  // owns objects
 end;

@@ -54,7 +54,6 @@ int main(int argc, char **argv)
     char *imports[256] = {0};
     int import_count = 0;
     
-    /* Parse command line */
     static struct option long_options[] = {
         {"output",  required_argument, 0, 'o'},
         {"type",    required_argument, 0, 't'},
@@ -135,7 +134,6 @@ int main(int argc, char **argv)
         }
     }
     
-    /* Get input file */
     if (optind < argc) {
         input = argv[optind];
     }
@@ -166,7 +164,6 @@ int main(int argc, char **argv)
         printf("  Stack:  %u KB\n", stack_size / 1024);
     }
     
-    /* Read input file */
     FILE *f = fopen(input, "rb");
     if (!f) {
         perror("Failed to open input file");
@@ -191,7 +188,6 @@ int main(int argc, char **argv)
         printf("  Code size: %ld bytes\n", code_size);
     }
     
-    /* Read data file if specified */
     uint8_t *data = NULL;
     long data_size = 0;
     
@@ -218,7 +214,6 @@ int main(int argc, char **argv)
         }
     }
     
-    /* Create builder */
     LXBuilder *builder = lx_builder_new();
     if (!builder) {
         fprintf(stderr, "Failed to create builder\n");
@@ -227,7 +222,6 @@ int main(int argc, char **argv)
         return 1;
     }
     
-    /* Configure builder */
     lx_builder_set_type(builder, module_flags);
     lx_builder_set_name(builder, module_name);
     lx_builder_set_cpu(builder, cpu_type);
@@ -238,17 +232,14 @@ int main(int argc, char **argv)
     lx_builder_add_object(builder, ".text", code, code_size,
                          LXOBJ_READABLE | LXOBJ_EXECUTABLE);
     
-    /* Add data section if present */
     if (data && data_size > 0) {
         lx_builder_add_object(builder, ".data", data, data_size,
                              LXOBJ_READABLE | LXOBJ_WRITABLE);
     } else {
-        /* Add empty data section */
         lx_builder_add_object(builder, ".data", NULL, 4096,
                              LXOBJ_READABLE | LXOBJ_WRITABLE);
     }
     
-    /* Process exports */
     for (int i = 0; i < export_count; i++) {
         char *exp = exports[i];
         char *colon = strchr(exp, ':');
@@ -267,7 +258,6 @@ int main(int argc, char **argv)
         free(exports[i]);
     }
     
-    /* Process imports */
     for (int i = 0; i < import_count; i++) {
         char *imp = imports[i];
         char *colon = strchr(imp, ':');
@@ -287,10 +277,8 @@ int main(int argc, char **argv)
         free(imports[i]);
     }
     
-    /* Write output */
     int result = lx_builder_write(builder, output);
     
-    /* Cleanup */
     lx_builder_free(builder);
     free(code);
     if (data) free(data);

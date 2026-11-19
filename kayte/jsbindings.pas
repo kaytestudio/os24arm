@@ -5,22 +5,20 @@ unit JSBindings;
 interface
 
 uses
-  SysUtils, Classes; // Classes for TObject, if you plan to link Pascal objects to JS
+  SysUtils, Classes;
 
 const
-{$IFDEF DARWIN} // Covers both Intel and ARM macOS
-  {$IFDEF CPUARM64} // Specific to Apple Silicon (ARM64)
-    QuickJSLib = 'libquickjs.a'; // Or 'libquickjs.dylib' if you build it dynamically
-  {$ELSE} // Intel macOS - keeping this for completeness within DARWIN, but the user requested ARM64 focus
-    QuickJSLib = 'libquickjs.a'; // Or 'libquickjs.dylib'
+{$IFDEF DARWIN}
+  {$IFDEF CPUARM64}
+    QuickJSLib = 'libquickjs.a';
+  {$ELSE}
+    QuickJSLib = 'libquickjs.a';
   {$ENDIF}
-{$ELSE} // This block now acts as a catch-all if not DARWIN, but the intent is ARM64 specific.
-        // For a strictly ARM64-only unit, you might remove the outer ELSE and just define QuickJSLib directly.
-        // However, keeping the IFDEF DARWIN structure is safer for compilation if CPUARM64 isn't defined.
-  QuickJSLib = 'libquickjs.a'; // Fallback for non-DARWIN or non-ARM64, but effectively unused if strictly ARM64 target.
+{$ELSE}
+  QuickJSLib = 'libquickjs.a';
 {$ENDIF}
 
-  // This constant needs to be in the 'const' block, not 'type'
+  // QuickJS exception tag.
   JS_TAG_EXCEPTION = $FFFFFFFFFFFFFFF0; // QuickJS JS_TAG_EXCEPTION (Verify this value with QuickJS source)
 
 type
@@ -162,12 +160,10 @@ begin
   FuncNameJS := CreateJSString(ctx, Name);
   JSFunc := JS_NewCFunction(ctx, Func, PAnsiChar(AnsiString(Name)), 0); // Length is usually 0 for custom funcs
   JS_SetPropertyStr(ctx, obj, PAnsiChar(AnsiString(Name)), JSFunc);
-  // JSFunc is now owned by the object, so we free the name value
+  // The property owns JSFunc after JS_SetPropertyStr returns.
   JS_FreeValue(ctx, FuncNameJS);
-  // Do NOT free JSFunc here; it's owned by the JS object.
 end;
 
-// Helper to evaluate script and handle basic errors
 procedure EvaluateJSCode(ctx: PJSContext; const Script: String; const Filename: String = '<eval>');
 var
   ScriptJS: JSValue;
@@ -190,8 +186,7 @@ end;
 procedure SetJSObjectProperty(ctx: PJSContext; obj: JSValue; const PropName: String; val: JSValue);
 begin
   JS_SetPropertyStr(ctx, obj, PAnsiChar(AnsiString(PropName)), val);
-  // Note: The value 'val' is consumed by JS_SetPropertyStr if successful.
-  // Do NOT free 'val' after this call if it's a newly created JSValue.
+  // JS_SetPropertyStr takes ownership of val.
 end;
 
 function GetJSObjectProperty(ctx: PJSContext; obj: JSValue; const PropName: String): JSValue;
@@ -208,8 +203,7 @@ const
 
 procedure ExposeNativePascalObject(ctx: PJSContext; jsObj: JSValue; PascalObj: TObject);
 begin
-  // TODO: use a JS class with JS_SetOpaque. For now the object's pointer is
-  // stored as a number property.
+  // TODO: Store this pointer in a JS class with JS_SetOpaque.
   JS_SetPropertyStr(ctx, jsObj, PAnsiChar(AnsiString(PascalObjKey)), JS_NewFloat64(Double(NativeUInt(PascalObj))));
 end;
 
@@ -220,7 +214,7 @@ var
 begin
   Result := nil;
   PtrVal := 0.0; // silences a compiler hint
-  // This is also NOT ROBUST for production. See note in ExposeNativePascalObject.
+  // A Double cannot preserve every 64-bit pointer value; use JS_SetOpaque instead.
   Res := JS_ToFloat64(ctx, PtrVal, JS_GetPropertyStr(ctx, jsObj, PAnsiChar(AnsiString(PascalObjKey))));
   if Res = 0 then
     Result := TObject(NativeUInt(PtrVal));
@@ -228,10 +222,8 @@ end;
 
 
 initialization
-  // Optional: Initialize the runtime when the unit loads
-  // InitJSRuntime; // You might want to control this manually in your main program
+  // Runtime setup is left to the application.
 finalization
-  // Optional: Free the runtime when the unit unloads
-  // DoneJSRuntime; // You might want to control this manually in your main program
+  // Runtime teardown is left to the application.
 end.
 

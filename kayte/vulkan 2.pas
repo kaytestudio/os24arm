@@ -37,7 +37,7 @@ begin
   InitWindow;
   InitVulkan;
   CreateSurface;
-  // Load your shaders from file or as a string and create the shader module
+  // Load the shader module from the compiled shader file.
   CreateShaderModule(LoadShaderFromFile('shader.spv'));
   CreateGraphicsPipeline;
 end;
@@ -110,10 +110,9 @@ var
   PipelineInfo: TVkGraphicsPipelineCreateInfo;
   ShaderStageInfo: array[0..1] of TVkPipelineShaderStageCreateInfo;
 begin
-  // Setup your pipeline creation info here
+  // TODO: Fill in the graphics pipeline state.
   FillChar(PipelineInfo, SizeOf(PipelineInfo), 0);
   PipelineInfo.sType := VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-  // Add more configurations like vertex input, rasterizer, viewport, etc.
 
   // Shader stages
   ShaderStageInfo[0].sType := VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -121,9 +120,9 @@ begin
   ShaderStageInfo[0].module := FShaderModule;
   ShaderStageInfo[0].pName := 'main';
 
-  // You would do similar for the fragment shader stage...
+  // TODO: Populate the fragment shader stage.
 
-  PipelineInfo.stageCount := 2; // Assuming two stages: vertex and fragment
+  PipelineInfo.stageCount := 2; // Vertex and fragment stages.
   PipelineInfo.pStages := @ShaderStageInfo[0];
 
   if vkCreateGraphicsPipelines(FDevice, VK_NULL_HANDLE, 1, @PipelineInfo, nil, @FPipeline) <> VK_SUCCESS then
@@ -134,8 +133,7 @@ procedure TVulkanApp.Run;
 begin
   while True do
   begin
-    // Your main loop, handling window events, drawing frames, etc.
-    // For simplicity, we'll just break the loop after one iteration
+    // TODO: Handle window events and render frames here.
     Break;
   end;
 end;

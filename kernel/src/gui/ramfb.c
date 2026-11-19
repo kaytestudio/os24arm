@@ -6,9 +6,8 @@
  * Register layout and protocol cross-checked against QEMU's own source
  * (include/standard-headers/linux/qemu_fw_cfg.h, hw/display/ramfb.c,
  * hw/arm/virt.c's memmap) and U-Boot's ARM fw_cfg driver
- * (drivers/misc/qfw_mmio.c) for the exact MMIO offsets and DMA trigger
- * sequence, since getting any of this wrong just hangs or silently does
- * nothing rather than erroring cleanly.
+ * (drivers/misc/qfw_mmio.c) for the MMIO offsets and DMA trigger sequence;
+ * mistakes here can hang QEMU or leave the framebuffer blank without an error.
  *
  * fw_cfg MMIO on the QEMU "virt" machine is fixed at 0x09020000 (the
  * same memmap this project's own UART_BASE=0x09000000 comes from):

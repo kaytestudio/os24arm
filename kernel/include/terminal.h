@@ -36,7 +36,6 @@ static inline void terminal_writehex(uint32_t num)
     kprintf("0x%x", num);
 }
 
-/* Newline helper */
 static inline void terminal_newline(void)
 {
     kprintf("\n");

@@ -51,7 +51,7 @@
 static int btrfs_search_path(btrfs_mount_t *mnt, uint64_t root_logical, uint8_t root_level,
                               btrfs_key_t target, uint8_t *leaf_out, btrfs_path_t *path);
 
-/* ── CRC32C ──────────────────────────────────────────────────────────────── */
+/* CRC32C */
 
 static uint32_t crc32c_table[256];
 static int crc32c_table_ready = 0;
@@ -88,7 +88,7 @@ static void checksum_block(uint8_t *buf, uint32_t size)
     memcpy(buf, &crc, 4);
 }
 
-/* ── Bump allocator ──────────────────────────────────────────────────────── */
+/* Bump allocator */
 
 static int btrfs_alloc_extent(btrfs_mount_t *mnt, uint64_t len, uint64_t *out_addr)
 {
@@ -115,7 +115,7 @@ static int btrfs_alloc_extent(btrfs_mount_t *mnt, uint64_t len, uint64_t *out_ad
     return VFS_OK;
 }
 
-/* ── Mount-time bootstrap: high-water mark + next inode number ──────────── */
+/* Mount-time bootstrap: high-water mark + next inode number */
 
 typedef struct {
     uint64_t max_end;
@@ -220,7 +220,7 @@ void btrfs_write_init_allocators(btrfs_mount_t *mnt)
     mnt->writable = 1;
 }
 
-/* ── Superblock commit ───────────────────────────────────────────────────── */
+/* Superblock commit */
 
 static int btrfs_write_superblock(btrfs_mount_t *mnt, uint64_t new_root, uint8_t new_root_level, uint64_t new_gen)
 {
@@ -237,7 +237,7 @@ static int btrfs_write_superblock(btrfs_mount_t *mnt, uint64_t new_root, uint8_t
     return btrfs_write_phys((blkdev_t *)mnt->dev, BTRFS_SUPER_OFFSET, sb_raw, sizeof(sb_raw));
 }
 
-/* ── Leaf item array (de)serialization ──────────────────────────────────── */
+/* Leaf item array (de)serialization */
 
 #define BTW_MAX_ITEM_DATA 320  /* covers every item type this driver writes:
                                  * inode item (160), extent data (53), and
@@ -353,9 +353,9 @@ static uint32_t serialize_internal(uint8_t *out, uint32_t nodesize, uint64_t own
     return total;
 }
 
-/* ── Core CoW commit: apply one mutation to a tree, following `path`,
+/* Core CoW commit: apply one mutation to a tree, following `path`,
  * splitting nodes / growing tree height as needed. On success, *root_addr
- * and *root_level are updated to the tree's new root. ─────────────────── */
+ * and *root_level are updated to the tree's new root. */
 
 typedef struct {
     uint64_t    addr;
@@ -518,14 +518,14 @@ static int btrfs_commit_tree(btrfs_mount_t *mnt, btrfs_path_t *path,
     return VFS_OK;
 }
 
-/* ── Top-level fs-tree operation: fs tree commit -> this subvolume's
+/* Top-level fs-tree operation: fs tree commit -> this subvolume's
  * ROOT_ITEM in the root tree -> superblock. Each of the (up to) two
  * B-tree commits below is its own atomic on-disk step, and the
  * superblock write is the very last thing touched - a crash at any point
  * before it leaves the previous, still-fully-valid tree state as the one
  * a subsequent mount sees (more, smaller atomic checkpoints than real
  * btrfs's one-commit-per-transaction, at the cost of more superblock
- * rewrites; simpler, and still crash-safe by the same argument). ──────── */
+ * rewrites; simpler, and still crash-safe by the same argument). */
 
 static int btrfs_do_fs_op(btrfs_mount_t *mnt, btrfs_key_t key, const void *data, uint16_t len, btw_op_t op)
 {
@@ -608,7 +608,7 @@ static int btrfs_delete_all_of_type(btrfs_mount_t *mnt, uint64_t ino, uint8_t ty
     }
 }
 
-/* ── Directory helpers ───────────────────────────────────────────────────── */
+/* Directory helpers */
 
 static int btrfs_dir_find_index(btrfs_mount_t *mnt, uint64_t dir_ino, const char *name, int name_len,
                                  uint64_t *out_offset, uint64_t *out_child_ino, uint8_t *out_type)
@@ -629,9 +629,7 @@ static int btrfs_dir_find_index(btrfs_mount_t *mnt, uint64_t dir_ino, const char
     }
 }
 
-/* Recomputed on demand (not persisted), same philosophy as the block/inode
- * allocators - real btrfs's per-directory index counter is a runtime
- * field, this driver just re-derives it from the tree each time. */
+/* Directory indices are derived from the tree on demand rather than persisted. */
 static uint64_t btrfs_dir_next_index(btrfs_mount_t *mnt, uint64_t dir_ino)
 {
     uint64_t pos = 0, max_seen = 1;
@@ -668,7 +666,7 @@ static void split_path(const char *path, char *parent_out, uint32_t parent_out_s
 /* Wall clock (kernel/src/main.c: the PL031 RTC); absent in LX builds. */
 extern uint32_t kernel_time_seconds(void) __attribute__((weak));
 
-/* A btrfs_timespec (sec: le64, nsec: le32) for now; left alone without a clock. */
+/* Store seconds and zero nanoseconds; the kernel clock has only second precision. */
 static void stamp_now(uint8_t ts[12])
 {
     if (!kernel_time_seconds) return;
@@ -713,7 +711,7 @@ static int insert_dir_entry(btrfs_mount_t *mnt, uint64_t parent_ino, const char 
     return btrfs_do_fs_op(mnt, dir_key, dbuf, dlen, BTW_INSERT);
 }
 
-/* ── File / directory write operations (called from btrfs.c) ───────────── */
+/* File / directory write operations (called from btrfs.c) */
 
 int btrfs_write_open(btrfs_mount_t *mnt, const char *path, int flags, btrfs_file_t **out_file)
 {
@@ -909,7 +907,7 @@ int btrfs_do_rename(btrfs_mount_t *mnt, const char *old_path, const char *new_pa
     return insert_dir_entry(mnt, nparent_ino, nbase, nlen, (btrfs_key_t){ino, BTRFS_INODE_ITEM_KEY, 0}, old_type);
 }
 
-/* ── Path-tracking B-tree search (extends btrfs_search() with ancestry) ─── */
+/* Path-tracking B-tree search (extends btrfs_search() with ancestry) */
 
 static int btrfs_search_path(btrfs_mount_t *mnt, uint64_t root_logical, uint8_t root_level,
                               btrfs_key_t target, uint8_t *leaf_out, btrfs_path_t *path)

@@ -48,7 +48,7 @@ static const char *generic_tips[] = {
 };
 #define NUM_GENERIC_TIPS (int)(sizeof(generic_tips) / sizeof(generic_tips[0]))
 
-/* ── Session-only usage tracking ─────────────────────────────────────────── */
+/* Session-only usage tracking */
 
 #define MAX_TRACKED 24
 
@@ -114,7 +114,7 @@ static const char *next_tip(void)
     return tip;
 }
 
-/* ── Subcommands ─────────────────────────────────────────────────────────── */
+/* Subcommands */
 
 static void ai_help(void)
 {
@@ -202,7 +202,7 @@ static void ai_tip(void)
     uart_puts("\r\n\r\n");
 }
 
-/* ── Entry point ─────────────────────────────────────────────────────────── */
+/* Entry point */
 
 static void str_toupper_local(char *s)
 {

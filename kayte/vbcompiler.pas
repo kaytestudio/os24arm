@@ -5,7 +5,7 @@ unit VBCompiler;
 interface
 
 uses
-  Classes, SysUtils, Process, Math; // Added Math unit for min function
+  Classes, SysUtils, Process, Math;
 
 type
   TVBCompilerResult = record
@@ -128,18 +128,7 @@ begin
     '-Fu' + IncludeTrailingPathDelimiter(OutputDir), // Add output directory to unit path
     '-FE' + IncludeTrailingPathDelimiter(OutputDir), // Set executable/library output directory
     OutputSwitch,
-    ProjectSourceFile     // The main project file (e.g., .lpr or .pas)
-    // Add other relevant options like -CX for cross-platform, -Cp for CPU etc.
-    // '-CX', // Creates linkable units (useful for shared libraries)
-    // '-XX', // Generate smart-linking .so/.dylib (reduces size)
-    // '-WM1', // MacOS specific: use system libraries directly
-    // '-gw', // Generate DWARF debug info
-    // '-O1', // Optimization level
-    // '-vboh', // Verbose output
-    // '-Sd', // Delphi compatibility mode (if helpful)
-    // '-Twin32', // Target windows 32 (for cross-compiling)
-    // '-Tlinux', // Target linux
-    // '-Tdarwin' // Target macOS
+    ProjectSourceFile
   ];
 
   Result := ExecuteCommand(CompilerPath, CompilerArgs);
@@ -207,15 +196,13 @@ begin
 
   Result := ExecuteCommand(CompilerPath, CompilerArgs);
 
-  // If compilation to object file was successful, try to archive it into a .a
+  // Archive the object if compilation succeeded.
   if Result.Success then
   begin
     {$IFDEF LINUX}
     {$IFDEF DARWIN}
     {$IFDEF UNIX}
-      // Assuming 'ar' is in PATH for Unix-like systems
-      // This step combines the .o file into a .a archive.
-      // OutputFile will be the actual .a file path now.
+      // Build the static .a archive.
       OutputFile := IncludeTrailingPathDelimiter(OutputDir) + TargetName + TargetExt;
       Result := ExecuteCommand('ar', ['rcs', OutputFile, OutputObjFile]);
       if not Result.Success then
@@ -224,20 +211,14 @@ begin
     {$ENDIF}
     {$ENDIF}
     {$IFDEF WINDOWS}
-            // On Windows, if you want a .a, you typically use a MinGW-compatible ar.exe
-            // If targeting MSVC, you usually use a .lib.
-            // This section is left for you to implement if you need a specific Windows static archive tool.
-            // For now, it just produces the .obj file.
-
+      // Windows uses lib.exe for MSVC libraries and ar.exe for MinGW archives.
       case StaticLibFormat of
         slfMSVC:
         begin
-          // For MSVC, use 'lib.exe' (part of Visual Studio's Build Tools)
-          // You need to ensure 'lib.exe' is in the system's PATH, or provide its full path.
           if FileExists(OutputObjFile) then
           begin
             LinkerArgs := ['/OUT:' + FinalLibFile, OutputObjFile];
-            Result := ExecuteCommand('lib.exe', LinkerArgs); // Assuming lib.exe is in PATH
+            Result := ExecuteCommand('lib.exe', LinkerArgs);
             if not Result.Success then
               Result.ErrorMessage := 'Failed to create static library (.lib) using lib.exe.';
           end
@@ -249,12 +230,10 @@ begin
         end;
         slfMinGW, slfAuto:
         begin
-          // For MinGW, use 'ar.exe' (part of MinGW/MSYS2 distribution)
-          // You need to ensure 'ar.exe' is in the system's PATH, or provide its full path.
           if FileExists(OutputObjFile) then
           begin
             LinkerArgs := ['rcs', FinalLibFile, OutputObjFile];
-            Result := ExecuteCommand('ar.exe', LinkerArgs); // Assuming ar.exe is in PATH
+            Result := ExecuteCommand('ar.exe', LinkerArgs);
             if not Result.Success then
               Result.ErrorMessage := 'Failed to create static archive (.a) using ar.exe.';
           end

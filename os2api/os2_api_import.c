@@ -1,11 +1,4 @@
-/* ============================================================================
- * os2api/os2_api_import.c  —  DOSCALLS.DLL import table implementation
- *
- * Defines the function-pointer variables declared in os2_api_import.h and
- * resolves them against an embedded copy of DOSCALLS.DLL - see that
- * header's comment, and os2api/doscalls_embed.S.in for how the DLL bytes
- * get into doscalls_dll_start/doscalls_dll_end below.
- * ========================================================================== */
+/* Resolve DOSCALLS function pointers against the embedded DLL. */
 
 #include "os2_api_import.h"
 #include "lx_dll_loader.h"
@@ -45,9 +38,7 @@ static lx_dll_t g_doscalls;
 /* Resolves `name` in g_doscalls and stores it into `fnptr` (cast to
  * fnptr's own type via __typeof__, so this works for every signature
  * above without a macro per function). Prints an error and returns 1 if
- * the export is missing - a mismatch between this file's import list and
- * DOSCALLS.DLL's actual exports is a build-time bug, not something to
- * paper over with a NULL pointer a caller could crash into. */
+ * an export is missing, the import table and DLL are out of sync. */
 #define RESOLVE(fnptr, name) \
     do { \
         void *proc = lx_dll_get_proc(&g_doscalls, (name)); \

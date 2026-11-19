@@ -20,7 +20,7 @@ typedef struct {
     BuiltinFunc fn;
 } Builtin;
 
-/* ================= TOKEN ================= */
+/* Tokens */
 
 typedef enum {
     TOK_EOF,
@@ -60,7 +60,7 @@ typedef struct {
     size_t length;
 } Token;
 
-/* ================= LEXER ================= */
+/* Lexer */
 
 typedef struct {
     const char* src;
@@ -70,7 +70,7 @@ typedef struct {
 void lexer_init(Lexer* l, const char* src);
 Token lexer_next(Lexer* l);
 
-/* ---------------- Runtime ---------------- */
+/* Runtime */
 
 #define MAX_VARS 128
 
@@ -79,7 +79,7 @@ typedef struct {
     char value[128];
 } Variable;
 
-/* ---------------- Procedures ---------------- */
+/* Procedures */
 
 #define MAX_PROCS 64
 
@@ -88,7 +88,7 @@ typedef struct {
     struct AST* body;
 } Procedure;
 
-/* ---------------- Execution Context ---------------- */
+/* Execution context */
 
 struct Context {
     Variable vars[MAX_VARS];
@@ -102,7 +102,7 @@ struct Context {
 };
 
 
-/* ================= AST ================= */
+/* AST */
 
 typedef enum {
     AST_NUMBER,
@@ -139,7 +139,7 @@ typedef struct AST {
     TokenType op;
 } AST;
 
-/* ================= PARSER ================= */
+/* Parser */
 
 typedef struct {
     Lexer lexer;
@@ -156,7 +156,7 @@ void runtime_init(Context* ctx);
 void runtime_set(Context* ctx, const char* name, const char* value);
 const char* runtime_get(Context* ctx, const char* name);
 
-/* ================= EVAL ================= */
+/* Evaluation */
 
 void eval(Context* ctx, AST* node);
 

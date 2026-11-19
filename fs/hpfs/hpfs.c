@@ -101,7 +101,7 @@ typedef struct {
 static hpfs_file_t files[MAX_FILES];
 static hpfs_dir_t  dirs[MAX_DIRS];
 
-/* ── Helpers ──────────────────────────────────────────────────────────── */
+/* Helpers */
 static uint16_t le16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
 static uint32_t le32(const uint8_t *p)
 {
@@ -189,7 +189,7 @@ static void dos_datetime(uint32_t t, uint16_t *date, uint16_t *time)
     *time = (uint16_t)(((secs / 3600) << 11) | (((secs / 60) % 60) << 5) | ((secs % 60) / 2));
 }
 
-/* ── Structures ───────────────────────────────────────────────────────── */
+/* Structures */
 static int read_fnode(hpfs_mount_t *m, uint32_t lsn, uint8_t *fn)
 {
     if (rd(m, lsn, 1, fn) != 0) return VFS_EIO;
@@ -215,7 +215,7 @@ static const uint8_t *load_dnode(hpfs_mount_t *m, uint32_t lsn)
     return m->dnode;
 }
 
-/* ── Directory walk (in order) ────────────────────────────────────────── */
+/* Directory walk (in order) */
 static void walk_start(dwalk_t *w, uint32_t root)
 {
     w->depth = 0;
@@ -571,7 +571,7 @@ static int set_dirty(hpfs_mount_t *m, int dirty)
     return 0;
 }
 
-/* ── Free-space bitmaps ───────────────────────────────────────────────── */
+/* Free-space bitmaps */
 static int band_load(hpfs_mount_t *m, uint32_t b)
 {
     if (m->band == b) return 0;
@@ -661,7 +661,7 @@ static void free_dnode(hpfs_mount_t *m, uint32_t lsn)
     }
 }
 
-/* ── Extent trees ─────────────────────────────────────────────────────── */
+/* Extent trees */
 /* All leaf extents of a file, in order, and the anodes holding them. */
 static int collect_extents(hpfs_mount_t *m, const uint8_t *fnode, extent_t *ext,
                            uint32_t *next, uint32_t *anodes, uint32_t *nanodes)
@@ -828,7 +828,7 @@ static int grow_fnode(hpfs_mount_t *m, uint32_t fnode_lsn, uint8_t *fnode, uint3
     return w != VFS_OK ? w : r;
 }
 
-/* ── Fnodes and directory entries ─────────────────────────────────────── */
+/* Fnodes and directory entries */
 static void init_fnode(uint8_t *f, const char *name, uint32_t nlen, uint32_t up, int dir)
 {
     kmemset(f, 0, 512);
@@ -937,7 +937,7 @@ static int locate(hpfs_mount_t *m, uint32_t dir_fnode, const char *s, uint32_t n
     return VFS_ENOENT;
 }
 
-/* ── Directory rebuild ────────────────────────────────────────────────── */
+/* Directory rebuild */
 typedef struct { uint32_t off, len, child; } rb_item_t;   /* entry in rb_ents */
 static uint8_t   rb_ents[RB_BYTES];
 static uint32_t  rb_used;
@@ -1149,8 +1149,8 @@ static int dir_rebuild(hpfs_mount_t *m, uint32_t dir_fnode, const uint8_t *add,
     return VFS_OK;
 }
 
-/* ── Directory insert / remove / update ───────────────────────────────── */
-/* ── B-tree insertion ─────────────────────────────────────────────────── */
+/* Directory insert / remove / update */
+/* B-tree insertion */
 static uint8_t   sp_node[MAX_DEPTH][HPFS_DNODE_SIZE];  /* a level's dnode, as read */
 static dn_item_t sp_items[MAX_DEPTH][80];
 
@@ -1335,7 +1335,7 @@ static int write_setup(hpfs_mount_t *m, const uint8_t *sb)
     return 0;
 }
 
-/* ── CHKDSK ───────────────────────────────────────────────────────────── */
+/* CHKDSK */
 int hpfs_is_dirty(hpfs_mount_t *m)
 {
     uint8_t b[512];
@@ -1447,7 +1447,7 @@ int hpfs_check(hpfs_mount_t *m, int fix, hpfs_check_t *r)
     return (int)r->problems;
 }
 
-/* ── VFS operations ───────────────────────────────────────────────────── */
+/* VFS operations */
 static int hpfs_mount_op(vfs_mount_t *mnt)
 {
     hpfs_mount_t *m = mnt->priv;
@@ -2144,7 +2144,7 @@ vfs_fs_t vfs_hpfs_fs = {
     .ftruncate = hpfs_ftruncate,
 };
 
-/* ── Probe / IFS init ─────────────────────────────────────────────────── */
+/* Probe / IFS init */
 int hpfs_probe(blkdev_t *dev)
 {
     uint8_t sb[512];

@@ -11,8 +11,8 @@
  * messages), or with OS2X86_PM=headless none at all, with OS2X86_PM_SCRIPT
  * supplying input whenever the program waits ("click X Y; key abc; close;
  * shot FILE.ppm; size W H", top-left pixel coordinates) - run-tests.sh uses
- * this. With neither, WinInitialize fails, and WinMessageBox in console
- * programs just prints. */
+ * this. With neither backend, WinInitialize fails and console WinMessageBox
+ * calls print their text. */
 
 #if defined(__clang__)
 #pragma clang diagnostic push

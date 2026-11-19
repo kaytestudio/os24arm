@@ -34,9 +34,6 @@ static int stricmp(const char *a, const char *b)
     return *a - *b;
 }
 
-/**
- * @brief Skip whitespace
- */
 static const char* skip_whitespace(const char *s)
 {
     while (*s == ' ' || *s == '\t') s++;
@@ -54,26 +51,23 @@ static const char* skip_whitespace(const char *s)
  */
 static int parse_ifs_line(const char *line, char *name, char *params)
 {
-    // Skip "IFS="
     const char *p = line;
     if (p[0] == 'I' && p[1] == 'F' && p[2] == 'S' && p[3] == '=') {
         p += 4;
     } else {
-        return -1; // Not an IFS line
+        return -1;
     }
 
     p = skip_whitespace(p);
 
-    // Extract driver name (up to .IFS)
     int i = 0;
     while (*p && *p != '.' && *p != ' ' && *p != '\t' && i < 31) {
         name[i++] = *p++;
     }
     name[i] = '\0';
 
-    if (i == 0) return -1; // No name
+    if (i == 0) return -1;
 
-    // Skip .IFS extension
     if (*p == '.') {
         p++;
         if (*p == 'I' && p[1] == 'F' && p[2] == 'S') {
@@ -97,8 +91,7 @@ static int parse_ifs_line(const char *line, char *name, char *params)
 void ifs_loader_init(void)
 {
 
-    // ifs_drivers array is already zeroed by boot.S BSS clearing
-    // Just initialize the counter
+    // The driver table is zeroed in BSS; reset its active count.
     ifs_count = 0;
 
 }
@@ -116,7 +109,7 @@ int ifs_register_builtin(const char *name, ifs_init_fn init_fn, vfs_fs_t *fs_ops
         return -1;
     }
 
-    // Register driver - simple direct assignment
+    // Store the driver callbacks and its backing module information.
     ifs_drivers[ifs_count].name = name;
     ifs_drivers[ifs_count].init = init_fn;
     ifs_drivers[ifs_count].fs_ops = fs_ops;
@@ -134,7 +127,6 @@ int ifs_load_from_line(const char *line)
     char name[32];
     char params[256];
 
-    // Parse IFS line
     if (parse_ifs_line(line, name, params) != 0) {
         return -1; // Not an IFS line or parse error
     }
@@ -145,7 +137,6 @@ int ifs_load_from_line(const char *line)
     }
     kprintf("\n");
 
-    // Find driver in registry
     ifs_driver_t *drv = NULL;
     for (int i = 0; i < ifs_count; i++) {
         if (stricmp(ifs_drivers[i].name, name) == 0) {
@@ -163,7 +154,6 @@ int ifs_load_from_line(const char *line)
         return -1;
     }
 
-    // Initialize driver
     int ret = drv->init(params);
     if (ret != 0) {
         kprintf("[IFS] ERROR: Driver '%s' initialization failed: %d\n", name, ret);
@@ -178,14 +168,12 @@ int ifs_load_from_config(const char *config_path)
 {
     kprintf("[IFS] Reading CONFIG.SYS: %s\n", config_path);
 
-    // Open CONFIG.SYS
     int fd = vfs_open(config_path, O_RDONLY);
     if (fd < 0) {
         kprintf("[IFS] WARNING: Could not open %s\n", config_path);
         return 0; // Not a fatal error
     }
 
-    // Read CONFIG.SYS line by line
     char line[512];
     int line_pos = 0;
     int drivers_loaded = 0;
@@ -197,11 +185,9 @@ int ifs_load_from_config(const char *config_path)
         if (bytes <= 0) break; // EOF or error
 
         if (c == '\n' || c == '\r') {
-            // End of line
             if (line_pos > 0) {
                 line[line_pos] = '\0';
 
-                // Check if IFS line
                 if (line[0] == 'I' && line[1] == 'F' && line[2] == 'S' && line[3] == '=') {
                     if (ifs_load_from_line(line) == 0) {
                         drivers_loaded++;
@@ -211,7 +197,6 @@ int ifs_load_from_config(const char *config_path)
                 line_pos = 0;
             }
         } else {
-            // Add to line buffer
             if (line_pos < sizeof(line) - 1) {
                 line[line_pos++] = c;
             }

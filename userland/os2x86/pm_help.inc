@@ -370,7 +370,7 @@ static void lay_esc(hlay_t *L, int code, const uint8_t *a, uint32_t n)
             L->fmono = strcasestr(face, "courier") || strcasestr(face, "mono") || strcasestr(face, "vio");
         }
         break;
-    case ESC_HIDE: L->hide = 1; break;                           /* :hide. - we never have the key */
+    case ESC_HIDE: L->hide = 1; break;                           /* :hide.: no hide key is defined */
     case ESC_ENDHIDE: L->hide = 0; break;
     case ESC_ARTWORK: {
         uint32_t c = L->rgb;
@@ -509,7 +509,7 @@ static void hv_follow(hview_t *v, int l)
         while (p && *p == ' ') p++;
         if (!book || (strcasecmp(pb, "view.exe") && strcasecmp(pb, "view"))) { if (trace) fprintf(stderr, "[help] launch \"%s\": not done\n", k->s); return; }
         char *plus = strchr(book, '+');
-        if (plus) *plus = 0;                                 /* BOOK1+BOOK2: just the first */
+        if (plus) *plus = 0;                                 /* BOOK1+BOOK2: open the first book only */
         inf_t *b = book_open(book, v->f->dir);
         if (!b) { char t[400]; snprintf(t, sizeof t, "The book %s can't be found.", book); pm_msgbox(t, "Help", MB_INFORMATION | MB_MOVEABLE); return; }
         int page = p && *p ? inf_find(b, p) : 0;

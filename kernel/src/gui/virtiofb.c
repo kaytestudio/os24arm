@@ -2,7 +2,7 @@
  * @file virtiofb.c
  * @brief VirtIO GPU Framebuffer Driver for OS/2 Warp ARM64
  * 
- * Provides a simple framebuffer interface for QEMU virt machine.
+ * Provides a software framebuffer for the QEMU virt machine.
  * Supports: 1024x768 @ 32-bit RGBA, double buffering, page flipping
  */
 
@@ -14,7 +14,7 @@
 extern void *mem_alloc(size_t size);
 extern void mem_free(void *ptr);
 
-/* ── VirtIO MMIO Registers ────────────────────────────────────────────────── */
+/* VirtIO MMIO Registers */
 #define VIRTIO_GPU_BASE     0x0A000000UL  /* QEMU virt: virtio-gpu-device */
 
 #define VIRTIO_MMIO_MAGIC            0x000  /* Magic value 'virt' */
@@ -35,14 +35,14 @@ extern void mem_free(void *ptr);
 #define VIRTIO_CONFIG_S_FEATURES_OK  8
 #define VIRTIO_CONFIG_S_FAILED       128
 
-/* ── Framebuffer Configuration ────────────────────────────────────────────── */
+/* Framebuffer Configuration */
 #define FB_WIDTH        1024
 #define FB_HEIGHT       768
 #define FB_BPP          32      /* Bits per pixel (RGBA8888) */
 #define FB_STRIDE       (FB_WIDTH * (FB_BPP / 8))
 #define FB_SIZE         (FB_STRIDE * FB_HEIGHT)
 
-/* ── Framebuffer State ────────────────────────────────────────────────────── */
+/* Framebuffer State */
 typedef struct {
     uint32_t *pixels;       /* Front buffer (displayed) */
     uint32_t *backbuffer;   /* Back buffer (drawn to) */
@@ -55,7 +55,7 @@ typedef struct {
 
 static framebuffer_t fb = {0};
 
-/* ── VirtIO GPU Helpers ───────────────────────────────────────────────────── */
+/* VirtIO GPU Helpers */
 static inline uint32_t virtio_read32(uint32_t offset)
 {
     return *(volatile uint32_t *)(VIRTIO_GPU_BASE + offset);
@@ -66,12 +66,7 @@ static inline void virtio_write32(uint32_t offset, uint32_t value)
     *(volatile uint32_t *)(VIRTIO_GPU_BASE + offset) = value;
 }
 
-/**
- * @brief Initialize VirtIO GPU device (simplified)
- * 
- * For bare-metal, we use a simple linear framebuffer approach.
- * Full VirtIO GPU requires virtqueues and command buffers - we'll add later.
- */
+/* Check that a VirtIO GPU is present and mark the device ready. */
 static bool virtio_gpu_init(void)
 {
     uint32_t magic = virtio_read32(VIRTIO_MMIO_MAGIC);
@@ -121,11 +116,7 @@ static bool virtio_gpu_init(void)
     return true;
 }
 
-/**
- * @brief Initialize framebuffer
- * 
- * Allocates front and back buffers, initializes VirtIO GPU.
- */
+/* Allocate the framebuffer and its optional back buffer. */
 bool fb_init(void)
 {
     if (fb.initialized) {
@@ -138,7 +129,7 @@ bool fb_init(void)
     /* Initialize VirtIO GPU (optional - can work without it) */
     virtio_gpu_init();
     
-    /* Allocate front buffer (16 MB aligned for performance) */
+    /* Allocate the front buffer (FB_SIZE bytes). */
     fb.pixels = (uint32_t *)mem_alloc(FB_SIZE);
     if (!fb.pixels) {
         uart_puts("[FB] ERROR: Failed to allocate front buffer\r\n");
@@ -212,7 +203,7 @@ void fb_present(void)
         }
     }
     
-    /* TODO: Signal VirtIO GPU to update display */
+    /* TODO: Submit a VirtIO GPU transfer and flush command. */
 }
 
 /**

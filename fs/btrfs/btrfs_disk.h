@@ -71,19 +71,19 @@ typedef unsigned long uint64_t;
 /* Extent compression (only "none" is supported by this driver) */
 #define BTRFS_COMPRESS_NONE 0
 
-/* ── B-tree key: sorts items as (objectid, type, offset) ─────────────────── */
+/* B-tree key: sorts items as (objectid, type, offset) */
 typedef struct __attribute__((packed)) {
     uint64_t objectid;
     uint8_t  type;
     uint64_t offset;
 } btrfs_key_t;
 
-/* ── Common header for every tree node (internal or leaf) ────────────────── */
+/* Common header for every tree node (internal or leaf) */
 typedef struct __attribute__((packed)) {
     uint8_t  csum[BTRFS_CSUM_SIZE];
     uint8_t  fsid[BTRFS_FSID_SIZE];
     uint64_t bytenr;       /* logical address of this node itself */
-    uint64_t flags;        /* low byte unused here; high bits hold level for some kernels, we use the explicit level field below instead */
+    uint64_t flags;        /* Unused here; level is read from the explicit field below. */
     uint8_t  chunk_tree_uuid[BTRFS_UUID_SIZE];
     uint64_t generation;
     uint64_t owner;        /* tree objectid this node belongs to */
@@ -91,7 +91,7 @@ typedef struct __attribute__((packed)) {
     uint8_t  level;        /* 0 = leaf, >0 = internal node */
 } btrfs_header_t;
 
-/* ── Leaf item: (key, data offset/size within the leaf) ───────────────────── */
+/* Leaf item: (key, data offset/size within the leaf) */
 typedef struct __attribute__((packed)) {
     btrfs_key_t key;
     uint32_t offset;  /* byte offset of the item's data, from the end of the
@@ -99,14 +99,14 @@ typedef struct __attribute__((packed)) {
     uint32_t size;
 } btrfs_item_t;
 
-/* ── Internal node key pointer ─────────────────────────────────────────────── */
+/* Internal node key pointer */
 typedef struct __attribute__((packed)) {
     btrfs_key_t key;
     uint64_t blockptr;  /* logical address of child node */
     uint64_t generation;
 } btrfs_key_ptr_t;
 
-/* ── Chunk mapping (logical block group -> physical device extent) ───────── */
+/* Chunk mapping (logical block group -> physical device extent) */
 typedef struct __attribute__((packed)) {
     uint64_t devid;
     uint64_t offset;   /* physical byte offset on the device */
@@ -126,7 +126,7 @@ typedef struct __attribute__((packed)) {
     btrfs_stripe_t stripes[1]; /* variable length: num_stripes entries */
 } btrfs_chunk_t;
 
-/* ── Device item (embedded in the superblock) ─────────────────────────────── */
+/* Device item (embedded in the superblock) */
 typedef struct __attribute__((packed)) {
     uint64_t devid;
     uint64_t total_bytes;
@@ -144,7 +144,7 @@ typedef struct __attribute__((packed)) {
     uint8_t  fsid[BTRFS_FSID_SIZE];
 } btrfs_dev_item_t;
 
-/* ── Superblock (4096 bytes at BTRFS_SUPER_OFFSET) ────────────────────────── */
+/* Superblock (4096 bytes at BTRFS_SUPER_OFFSET) */
 typedef struct __attribute__((packed)) {
     uint8_t  csum[BTRFS_CSUM_SIZE];
     uint8_t  fsid[BTRFS_FSID_SIZE];
@@ -183,7 +183,7 @@ typedef struct __attribute__((packed)) {
     uint8_t  reserved3[1237];       /* root backups + padding, unused here */
 } btrfs_super_t;
 
-/* ── Inode item (subset of fields this driver actually uses) ─────────────── */
+/* Inode item (subset of fields this driver actually uses) */
 typedef struct __attribute__((packed)) {
     uint64_t generation;
     uint64_t transid;
@@ -207,7 +207,7 @@ typedef struct __attribute__((packed)) {
      * shifts every field that follows it. */
 } btrfs_inode_item_t;
 
-/* ── Directory entry item (DIR_ITEM / DIR_INDEX both use this layout) ────── */
+/* Directory entry item (DIR_ITEM / DIR_INDEX both use this layout) */
 typedef struct __attribute__((packed)) {
     btrfs_key_t location;   /* key of the target inode (INODE_ITEM) */
     uint64_t transid;
@@ -217,7 +217,7 @@ typedef struct __attribute__((packed)) {
     /* name[name_len] then data[data_len] follow immediately */
 } btrfs_dir_item_t;
 
-/* ── Root item (subset: just enough to find a subvolume's tree root) ─────── */
+/* Root item fields used to locate a subvolume's tree root */
 typedef struct __attribute__((packed)) {
     btrfs_inode_item_t inode;
     uint64_t generation;
@@ -234,7 +234,7 @@ typedef struct __attribute__((packed)) {
     /* generation_v2 + uuids + timestamps follow; unused here */
 } btrfs_root_item_t;
 
-/* ── File extent item (EXTENT_DATA) ───────────────────────────────────────── */
+/* File extent item (EXTENT_DATA) */
 typedef struct __attribute__((packed)) {
     uint64_t generation;
     uint64_t ram_bytes;

@@ -9,8 +9,8 @@
  *
  * This is NOT the real Wayland wire protocol: there is no second process
  * to speak it to here (freestanding, single address space, no sockets).
- * "Client" and "compositor" are both just C code in the same kernel, but
- * the architecture mirrors the real split deliberately - client code
+ * Client and compositor run in the same kernel, but the architecture
+ * mirrors the real split deliberately: client code
  * renders into a surface's own buffer via a draw callback, and only the
  * compositor ever touches the shared output framebuffer directly. See
  * fs/README or the project conversation history for why real Wayland/Qt6
@@ -71,7 +71,7 @@ struct wl_surface {
     wl_surface_t *next;         /* compositor's surface list, back to front */
 };
 
-/* ── Compositor ──────────────────────────────────────────────────────────── */
+/* Compositor */
 
 void wl_compositor_init(int output_width, int output_height);
 wl_surface_t *wl_compositor_create_surface(int width, int height);
@@ -80,7 +80,7 @@ void wl_compositor_raise(wl_surface_t *surface);   /* bring to front + focus */
 void wl_compositor_flush(void);                     /* composite onto the output */
 int wl_compositor_surface_count(void);
 
-/* ── Workplaces (virtual desktops) ──────────────────────────────────────── */
+/* Workplaces (virtual desktops) */
 
 /* Switch the active workplace (0..WL_MAX_WORKPLACES-1): surfaces on other
  * workplaces stop being composited until switched back to. Forces a full
@@ -92,26 +92,25 @@ void wl_compositor_set_workplace(int index);
 int wl_compositor_get_workplace(void);
 void wl_compositor_cycle_workplace(void); /* advance to the next one, wrapping */
 
-/* ── wl_surface client requests ─────────────────────────────────────────── */
+/* wl_surface client requests */
 
 void wl_surface_set_draw_callback(wl_surface_t *surface, wl_surface_draw_fn fn);
 void wl_surface_damage(wl_surface_t *surface, int x, int y, int w, int h);
 void wl_surface_commit(wl_surface_t *surface);      /* repaint buffer if damaged */
 void wl_surface_move(wl_surface_t *surface, int x, int y);
 
-/* ── xdg_shell-ish toplevel role ────────────────────────────────────────── */
+/* xdg_shell-ish toplevel role */
 
 wl_surface_t *xdg_toplevel_create(int x, int y, int width, int height, const char *title);
 void xdg_toplevel_close(wl_surface_t *surface);
 
-/* ── Client-side buffer drawing (writes into a surface's own buffer,
- * never the shared output framebuffer) ───────────────────────────────── */
+/* Draw into a surface's buffer, not the shared output framebuffer. */
 
 void wl_buf_putpixel(wl_surface_t *surface, int x, int y, fb_color_t color);
 void wl_buf_fillrect(wl_surface_t *surface, int x, int y, int w, int h, fb_color_t color);
 void wl_buf_drawstring(wl_surface_t *surface, int x, int y, const char *str, fb_color_t fg, fb_color_t bg);
 
-/* ── wl_seat: pointer input routed to the surface under the cursor ─────── */
+/* wl_seat: pointer input routed to the surface under the cursor */
 
 void wl_seat_pointer_button(int x, int y, int button, bool pressed);
 void wl_seat_pointer_motion(int x, int y);

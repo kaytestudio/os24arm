@@ -7,7 +7,7 @@ set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR aarch64)
 
 # Cross-compilation tools
-# Adjust these paths based on your installation:
+# Install one of these toolchains and set TOOLCHAIN_PREFIX below:
 #   - macOS: brew install aarch64-elf-gcc
 #   - Linux: apt-get install gcc-aarch64-linux-gnu
 #   - Or use a custom toolchain path

@@ -21,7 +21,7 @@
 #define VIRTIO_BLK_S_IOERR       1
 #define VIRTIO_BLK_S_UNSUPP      2
 
-/* VirtIO device structure (simplified) */
+/* Device state used by the current VirtIO block driver. */
 typedef struct {
     uint32_t type;
     uint32_t status;
@@ -32,7 +32,7 @@ typedef struct {
     uint64_t capacity;
 } virtio_device_t;
 
-/* ── VirtIO Block Driver Interface ────────────────────────────────────── */
+/* VirtIO Block Driver Interface */
 
 /**
  * Initialize VirtIO block device driver
@@ -54,7 +54,7 @@ int virtio_blk_write(blkdev_t *dev, uint64_t sector, uint32_t count, const void 
  */
 uint64_t virtio_blk_capacity(virtio_device_t *vdev);
 
-/* ── GPT Partition Table Support ──────────────────────────────────────── */
+/* GPT Partition Table Support */
 
 /* GPT partition entry */
 typedef struct {

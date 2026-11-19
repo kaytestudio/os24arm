@@ -123,7 +123,7 @@ static nsock_t *alloc(int type, int v6)
     return 0;
 }
 
-/* ── TCP callbacks ──────────────────────────────────────────────────── */
+/* TCP callbacks */
 static err_t tcp_recv_cb(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
 {
     (void)pcb;
@@ -189,7 +189,7 @@ static err_t tcp_accept_cb(void *arg, struct tcp_pcb *newpcb, err_t err)
     return ERR_OK;
 }
 
-/* ── UDP ───────────────────────────────────────────────────────────── */
+/* UDP */
 static void udp_recv_cb(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *addr, u16_t port)
 {
     (void)pcb;
@@ -203,9 +203,8 @@ static void udp_recv_cb(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip
     wake(s);
 }
 
-/* ── raw (ICMP): a copy of every packet - ICMP: its IP header in front;
- *    ICMPv6: without it, as Linux - and lwIP goes on with them (its own
- *    echo replies, the shell's PING) ───────────────────────────────── */
+/* Raw sockets queue each packet. IPv4 includes the IP header; IPv6 follows
+ * lwIP and omits it. The shell uses this path for PING. */
 static u8_t raw_recv_cb(void *arg, struct raw_pcb *pcb, struct pbuf *p, const ip_addr_t *addr)
 {
     (void)pcb;
@@ -225,7 +224,7 @@ static u8_t raw_recv_cb(void *arg, struct raw_pcb *pcb, struct pbuf *p, const ip
     return 0;                                         /* (not eaten) */
 }
 
-/* ── the calls ─────────────────────────────────────────────────────── */
+/* the calls */
 nsock_t *nsock_new(int type, int v6)
 {
     nsock_t *s = alloc(type, v6);

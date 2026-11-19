@@ -8,7 +8,7 @@
 extern void rexx_interactive(void);
 extern void rexx_run_script(const char* path);
 
-/* ── UART TX ─────────────────────────────────────────────────────────────── */
+/* UART output */
 static void putc_out(char c)
 {
     volatile unsigned long *fr = (volatile unsigned long *)(0x09000000UL + 0x018);
@@ -35,12 +35,12 @@ static void putn_out(unsigned long n)
     while (i--) putc_out(buf[i]);
 }
 
-/* ── ANSI helpers ─────────────────────────────────────────────────────────── */
+/* ANSI helpers */
 static void cursor_left (unsigned long n) { if (n) { puts_out("\x1b["); putn_out(n); putc_out('D'); } }
 static void cursor_right(unsigned long n) { if (n) { puts_out("\x1b["); putn_out(n); putc_out('C'); } }
 static void erase_to_eol(void)            { puts_out("\x1b[K"); }
 
-/* ── String helpers ───────────────────────────────────────────────────────── */
+/* String helpers */
 static int kstrlen(const char *s) { int i = 0; while (s[i]) i++; return i; }
 
 static void kmemcpy(char *d, const char *s, int n) { while (n--) *d++ = *s++; }
@@ -58,7 +58,7 @@ static int kstrncmp(const char *a, const char *b, int n)
     return (unsigned char)*a - (unsigned char)*b;
 }
 
-/* ── History ──────────────────────────────────────────────────────────────── */
+/* Command history */
 static char hist[CLI_HIST_SIZE][CLI_MAX_LINE];
 static int  hist_count = 0;
 static int  hist_head  = 0;
@@ -89,7 +89,7 @@ static const char *hist_get(int offset)
     return hist[idx];
 }
 
-/* ── Line editor ──────────────────────────────────────────────────────────── */
+/* Line editor */
 static int cli_readline(char *buf, int maxlen)
 {
     int  len = 0, cur = 0, hoff = 0;
@@ -174,7 +174,7 @@ static int cli_readline(char *buf, int maxlen)
     }
 }
 
-/* ── Help ─────────────────────────────────────────────────────────────────── */
+/* Help */
 static void cmd_help(void)
 {
     puts_out("\r\n  OS/2 Warp ARM64 -- Command Reference\r\n\r\n");
@@ -221,7 +221,7 @@ static void cmd_help(void)
     puts_out("\r\n");
 }
 
-/* ── Command word match ───────────────────────────────────────────────────── */
+/* Command matching */
 static const char *cmd_arg(const char *line, const char *cmd)
 {
     int n = kstrlen(cmd);
@@ -232,7 +232,7 @@ static const char *cmd_arg(const char *line, const char *cmd)
     return arg;
 }
 
-/* ── Dispatcher ───────────────────────────────────────────────────────────── */
+/* Dispatcher */
 static void dispatch(const char *line)
 {
     const char *arg;
@@ -290,7 +290,7 @@ static void dispatch(const char *line)
     puts_out(" is not recognized as an internal or external command.\r\n");
 }
 
-/* ── Entry point ──────────────────────────────────────────────────────────── */
+/* Entry point */
 void cli_run(void)
 {
     char buf[CLI_MAX_LINE];

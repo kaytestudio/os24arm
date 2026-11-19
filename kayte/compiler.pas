@@ -38,13 +38,10 @@ begin
   for I := 0 to ASource.Count - 1 do
   begin
     S := ASource[I];
-    // Find the first occurrence of a single-line comment marker
     if Pos('//', S) > 0 then
     begin
-      // Extract the part of the string before the comment
       S := Copy(S, 1, Pos('//', S) - 1);
     end;
-    // Add the line to the result list only if it's not empty
     if Trim(S) <> '' then
     begin
       ResultList.Add(S);
@@ -83,7 +80,6 @@ begin
     Exit;
   end;
 
-  // Load source and strip comments before compiling
   FSourceCode.LoadFromFile(ASourceFile);
   FCommentFreeSource.Assign(StripComments(FSourceCode));
 
@@ -93,12 +89,9 @@ begin
   try
     Parser := TParser.Create(Lexer);
     try
-      // Parse the code and generate bytecode
       ByteCodeProg := Parser.Parse;
       FCompilerSuccess := True;
       Result := True;
-      // The bytecode is now in ByteCodeProg
-      // You may want to do something with it here (save to file, etc.)
     finally
       Parser.Free;
     end;
@@ -112,7 +105,6 @@ var
   Lexer: TLexer;
   Parser: TParser;
 begin
-  // First, strip comments from the source
   FCommentFreeSource.Assign(StripComments(ASource));
 
   Lexer := TLexer.Create(FCommentFreeSource);

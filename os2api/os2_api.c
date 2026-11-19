@@ -12,21 +12,9 @@
 #include "string.h"
 #include "kprintf.h"
 
-/* This file is compiled two different ways:
- *   - Into DOSCALLS.DLL (add_lx_dll(DOSCALLS ...), top-level CMakeLists.txt)
- *     - a standalone freestanding image with nothing else to initialize
- *     its VFS/blkdev/ext4/btrfs state, so it must do so itself, lazily,
- *     the first time any call touches storage (real OS/2 programs never
- *     had to initialize DOSCALLS.DLL themselves either - it's already
- *     resident and mounted before any app runs).
- *   - Into the `os2api` static library (os2api/CMakeLists.txt), linked
- *     directly into the kernel image alongside rexx - there,
- *     kernel_main() (kernel/src/main.c) already calls vfs_init/blk_init/
- *     ext4_init/btrfs_init once, in this exact address space, before any
- *     shell/REXX code can run, so doing it again here would be redundant
- *     at best (double-mounting the same filesystem). That build defines
- *     OS2_API_SKIP_LAZY_INIT to skip the block below entirely.
- */
+/* The DLL build has its own VFS and initializes it on the first storage
+ * call. The in-kernel build shares the VFS initialized by kernel_main;
+ * OS2_API_SKIP_LAZY_INIT keeps it from mounting the same volumes twice. */
 #ifndef OS2_API_SKIP_LAZY_INIT
 #include "blkdev.h"
 #include "fat32.h"
@@ -46,9 +34,8 @@ static int g_os2_api_initialized = 0;
 #endif /* !OS2_API_SKIP_LAZY_INIT */
 
 #ifndef OS2_API_SKIP_LAZY_INIT
-/* When the kernel starts the program, it hands over its own VFS
- * (DosSetKernelServices below): every vfs_* call in this file then goes
- * to the kernel's mounts instead of this DLL's private copy. */
+/* A program can hand DOSCALLS the kernel's VFS. When present, use those
+ * mounts instead of the DLL's private copy. */
 #include "lx_services.h"
 #include "lx_vfs.h"
 static const struct lx_vfs_ops *kvfs;
@@ -380,7 +367,7 @@ APIRET DosOpen(const char *filename, HFILE *handle, uint32_t *action,
     if (fd < 0) return vfs_to_os2_error(fd);
 
     if (handle) *handle = (HFILE)fd;
-    if (action) *action = 1; /* opened existing (we don't distinguish create-vs-open here) */
+    if (action) *action = 1; /* This port does not distinguish create from open. */
     return NO_ERROR;
 }
 
@@ -701,12 +688,7 @@ VOID APIENTRY KernThunkStackTo32(VOID)
 
 VOID APIENTRY KernThunkStackTo64(VOID)
 {
-    /* Not a real OS/2 API (OS/2 never had a 64-bit mode); added for this
-     * ARM64 port so a 32-bit-shaped caller can land back on the native
-     * flat 64-bit stack. Unlike the two thunks above, SP here genuinely
-     * *is* the real, single, 64-bit AArch64 stack pointer already - so
-     * this just reads it back, both to document that fact and to give
-     * callers a real (if trivial) value instead of a pure no-op. */
+    /* Port extension: this flat 64-bit build already uses the native SP. */
     uintptr_t sp;
 #if defined(__riscv)
     __asm__ volatile("mv %0, sp" : "=r"(sp));   /* BeagleV-Ahead (RV64) */
@@ -794,22 +776,10 @@ APIRET APIENTRY KernVMAlloc(ULONG size, ULONG flags, PVOID *linaddr, PULONG phys
 {
     if (!linaddr || size == 0) return ERROR_INVALID_PARAMETER;
 
-    /* This port has one flat address space with no MMU and a simple bump
-     * allocator (mem_alloc(), kernel/src/mem.c) - no physical-vs-linear
-     * address distinction, no swapping, no GDT selectors, and no way to
-     * place an allocation at a caller-chosen or range-constrained address.
-     * Flags that are just hints in that world - FIXED/SWAP (nothing is
-     * ever swapped either way), SHARED/PROCESS (everything already shares
-     * the one address space), SGSCONT (no screen-group bookkeeping to
-     * register with), RESERVE (mem_alloc always commits immediately - a
-     * safe superset of "don't commit yet"), CONTIG (a bump allocator's
-     * output is always contiguous), and GETSEL (no GDT to return a
-     * selector from) - are accepted and effectively no-ops. Flags that
-     * promise a specific placement this allocator cannot deliver - PHYS
-     * (a caller-chosen physical address), 16MB/USEHIGHMEM (an address
-     * range guarantee) - are honestly rejected rather than silently
-     * ignored: a caller relying on e.g. sub-16MB memory for legacy DMA
-     * must not be told it succeeded when it didn't. */
+    /* This port has a flat address space and a bump allocator: it cannot
+     * honor caller-selected physical addresses or range limits. Accept
+     * flags that have no meaning here, but reject PHYS, 16MB, and
+     * USEHIGHMEM because callers may depend on those placement guarantees. */
     if (flags & (KEE_VMA_PHYS | KEE_VMA_16MB | KEE_VMA_USEHIGHMEM)) {
         return ERROR_NOT_SUPPORTED;
     }
@@ -827,12 +797,8 @@ APIRET APIENTRY KernVMFree(PVOID linaddr)
 {
     if (!linaddr) return ERROR_INVALID_PARAMETER;
 
-    /* mem_alloc() (kernel/src/mem.c) is a simple bump allocator with no
-     * free-list, so mem_free() is intentionally a no-op - this can't
-     * actually reclaim the memory. Still validates the pointer and
-     * returns success, same as KernVMAlloc's flag handling above: a
-     * caller checking the return code gets an honest NO_ERROR for a
-     * well-formed free, it just can't be told the memory is reusable. */
+    /* The bump allocator has no free list, so this validates the pointer
+     * but cannot reclaim its allocation. */
     mem_free(linaddr);
     return NO_ERROR;
 }
@@ -844,14 +810,8 @@ APIRET APIENTRY KernVMLock(ULONG flags, PVOID linaddr, ULONG size,
 
     if (!linaddr || size == 0) return ERROR_INVALID_PARAMETER;
 
-    /* This port has one flat address space with no MMU and nothing is
-     * ever paged out (see the comment above KernVMAlloc) - so every
-     * region is already permanently resident, and locking it against
-     * swap-out (or just verifying it's accessible, KEE_VML_VERIFYONLY)
-     * trivially succeeds for any non-NULL pointer/size. There's no real
-     * lock handle or page list to hand back either; zero them out so a
-     * caller that inspects lock/pglist/pgsize doesn't mistake
-     * uninitialized memory for real entries. */
+    /* There is no paging or lock table. Treat non-null ranges as resident
+     * and clear the outputs; this port cannot provide a real lock or page list. */
     if (lock) memset(lock, 0, sizeof(*lock));
     if (pglist) memset(pglist, 0, sizeof(*pglist));
     if (pgsize) *pgsize = 0;
@@ -862,11 +822,8 @@ APIRET APIENTRY KernVMUnlock(KEEVMLOCK *lock)
 {
     if (!lock) return ERROR_INVALID_PARAMETER;
 
-    /* Nothing to actually release - KernVMLock() above never took a real
-     * lock (this port has no MMU/paging, so nothing needed protecting
-     * against swap-out in the first place; see its comment). Just
-     * validate the handle and clear it so a stale lock can't be reused
-     * as if it were still valid. */
+    /* KernVMLock() does not acquire a lock; clear the handle to prevent
+     * callers from reusing stale contents. */
     memset(lock, 0, sizeof(*lock));
     return NO_ERROR;
 }
@@ -875,12 +832,8 @@ APIRET APIENTRY KernLinToPageList(PVOID linaddr, ULONG size, KEEVMPageList *list
 {
     if (!linaddr || size == 0) return ERROR_INVALID_PARAMETER;
 
-    /* This port has no MMU-backed paging (see the comment above
-     * KernVMAlloc) - physical address always equals linear address, so
-     * there's no real per-page frame table to build the way a real
-     * VMLinToPageList would. Same honest-stub treatment as KernVMLock/
-     * KernVMUnlock above: validate the range, report zero pages rather
-     * than fabricate frame numbers a caller might mistake for real ones. */
+    /* Without paging there is no frame table to query. Return an empty
+     * list instead of inventing physical frame numbers. */
     if (list) memset(list, 0, sizeof(*list));
     if (pgsize) *pgsize = 0;
     return NO_ERROR;
@@ -892,15 +845,8 @@ APIRET APIENTRY KernVMSetMem(ULONG flags, PVOID linaddr, ULONG size)
 
     if (!linaddr || size == 0) return ERROR_INVALID_PARAMETER;
 
-    /* This port has one flat address space with no MMU and a bump
-     * allocator that always commits immediately (see the KEE_VMA_RESERVE
-     * comment above KernVMAlloc) - there's no committed-vs-reserved state
-     * to change. Nothing is ever paged out (see KernVMLock above) and
-     * nothing is ever swapped (see KEE_VMA_SWAP above either), so
-     * KEE_VMS_UNCOMMIT, KEE_VMS_RESIDENT, and KEE_VMS_SWAPPABLE are all
-     * no-ops here: the region is already resident and already committed,
-     * and there's no swap subsystem to opt in or out of. Just validate
-     * the range and succeed. */
+    /* Allocations are committed immediately, and this port has no paging
+     * or swap state to change. Validate the range and accept these flags. */
     return NO_ERROR;
 }
 

@@ -1,8 +1,8 @@
 #ifndef QEMU_PCI_H
 #define QEMU_PCI_H
 
-/* Minimal PCI support for QEMU riscv64 "virt" (QEMU_RISCV) - just enough
- * to reach an sdhci-pci SD host controller (kernel/src/qemu_pci.c). */
+/* PCI helper for QEMU riscv64 "virt" (QEMU_RISCV), used to locate the
+ * sdhci-pci controller (kernel/src/qemu_pci.c). */
 
 /**
  * @brief Find the first SD host controller (class 08h, subclass 05h) on

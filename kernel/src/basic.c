@@ -56,7 +56,7 @@
 #include "uart.h"
 #include "types.h"
 
-/* ── Tunables ─────────────────────────────────────────────────────────────── */
+/* Tunables */
 
 #define MAX_LINES      512
 #define MAX_LINE_LEN   160
@@ -66,7 +66,7 @@
 #define MAX_DATA_ITEMS 256
 #define MAX_CONSTS      32
 
-/* ── RNG state (xorshift32) ──────────────────────────────────────────────── */
+/* RNG state (xorshift32) */
 static uint32_t rng_state = 12345;
 static uint32_t rng_next(void) {
     rng_state ^= rng_state << 13;
@@ -75,13 +75,13 @@ static uint32_t rng_next(void) {
     return rng_state;
 }
 
-/* ── Program storage ─────────────────────────────────────────────────────── */
+/* Program storage */
 
 typedef struct { int num; char text[MAX_LINE_LEN]; } bline_t;
 static bline_t prog[MAX_LINES];
 static int     prog_count = 0;
 
-/* ── Variables ────────────────────────────────────────────────────────────── */
+/* Variables */
 
 static int32_t int_vars[26];                        /* A%–Z%  */
 static char    str_vars[26][MAX_STR_LEN + 1];       /* A$–Z$  */
@@ -95,7 +95,7 @@ typedef struct { char name[16]; int32_t val; } bconst_t;
 static bconst_t consts[MAX_CONSTS];
 static int      const_count = 0;
 
-/* ── Call / loop stacks ───────────────────────────────────────────────────── */
+/* Call / loop stacks */
 
 typedef struct { int ret_idx; int ret_stmt; } gosub_frame_t;
 static gosub_frame_t call_stack[CALL_DEPTH];
@@ -137,13 +137,13 @@ typedef struct {
 static sel_frame_t sel_stack[CALL_DEPTH];
 static int         sel_top = 0;
 
-/* ── DATA / READ / RESTORE ────────────────────────────────────────────────── */
+/* DATA / READ / RESTORE */
 
 static char  data_items[MAX_DATA_ITEMS][32];
 static int   data_count = 0;
 static int   data_ptr   = 0;
 
-/* ── Interpreter state ───────────────────────────────────────────────────── */
+/* Interpreter state */
 
 static bool running  = false;
 static bool stopped  = false;
@@ -153,7 +153,7 @@ static bool bye_flag = false;
 static int cur_idx  = 0;   /* prog[] index   */
 static int cur_stmt = 0;   /* colon-stmt idx */
 
-/* ── Parse pointer ───────────────────────────────────────────────────────── */
+/* Parse pointer */
 
 static const char *gp;     /* global parse pointer */
 
@@ -185,7 +185,7 @@ static int bstrncmp(const char *a, const char *b, int n)
     return (unsigned char)*a-(unsigned char)*b;
 }
 
-/* ── Output helpers ──────────────────────────────────────────────────────── */
+/* Output helpers */
 
 static void bputc(char c) { uart_putc(c); }
 
@@ -197,7 +197,7 @@ static void bputi(int32_t v) { kprintf("%d", (int)v); }
 
 static void bputnl(void) { uart_putc('\r'); uart_putc('\n'); }
 
-/* ── ANSI helpers ─────────────────────────────────────────────────────────── */
+/* ANSI helpers */
 
 static void ansi_cls(void)     { bputs("\x1b[2J\x1b[H"); }
 static void ansi_locate(int r, int c) { kprintf("\x1b[%d;%dH", r, c); }
@@ -239,7 +239,7 @@ static bool kw_any(const char *k)
     return true;
 }
 
-/* ── Skip statements ─────────────────────────────────────────────────────── */
+/* Skip statements */
 
 static void skip_to_colon(void)
 {
@@ -256,7 +256,7 @@ static void skip_to_colon(void)
 static int32_t parse_expr(void);
 static void    parse_str_expr(char *out, int maxlen);
 
-/* ── Integer functions ────────────────────────────────────────────────────── */
+/* Integer functions */
 
 static int32_t fn_sqr(void)
 {
@@ -305,8 +305,7 @@ static int32_t fn_instr(void)
     skip_sp(); if(*gp=='(') gp++;
     /* peek: if first arg is numeric, it's start */
     int32_t start = 1;
-    /* Try: we parse first arg; if followed by comma then check if string */
-    /* Simpler: check if next token is a string literal or string var */
+    /* Treat a numeric first argument as the optional start position. */
     const char *save = gp;
     skip_sp();
     bool first_is_num = false;
@@ -329,7 +328,7 @@ static int32_t fn_instr(void)
     return 0;
 }
 
-/* ── String functions ─────────────────────────────────────────────────────── */
+/* String functions */
 
 static void fn_chr(char *out)
 {
@@ -433,7 +432,6 @@ static void fn_rtrim(char *out)
 static void fn_trim(char *out)
 {
     char tmp[MAX_STR_LEN+1]; fn_ltrim(tmp);
-    /* re-run rtrim on tmp: simulate by directly trimming */
     bstrcpy(out,tmp);
     int i=bstrlen(out)-1; while(i>=0&&out[i]==' ')out[i--]='\0';
 }
@@ -483,7 +481,7 @@ static void fn_inkey(char *out)
     }
 }
 
-/* ── String expression parser ─────────────────────────────────────────────── */
+/* String expression parser */
 
 static void parse_str_expr(char *out, int maxlen)
 {
@@ -566,7 +564,7 @@ static void parse_str_expr(char *out, int maxlen)
     }
 }
 
-/* ── Primary parser ───────────────────────────────────────────────────────── */
+/* Primary parser */
 
 static int32_t parse_primary(void)
 {
@@ -758,7 +756,7 @@ static void insert_line(int num, const char *text)
     prog_count++;
 }
 
-/* ── DATA scanner ─────────────────────────────────────────────────────────── */
+/* DATA scanner */
 
 static void collect_data(void)
 {
@@ -844,7 +842,7 @@ static void jump_to(int idx)
     cur_idx=idx; cur_stmt=0;
 }
 
-/* ── PRINT ─────────────────────────────────────────────────────────────────── */
+/* PRINT */
 
 static void exec_print(void)
 {
@@ -903,7 +901,7 @@ static void exec_print(void)
     if(need_nl) bputnl();
 }
 
-/* ── LET ──────────────────────────────────────────────────────────────────── */
+/* LET */
 
 static void exec_let(void)
 {
@@ -940,7 +938,7 @@ static void exec_let(void)
     int_vars[var]=parse_expr();
 }
 
-/* ── INPUT ─────────────────────────────────────────────────────────────────── */
+/* INPUT */
 
 static void exec_input(void)
 {
@@ -970,7 +968,7 @@ static void exec_input(void)
     }
 }
 
-/* ── GOTO / GOSUB ─────────────────────────────────────────────────────────── */
+/* GOTO / GOSUB */
 
 static void exec_goto(void)
 {
@@ -1006,7 +1004,7 @@ static void exec_return(void)
     }
 }
 
-/* ── FOR / NEXT ───────────────────────────────────────────────────────────── */
+/* FOR / NEXT */
 
 static void exec_for(void)
 {
@@ -1055,7 +1053,7 @@ static void exec_next(void)
     }
 }
 
-/* ── WHILE / WEND ──────────────────────────────────────────────────────────── */
+/* WHILE / WEND */
 
 static void exec_while(void)
 {
@@ -1103,7 +1101,7 @@ static void exec_wend(void)
     }
 }
 
-/* ── DO / LOOP ─────────────────────────────────────────────────────────────── */
+/* DO / LOOP */
 
 static void exec_do(void)
 {
@@ -1152,12 +1150,12 @@ static void exec_loop(void)
     }
 }
 
-/* ── IF (single-line and block) ────────────────────────────────────────────── */
+/* IF (single-line and block) */
 
 /* Single-line: IF cond THEN stmts [:] [ELSE stmts] */
 static void exec_if_single(int32_t cond)
 {
-    /* find ELSE if any on this line */
+    /* Find the top-level ELSE, ignoring strings and nested IFs. */
     const char *else_pos=NULL;
     const char *scan=gp;
     int depth=0;
@@ -1171,12 +1169,7 @@ static void exec_if_single(int32_t cond)
     }
 
     if(cond) {
-        /* execute THEN part (gp is already past THEN keyword) */
-        /* truncate at ELSE if found: temporarily NUL-terminate... */
-        /* Actually we just stop at ELSE by setting a boundary: use skip_to_colon logic */
-        /* For simplicity: exec statements until we hit ELSE or EOL */
-        /* We re-enter exec_stmt logic inline */
-        /* QB: THEN can be followed by a line number (implicit GOTO) */
+        /* A line number after THEN is an implicit GOTO. */
         skip_sp();
         if(*gp>='0'&&*gp<='9') {
             int ln=(int)parse_expr();
@@ -1185,13 +1178,7 @@ static void exec_if_single(int32_t cond)
             else jump_to(idx);
             return;
         }
-        /* otherwise the rest of gp until ELSE is the then-body;
-           we'll just leave gp where it is and let the main dispatch handle it
-           by setting a "else_skip" flag — but that's complex.
-           Simpler: parse ONE statement, then handle ELSE ourselves. */
-        /* Leave gp at then-body; caller (exec_line) will dispatch next stmt.
-           We mark that ELSE should be skipped. */
-        /* For now: just skip ELSE branch */
+        /* Leave the THEN statement for exec_line to dispatch. */
         (void)else_pos;
         /* gp stays at THEN body — let exec_line dispatch it */
     } else {
@@ -1292,7 +1279,7 @@ static void exec_endif(void)
     else kprintf("?END IF without IF\n");
 }
 
-/* ── SELECT CASE ───────────────────────────────────────────────────────────── */
+/* SELECT CASE */
 
 static void exec_select(void)
 {
@@ -1380,7 +1367,7 @@ static void exec_end_select(void)
     else kprintf("?END SELECT without SELECT\n");
 }
 
-/* ── ON expr GOTO / GOSUB ─────────────────────────────────────────────────── */
+/* ON expr GOTO / GOSUB */
 
 static void exec_on(void)
 {
@@ -1408,7 +1395,7 @@ static void exec_on(void)
     jump_to(idx);
 }
 
-/* ── READ / DATA / RESTORE ─────────────────────────────────────────────────── */
+/* READ / DATA / RESTORE */
 
 static void exec_read(void)
 {
@@ -1423,9 +1410,9 @@ static void exec_read(void)
 
 static void exec_restore(void) { data_ptr=0; }
 
-/* ── DIM ───────────────────────────────────────────────────────────────────── */
+/* DIM */
 
-/* Simple bump allocator for arrays (static pool) */
+/* DIM arrays use this fixed pool; allocated ranges are not reclaimed. */
 static int32_t arr_pool[26*MAX_ARRAY_LEN];
 static int     arr_pool_ptr=0;
 
@@ -1451,7 +1438,7 @@ static void exec_dim(void)
     } while(*gp==','&&gp++);
 }
 
-/* ── CONST ─────────────────────────────────────────────────────────────────── */
+/* CONST */
 
 static void exec_const(void)
 {
@@ -1470,7 +1457,7 @@ static void exec_const(void)
     }
 }
 
-/* ── SWAP ───────────────────────────────────────────────────────────────────── */
+/* SWAP */
 
 static void exec_swap(void)
 {
@@ -1489,7 +1476,7 @@ static void exec_swap(void)
     } else { kprintf("?Type mismatch\n"); }
 }
 
-/* ── SLEEP ──────────────────────────────────────────────────────────────────── */
+/* SLEEP */
 
 static void exec_sleep(void)
 {
@@ -1688,7 +1675,7 @@ static void cmd_renum(const char *arg)
     }
     /* Renumber */
     for(int i=0;i<prog_count;i++) prog[i].num=new_nums[i];
-    /* Patch GOTO/GOSUB references (simple text scan) */
+    /* Patch line references in raw text; this does not parse strings or comments. */
     for(int i=0;i<prog_count;i++) {
         char newtext[MAX_LINE_LEN]; int ni=0;
         const char *p=prog[i].text;

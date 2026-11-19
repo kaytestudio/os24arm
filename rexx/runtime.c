@@ -26,7 +26,6 @@ void runtime_init(Context* ctx)
     runtime_register_builtin(ctx, "EXIT",  sys_exit);
     runtime_register_builtin(ctx, "EXEC",  sys_exec);
 
-    /* Initialize Object REXX */
     orexx_init();
 }
 

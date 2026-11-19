@@ -141,7 +141,7 @@ static const char *speed_name(uint8_t s)
     }
 }
 
-/* ── IDC plumbing ─────────────────────────────────────────────────────── */
+/* IDC plumbing */
 uint16_t usb_idc_call(usb_idc_fn idc, uint8_t category, uint8_t function,
                       void *parm, void *data)
 {
@@ -184,7 +184,7 @@ static void pump(void)
         }
 }
 
-/* ── Device table ─────────────────────────────────────────────────────── */
+/* Device table */
 static usbd_dev_t *dev_alloc(void)
 {
     for (int i = 0; i < MAX_DEVS; i++)
@@ -214,7 +214,7 @@ static uint8_t addr_alloc(uint16_t ctrl)
     return 0;
 }
 
-/* ── Synchronous requests (enumeration) ───────────────────────────────── */
+/* Synchronous requests (enumeration) */
 static void fill_routing(USBRb *rb, const usbd_dev_t *d)
 {
     if (d->speed == USB_SPEED_LOW)  rb->flags |= USRB_FLAGS_DET_LOWSPEED;
@@ -290,7 +290,7 @@ static int control(usbd_dev_t *d, uint8_t type, uint8_t req, uint16_t value,
     return control_at(d, d->addr, type, req, value, index, data, len, 0);
 }
 
-/* ── Hub helpers ──────────────────────────────────────────────────────── */
+/* Hub helpers */
 static int port_status(usbd_dev_t *hub, uint8_t port, uint16_t *st, uint16_t *ch)
 {
     uint8_t b[4] __attribute__((aligned(8)));
@@ -331,7 +331,7 @@ static void hub_arm(usbd_dev_t *hub)
         V("[USBD]   hub %u: status pipe can't be set up, not polling it\n", hub->addr);
 }
 
-/* ── Enumeration ──────────────────────────────────────────────────────── */
+/* Enumeration */
 static void port_attach(usbd_dev_t *hub, uint8_t port);
 static void dev_detach(usbd_dev_t *d);
 
@@ -596,7 +596,7 @@ static void send_idle(void)
         }
 }
 
-/* ── USBD IDC entry ("USBD$") ─────────────────────────────────────────── */
+/* USBD IDC entry ("USBD$") */
 static uint16_t do_register(RP_GENIOCTL *rp)
 {
     if (!rp->ParmPacket) return USB_IDC_PARMERR;
@@ -791,7 +791,7 @@ void usbd_idc(RP_GENIOCTL *rp)
     rp->Status = err ? (uint16_t)(STATUS_DONE | STERR | err) : STATUS_DONE;
 }
 
-/* ── Driver lifecycle ─────────────────────────────────────────────────── */
+/* Driver lifecycle */
 int usbd_basedevinit(int v)
 {
     verbose = v;

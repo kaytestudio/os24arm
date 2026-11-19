@@ -43,13 +43,13 @@
 #include "usb_util.h"
 #include "kprintf.h"
 
-/* ── QEMU virt memory map ─────────────────────────────────────────────── */
+/* QEMU virt memory map */
 #define VIRT_PCIE_ECAM_HIGH   0x4010000000UL  /* bus 0, 1MB per bus */
 #define VIRT_PCIE_ECAM_LOW    0x3F000000UL    /* when there's no high one (16 buses) */
 #define VIRT_PCIE_MMIO_BASE   0x10000000UL    /* 32-bit BAR window */
 #define VIRT_PCIE_MMIO_SIZE   0x2EFF0000UL
 
-/* ── PCI config space ─────────────────────────────────────────────────── */
+/* PCI config space */
 #define PCI_VENDOR_DEVICE  0x00
 #define PCI_COMMAND        0x04
 #define PCI_CLASS_REV      0x08
@@ -60,7 +60,7 @@
 #define PCI_BAR_TYPE_64    (2u << 1)
 #define PCI_CLASS_XHCI     0x0C0330u          /* serial bus / USB / xHCI */
 
-/* ── xHCI registers ───────────────────────────────────────────────────── */
+/* xHCI registers */
 #define CAP_CAPLENGTH      0x00
 #define CAP_HCSPARAMS1     0x04
 #define CAP_HCSPARAMS2     0x08
@@ -113,7 +113,7 @@
 #define IR0_ERDP           0x38
 #define ERDP_EHB           (1u << 3)
 
-/* ── TRBs ─────────────────────────────────────────────────────────────── */
+/* TRBs */
 typedef struct {
     uint32_t p0, p1;
     uint32_t status;
@@ -232,7 +232,7 @@ typedef struct {
     uint8_t  status;
 } xfer_t;
 
-/* ── Controller-visible memory ────────────────────────────────────────── */
+/* Controller-visible memory */
 static u64          dcbaa[MAX_SLOTS + 1]          __attribute__((aligned(64)));
 static u64          scratch_array[MAX_SCRATCHPAD] __attribute__((aligned(64)));
 static uint8_t      scratch_pages[MAX_SCRATCHPAD][4096] __attribute__((aligned(4096)));
@@ -244,7 +244,7 @@ static trb_t        ep_trbs[MAX_EP_RINGS][RING_TRBS] __attribute__((aligned(64))
 static uint8_t      in_ctx[33 * CTX_MAX_SIZE]     __attribute__((aligned(64)));
 static uint8_t      dev_ctx[MAX_SLOTS][32 * CTX_MAX_SIZE] __attribute__((aligned(64)));
 
-/* ── Driver state ─────────────────────────────────────────────────────── */
+/* Driver state */
 static int       verbose, found, registered, running;
 static uintptr_t mmio, op, rt, db;
 static uint16_t  pci_vendor, pci_device;
@@ -272,7 +272,7 @@ static int       rh_int = -1;                 /* pending status-change xfer */
 static void    free_slot(hdev_t *d);
 static hdev_t *find_default(uint32_t hub_slot, uint32_t port);
 
-/* ── Helpers ──────────────────────────────────────────────────────────── */
+/* Helpers */
 static inline uint32_t rd32(uintptr_t a) { return *(volatile uint32_t *)a; }
 static inline void wr32(uintptr_t a, uint32_t v) { *(volatile uint32_t *)a = v; }
 static inline void wr64(uintptr_t a, u64 v)
@@ -304,7 +304,7 @@ static volatile uint32_t *pci_cfg(uint32_t dev, uint32_t reg)
     return (volatile uint32_t *)(ecam_base() + ((uintptr_t)dev << 15) + reg);
 }
 
-/* ── Rings ────────────────────────────────────────────────────────────── */
+/* Rings */
 static void ring_init(ring_t *r, trb_t *trbs)
 {
     usb_zero(trbs, RING_TRBS * sizeof(trb_t));
@@ -386,7 +386,7 @@ static void doorbell(uint32_t slot, uint32_t target)
     wr32(db + 4 * slot, target);
 }
 
-/* ── Requests in flight ───────────────────────────────────────────────── */
+/* Requests in flight */
 static int xfer_alloc(const USBRb *rb)
 {
     for (int i = 0; i < MAX_XFERS; i++)
@@ -448,7 +448,7 @@ static void xfer_drop(uint32_t slot, uint32_t dci_or_all)
     cq_t = n;
 }
 
-/* ── Events ───────────────────────────────────────────────────────────── */
+/* Events */
 static int event_poll(trb_t *out)
 {
     volatile trb_t *e = &event_trbs[ev_deq];
@@ -540,7 +540,7 @@ static int command(u64 param, uint32_t control, trb_t *done)
     return r;
 }
 
-/* ── PCI ──────────────────────────────────────────────────────────────── */
+/* PCI */
 static int pci_find_xhci(void)
 {
     for (uint32_t dev = 0; dev < 32; dev++) {
@@ -573,7 +573,7 @@ static int pci_find_xhci(void)
     return -1;
 }
 
-/* ── RSTHOST: controller reset + start ────────────────────────────────── */
+/* RSTHOST: controller reset + start */
 static int hc_start(void)
 {
     uint32_t caplen = rd32(mmio + CAP_CAPLENGTH) & 0xFF;
@@ -644,7 +644,7 @@ static int hc_start(void)
     return 0;
 }
 
-/* ── Software root hub ────────────────────────────────────────────────── */
+/* Software root hub */
 static const uint8_t rh_dev_desc[18] = {
     18, 1, 0x00, 0x02,          /* USB 2.0 */
     9, 0, 1, 64,                /* hub class, single TT, EP0 64 bytes */
@@ -792,7 +792,7 @@ static uint16_t rh_request(int xi)
     return 0;
 }
 
-/* ── Devices ──────────────────────────────────────────────────────────── */
+/* Devices */
 static uint32_t *ictx(uint32_t i) { return (uint32_t *)(in_ctx + i * ctx_size); }
 static uint8_t *dctx(const hdev_t *d) { return dev_ctx[d->slot - 1]; }
 
@@ -994,7 +994,7 @@ static ring_t *ep_configure(hdev_t *d, uint32_t dci, const USBRb *rb)
     return r;
 }
 
-/* ── ACCIO ────────────────────────────────────────────────────────────── */
+/* ACCIO */
 static uint16_t accio_control(int xi, hdev_t *d)
 {
     xfer_t *x = &xfers[xi];
@@ -1131,7 +1131,7 @@ static uint16_t accio(const USBRb *in_rb)
     return err;
 }
 
-/* ── CANCEL ───────────────────────────────────────────────────────────── */
+/* CANCEL */
 static uint16_t cancel(const USBCancel *c)
 {
     if (!c || c->controllerId != ctrl_id) return USB_IDC_ADDRINV;
@@ -1160,7 +1160,7 @@ static uint16_t cancel(const USBCancel *c)
     return 0;
 }
 
-/* ── PRCIRQ: poll, then notify ────────────────────────────────────────── */
+/* PRCIRQ: poll, then notify */
 /* The slot context must say whether a device is a hub (and how many
  * ports, multi-TT or not) - nothing in the IDC tells the HCD, so it reads
  * that off the descriptors USBD fetches during enumeration. */
@@ -1248,7 +1248,7 @@ static void process(void)
     }
 }
 
-/* ── IDC entry ────────────────────────────────────────────────────────── */
+/* IDC entry */
 static void xhci_idc(RP_GENIOCTL *rp)
 {
     uint16_t err = 0;
@@ -1271,7 +1271,7 @@ static void xhci_idc(RP_GENIOCTL *rp)
     rp->Status = err ? (uint16_t)(STATUS_DONE | STERR | err) : STATUS_DONE;
 }
 
-/* ── Driver lifecycle ─────────────────────────────────────────────────── */
+/* Driver lifecycle */
 static void try_register(void)
 {
     USBHCD h;

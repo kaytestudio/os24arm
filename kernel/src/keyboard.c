@@ -1,8 +1,6 @@
 #include "keyboard.h"
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   PL011 UART registers  (QEMU virt, base 0x09000000)
-   ───────────────────────────────────────────────────────────────────────────── */
+/* PL011 UART registers on QEMU virt (base 0x09000000). */
 #define UART_BASE   0x09000000UL
 #define UART_DR     (*(volatile ULONG *)(UART_BASE + 0x000))
 #define UART_FR     (*(volatile ULONG *)(UART_BASE + 0x018))

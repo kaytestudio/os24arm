@@ -11,10 +11,10 @@
 #include "kio.h"
 #include "types.h"
 
-/* ── Internal buffer for CAT / WRITE ────────────────────────────────────── */
+/* Internal buffer for CAT / WRITE */
 static uint8_t g_io_buf[4096];
 
-/* ── fs_shell_format ─────────────────────────────────────────────────────── */
+/* fs_shell_format */
 /* FORMAT <device> <fstype> [label]
    e.g.: FORMAT ramdisk0 ext4 MYDATA
          FORMAT ramdisk1 fat16
@@ -68,7 +68,7 @@ void fs_cmd_format(int argc, char *argv[])
         kprintf(ANSI_RED "Format failed: %s\n" ANSI_RESET, vfs_errstr(r));
 }
 
-/* ── fs_cmd_mount ────────────────────────────────────────────────────────── */
+/* fs_cmd_mount */
 /* MOUNT <device> <mountpoint> <fstype>
    e.g.: MOUNT ramdisk0 /data ext4                                            */
 void fs_cmd_mount(int argc, char *argv[])
@@ -102,7 +102,7 @@ void fs_cmd_mount(int argc, char *argv[])
         kprintf(ANSI_RED "Mount failed: %s\n" ANSI_RESET, vfs_errstr(r));
 }
 
-/* ── fs_cmd_umount ───────────────────────────────────────────────────────── */
+/* fs_cmd_umount */
 void fs_cmd_umount(int argc, char *argv[])
 {
     if (argc < 2) { kprintf("Usage: UMOUNT <mountpoint>\n"); return; }
@@ -111,7 +111,7 @@ void fs_cmd_umount(int argc, char *argv[])
         kprintf(ANSI_RED "Unmount failed: %s\n" ANSI_RESET, vfs_errstr(r));
 }
 
-/* ── fs_cmd_ls ───────────────────────────────────────────────────────────── */
+/* fs_cmd_ls */
 /* LS [path]   — list directory contents */
 void fs_cmd_ls(int argc, char *argv[])
 {
@@ -151,7 +151,7 @@ void fs_cmd_ls(int argc, char *argv[])
     vfs_close(&dir);
 }
 
-/* ── fs_cmd_cat ──────────────────────────────────────────────────────────── */
+/* fs_cmd_cat */
 /* CAT <file>   — display file contents */
 void fs_cmd_cat(int argc, char *argv[])
 {
@@ -171,7 +171,7 @@ void fs_cmd_cat(int argc, char *argv[])
     vfs_close(&file);
 }
 
-/* ── fs_cmd_write ────────────────────────────────────────────────────────── */
+/* fs_cmd_write */
 /* WRITE <file> <text>   — write text to a file */
 void fs_cmd_write(int argc, char *argv[])
 {
@@ -193,7 +193,7 @@ void fs_cmd_write(int argc, char *argv[])
     kprintf("Written to %s\n", argv[1]);
 }
 
-/* ── fs_cmd_mkdir ────────────────────────────────────────────────────────── */
+/* fs_cmd_mkdir */
 void fs_cmd_mkdir_vfs(int argc, char *argv[])
 {
     if (argc < 2) { kprintf("Usage: MKDIR <path>\n"); return; }
@@ -201,7 +201,7 @@ void fs_cmd_mkdir_vfs(int argc, char *argv[])
     if (r != VFS_OK) kprintf("mkdir: %s: %s\n", argv[1], vfs_errstr(r));
 }
 
-/* ── fs_cmd_rm ───────────────────────────────────────────────────────────── */
+/* fs_cmd_rm */
 void fs_cmd_rm(int argc, char *argv[])
 {
     if (argc < 2) { kprintf("Usage: RM <file>\n"); return; }
@@ -210,19 +210,19 @@ void fs_cmd_rm(int argc, char *argv[])
     else kprintf("Removed %s\n", argv[1]);
 }
 
-/* ── fs_cmd_lsblk ────────────────────────────────────────────────────────── */
+/* fs_cmd_lsblk */
 void fs_cmd_lsblk(void)
 {
     blkdev_list();
 }
 
-/* ── fs_cmd_mounts ───────────────────────────────────────────────────────── */
+/* fs_cmd_mounts */
 void fs_cmd_mounts(void)
 {
     vfs_mounts_list();
 }
 
-/* ── fs_cmd_fsinfo ───────────────────────────────────────────────────────── */
+/* fs_cmd_fsinfo */
 /* FSINFO — show filesystem layout reference */
 void fs_cmd_fsinfo(void)
 {

@@ -43,7 +43,6 @@ static void print_num(unsigned long num, int base, int pad, char pad_char)
 
     int digits = i;
 
-    /* Add padding */
     while (!left && i < pad) {
         buf[i++] = pad_char;
     }
@@ -57,7 +56,7 @@ static void print_num(unsigned long num, int base, int pad, char pad_char)
         put_spaces(pad - digits);
 }
 
-/* Simple printf implementation */
+/* Freestanding formatter for kernel UART output. */
 void kprintf(const char *fmt, ...)
 {
     va_list args;
@@ -67,7 +66,6 @@ void kprintf(const char *fmt, ...)
         if (*fmt == '%') {
             fmt++;
 
-            /* Handle padding */
             int pad = 0;
             int left = 0;
             char pad_char = ' ';

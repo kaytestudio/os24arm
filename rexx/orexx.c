@@ -17,11 +17,11 @@ ORexxClass *orexx_class_Array     = NULL;
 ORexxClass *orexx_class_Directory = NULL;
 ORexxClass *orexx_class_Method    = NULL;
 
-/* ── Simple Memory Management (stub - replace with proper allocator) ────── */
+/* ── Runtime allocation ─────────────────────────────────────────────────── */
 
 static void* orexx_malloc(size_t size)
 {
-    /* TODO: Replace with proper memory allocator */
+    /* Keep allocations local until this runtime is wired into the kernel. */
     static char heap[1024 * 1024];  /* 1MB static heap */
     static size_t offset = 0;
 
@@ -35,7 +35,7 @@ static void* orexx_malloc(size_t size)
 
 static void orexx_free(void *ptr)
 {
-    /* TODO: Implement proper free when allocator available */
+    /* The arena allocator cannot reclaim individual objects. */
     (void)ptr;
 }
 
@@ -63,9 +63,7 @@ static int orexx_strcmp(const char *a, const char *b)
     return (unsigned char)*a - (unsigned char)*b;
 }
 
-/* ══════════════════════════════════════════════════════════════════════════
-   OBJECT LIFECYCLE
-   ══════════════════════════════════════════════════════════════════════════ */
+/* Object lifecycle */
 
 ORexxObject* orexx_object_new(ORexxClass *class)
 {
@@ -115,16 +113,13 @@ void orexx_object_release(ORexxObject *obj)
     }
 }
 
-/* ══════════════════════════════════════════════════════════════════════════
-   CLASS MANAGEMENT
-   ══════════════════════════════════════════════════════════════════════════ */
+/* Class management */
 
 ORexxClass* orexx_class_new(const char *name, ORexxClass *superclass)
 {
     ORexxClass *class = orexx_malloc(sizeof(ORexxClass));
     if (!class) return NULL;
 
-    /* Initialize as Object first */
     orexx_object_init(&class->base, orexx_class_Class);
 
     class->name = orexx_strdup(name);
@@ -150,8 +145,7 @@ void orexx_class_add_method(ORexxClass *class, const char *name,
     method->flags = flags;
     method->owner = class;
 
-    /* Add to method list (simple linear array for now) */
-    /* TODO: Use hash table for better performance */
+    /* Methods are stored in a linear array and searched by name. */
     ORexxMethod *new_methods = orexx_malloc(
         sizeof(ORexxMethod) * (class->method_count + 1));
 
@@ -186,9 +180,7 @@ ORexxMethod* orexx_class_lookup_method(ORexxClass *class, const char *name)
     return NULL;  /* Method not found */
 }
 
-/* ══════════════════════════════════════════════════════════════════════════
-   MESSAGE SENDING
-   ══════════════════════════════════════════════════════════════════════════ */
+/* Message sending */
 
 ORexxObject* orexx_send_message(ORexxObject *receiver, const char *selector,
                                 ORexxObject **args, uint32_t arg_count)
@@ -199,27 +191,23 @@ ORexxObject* orexx_send_message(ORexxObject *receiver, const char *selector,
     ORexxMethod *method = orexx_class_lookup_method(receiver->class, selector);
 
     if (!method) {
-        /* Method not found - could invoke doesNotUnderstand: */
+        /* doesNotUnderstand: dispatch is not implemented yet. */
         return NULL;
     }
 
-    /* TODO: Execute method with args */
-    /* This would invoke the AST or native code stored in method->code */
+    /* Method bodies are not executable yet; method->code is not dispatched. */
     (void)args;
     (void)arg_count;
 
-    return NULL;  /* Stub - implement method execution */
+    return NULL;  /* Method bodies are not executed yet. */
 }
 
-/* ══════════════════════════════════════════════════════════════════════════
-   INSTANCE VARIABLES
-   ══════════════════════════════════════════════════════════════════════════ */
+/* Instance variables */
 
 void orexx_set_instance_var(ORexxObject *obj, const char *name,
                             ORexxObject *value)
 {
-    /* TODO: Implement instance variable storage */
-    /* Could use a hash table or dictionary structure */
+    /* Instances do not have variable storage yet. */
     (void)obj;
     (void)name;
     (void)value;
@@ -227,7 +215,7 @@ void orexx_set_instance_var(ORexxObject *obj, const char *name,
 
 ORexxObject* orexx_get_instance_var(ORexxObject *obj, const char *name)
 {
-    /* TODO: Implement instance variable retrieval */
+    /* Instances do not have variable storage yet. */
     (void)obj;
     (void)name;
     return NULL;
@@ -256,14 +244,10 @@ int orexx_is_kind_of(ORexxObject *obj, ORexxClass *class)
     return 0;
 }
 
-/* ══════════════════════════════════════════════════════════════════════════
-   INITIALIZATION
-   ══════════════════════════════════════════════════════════════════════════ */
+/* Initialization */
 
 void orexx_init(void)
 {
-    /* Create fundamental classes */
-
     /* Object is the root of all classes */
     orexx_class_Object = orexx_malloc(sizeof(ORexxClass));
     if (orexx_class_Object) {
@@ -283,11 +267,10 @@ void orexx_init(void)
     orexx_class_Directory = orexx_class_new("Directory", orexx_class_Object);
     orexx_class_Method    = orexx_class_new("Method", orexx_class_Object);
 
-    /* TODO: Add built-in methods to each class */
+    /* Built-in classes currently have no methods. */
 }
 
 void orexx_shutdown(void)
 {
-    /* TODO: Cleanup all allocated objects and classes */
-    /* For now, with static heap, nothing to do */
+    /* The process-wide arena is reclaimed when the process exits. */
 }

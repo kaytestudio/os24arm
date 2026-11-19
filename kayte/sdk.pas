@@ -92,13 +92,13 @@ end;
 
 procedure InitializeGraphics;
 begin
-  // Placeholder for SNES graphics initialization
+  // TODO: Initialize the SNES graphics subsystem.
   Writeln('Graphics initialized for SNES.');
 end;
 
 procedure InitializeSound;
 begin
-  // Placeholder for SNES sound initialization
+  // TODO: Initialize the SNES sound subsystem.
   Writeln('Sound initialized for SNES.');
 end;
 

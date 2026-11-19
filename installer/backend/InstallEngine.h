@@ -8,7 +8,7 @@ class InstallEngine : public QObject
 public:
     explicit InstallEngine(QObject *parent = nullptr);
 
-    // Call this to start - wraps your existing install logic
+    // Start installation on targetDisk with the selected components.
     void startInstall(const QString &targetDisk, const QStringList &components);
 
     signals:

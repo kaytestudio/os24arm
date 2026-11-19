@@ -15,7 +15,7 @@ extern void fb_clear_screen(uint32_t color);
 extern int fb_width(void);
 extern int fb_height(void);
 
-/* ── 8x8 Font ──────────────────────────────────────────────────────────────── */
+/* 8x8 Font */
 static const uint8_t font_8x8[128][8] = {
     [' '] = {0},
     ['A'] = {0x18, 0x3C, 0x66, 0x7E, 0x66, 0x66, 0x66, 0x00},

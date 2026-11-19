@@ -39,7 +39,6 @@ begin
   OutputFile := 'test.bytecode';
   BytecodeGen.GenerateBytecode('example.kyte', OutputFile);
 
-  // Check if bytecode was generated successfully
   CheckTrue(FileExists(OutputFile), 'Bytecode file was not generated.');
   DeleteFile(OutputFile); // Clean up
 end;

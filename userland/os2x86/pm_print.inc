@@ -129,7 +129,7 @@ static uint32_t api_DevEscape(void)
     }
     return 0;
 }
-/* DevQueryHardcopyCaps (hdc, lStartForm, lForms, phcInfo): lForms 0 returns the count; we have one form, A4 */
+/* DevQueryHardcopyCaps exposes a single printer form: A4. */
 static uint32_t api_DevQueryHardcopyCaps(void)
 {
     pmdc_t *d = dc_get(A(0));

@@ -40,10 +40,8 @@ type
     Operand: Int64;
   end;
 
-{ Helper function to create instruction }
 function MakeInsn(OpCode: TKayteOpcode; Operand: Int64): TKayteInsn;
 
-{ Main compilation function - generates PE executable for Windows ARM64 }
 function CompileToPE(const Instructions: array of TKayteInsn; const OutputPath: string): Integer;
 
 implementation

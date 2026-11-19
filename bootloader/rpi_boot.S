@@ -72,7 +72,6 @@ el2_entry:
     eret
     
 el1_entry:
-    // Now in EL1, jump to kernel
     bl      kernel_main
     
     // If kernel returns, hang

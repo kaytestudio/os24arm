@@ -22,7 +22,7 @@
  * needed. */
 void mmu_init(void);
 
-/* ── User (EL0) address spaces ───────────────────────────────────────────
+/* User (EL0) address spaces.
  * Every process sees [MMU_USER_BASE, MMU_USER_BASE + MMU_USER_SIZE) mapped
  * with 4 KB pages to frames of its own, with per-page EL0 permissions;
  * the kernel's own tables leave that window unmapped. Frames come from

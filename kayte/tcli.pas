@@ -68,9 +68,8 @@ begin
   if Verbose then
     Writeln('Compiling ', InputFile, ' to ', OutputFile);
 
-  // Simulate bytecode generation process
   try
-    // Add actual logic for bytecode generation here
+    // TODO: Generate bytecode and write it to OutputFile.
     Writeln('Compiled ', InputFile, ' to bytecode file ', OutputFile);
   except
     on E: Exception do
@@ -95,9 +94,8 @@ begin
   if Verbose then
     Writeln('Running bytecode file: ', BytecodeFile);
 
-  // Simulate bytecode execution process
   try
-    // Add actual logic for running bytecode here
+    // TODO: Load and execute the bytecode instructions.
     Writeln('Executed bytecode file: ', BytecodeFile);
   except
     on E: Exception do
@@ -110,9 +108,8 @@ begin
   if Verbose then
     Writeln('Starting Kayte web server...');
 
-  // Simulate web server startup process
   try
-    // Add actual logic for starting the web server here
+    // TODO: Start the HTTP server and enter its request loop.
     Writeln('Kayte web server is running.');
   except
     on E: Exception do
@@ -137,7 +134,6 @@ begin
     begin
       CLIOptions.CompileKayte := True;
 
-      // Check for input file
       if (I + 1 <= ParamCount) then
       begin
         Inc(I);
@@ -149,7 +145,6 @@ begin
         Exit;
       end;
 
-      // Check for output file
       if (I + 1 <= ParamCount) then
       begin
         Inc(I);
@@ -165,7 +160,6 @@ begin
     begin
       CLIOptions.RunBytecode := True;
 
-      // Check for bytecode file
       if (I + 1 <= ParamCount) then
       begin
         Inc(I);

@@ -36,10 +36,8 @@ type
     function PeekNextToken: TToken;
 
 
-    // --- Added Public Properties for Current Position ---
     property CurrentLine: Integer read FCurrentLineIndex;
     property CurrentColumn: Integer read FCurrentCharIndex;
-    // --- End Added Public Properties ---
   end;
 
 implementation
@@ -119,7 +117,6 @@ begin
     NextCharIndex := 0;
     if NextLineIndex < FSourceCode.Count then
     begin
-      // Check if the next line is empty
       if Length(FSourceCode[NextLineIndex]) > 0 then
         Result := FSourceCode[NextLineIndex][NextCharIndex + 1]
       else
@@ -178,18 +175,16 @@ begin
     '+', '-', '*', '/', '=', '<', '>', '<=', '>=', '<>', '&': // '&' for string concat
       Result := tkOperator;
     'AND', 'OR', 'NOT', 'IS': // Logical/comparison operators as keywords
-      Result := tkOperator; // Or keep as tkKeyword if you want to distinguish
+      Result := tkOperator;
     '(': Result := tkParenthesisOpen;
     ')': Result := tkParenthesisClose;
     ',': Result := tkComma;
     '.': Result := tkDot;
     ':': Result := tkColon;
-    // --- New Keywords for Option Explicit ---
-    'OPTION': Result := tkKeywordOption; // Changed from tkOption
-    'EXPLICIT': Result := tkKeywordExplicit; // Changed from tkExplicit
-    'ON': Result := tkKeywordOn; // Changed from tkOn
-    'OFF': Result := tkKeywordOff; // Changed from tkOff
-    // --- End New Keywords ---
+    'OPTION': Result := tkKeywordOption;
+    'EXPLICIT': Result := tkKeywordExplicit;
+    'ON': Result := tkKeywordOn;
+    'OFF': Result := tkKeywordOff;
   end;
 end;
 
@@ -346,7 +341,7 @@ begin
     CurrentTokType := GetTokenType(LexemeBuilder);
 
     // --- Special handling for "Option Explicit On/Off" sequence ---
-    if (CurrentTokType = tkKeywordOption) then // Changed from tkOption
+    if (CurrentTokType = tkKeywordOption) then
     begin
       // Store current position to rollback if it's not "Option Explicit On/Off"
       SavedCharIndex := FCurrentCharIndex;
@@ -360,7 +355,7 @@ begin
         LexemeBuilder := LexemeBuilder + CurrentChar;
         Advance;
       end;
-      if GetTokenType(LexemeBuilder) = tkKeywordExplicit then // Changed from tkExplicit
+      if GetTokenType(LexemeBuilder) = tkKeywordExplicit then
       begin
         SkipWhitespace; // Skip space after "Explicit"
         LexemeBuilder := '';
@@ -369,13 +364,13 @@ begin
           LexemeBuilder := LexemeBuilder + CurrentChar;
           Advance;
         end;
-        if GetTokenType(LexemeBuilder) = tkKeywordOn then // Changed from tkOn
+        if GetTokenType(LexemeBuilder) = tkKeywordOn then
         begin
           Result.TokenType := tkOptionExplicitOn;
           Result.Lexeme := 'Option Explicit On';
           Exit;
         end
-        else if GetTokenType(LexemeBuilder) = tkKeywordOff then // Changed from tkOff
+        else if GetTokenType(LexemeBuilder) = tkKeywordOff then
         begin
           Result.TokenType := tkOptionExplicitOff;
           Result.Lexeme := 'Option Explicit Off';
@@ -383,12 +378,11 @@ begin
         end
         else
         begin
-          // Not "On" or "Off", rollback
+          // Roll back and return OPTION as a regular keyword.
           FCurrentCharIndex := SavedCharIndex;
           FCurrentLineIndex := SavedLineIndex;
           FCurrentLine := SavedLineContent;
-          // Re-process "Option" as a regular keyword/identifier
-          Result.TokenType := tkKeyword; // It's just 'Option' keyword
+          Result.TokenType := tkKeyword;
           Result.Lexeme := 'Option';
           // No Advance here, as the token is already formed from the rollback point
           Exit;
@@ -396,26 +390,23 @@ begin
       end
       else
       begin
-        // Not "Explicit", rollback
+        // Roll back and return OPTION as a regular keyword.
         FCurrentCharIndex := SavedCharIndex;
         FCurrentLineIndex := SavedLineIndex;
         FCurrentLine := SavedLineContent;
-        // Re-process "Option" as a regular keyword/identifier
-        Result.TokenType := tkKeyword; // It's just 'Option' keyword
+        Result.TokenType := tkKeyword;
         Result.Lexeme := 'Option';
         // No Advance here, as the token is already formed from the rollback point
         Exit;
       end;
     end;
-    // --- End Special handling ---
-
     Result.TokenType := CurrentTokType;
     Result.Lexeme := LexemeBuilder;
     Exit;
   end;
 
   // Handle Operators and single-character tokens
-  // Initialize LexemeBuilder with the current character, assuming it's a single-char token
+  // Start with the current character; multi-character operators extend it below.
   LexemeBuilder := String(CurrentChar);
   CurrentTokType := tkUnknown; // Default to unknown, will be updated in case
 
@@ -423,12 +414,10 @@ begin
     '+', '-', '*': CurrentTokType := tkOperator;
     '/':
       begin
-        // Check if it's a comment (//) - this should have been caught earlier
-        // but just in case, we'll check here too
+        // A comment reaching this branch means comment handling failed.
         if PeekChar = '/' then
         begin
-          // This is a comment, but it should have been handled earlier
-          // If we get here, something went wrong, but let's handle it gracefully
+          // Comments should have been consumed before tokenization.
           raise Exception.CreateFmt('Lexer Error: Unexpected comment at %d:%d (should have been handled earlier)',
             [Result.Line + 1, Result.Column + 1]);
         end
@@ -477,8 +466,7 @@ begin
         [CurrentChar, Result.Line + 1, Result.Column + 1]);
   end;
 
-  // If a multi-character operator was handled (e.g., <=, >=, <>), Advance would have already been called.
-  // For single-character operators, we need to advance here.
+  // Multi-character operators already advanced; consume the rest here.
   if Length(LexemeBuilder) = 1 then
     Advance;
 

@@ -57,7 +57,7 @@ static uint32_t qh, qt;
 
 static void usbmouse_idc(RP_GENIOCTL *rp);
 
-/* ── HID report descriptor parsing ────────────────────────────────────── */
+/* HID report descriptor parsing */
 static void parse_rdesc(const uint8_t *d, uint32_t len)
 {
     uint32_t page = 0, rsize = 0, rcount = 0, rid = 0;
@@ -169,7 +169,7 @@ static void report(const uint8_t *r, uint32_t len)
     qt = next;
 }
 
-/* ── Requests ─────────────────────────────────────────────────────────── */
+/* Requests */
 static void submit(USBRb *rb)
 {
     rb->controllerId  = ctrl;
@@ -209,7 +209,7 @@ static void read_report(uint32_t i)
     submit(&rb);
 }
 
-/* ── CHKSERV ──────────────────────────────────────────────────────────── */
+/* CHKSERV */
 static void chkserv(USBCDServe *s)
 {
     DeviceInfo *di = s ? s->pDeviceInfo : 0;
@@ -266,7 +266,7 @@ static void chkserv(USBCDServe *s)
       addr, iface, ep_addr);
 }
 
-/* ── PRCIRQ ───────────────────────────────────────────────────────────── */
+/* PRCIRQ */
 static void completion(USBRb *rb)
 {
     if (!active || rb->deviceAddress != addr || rb->controllerId != ctrl) return;
@@ -306,7 +306,7 @@ static void completion(USBRb *rb)
     }
 }
 
-/* ── IDC entry ────────────────────────────────────────────────────────── */
+/* IDC entry */
 static void usbmouse_idc(RP_GENIOCTL *rp)
 {
     uint16_t err = 0;
@@ -335,7 +335,7 @@ static void usbmouse_idc(RP_GENIOCTL *rp)
     rp->Status = err ? (uint16_t)(STATUS_DONE | STERR | err) : STATUS_DONE;
 }
 
-/* ── Lifecycle / API ──────────────────────────────────────────────────── */
+/* Lifecycle / API */
 static void try_register(void)
 {
     USBDClass c = { usbmouse_idc, 0 };

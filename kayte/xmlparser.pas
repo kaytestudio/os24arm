@@ -15,7 +15,6 @@ type
     procedure LoadDTDFile;
     procedure ParseElementDeclaration(const Line: string);
     procedure ParseAttributeDeclaration(const Line: string);
-    // Add more parsing functions if necessary
   public
     constructor Create(const DTDFilePath: string);
     destructor Destroy; override;
@@ -51,13 +50,11 @@ end;
 
 procedure TDTDParser.ParseElementDeclaration(const Line: string);
 begin
-  // Example of parsing <!ELEMENT ... > declarations
   Writeln('Parsing ELEMENT declaration: ', Line);
 end;
 
 procedure TDTDParser.ParseAttributeDeclaration(const Line: string);
 begin
-  // Example of parsing <!ATTLIST ... > declarations
   Writeln('Parsing ATTLIST declaration: ', Line);
 end;
 

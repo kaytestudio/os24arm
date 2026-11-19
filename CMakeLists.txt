@@ -37,6 +37,7 @@ set(CMAKE_SYSTEM_PROCESSOR ${TARGET_ARCH})
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 
 project(OS2WarpARM64 LANGUAGES C ASM)
+option(OS2WARP_UNIXROOT_DEBUG "Log each UNIXROOT directory setup result" OFF)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -130,7 +131,7 @@ if(USE_KCC)
     message(STATUS "KCC will be built at: ${KCC_BINARY}")
     message(STATUS "")
 
-    # KCC-specific compiler flags (adjust as needed)
+    # Target flags for KCC.
     set(ARCH_FLAGS
             -target aarch64-none-elf
             -mcpu=cortex-a72

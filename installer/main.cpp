@@ -9,7 +9,6 @@ int main(int argc, char *argv[])
     app.setApplicationVersion("4.52");
     app.setOrganizationName("IBM");
 
-    // Load OS/2 themed stylesheet
     QFile styleFile(":/styles/os2theme.qss");
     if (styleFile.open(QFile::ReadOnly)) {
         app.setStyleSheet(styleFile.readAll());

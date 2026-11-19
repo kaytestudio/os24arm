@@ -58,7 +58,7 @@ static void print_dos_error(const char *cmd, APIRET rc)
 }
 
 
-/* ── Paths as DOS shows them ─────────────────────────────────────────────── */
+/* Paths as DOS shows them */
 
 void dos_display_path(const char *vfs_path, char *out, int out_size)
 {
@@ -212,7 +212,7 @@ static APIRET copy_one(const char *from, const char *to, unsigned long long *byt
     return rc;
 }
 
-/* ── ECHO ─────────────────────────────────────────────────────────────────── */
+/* ECHO */
 
 /* ECHO text            prints it
  * ECHO text > file     writes it (and CR LF) to file, replacing it
@@ -267,7 +267,7 @@ void dos_echo(int argc, char **argv)
     else uart_puts("\r\n");
 }
 
-/* ── DEBUG ─────────────────────────────────────────────────────────────────
+/* DEBUG
  * A partial reimplementation of the classic MS-DOS DEBUG.COM/DEBUG.EXE
  * shell: its own interactive "-" sub-prompt (reusing dos_read_line(), so
  * DOSKEY history/macros work inside it too) until Q returns to the normal
@@ -331,7 +331,7 @@ static void dos_debug_help(void)
     uart_puts("display expanded memory status  XS\r\n");
 }
 
-/* ── DEBUG memory commands: shared parsing helpers ──────────────────────── */
+/* DEBUG memory commands: shared parsing helpers */
 
 static void debug_tokenize(char *str, char **tokens, int max_tokens, int *out_count)
 {
@@ -399,7 +399,7 @@ static int debug_parse_range(int argc, char **argv, unsigned long *start, unsign
     return 1;
 }
 
-/* ── DEBUG memory commands ───────────────────────────────────────────────── */
+/* DEBUG memory commands */
 
 static unsigned long debug_last_addr = 0;
 
@@ -624,7 +624,7 @@ static void debug_cmd_assemble(int argc, char **argv)
     uart_puts("\r\n");
 }
 
-/* ── G, P, T: running code (kernel/src/debug_entry.S; kernel console only) ──
+/* G, P, T run code through kernel/src/debug_entry.S from the kernel console.
  * The code runs in its own context: x0-x30, sp (its own stack), pc, pstate. x30 starts at debug_return_trap, so
  * returning comes back here. Breakpoints use the hardware (DBGBVRn/DBGBCRn), so nothing is written into the code
  * and read-only kernel code works too; stepping uses software step. */
@@ -877,7 +877,7 @@ void dos_debug(int argc, char **argv)
 }
 
 
-/* ── COMP ─────────────────────────────────────────────────────────────────
+/* COMP
  * Byte-for-byte binary comparison of two files (classic DOS COMP): reports
  * the offset and differing byte values at the first point the files
  * diverge (or a size mismatch), else "Files compare OK". */
@@ -954,7 +954,7 @@ void dos_comp(int argc, char **argv)
     } else dos_cmd_rc = 1;
 }
 
-/* ── FC ───────────────────────────────────────────────────────────────────
+/* FC
  * Line-oriented text comparison (classic DOS FC): reports the line number
  * and content of every differing line, and which file has extra trailing
  * lines if their line counts don't match. Unlike real FC, this doesn't
@@ -1078,7 +1078,7 @@ void dos_fc(int argc, char **argv)
 }
 
 
-/* ── CLS ─────────────────────────────────────────────────────────────────── */
+/* CLS */
 
 void dos_cls(int argc, char **argv)
 {
@@ -1087,7 +1087,7 @@ void dos_cls(int argc, char **argv)
 }
 
 
-/* ── DOSKEY ───────────────────────────────────────────────────────────────
+/* DOSKEY
  * Based on https://en.wikipedia.org/wiki/DOSKEY : command history (arrow
  * keys, F7 list, F8 prefix search, F9 select-by-number), line editing
  * (Esc clears the line; insert/overstrike), and $-macros ($1-$9, $*, $T,
@@ -1393,7 +1393,7 @@ void dos_doskey(int argc, char **argv)
     }
 }
 
-/* ── Shared line editor (dos_read_line) ──────────────────────────────────
+/* Shared line editor (dos_read_line)
  * The one place both shells read a full command line - see the big
  * comment above dos_doskey() for why this, rather than dos_doskey()
  * itself, is where history/macro/editing actually happens. */
@@ -1718,7 +1718,7 @@ int dos_read_line(const char *prompt, char *buffer, int max_len, dos_idle_fn idl
     }
 }
 
-/* ── EXIT ─────────────────────────────────────────────────────────────────── */
+/* EXIT */
 
 /* This flat-address-space kernel has no process boundary to return
  * across (see cmd_run()'s comment in kernel/src/main.c: CMD.EXE is
@@ -1735,7 +1735,7 @@ void dos_exit(int argc, char **argv)
 }
 
 
-/* ── DIR ─────────────────────────────────────────────────────────────────── */
+/* DIR */
 
 /* Hidden or system: left out of DIR, TREE and wildcards unless asked (/A). */
 #define ATTR_HIDE (VFS_ATTR_HIDDEN | VFS_ATTR_SYSTEM)
@@ -1842,7 +1842,7 @@ void dos_dir(int argc, char **argv)
     uart_puts("\r\n\r\n");
 }
 
-/* ── TYPE ────────────────────────────────────────────────────────────────── */
+/* TYPE */
 
 void dos_type(int argc, char **argv)
 {
@@ -1870,7 +1870,7 @@ void dos_type(int argc, char **argv)
     DosClose(h);
 }
 
-/* ── COPY ────────────────────────────────────────────────────────────────── */
+/* COPY */
 
 struct xfer {
     const char *dest;          /* a directory, or the target file name */
@@ -1959,7 +1959,7 @@ void dos_copy(int argc, char **argv) { copy_or_move(argc, argv, 0); }
 /* MOVE source [dest]: a rename on the same volume, else copy + delete. */
 void dos_move(int argc, char **argv) { copy_or_move(argc, argv, 1); }
 
-/* ── DEL ─────────────────────────────────────────────────────────────────── */
+/* DEL */
 
 void dos_del(int argc, char **argv)
 {
@@ -2013,7 +2013,7 @@ void dos_del(int argc, char **argv)
     }
 }
 
-/* ── REN ─────────────────────────────────────────────────────────────────── */
+/* REN */
 
 void dos_ren(int argc, char **argv)
 {
@@ -2043,7 +2043,7 @@ void dos_ren(int argc, char **argv)
     }
 }
 
-/* ── MD ──────────────────────────────────────────────────────────────────── */
+/* MD */
 
 void dos_md(int argc, char **argv)
 {
@@ -2060,7 +2060,7 @@ void dos_md(int argc, char **argv)
     }
 }
 
-/* ── RD ──────────────────────────────────────────────────────────────────── */
+/* RD */
 
 void dos_rd(int argc, char **argv)
 {
@@ -2092,7 +2092,7 @@ void dos_rd(int argc, char **argv)
     }
 }
 
-/* ── CD ──────────────────────────────────────────────────────────────────── */
+/* CD */
 
 void dos_cd(int argc, char **argv)
 {
@@ -2113,7 +2113,7 @@ void dos_cd(int argc, char **argv)
     }
 }
 
-/* ── VOL ─────────────────────────────────────────────────────────────────── */
+/* VOL */
 
 void dos_vol(int argc, char **argv)
 {
@@ -2134,7 +2134,7 @@ void dos_vol(int argc, char **argv)
     uart_puts(")\r\n\r\n");
 }
 
-/* ── ATTRIB ──────────────────────────────────────────────────────────────── */
+/* ATTRIB */
 
 void dos_attrib(int argc, char **argv)
 {
@@ -2166,7 +2166,7 @@ void dos_attrib(int argc, char **argv)
     uart_puts("\r\n");
 }
 
-/* ── CHKDSK / FORMAT ─────────────────────────────────────────────────────── */
+/* CHKDSK / FORMAT */
 
 /* CHKDSK [path]: the volume's size and free space. There's no repair
  * pass - the drivers check their structures as they mount. */
@@ -2207,7 +2207,7 @@ void dos_format(int argc, char **argv)
               "(see userland/make-stick.sh for HPFS)\r\n");
 }
 
-/* ── TREE ────────────────────────────────────────────────────────────────── */
+/* TREE */
 
 static unsigned tree_dirs, tree_files;
 static int tree_all;                            /* /A: hidden and system too */
@@ -2295,7 +2295,7 @@ void dos_tree(int argc, char **argv)
     uart_puts("\r\n");
 }
 
-/* ── FIND ────────────────────────────────────────────────────────────────── */
+/* FIND */
 
 struct find_opts {
     const char *needle;
@@ -2399,7 +2399,7 @@ void dos_find(int argc, char **argv)
     if (!o.total && !dos_cmd_rc) dos_cmd_rc = 1;                  /* nothing found: 1, like FIND.EXE */
 }
 
-/* ── MORE ────────────────────────────────────────────────────────────────── */
+/* MORE */
 
 /* MORE file: a screen (24 lines) at a time; any key continues, Q quits. */
 void dos_more(int argc, char **argv)
@@ -2432,7 +2432,7 @@ void dos_more(int argc, char **argv)
     DosClose(h);
 }
 
-/* ── DATE / TIME ─────────────────────────────────────────────────────────── */
+/* DATE / TIME */
 
 /* QEMU virt's PL031 real-time clock: seconds since 1970 (UTC). */
 static unsigned long rtc_seconds(void)
@@ -2478,7 +2478,7 @@ void dos_time(int argc, char **argv)
     if (argc > 1) uart_puts("TIME: the clock can't be set here - it follows the host's\r\n");
 }
 
-/* ── Shell dispatcher ────────────────────────────────────────────────────── */
+/* Shell dispatcher */
 
 static void dos_str_toupper(char *s)
 {

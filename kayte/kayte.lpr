@@ -155,8 +155,7 @@ begin
   begin
     // Main execution loop using repeat-until (do-while equivalent)
     repeat
-      // Simulating fetching an instruction and executing it
-      // Here we just cycle through some sample instructions for demonstration
+      // Run the small built-in instruction sequence.
       case FPC of
         0: ExecuteInstruction(NOP);
         1: ExecuteInstruction(LOAD);

@@ -11,7 +11,6 @@
 
 set -e
 
-# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 CYAN='\033[0;36m'
@@ -19,7 +18,6 @@ YELLOW='\033[1;33m'
 MAGENTA='\033[0;35m'
 NC='\033[0m'
 
-# Detect OS
 OS_TYPE="$(uname -s)"
 case "$OS_TYPE" in
     Linux*)     OS="Linux";;
@@ -27,7 +25,6 @@ case "$OS_TYPE" in
     *)          OS="Unknown";;
 esac
 
-# Detect if running on ODROID
 ODROID_BOARD=""
 if [ "$OS" = "Linux" ] && [ -f /proc/device-tree/model ]; then
     BOARD_MODEL=$(cat /proc/device-tree/model 2>/dev/null | tr -d '\0')
@@ -39,7 +36,6 @@ if [ "$OS" = "Linux" ] && [ -f /proc/device-tree/model ]; then
     esac
 fi
 
-# Print header
 echo -e "${CYAN}  OS/2 Warp 4.52 ARM64 — Disk Image Creator${NC}"
 echo -e "${CYAN}  Platform: $OS${NC}"
 if [ -n "$ODROID_BOARD" ]; then
@@ -47,7 +43,6 @@ if [ -n "$ODROID_BOARD" ]; then
 fi
 echo
 
-# Check arguments
 ODROID_MODE=0
 if [ $# -eq 2 ] && [ "$2" = "--odroid" ]; then
     ODROID_MODE=1
@@ -69,7 +64,6 @@ fi
 
 IMAGE="$1"
 
-# Check if image already exists
 if [ -f "$IMAGE" ]; then
     echo -e "${YELLOW}Warning: $IMAGE already exists!${NC}"
     read -p "Overwrite? [y/N] " -n 1 -r
@@ -81,7 +75,6 @@ if [ -f "$IMAGE" ]; then
     rm -f "$IMAGE"
 fi
 
-# Check dependencies based on OS
 echo -e "${CYAN}[1/10]${NC} Checking dependencies..."
 MISSING=()
 
@@ -177,22 +170,18 @@ else
     echo -e "${GREEN}${NC} All dependencies found (including EXT4 support)"
 fi
 
-# Disk size: 6 GiB
 DISK_SIZE=$((6 * 1024 * 1024 * 1024))
 
-# Create sparse image
 echo -e "${CYAN}[2/10]${NC} Creating 6 GiB disk image..."
 dd if=/dev/zero of="$IMAGE" bs=1M count=0 seek=6144 status=none 2>/dev/null || \
     dd if=/dev/zero of="$IMAGE" bs=1m count=0 seek=6144 2>/dev/null
 echo -e "${GREEN}${NC} Created $IMAGE (6 GiB)"
 
-# Create GPT partition table
 echo -e "${CYAN}[3/10]${NC} Creating GPT partition table..."
 sgdisk -Z "$IMAGE" > /dev/null 2>&1
 sgdisk -o "$IMAGE" > /dev/null 2>&1
 echo -e "${GREEN}${NC} GPT initialized"
 
-# Create partitions
 echo -e "${CYAN}[4/10]${NC} Creating partitions..."
 
 if [ $ODROID_MODE -eq 1 ]; then
@@ -224,14 +213,11 @@ echo -e "${GREEN}  ${NC} P3: FAT16DATA (FAT16, 512 MiB)"
 sgdisk -n 4:0:0 -t 4:0700 -c 4:"EXFATUSB" "$IMAGE" > /dev/null 2>&1
 echo -e "${GREEN}  ${NC} P4: EXFATUSB (exFAT, remaining)"
 
-# Print partition table
 echo -e "${CYAN}[5/10]${NC} Partition table:"
 sgdisk -p "$IMAGE" 2>/dev/null | grep -E "^   [0-9]" || true
 
-# Set up disk device (OS-specific)
 echo -e "${CYAN}[6/10]${NC} Setting up disk device..."
 
-# Check if we need sudo
 if [ "$EUID" -ne 0 ]; then
     SUDO="sudo"
 else
@@ -277,7 +263,6 @@ elif [ "$OS" = "macOS" ]; then
     PART4="${DISK_DEV}s4"
 fi
 
-# Format partitions (OS-specific)
 echo -e "${CYAN}[7/10]${NC} Formatting P1: EFI (FAT32)..."
 if [ -e "$PART1" ]; then
     if [ "$OS" = "Linux" ]; then
@@ -329,7 +314,6 @@ else
     echo -e "${RED}Error: $PART4 not found${NC}"
 fi
 
-# Copy bootloader and kernel (if they exist)
 if [ -f "build/bootloader/BOOTAA64.EFI" ] || [ -f "bootloader/BOOTAA64.EFI" ]; then
     echo -e "${CYAN}[BONUS]${NC} Installing bootloader..."
     MOUNT_POINT=$(mktemp -d)

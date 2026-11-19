@@ -83,7 +83,7 @@ static struct os2_backend *get_backend(struct wlr_backend *b)
     return wl_container_of(b, (struct os2_backend *)0, base);
 }
 
-/* ── Output ───────────────────────────────────────────────────────────── */
+/* Output */
 static const uint32_t SUPPORTED_STATE = WLR_OUTPUT_STATE_BACKEND_OPTIONAL | WLR_OUTPUT_STATE_BUFFER |
                                         WLR_OUTPUT_STATE_DAMAGE | WLR_OUTPUT_STATE_ENABLED |
                                         WLR_OUTPUT_STATE_MODE;
@@ -205,7 +205,7 @@ static const struct wlr_output_impl output_impl = {
     .commit = output_commit,
 };
 
-/* ── Input ────────────────────────────────────────────────────────────── */
+/* Input */
 static const struct wlr_keyboard_impl keyboard_impl = { .name = "os2-keyboard" };
 static const struct wlr_pointer_impl pointer_impl = { .name = "os2-pointer" };
 
@@ -353,7 +353,7 @@ static int check_size(void *data)
     return 0;
 }
 
-/* ── Backend ──────────────────────────────────────────────────────────── */
+/* Backend */
 static bool backend_start(struct wlr_backend *wb)
 {
     struct os2_backend *b = get_backend(wb);

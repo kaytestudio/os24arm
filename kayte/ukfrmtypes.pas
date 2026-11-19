@@ -15,12 +15,10 @@ type
     cktLabel,
     cktEdit,
     cktButton
-    // Add more control types as needed (e.g., cktMemo, cktPanel, cktCheckbox)
+    // Extend this list when the form format supports more controls.
   );
 
-  // Forward declarations for classes that might reference each other
-  // (though with the current structure, direct forward declarations might not be strictly needed
-  // if definitions are ordered correctly, it's good practice for clarity).
+  // The event binding and component definitions refer to each other.
   TKfrmComponentDef = class;
   TKfrmFormDef = class; // TKfrmFormDef inherits from TKfrmComponentDef
 
@@ -31,7 +29,7 @@ type
     EventName: String;    // e.g., 'OnClick'
     FunctionName: String; // The name of the Kayte function to call
     constructor Create(const AEventName, AFunctionName: String);
-    destructor Destroy; override; // Added destructor for completeness, though not strictly needed for simple strings
+    destructor Destroy; override;
   end;
 
 
@@ -47,7 +45,7 @@ type
     FCaption: String; // Common for many visual controls
     FVisible: Boolean;
     FEnabled: Boolean;
-    FEventBindings: TObjectList; // List of TEventBinding (now actual TObject instances)
+    FEventBindings: TObjectList; // Owns TEventBinding instances.
 
   public
     constructor Create; overload;
@@ -67,8 +65,7 @@ type
     property EventBindings: TObjectList read FEventBindings; // Contains TEventBinding objects
   end;
 
-  // TKfrmFormDef: Represents a Kayte Form definition.
-  // This is the root container for other controls.
+  // A form owns its child controls.
   TKfrmFormDef = class(TKfrmComponentDef) // Inherit from TKfrmComponentDef
   private
     FControls: TObjectList; // List of TKfrmComponentDef (the controls on the form)
@@ -131,8 +128,7 @@ type
   TKfrmButtonDef = class(TKfrmComponentDef) // Inherit from TKfrmComponentDef
   private
     FControlType: TControlKfrmType; // Stores cktButton
-    // Specific properties for TButton (none beyond common for now, 'Caption' is key)
-    // TButton has 'ModalResult', 'Default', 'Cancel', etc., but we'll keep it simple for now.
+    // Add button-only properties here if the form format needs them.
 
   public
     constructor Create; overload;
@@ -163,7 +159,7 @@ end;
 
 constructor TKfrmComponentDef.Create;
 begin
-  inherited Create; // Calls TObject.Create
+  inherited Create;
   FName := '';
   FLeft := 0;
   FTop := 0;
@@ -177,7 +173,7 @@ end;
 
 constructor TKfrmComponentDef.Create(const AName: String; ALeft, ATop, AWidth, AHeight: Integer);
 begin
-  Create; // Call default constructor to initialize common fields and FEventBindings
+  Create; // Initialize shared fields and event ownership.
   FName := AName;
   FLeft := ALeft;
   FTop := ATop;
@@ -187,7 +183,7 @@ end;
 
 destructor TKfrmComponentDef.Destroy;
 begin
-  FreeAndNil(FEventBindings); // Frees all TEventBinding objects
+  FreeAndNil(FEventBindings);
   inherited Destroy;
 end;
 
@@ -204,7 +200,7 @@ end;
 
 constructor TKfrmFormDef.Create;
 begin
-  inherited Create; // Calls TKfrmComponentDef.Create
+  inherited Create;
   FControls := TObjectList.Create(True); // Owns the control objects (TKfrmComponentDef instances)
   FFileName := '';
   FFormType := cktForm;
@@ -213,7 +209,7 @@ end;
 
 constructor TKfrmFormDef.Create(const AName: String; ALeft, ATop, AWidth, AHeight: Integer; const AFileName: String);
 begin
-  inherited Create(AName, ALeft, ATop, AWidth, AHeight); // Calls TKfrmComponentDef.Create(AName, ...)
+  inherited Create(AName, ALeft, ATop, AWidth, AHeight);
   FControls := TObjectList.Create(True); // Owns the control objects
   FFileName := AFileName;
   FFormType := cktForm;
@@ -222,15 +218,15 @@ end;
 
 destructor TKfrmFormDef.Destroy;
 begin
-  FreeAndNil(FControls); // Frees all control objects added to it
-  inherited Destroy; // Calls TKfrmComponentDef.Destroy
+  FreeAndNil(FControls);
+  inherited Destroy;
 end;
 
 { TKfrmLabelDef }
 
 constructor TKfrmLabelDef.Create;
 begin
-  inherited Create; // Calls TKfrmComponentDef.Create
+  inherited Create;
   FControlType := cktLabel;
   FAlignment := 'Left'; // Default
   FAutoSize := True;    // Default
@@ -239,7 +235,7 @@ end;
 
 constructor TKfrmLabelDef.Create(const AName: String; ALeft, ATop, AWidth, AHeight: Integer; const ACaption: String);
 begin
-  inherited Create(AName, ALeft, ATop, AWidth, AHeight); // Calls TKfrmComponentDef.Create(AName, ...)
+  inherited Create(AName, ALeft, ATop, AWidth, AHeight);
   FControlType := cktLabel;
   FCaption := ACaption; // Set specific caption
   FAlignment := 'Left';
@@ -251,7 +247,7 @@ end;
 
 constructor TKfrmEditDef.Create;
 begin
-  inherited Create; // Calls TKfrmComponentDef.Create
+  inherited Create;
   FControlType := cktEdit;
   FText := '';
   FReadOnly := False;
@@ -261,7 +257,7 @@ end;
 
 constructor TKfrmEditDef.Create(const AName: String; ALeft, ATop, AWidth, AHeight: Integer; const AText: String);
 begin
-  inherited Create(AName, ALeft, ATop, AWidth, AHeight); // Calls TKfrmComponentDef.Create(AName, ...)
+  inherited Create(AName, ALeft, ATop, AWidth, AHeight);
   FControlType := cktEdit;
   FText := AText; // Set specific text
   FReadOnly := False;
@@ -273,15 +269,14 @@ end;
 
 constructor TKfrmButtonDef.Create;
 begin
-  inherited Create; // Calls TKfrmComponentDef.Create
+  inherited Create;
   FControlType := cktButton;
-  // Specific TButton properties can be added here if needed,
-  // but for now, Caption is handled by TKfrmComponentDef
+  // The caption is stored by TKfrmComponentDef.
 end;
 
 constructor TKfrmButtonDef.Create(const AName: String; ALeft, ATop, AWidth, AHeight: Integer; const ACaption: String);
 begin
-  inherited Create(AName, ALeft, ATop, AWidth, AHeight); // Calls TKfrmComponentDef.Create(AName, ...)
+  inherited Create(AName, ALeft, ATop, AWidth, AHeight);
   FControlType := cktButton;
   FCaption := ACaption; // Set specific caption
 end;

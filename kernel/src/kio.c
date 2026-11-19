@@ -42,7 +42,6 @@ void kgets(char *buf, size_t len)
     while (pos < len - 1) {
         char c = uart_getc();
 
-        // Handle backspace
         if (c == '\b' || c == 127) {
             if (pos > 0) {
                 pos--;
@@ -53,7 +52,6 @@ void kgets(char *buf, size_t len)
             continue;
         }
 
-        // Handle enter
         if (c == '\r' || c == '\n') {
             buf[pos] = '\0';
             uart_putc('\r');
@@ -61,7 +59,6 @@ void kgets(char *buf, size_t len)
             return;
         }
 
-        // Handle printable characters
         if (c >= 32 && c < 127) {
             buf[pos++] = c;
             uart_putc(c);

@@ -40,10 +40,8 @@ type
     Operand: Int64;
   end;
 
-{ Helper function to create instruction }
 function MakeInsn(OpCode: TKayteOpcode; Operand: Int64): TKayteInsn;
 
-{ Main compilation function - generates ELF executable for Linux ARM64 }
 function CompileToELF(const Instructions: array of TKayteInsn; const OutputPath: string): Integer;
 
 implementation
@@ -80,7 +78,6 @@ begin
   OutputPathCStr := PChar(OutputPath);
 
   try
-    // Call the C backend to generate ELF executable
     Result := kayte_arm64_compile_elf(InstructionsPtr, InstructionCount, OutputPathCStr);
 
     if Result = 0 then

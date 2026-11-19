@@ -1,7 +1,7 @@
 #include "rexx.h"
 #include "../os2/os2_api.h"
 
-/* simple file load using DosOpen/DosRead */
+/* Load a script through the OS/2 file APIs. */
 extern APIRET DosRead(ULONG handle, void* buf, ULONG len, ULONG* read);
 
 void rexx_run_script(const char* path)

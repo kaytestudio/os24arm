@@ -11,7 +11,7 @@ extern uint8_t _bss_end;
 extern void mem_init(uintptr_t start, size_t size);
 extern void scheduler_init(void);
 
-/* ── Raspberry Pi 3+ Hardware Addresses ──────────────────────────────────── */
+/* Raspberry Pi 3+ Hardware Addresses */
 
 /* BCM2837 Peripheral base */
 #define BCM2837_PERI_BASE   0x3F000000UL
@@ -37,7 +37,7 @@ extern void scheduler_init(void);
 #define UART_FR_TXFF        (1u << 5)
 #define UART_FR_RXFE        (1u << 4)
 
-/* ── Delay function ──────────────────────────────────────────────────────── */
+/* Delay function */
 
 static void delay(int count)
 {
@@ -46,7 +46,7 @@ static void delay(int count)
         __asm__ volatile("nop");
 }
 
-/* ── UART Initialization for RPi ─────────────────────────────────────────── */
+/* UART Initialization for RPi */
 
 static void uart_init(void)
 {
@@ -85,7 +85,7 @@ static void uart_init(void)
     *UART0_CR = (1 << 0) | (1 << 8) | (1 << 9);
 }
 
-/* ── Low-level UART helpers ──────────────────────────────────────────────── */
+/* Low-level UART helpers */
 
 static void uart_putc(char c)
 {
@@ -118,7 +118,7 @@ static void uart_puthex(ULONG val)
         uart_putc(hex[(val >> shift) & 0xF]);
 }
 
-/* ── String utilities ────────────────────────────────────────────────────── */
+/* String utilities */
 
 static int my_strcmp(const char *s1, const char *s2)
 {
@@ -162,7 +162,7 @@ static void str_toupper(char *s)
     }
 }
 
-/* ── Commands (simplified for initial boot test) ────────────────────────── */
+/* Commands */
 
 static void cmd_ver(void)
 {
@@ -211,7 +211,7 @@ static void cmd_echo(int argc, char **argv)
     uart_puts("\r\n");
 }
 
-/* ── Command dispatcher ──────────────────────────────────────────────────── */
+/* Command dispatcher */
 
 static void execute_command(char *cmdline)
 {
@@ -248,7 +248,7 @@ static void execute_command(char *cmdline)
     }
 }
 
-/* ── Kernel shell ────────────────────────────────────────────────────────── */
+/* Kernel shell */
 
 static void print_banner(void)
 {
@@ -313,11 +313,10 @@ static void kernel_shell(void)
     }
 }
 
-/* ── Kernel entry point ──────────────────────────────────────────────────── */
+/* Kernel entry point */
 
 void kernel_main(void)
 {
-    /* Initialize UART first so we can see output */
     uart_init();
     
     print_banner();

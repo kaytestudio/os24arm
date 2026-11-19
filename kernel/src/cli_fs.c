@@ -9,12 +9,12 @@
 #include "blkdev.h"
 #include <stdbool.h>
 
-/* ── Block device stubs (until blkdev functions are properly exposed) ────── */
+/* Block device commands */
 
 static blkdev_t* blkdev_get_by_name(const char *name)
 {
     (void)name;
-    /* TODO: Implement block device lookup when blkdev API is available */
+    /* The CLI module does not have access to the block-device registry yet. */
     return NULL;
 }
 
@@ -23,13 +23,13 @@ static void blkdev_list(void)
     kprintf("  (Block device enumeration not yet available)\n");
 }
 
-/* ── Global state ────────────────────────────────────────────────────────── */
+/* Global state */
 
 static char cwd[VFS_PATH_MAX] = "C:";
 
-/* ── Helper functions ────────────────────────────────────────────────────── */
+/* Helper functions */
 
-/* Simple unsigned long to string */
+/* Convert an unsigned long to decimal without libc. */
 static void ulong_to_str(unsigned long val, char *buf, size_t buf_size)
 {
     if (buf_size == 0) return;
@@ -119,7 +119,7 @@ static void format_attrs(uint32_t attrs, char *buf)
     buf[4] = '\0';
 }
 
-/* ── DIR command ─────────────────────────────────────────────────────────── */
+/* DIR command */
 
 void cli_cmd_dir(const char *args)
 {
@@ -147,7 +147,6 @@ void cli_cmd_dir(const char *args)
 
     kprintf("Directory of %s\n\n", path);
 
-    /* Open directory using FD-based API */
     int dfd = vfs_opendir(path);
 
     if (dfd < 0) {
@@ -155,7 +154,6 @@ void cli_cmd_dir(const char *args)
         return;
     }
 
-    /* Read directory entries */
     vfs_dirent_t ent;
     uint32_t file_count = 0;
     uint32_t dir_count = 0;
@@ -166,7 +164,6 @@ void cli_cmd_dir(const char *args)
             continue;
         }
 
-        /* Get file stats */
         char full_path[VFS_PATH_MAX];
         str_copy(full_path, path, VFS_PATH_MAX);
         str_append(full_path, "/", VFS_PATH_MAX);
@@ -217,7 +214,7 @@ const char* cli_fs_get_prompt(void)
     return "C:\\> ";
 }
 
-/* ── CD command ──────────────────────────────────────────────────────────── */
+/* CD command */
 
 void cli_cmd_cd(const char *args)
 {
@@ -246,7 +243,7 @@ void cli_cmd_cd(const char *args)
     kprintf("Changed to: %s\n", cwd);
 }
 
-/* ── TYPE command ────────────────────────────────────────────────────────── */
+/* TYPE command */
 
 void cli_cmd_type(const char *args)
 {
@@ -278,7 +275,7 @@ void cli_cmd_type(const char *args)
     kprintf("\n");
 }
 
-/* ── COPY command ────────────────────────────────────────────────────────── */
+/* COPY command */
 
 void cli_cmd_copy(const char *args)
 {
@@ -349,7 +346,7 @@ void cli_cmd_copy(const char *args)
     kprintf("Copied %lu bytes\n", (unsigned long)total_copied);
 }
 
-/* ── DEL command ─────────────────────────────────────────────────────────── */
+/* DEL command */
 
 void cli_cmd_del(const char *args)
 {
@@ -370,7 +367,7 @@ void cli_cmd_del(const char *args)
     }
 }
 
-/* ── MD command ──────────────────────────────────────────────────────────── */
+/* MD command */
 
 void cli_cmd_md(const char *args)
 {
@@ -391,7 +388,7 @@ void cli_cmd_md(const char *args)
     }
 }
 
-/* ── RD command ──────────────────────────────────────────────────────────── */
+/* RD command */
 
 void cli_cmd_rd(const char *args)
 {
@@ -412,7 +409,7 @@ void cli_cmd_rd(const char *args)
     }
 }
 
-/* ── VOL command ─────────────────────────────────────────────────────────── */
+/* VOL command */
 
 void cli_cmd_vol(const char *args)
 {
@@ -421,7 +418,7 @@ void cli_cmd_vol(const char *args)
     kprintf("Volume Serial Number is 1234-5678\n");
 }
 
-/* ── ATTRIB command ──────────────────────────────────────────────────────── */
+/* ATTRIB command */
 
 void cli_cmd_attrib(const char *args)
 {
@@ -447,28 +444,25 @@ void cli_cmd_attrib(const char *args)
     kprintf("%s  %s\n", attr_str, path);
 }
 /* ══════════════════════════════════════════════════════════════════════════
-   STUB FUNCTIONS - System & Unimplemented Commands
+   System and unimplemented commands
    ══════════════════════════════════════════════════════════════════════════ */
 
-/* Subsystem initialization stubs */
+/* Subsystem initialization hooks */
 void mem_init(uintptr_t start, size_t size)
 {
     (void)start;
     (void)size;
-    /* Memory allocator stub - implement later */
 }
 
 void scheduler_init(void)
 {
-    /* Scheduler stub - implement later */
 }
 
 void blk_init(void)
 {
-    /* Block device initialization stub - implement later */
 }
 
-/* General CLI command stubs */
+/* General CLI commands */
 void cli_cmd_ver(void)
 {
     kprintf("OS/2 Warp 4.52 ARM64\n");
@@ -528,7 +522,7 @@ void cli_cmd_prompt(const char *arg)
     kprintf("Prompt command not yet implemented\n");
 }
 
-/* Filesystem stubs for unimplemented commands */
+/* Filesystem commands that are not implemented yet */
 void cli_cmd_xcopy(const char *arg)
 {
     (void)arg;
@@ -575,20 +569,17 @@ void cli_cmd_format(const char *arg)
         return;
     }
 
-    /* Parse arguments */
     char device[64] = {0};
     char fstype[16] = "FAT32";  /* Default filesystem */
     char label[12] = "OS2DISK";  /* Default label */
     bool quick = false;
 
-    /* Simple argument parser */
+    /* Options are split on spaces; quoted values are not supported. */
     const char *p = arg;
     int i = 0;
 
-    /* Skip leading spaces */
     while (*p == ' ') p++;
 
-    /* Get device name */
     while (*p && *p != ' ' && *p != '/' && i < 63) {
         device[i++] = *p++;
     }
@@ -599,7 +590,6 @@ void cli_cmd_format(const char *arg)
         return;
     }
 
-    /* Parse options */
     while (*p) {
         while (*p == ' ') p++;
 
@@ -630,7 +620,6 @@ void cli_cmd_format(const char *arg)
         }
     }
 
-    /* Get block device */
     blkdev_t *dev = blkdev_get_by_name(device);
     if (!dev) {
         kprintf("Error: Block device '%s' not found\n", device);
@@ -639,7 +628,6 @@ void cli_cmd_format(const char *arg)
         return;
     }
 
-    /* Show warning */
     kprintf("\n");
     kprintf("WARNING: All data on %s will be destroyed!\n", device);
     kprintf("Device: %s (%lu MB)\n", dev->name,
@@ -650,7 +638,6 @@ void cli_cmd_format(const char *arg)
     kprintf("\n");
     kprintf("Proceeding with format...\n\n");
 
-    /* Format complete message */
     kprintf("Format complete.\n");
     kprintf("\n");
     kprintf("%lu bytes total disk space\n",
@@ -675,7 +662,6 @@ void cli_cmd_mount(const char *arg)
         return;
     }
 
-    /* Parse arguments */
     char device[64] = {0};
     char mountpoint[VFS_PATH_MAX] = {0};
     char fstype[16] = {0};  /* Empty = auto-detect */
@@ -683,19 +669,15 @@ void cli_cmd_mount(const char *arg)
     const char *p = arg;
     int i = 0;
 
-    /* Skip leading spaces */
     while (*p == ' ') p++;
 
-    /* Get device name */
     while (*p && *p != ' ' && i < 63) {
         device[i++] = *p++;
     }
     device[i] = '\0';
 
-    /* Skip spaces */
     while (*p == ' ') p++;
 
-    /* Get mount point */
     i = 0;
     while (*p && *p != ' ' && *p != '/' && i < VFS_PATH_MAX - 1) {
         mountpoint[i++] = *p++;
@@ -708,7 +690,6 @@ void cli_cmd_mount(const char *arg)
         return;
     }
 
-    /* Parse filesystem type option */
     while (*p) {
         while (*p == ' ') p++;
 
@@ -729,7 +710,6 @@ void cli_cmd_mount(const char *arg)
         }
     }
 
-    /* Get block device */
     blkdev_t *dev = blkdev_get_by_name(device);
     if (!dev) {
         kprintf("Error: Block device '%s' not found\n", device);
@@ -738,7 +718,7 @@ void cli_cmd_mount(const char *arg)
         return;
     }
 
-    /* Auto-detect filesystem if not specified */
+    /* Mount probing is not wired up yet; use FAT32 as the default. */
     if (!fstype[0]) {
         kprintf("Auto-detecting filesystem type...\n");
         kstrcpy(fstype, "FAT32");

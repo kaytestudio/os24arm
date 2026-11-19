@@ -58,7 +58,7 @@ static uint32_t qh, qt;
 
 static void usbkbd_idc(RP_GENIOCTL *rp);
 
-/* ── Requests ─────────────────────────────────────────────────────────── */
+/* Requests */
 static uint16_t submit(USBRb *rb)
 {
     rb->controllerId  = ctrl;
@@ -109,7 +109,7 @@ static void send_leds(void)
     class_request(setup_led, HID_REQ_SET_REPORT, 0x0200, led_data, 1, RQ_LED);
 }
 
-/* ── Raw key events (for /dev/input/event0) ───────────────────────────── */
+/* Raw key events (for /dev/input/event0) */
 /* Presses and releases as HID usages (page 7; modifiers are 0xE0-0xE7),
  * bit 8 = pressed. While grabbed, keys don't go to the ASCII queue. */
 #define RAWQ 128
@@ -150,7 +150,7 @@ void usbkbd_grab(int on)
     if (on) rep_key = 0;
 }
 
-/* ── Key translation ──────────────────────────────────────────────────── */
+/* Key translation */
 static void put(char c)
 {
     uint32_t next = (qt + 1) % sizeof q;
@@ -231,7 +231,7 @@ static void report(const uint8_t *r)
     usb_copy(prev, r, 8);
 }
 
-/* ── CHKSERV: accept a HID boot keyboard ──────────────────────────────── */
+/* CHKSERV: accept a HID boot keyboard */
 static int chkserv(USBCDServe *s)
 {
     DeviceInfo *di = s ? s->pDeviceInfo : 0;
@@ -286,7 +286,7 @@ static int chkserv(USBCDServe *s)
     return 1;
 }
 
-/* ── PRCIRQ: request completions ──────────────────────────────────────── */
+/* PRCIRQ: request completions */
 static void completion(USBRb *rb)
 {
     if (!active || rb->deviceAddress != addr || rb->controllerId != ctrl) return;
@@ -327,7 +327,7 @@ static void completion(USBRb *rb)
     }
 }
 
-/* ── IDC entry ────────────────────────────────────────────────────────── */
+/* IDC entry */
 static void usbkbd_idc(RP_GENIOCTL *rp)
 {
     uint16_t err = 0;
@@ -361,7 +361,7 @@ static void usbkbd_idc(RP_GENIOCTL *rp)
     rp->Status = err ? (uint16_t)(STATUS_DONE | STERR | err) : STATUS_DONE;
 }
 
-/* ── Driver lifecycle ─────────────────────────────────────────────────── */
+/* Driver lifecycle */
 static void try_register(void)
 {
     USBDClass c = { usbkbd_idc, 0 };
@@ -384,7 +384,7 @@ void usbkbd_init_complete(void)
     if (!registered) V("[USBKBD] USBD not loaded, driver inactive\n");
 }
 
-/* ── Console input ────────────────────────────────────────────────────── */
+/* Console input */
 int usbkbd_ready(void)
 {
     if (!registered) return 0;

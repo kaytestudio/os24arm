@@ -5,11 +5,10 @@
  * Loads the LX programs produced by this project's own toolchain (see the
  * top-level CMakeLists.txt's add_lx_executable()/add_lx_library() and the
  * CMD.EXE build target, all of which link via lx/lx_app.ld) and runs them
- * in-place, in the kernel's own address space - there is no process
- * isolation or syscall boundary in this project, so "loading" a program
- * just means copying its pages to the fixed addresses they were linked at
- * (LX_LOAD_BASE/LX_DATA_LOAD_BASE) and calling into it like any other
- * function.
+ * in-place, in the kernel's own address space. There is no process
+ * isolation or syscall boundary: the loader copies pages to their linked
+ * addresses (LX_LOAD_BASE/LX_DATA_LOAD_BASE) and calls the entry point
+ * directly.
  *
  * This only supports the flat, two-object, no-fixup LX files this
  * project's own build produces (see lx/lxbuilder.c and lx/lx_app.ld): a

@@ -5,9 +5,7 @@
 #include "blkdev.h"
 #include "vfs.h"
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   FAT32 on-disk structures  (all fields little-endian)
-   ───────────────────────────────────────────────────────────────────────────── */
+/* FAT32 on-disk structures; all fields are little-endian. */
 
 #define FAT32_SIGNATURE     0xAA55
 #define FAT32_EOC           0x0FFFFFF8U

@@ -4,7 +4,7 @@
  *
  * Not a port of illumos-kvm/Linux KVM (those are x86 VT-x and arm64 KVM
  * respectively, built on kernels this one doesn't have) - this borrows
- * KVM's *shape*: a vCPU you run until it exits back to the host with a
+ * KVM's model: run a vCPU until it exits to the host with a
  * reason (MMIO, shutdown, error), and the host's device model handles the
  * exit before running it again (see vcpu_run()).
  *
@@ -28,19 +28,19 @@
 #ifndef HYP_H
 #define HYP_H
 
-/* ── hvc #0 calls from the host kernel (x0 = call, x1.. = args) ──────── */
+/* hvc #0 calls from the host kernel (x0 = call, x1.. = args) */
 #define HYP_CALL_PROBE     0   /* -> x0 = HYP_MAGIC */
 #define HYP_CALL_INIT_MMU  1   /* x1 = TTBR0_EL2, x2 = TCR_EL2, x3 = MAIR_EL2 */
 #define HYP_CALL_RUN_VCPU  2   /* x1 = struct hyp_vcpu * -> x0 = HYP_EXIT_* */
 #define HYP_CALL_SYSTEM_OFF 3  /* PSCI SYSTEM_OFF, by smc from EL2 (no return) */
 #define HYP_MAGIC          0x48595021  /* "HYP!" */
 
-/* ── Why the guest stopped running (which EL2 vector it came in on) ──── */
+/* Why the guest stopped running (which EL2 vector it came in on) */
 #define HYP_EXIT_TRAP      0   /* synchronous: ESR_EL2 says what */
 #define HYP_EXIT_IRQ       1   /* physical IRQ/FIQ while the guest ran */
 #define HYP_EXIT_SERROR    2
 
-/* ── struct hyp_ctx: one full EL1 CPU context (guest or host) ────────── */
+/* struct hyp_ctx: one full EL1 CPU context (guest or host) */
 #define CTX_X        0     /* x0..x30 */
 #define CTX_PC       248   /* ELR_EL2 */
 #define CTX_PSTATE   256   /* SPSR_EL2 */
@@ -75,7 +75,7 @@
 #define CTX_SYS_CNTV_CTL    24   /* EL1 virtual timer: the guest's own */
 #define CTX_SYS_CNTV_CVAL   25
 
-/* ── struct hyp_vcpu: what EL2 needs to run one vCPU ─────────────────── */
+/* struct hyp_vcpu: what EL2 needs to run one vCPU */
 #define VCPU_GUEST       0
 #define VCPU_HOST        CTX_SIZE
 #define VCPU_HCR         (2 * CTX_SIZE)        /* HCR_EL2 while guest runs */
@@ -92,7 +92,7 @@
 
 #define HYP_VCPU_F_FLUSH_TLB  (1 << 0)   /* tlbi vmalls12e1 before entry */
 
-/* ── EL2 control register values ─────────────────────────────────────── */
+/* EL2 control register values */
 #define HCR_EL2_HOST   (1 << 31)             /* RW: EL1 is AArch64, nothing trapped */
 #define CPTR_EL2_HOST  0x33ff                /* RES1 bits only: FP/SIMD not trapped */
 #define CPTR_EL2_GUEST (CPTR_EL2_HOST | (1 << 10))  /* TFP: guest FP traps (not context-switched yet) */
@@ -131,7 +131,7 @@ struct hyp_vcpu {
     uint64_t slice;
 };
 
-/* ── KVM-style run API ───────────────────────────────────────────────── */
+/* KVM-style run API */
 
 enum vm_exit_reason {
     VM_EXIT_MMIO,            /* guest touched unmapped IPA space: see run.mmio */

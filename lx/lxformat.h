@@ -14,13 +14,13 @@
 
 #include <stdint.h>
 
-/* ── LX Magic Numbers ────────────────────────────────────────────────────── */
+/* LX Magic Numbers */
 
 #define LX_MAGIC1  'L'
 #define LX_MAGIC2  'X'
 #define LX_SIGNATURE  0x584C  /* "LX" */
 
-/* ── LX Module Flags ─────────────────────────────────────────────────────── */
+/* LX Module Flags */
 
 #define LXMF_PROGRAM          0x00000000  /* Program module (EXE) */
 #define LXMF_LIBRARY          0x00008000  /* Library module (DLL) */
@@ -36,7 +36,7 @@
 #define LXMF_USES_PM          0x00000300  /* Uses PM API */
 #define LXMF_NOT_LOADABLE     0x00002000  /* Not loadable (errors) */
 
-/* ── LX CPU Types ────────────────────────────────────────────────────────── */
+/* LX CPU Types */
 
 #define LXCPU_286    0x01
 #define LXCPU_386    0x02
@@ -44,14 +44,14 @@
 #define LXCPU_586    0x04  /* Pentium */
 #define LXCPU_ARM64  0x0A  /* ARM64 (custom for OS/2 Warp ARM64) */
 
-/* ── LX OS Types ─────────────────────────────────────────────────────────── */
+/* LX OS Types */
 
 #define LXOS_OS2     0x01  /* OS/2 */
 #define LXOS_WINDOWS 0x02  /* Windows */
 #define LXOS_DOS     0x03  /* DOS 4.x */
 #define LXOS_WIN386  0x04  /* Windows 386 */
 
-/* ── LX Object Flags ─────────────────────────────────────────────────────── */
+/* LX Object Flags */
 
 #define LXOBJ_READABLE        0x00000001  /* Readable */
 #define LXOBJ_WRITABLE        0x00000002  /* Writable */
@@ -70,7 +70,7 @@
 #define LXOBJ_CONFORMING      0x00004000  /* Conforming */
 #define LXOBJ_IOPL            0x00008000  /* IOPL */
 
-/* ── LX Page Flags ───────────────────────────────────────────────────────── */
+/* LX Page Flags */
 
 #define LXPAGE_VALID          0x00  /* Valid physical page */
 #define LXPAGE_ITERDATA       0x01  /* Iterated data */
@@ -78,7 +78,7 @@
 #define LXPAGE_ZEROED         0x03  /* Zero-filled page */
 #define LXPAGE_RANGE          0x04  /* Range of pages */
 
-/* ── LX Entry Table Bundle Types ─────────────────────────────────────────── */
+/* LX Entry Table Bundle Types */
 
 #define LXENTRY_TYPE_UNUSED   0x00  /* Empty bundle (skips ordinals) */
 #define LXENTRY_TYPE_16BIT    0x01  /* 16-bit offset entry */
@@ -96,7 +96,7 @@
 #pragma pack(push, 1)
 
 typedef struct {
-    /* ── Signature ────────────────────────────────────────────────────── */
+ /* Signature */
     uint8_t  signature[2];        /* "LX" magic bytes */
     uint8_t  byte_order;          /* Byte ordering (0=little endian) */
     uint8_t  word_order;          /* Word ordering (0=little endian) */
@@ -106,7 +106,7 @@ typedef struct {
     uint32_t module_version;      /* Module version */
     uint32_t module_flags;        /* Module flags (EXE, DLL, etc.) */
     
-    /* ── Module Information ───────────────────────────────────────────── */
+ /* Module Information */
     uint32_t module_pages;        /* Number of memory pages */
     uint32_t eip_object;          /* Object number for EIP */
     uint32_t eip;                 /* Starting EIP value */
@@ -119,7 +119,7 @@ typedef struct {
     uint32_t loader_section_size; /* Loader section size */
     uint32_t loader_section_checksum; /* Loader section checksum */
     
-    /* ── Table Offsets ────────────────────────────────────────────────── */
+ /* Table Offsets */
     uint32_t object_table_offset; /* Offset to object table */
     uint32_t object_count;        /* Number of objects */
     uint32_t object_page_table_offset; /* Offset to object page table */
@@ -150,7 +150,7 @@ typedef struct {
     uint32_t stack_size;               /* Stack size */
 } LXHeader;
 
-/* ── LX Object Table Entry ───────────────────────────────────────────────── */
+/* LX Object Table Entry */
 
 typedef struct {
     uint32_t virtual_size;        /* Virtual segment size */
@@ -161,7 +161,7 @@ typedef struct {
     uint32_t reserved;            /* Reserved (must be 0) */
 } LXObject;
 
-/* ── LX Object Page Table Entry ──────────────────────────────────────────── */
+/* LX Object Page Table Entry */
 
 typedef struct {
     uint32_t page_data_offset;    /* Offset to page data (high 24 bits) */
@@ -169,7 +169,7 @@ typedef struct {
     uint16_t flags;               /* Page flags */
 } LXPage;
 
-/* ── LX Fixup Record ─────────────────────────────────────────────────────── */
+/* LX Fixup Record */
 
 typedef struct {
     uint8_t  source_type;         /* Source type */
@@ -179,14 +179,14 @@ typedef struct {
     uint32_t target_offset;       /* Target offset */
 } LXFixup;
 
-/* ── LX Import Module Entry ──────────────────────────────────────────────── */
+/* LX Import Module Entry */
 
 typedef struct {
     uint8_t  name_length;         /* Length of module name */
     char     name[255];           /* Module name */
 } LXImportModule;
 
-/* ── LX Resident/Non-Resident Name Entry ─────────────────────────────────── */
+/* LX Resident/Non-Resident Name Entry */
 
 typedef struct {
     uint8_t  name_length;         /* Length of name */
@@ -194,7 +194,7 @@ typedef struct {
     uint16_t ordinal;             /* Ordinal number */
 } LXName;
 
-/* ── LX Entry Table Bundle ───────────────────────────────────────────────── */
+/* LX Entry Table Bundle */
 
 typedef struct {
     uint8_t  entry_count;         /* Number of entries */

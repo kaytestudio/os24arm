@@ -50,7 +50,7 @@ typedef struct {
     uint16_t Characteristics;
 } IMAGE_FILE_HEADER;
 
-// PE Optional Header (simplified for ARM64)
+// PE32+ optional-header fields used by the current ARM64 emitter.
 typedef struct {
     uint16_t Magic;
     uint8_t  MajorLinkerVersion;
@@ -126,9 +126,9 @@ static size_t generate_arm64_code(kayte_insn_t *instructions, int count, uint32_
                 break;
                 
             case 14: // OP_HALT
-                // Exit via ExitProcess (syscall or function call)
+                // Placeholder only: Windows process exit needs an imported runtime call.
                 emit_arm64_insn(&code_ptr, 0xD2800000); // mov x0, #0
-                emit_arm64_insn(&code_ptr, 0xD4000001); // svc #0 (simplified)
+                emit_arm64_insn(&code_ptr, 0xD4000001); // svc #0
                 break;
                 
             default:

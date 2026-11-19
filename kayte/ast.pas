@@ -59,8 +59,6 @@ begin
   Result := TStatementNode(inherited Get(Index));
 end;
 
-// Now, implement the constructors for the new expression node classes
-
 { TLiteralNode }
 constructor TLiteralNode.Create(ALexeme: String; ATokenType: TTokenType);
 begin

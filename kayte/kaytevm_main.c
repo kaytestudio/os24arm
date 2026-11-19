@@ -24,10 +24,9 @@
  * real OS/2 LX DLL that KAYTEVM.EXE embeds a build-time copy of
  * (os2api/doscalls_embed.S.in) and loads via the kernel's built-in DLL
  * loader (kernel/src/lx_dll_loader.c) - see os2api/os2_api_import.h/.c.
- * The DLL owns its own private vfs.c/blkdev.c/ext4.c/btrfs.c state and
- * mounts it lazily, on whichever Dos* call touches storage first - this
- * program's own mem_init() below is unrelated, just this VM's own working
- * memory (bytecode, strings, variables).
+ * The DLL has a private filesystem stack and mounts it on the first Dos*
+ * storage call. The mem_init() below allocates the VM's bytecode and data;
+ * it is separate from the DLL's filesystem state.
  */
 
 #include "lx_services.h"

@@ -16,7 +16,6 @@ typedef struct {
 #define ELF_MACHINE_AARCH64 183
 #define PAGE_SIZE 4096
 
-// Function to write ELF header
 static int write_elf_header(FILE *fp, size_t code_size) {
     Elf64_Ehdr ehdr = {0};
     
@@ -44,7 +43,6 @@ static int write_elf_header(FILE *fp, size_t code_size) {
     return fwrite(&ehdr, sizeof(ehdr), 1, fp) == 1 ? 0 : -1;
 }
 
-// Function to write program header
 static int write_program_header(FILE *fp, size_t code_size) {
     Elf64_Phdr phdr = {0};
     
@@ -93,8 +91,8 @@ static size_t generate_arm64_code(kayte_insn_t *instructions, int count, uint32_
                 break;
                 
             case 13: // OP_PRINT
-                // Call printf or syscall
-                emit_arm64_insn(&code_ptr, 0xD503201F); // nop (placeholder)
+                // PRINT is unsupported; emit a NOP until runtime calls are wired in.
+                emit_arm64_insn(&code_ptr, 0xD503201F);
                 break;
                 
             case 14: // OP_HALT

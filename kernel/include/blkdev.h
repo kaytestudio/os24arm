@@ -46,7 +46,7 @@ struct blkdev {
 #define BLKDEV_PARTITION  (1 << 2)
 #define BLKDEV_BOOT       (1 << 3)   /* MBR "active" partition (boot flag 0x80) */
 
-/* ── Block device management ────────────────────────────────────────────── */
+/* Block device management */
 
 /**
  * Initialize block device subsystem
@@ -93,7 +93,7 @@ static inline int blk_read(blkdev_t *dev, int64_t sector, uint32_t count, void *
 {
     if (!dev || !dev->read) return -1;
     
-    /* If this is a partition, adjust sector offset */
+    /* Add the partition's starting sector before reading the device. */
     if (dev->parent) {
         sector += dev->start_sector;
     }
@@ -109,7 +109,7 @@ static inline int blk_write(blkdev_t *dev, int64_t sector, uint32_t count, const
     if (!dev || !dev->write) return -1;
     if (dev->flags & BLKDEV_READONLY) return -1;
     
-    /* If this is a partition, adjust sector offset */
+    /* Translate partition-relative sectors to the parent device. */
     if (dev->parent) {
         sector += dev->start_sector;
     }

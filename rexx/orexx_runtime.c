@@ -77,7 +77,7 @@ typedef struct ORexxParserState {
     char         *current_class;  /* Name of class being defined */
 } ORexxParserState;
 
-/* ── Helper: Check if token matches keyword ──────────────────────────────── */
+/* ── Keyword matching ───────────────────────────────────────────────────── */
 
 static int orexx_match_keyword(const char **src, const char *keyword)
 {
@@ -148,11 +148,7 @@ static char* orexx_parse_identifier(const char **src)
     return id;
 }
 
-/* ══════════════════════════════════════════════════════════════════════════
-   PARSE ::CLASS DIRECTIVE
-
-   Syntax: ::CLASS name [SUBCLASS parent] [PUBLIC|PRIVATE]
-   ══════════════════════════════════════════════════════════════════════════ */
+/* Parse ::CLASS name [SUBCLASS parent] [PUBLIC|PRIVATE]. */
 
 AST* orexx_parse_class_directive(ORexxParserState *state)
 {
@@ -168,13 +164,11 @@ AST* orexx_parse_class_directive(ORexxParserState *state)
     char *classname = orexx_parse_identifier(&s);
     if (!classname) return NULL;
 
-    /* Check for SUBCLASS */
     char *superclass = NULL;
     if (orexx_match_keyword(&s, "SUBCLASS")) {
         superclass = orexx_parse_identifier(&s);
     }
 
-    /* Check for visibility */
     uint32_t flags = OREXX_METHOD_PUBLIC;  /* Default PUBLIC */
     if (orexx_match_keyword(&s, "PUBLIC")) {
         flags = OREXX_METHOD_PUBLIC;
@@ -182,7 +176,6 @@ AST* orexx_parse_class_directive(ORexxParserState *state)
         flags = OREXX_METHOD_PRIVATE;
     }
 
-    /* Create AST node */
     AST *node = mem_alloc(sizeof(AST));  /* TODO: Use proper allocator */
     if (!node) return NULL;
 
@@ -204,11 +197,7 @@ AST* orexx_parse_class_directive(ORexxParserState *state)
     return node;
 }
 
-/* ══════════════════════════════════════════════════════════════════════════
-   PARSE ::METHOD DIRECTIVE
-
-   Syntax: ::METHOD name [PUBLIC|PRIVATE|PROTECTED]
-   ══════════════════════════════════════════════════════════════════════════ */
+/* Parse ::METHOD name [PUBLIC|PRIVATE|PROTECTED]. */
 
 AST* orexx_parse_method_directive(ORexxParserState *state)
 {
@@ -224,7 +213,6 @@ AST* orexx_parse_method_directive(ORexxParserState *state)
     char *methodname = orexx_parse_identifier(&s);
     if (!methodname) return NULL;
 
-    /* Check for visibility */
     uint32_t flags = OREXX_METHOD_PUBLIC;  /* Default PUBLIC */
     if (orexx_match_keyword(&s, "PUBLIC")) {
         flags = OREXX_METHOD_PUBLIC;
@@ -234,7 +222,6 @@ AST* orexx_parse_method_directive(ORexxParserState *state)
         flags = OREXX_METHOD_PROTECTED;
     }
 
-    /* Create AST node */
     AST *node = mem_alloc(sizeof(AST));
     if (!node) return NULL;
 
@@ -255,11 +242,7 @@ AST* orexx_parse_method_directive(ORexxParserState *state)
     return node;
 }
 
-/* ══════════════════════════════════════════════════════════════════════════
-   PARSE EXPOSE STATEMENT
-
-   Syntax: EXPOSE var1 var2 var3 ...
-   ══════════════════════════════════════════════════════════════════════════ */
+/* Parse an EXPOSE statement listing variable names. */
 
 AST* orexx_parse_expose(ORexxParserState *state)
 {
@@ -281,13 +264,11 @@ AST* orexx_parse_expose(ORexxParserState *state)
         /* Skip whitespace */
         while (*s == ' ' || *s == '\t') s++;
 
-        /* Check for end of line */
         if (*s == '\n' || *s == '\r' || *s == '\0') break;
     }
 
     if (count == 0) return NULL;
 
-    /* Create AST node */
     AST *node = mem_alloc(sizeof(AST));
     node->type = OREXX_AST_EXPOSE;
     node->value = (char*)vars;
@@ -297,12 +278,7 @@ AST* orexx_parse_expose(ORexxParserState *state)
     return node;
 }
 
-/* ══════════════════════════════════════════════════════════════════════════
-   PARSE MESSAGE SEND
-
-   Syntax: object~method(arg1, arg2, ...)
-           .ClassName~new(args)
-   ══════════════════════════════════════════════════════════════════════════ */
+/* Parse object~method(args) and .ClassName~new(args) message sends. */
 
 AST* orexx_parse_message_send(ORexxParserState *state, AST *receiver)
 {
@@ -338,12 +314,11 @@ AST* orexx_parse_message_send(ORexxParserState *state, AST *receiver)
             }
 
             /* Parse argument expression */
-            /* TODO: Call main parser to parse expression */
-            /* For now, just skip to comma or close paren */
+            /* Preserve the argument text until the main expression parser is available. */
             const char *arg_start = s;
             while (*s && *s != ',' && *s != ')') s++;
 
-            /* Create string literal AST for arg (simplified) */
+            /* Preserve the source text as a string literal node. */
             AST *arg = mem_alloc(sizeof(AST));
             arg->type = 0;  /* String literal */
             size_t arg_len = s - arg_start;
@@ -359,7 +334,6 @@ AST* orexx_parse_message_send(ORexxParserState *state, AST *receiver)
         }
     }
 
-    /* Create message send AST */
     AST *node = mem_alloc(sizeof(AST));
     node->type = OREXX_AST_MESSAGE_SEND;
 
@@ -375,11 +349,7 @@ AST* orexx_parse_message_send(ORexxParserState *state, AST *receiver)
     return node;
 }
 
-/* ══════════════════════════════════════════════════════════════════════════
-   PARSE CLASS REFERENCE
-
-   Syntax: .ClassName
-   ══════════════════════════════════════════════════════════════════════════ */
+/* Parse a .ClassName reference. */
 
 AST* orexx_parse_class_reference(ORexxParserState *state)
 {
@@ -394,14 +364,13 @@ AST* orexx_parse_class_reference(ORexxParserState *state)
     char *classname = orexx_parse_identifier(&s);
     if (!classname) return NULL;
 
-    /* Create AST node */
     AST *node = mem_alloc(sizeof(AST));
     node->type = OREXX_AST_CLASS_REF;
     node->value = classname;
 
     state->source = s;
 
-    /* Check if this is followed by ~new() or another message */
+    /* Continue parsing a chained message send when '~' follows. */
     const char *peek = s;
     while (*peek == ' ' || *peek == '\t') peek++;
     if (*peek == '~') {
@@ -412,9 +381,7 @@ AST* orexx_parse_class_reference(ORexxParserState *state)
     return node;
 }
 
-/* ══════════════════════════════════════════════════════════════════════════
-   MAIN OBJECT REXX PARSER ENTRY POINT
-   ══════════════════════════════════════════════════════════════════════════ */
+/* Object REXX parser entry point */
 
 AST* orexx_parse_statement(Parser *parser)
 {
@@ -431,7 +398,6 @@ AST* orexx_parse_statement(Parser *parser)
     while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') s++;
     state.source = s;
 
-    /* Check for directive (::) */
     if (*s == ':' && *(s+1) == ':') {
         /* Try ::CLASS */
         AST *node = orexx_parse_class_directive(&state);
@@ -448,7 +414,6 @@ AST* orexx_parse_statement(Parser *parser)
         }
     }
 
-    /* Check for EXPOSE */
     if (state.in_method && orexx_match_keyword(&s, "EXPOSE")) {
         state.source = s - 6;  /* Back up to start of EXPOSE */
         AST *node = orexx_parse_expose(&state);
@@ -458,7 +423,6 @@ AST* orexx_parse_statement(Parser *parser)
         }
     }
 
-    /* Check for class reference (.ClassName) */
     if (*s == '.') {
         AST *node = orexx_parse_class_reference(&state);
         if (node) {
@@ -467,25 +431,10 @@ AST* orexx_parse_statement(Parser *parser)
         }
     }
 
-    /* Check for message send in variable (var~method) */
-    /* This requires integration with main expression parser */
-    /* TODO: Hook into main parser to detect ~ operator */
+    /* The main expression parser must recognize the Object REXX ~ operator. */
 
     /* Not an Object REXX construct - let main parser handle it */
     return NULL;
 }
 
-/* ══════════════════════════════════════════════════════════════════════════
-   INTEGRATION WITH MAIN PARSER
-   ══════════════════════════════════════════════════════════════════════════ */
-
-/*
- * To integrate with the main REXX parser (parser.c), add this at the
- * beginning of parse_statement():
- *
- *   // Try Object REXX syntax first
- *   AST *orexx_node = orexx_parse_statement(parser);
- *   if (orexx_node) return orexx_node;
- *
- *   // Continue with normal REXX parsing...
- */
+/* The main statement parser must call this before its standard REXX parser. */

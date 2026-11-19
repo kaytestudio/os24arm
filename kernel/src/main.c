@@ -48,7 +48,7 @@ extern uint8_t _bss_end;
 extern void mem_init(uintptr_t start, size_t size);
 extern void scheduler_init(void);
 
-/* ── UART ────────────────────────────────────────────────────────────────── */
+/* UART */
 
 #define UART_BASE    ((volatile ULONG *)0x09000000UL)
 #define UART_DR      (UART_BASE + 0x00)
@@ -82,7 +82,7 @@ static void uart_puthex(ULONG val)
         uart_putc(hex[(val >> shift) & 0xF]);
 }
 
-/* ── String utilities ────────────────────────────────────────────────────── */
+/* String utilities */
 
 static int my_strcmp(const char *s1, const char *s2)
 {
@@ -144,8 +144,7 @@ static void cmd_gui_flat_background(wl_surface_t *surface, fb_rect_t damage)
     wl_buf_fillrect(surface, 0, 0, surface->width, surface->height, WPS_WINDOW_BG);
 }
 
-/* One distinctly-colored demo window per extra workplace, so switching
- * with Cmd+Escape is obviously visible. */
+/* Give each extra workplace a distinct background. */
 static void cmd_gui_wp2_background(wl_surface_t *surface, fb_rect_t damage)
 {
     (void)damage;
@@ -233,38 +232,12 @@ static void str_toupper(char *s)
     }
 }
 
-/* ── BASIC Interpreter ───────────────────────────────────────────────────── */
-/* OLD SIMPLE BASIC - REPLACED WITH FULL QUICKBASIC INTERPRETER FROM basic.c
-
-#define MAX_BASIC_LINES 100
-#define MAX_BASIC_VARS  26
-#define MAX_LINE_LEN    256
-
-typedef struct {
-    int line_num;
-    char code[MAX_LINE_LEN];
-} basic_line_t;
-
-static basic_line_t basic_program[MAX_BASIC_LINES];
-static int basic_line_count = 0;
-static int basic_vars[MAX_BASIC_VARS];
-static int basic_pc = 0;
-
-static void basic_init(void) { ... }
-static int basic_find_line(int line_num) { ... }
-static void basic_insert_line(int line_num, const char *code) { ... }
-static int basic_eval_expr(const char *expr) { ... }
-static void basic_exec_line(const char *line) { ... }
-
-END OF OLD BASIC CODE */
-
 static void cmd_basic(void)
 {
-    /* Call the full QuickBASIC interpreter from basic.c */
     basic_run();
 }
 
-/* ── Other Commands (VER, HELP, DIR, etc.) ──────────────────────────────── */
+/* Other Commands (VER, HELP, DIR, etc.) */
 
 static void cmd_ver(void)
 {
@@ -428,7 +401,7 @@ uint32_t kernel_time_seconds(void)
     return *(volatile uint32_t *)0x09010000UL;
 }
 
-/* ── MOUNT / UMOUNT ──────────────────────────────────────────────────────────
+/* Mount and unmount block devices.
  * Mount an HPFS or FAT16/FAT32 block device (e.g. a USB stick's
  * partition, usb0p1) after boot, reachable from the shell as \<DIR>:
  *   MOUNT                  list mounts and block devices
@@ -716,7 +689,7 @@ static void cmd_desktop(int argc, char **argv)
     if (status != 0) kprintf("\nThe desktop ended unexpectedly (status %d)\n", status);
 }
 
-/* ── Command dispatcher ──────────────────────────────────────────────────── */
+/* Command dispatcher */
 
 static void execute_command(char *cmdline)
 {
@@ -818,7 +791,7 @@ static void execute_command(char *cmdline)
     }
 }
 
-/* ── The shell for Linux programs (/dev/os2cmd) ──────────────────────────
+/* The shell for Linux programs (/dev/os2cmd).
  * kernel/src/linux/linux.c runs command lines a Linux program writes to
  * /dev/os2cmd through here, with console output captured for it to read
  * back: the same interpreter, mounts and current directory as this shell,
@@ -912,7 +885,7 @@ void os2_shell_line(const char *line)
     execute_command(buffer);
 }
 
-/* ── Kernel shell ────────────────────────────────────────────────────────── */
+/* Kernel shell */
 
 static void print_banner(void)
 {
@@ -1004,7 +977,7 @@ static void desktop_at_boot(void)
             if ((d->name[0] | 0x20) == 'u' && (d->name[1] | 0x20) == 's' && (d->name[2] | 0x20) == 'b')
                 stick = 1;
         }
-        if (stick && t >= 100) break;                   /* (half a second to change your mind) */
+        if (stick && t >= 100) break;                   /* Leave a 500 ms window to cancel from the console. */
         uart_idle_wait();
     }
     char *av[1] = { "DESKTOP" };
@@ -1044,7 +1017,7 @@ static void kernel_shell(void)
     }
 }
 
-/* ── Kernel entry point ──────────────────────────────────────────────────── */
+/* Kernel entry point */
 
 extern void stack_protector_reseed(void);
 
@@ -1079,7 +1052,7 @@ void kernel_main(void)
     blk_init();
 
 
-    /* ── IFS Loader Integration ─────────────────────────────────────────── */
+ /* IFS Loader Integration */
     uart_puts("[IFS]    Initializing IFS loader...\r\n");
     ifs_loader_init();
 
@@ -1118,10 +1091,8 @@ void kernel_main(void)
     if (ifs_register_builtin("RAMFS", ramfs_ifs_init, &vfs_ramfs) != 0)
         uart_puts("[IFS]    ERROR: Failed to register RAMFS driver\r\n");
 
-    /* For now, manually initialize all three with default parameters; each
-     * looks for its own block device and no-ops if it isn't present. FAT
-     * takes the "BOOT" partition (/BOOT); ext4 and btrfs both try "C" (/)
-     * and only the one whose superblock matches mounts it. */
+    /* Probe available devices with default settings. FAT mounts BOOT at
+     * /BOOT; ext4 and btrfs try C: at /. Only the matching driver mounts. */
     uart_puts("[IFS]    Loading drivers with default parameters...\r\n");
     fat32_init(NULL);
     ext4_init("/CACHE:1024");
@@ -1133,7 +1104,7 @@ void kernel_main(void)
     }
     hpfs_init("/CACHE:1024");   /* any HPFS volume -> /HPFS */
 
-    /* ── CONFIG.SYS / UNIXROOT ────────────────────────────────────────────
+    /* CONFIG.SYS / UNIXROOT.
      * Root is now mounted at "/" (see ext4_init/btrfs_init above - that
      * mount IS drive C:, per unixroot.h). Load CONFIG.SYS from it if
      * present, so "SET UNIXROOT=..." / "SET USER=..." there can steer the

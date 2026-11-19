@@ -62,7 +62,7 @@ static vfs_fs_t btrfs_fs_ops = {
     .statfs   = btrfs_statfs,
 };
 
-/* ── Key helpers ─────────────────────────────────────────────────────────── */
+/* Key helpers */
 
 int key_cmp(const btrfs_key_t *a, const btrfs_key_t *b)
 {
@@ -89,7 +89,7 @@ btrfs_key_t key_successor(btrfs_key_t k)
     return k;
 }
 
-/* ── Physical / logical block I/O ───────────────────────────────────────── */
+/* Physical / logical block I/O */
 
 int btrfs_read_phys(blkdev_t *dev, uint64_t phys_offset, void *buf, uint32_t len)
 {
@@ -175,7 +175,7 @@ int btrfs_write_node(btrfs_mount_t *mnt, uint64_t logical, const uint8_t *buf)
     return btrfs_write_logical(mnt, logical, buf, mnt->nodesize);
 }
 
-/* ── Chunk map ───────────────────────────────────────────────────────────── */
+/* Chunk map */
 
 void add_chunk_map(btrfs_mount_t *mnt, uint64_t logical, uint64_t length, uint64_t phys, uint64_t type)
 {
@@ -255,10 +255,10 @@ static void chunk_tree_leaf_cb(btrfs_mount_t *mnt, const uint8_t *leaf, void *ct
     }
 }
 
-/* ── Generic B-tree search: descend to the leaf that would contain
+/* Generic B-tree search: descend to the leaf that would contain
  * target_key, returning that leaf's raw bytes and the lower-bound item
  * index within it (first item with key >= target_key, or nritems if
- * every item in this leaf sorts before target_key). ─────────────────── */
+ * every item in this leaf sorts before target_key). */
 
 int btrfs_search(btrfs_mount_t *mnt, uint64_t root_logical, uint8_t root_level,
                          btrfs_key_t target, uint8_t *leaf_out, uint32_t *index_out)
@@ -309,7 +309,7 @@ int item_at(const uint8_t *leaf, uint32_t index, btrfs_item_t *out_item, const u
     return VFS_OK;
 }
 
-/* ── Inode / directory / file operations ────────────────────────────────── */
+/* Inode / directory / file operations */
 
 int btrfs_read_inode(btrfs_mount_t *mnt, uint64_t ino, btrfs_inode_item_t *out)
 {
@@ -494,7 +494,7 @@ int btrfs_inode_pread(btrfs_mount_t *mnt, uint64_t ino, btrfs_inode_item_t *inod
     return VFS_OK;
 }
 
-/* ── Mount / unmount ─────────────────────────────────────────────────────── */
+/* Mount / unmount */
 
 static int btrfs_mount_impl(vfs_mount_t *mnt)
 {
@@ -617,7 +617,7 @@ static int btrfs_unmount_impl(vfs_mount_t *mnt)
     return VFS_OK;
 }
 
-/* ── File operations ─────────────────────────────────────────────────────── */
+/* File operations */
 
 static int btrfs_open(vfs_mount_t *mnt, const char *path, int flags, void **fpriv)
 {
@@ -701,7 +701,7 @@ static int btrfs_write(vfs_mount_t *mnt, void *fpriv, const void *buf, uint32_t 
     return btrfs_write_data(f, buf, len, actual);
 }
 
-/* ── Directory operations ────────────────────────────────────────────────── */
+/* Directory operations */
 
 static int btrfs_opendir(vfs_mount_t *mnt, const char *path, void **dpriv)
 {
@@ -764,7 +764,7 @@ static int btrfs_closedir(vfs_mount_t *mnt, void *dpriv)
     return VFS_OK;
 }
 
-/* ── Metadata ─────────────────────────────────────────────────────────────── */
+/* Metadata */
 
 static int btrfs_stat(vfs_mount_t *mnt, const char *path, vfs_stat_t *st)
 {
@@ -814,7 +814,7 @@ static int btrfs_rename(vfs_mount_t *mnt, const char *old, const char *nw)
     return btrfs_do_rename(bmnt, old, nw);
 }
 
-/* ── Driver init / VFS wiring ────────────────────────────────────────────── */
+/* Driver init / VFS wiring */
 
 /* A btrfs superblock (its magic, 64 KB in)? */
 int btrfs_probe(blkdev_t *dev)

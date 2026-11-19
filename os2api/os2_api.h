@@ -73,16 +73,15 @@ uint32_t os2_to_vfs_attrs(uint16_t os2_attrs);
 /** Convert VFS_ATTR_* to OS/2 (FILESTATUS-style) attributes */
 uint16_t vfs_to_os2_attrs(uint32_t vfs_attrs);
 
-/** This will convert a 16:32 SS:ESP value to a 16:16 SS:SP value. **/
+/** Convert a 16:32 SS:ESP value to 16:16 SS:SP. */
 VOID APIENTRY KernThunkStackTo16(VOID);
 
-/** This will convert a 16:16 SS:SP value back to a 16:32 SS:ESP value. **/
+/** Convert 16:16 SS:SP back to 16:32 SS:ESP. */
 VOID APIENTRY KernThunkStackTo32(VOID);
 
-/** This will convert a 16:32 SS:ESP value to a native 64-bit AArch64 SP
- *  value. There is no such conversion in real OS/2 (32-bit only); this
- *  exists purely so 32-bit-shaped callers on this ARM64 port have a way
- *  to land back on the native flat 64-bit stack. **/
+/** Convert 16:32 SS:ESP to the native AArch64 stack. OS/2 itself has no
+ *  equivalent; this entry point lets 32-bit-shaped callers return to the
+ *  flat 64-bit stack on this port. */
 VOID APIENTRY KernThunkStackTo64(VOID);
 
 /** Acquire the global serialization lock real OS/2 required before entering
@@ -92,8 +91,7 @@ VOID APIENTRY KernSerialize16BitDD(VOID);
 /** Release the lock acquired by KernSerialize16BitDD(). **/
 VOID APIENTRY KernUnSerialize16BitDD(VOID);
 
-/** Copy a buffer of user space data into a kernel buffer. **/
-
+/** Copy bytes between user and kernel address spaces. */
 APIRET APIENTRY KernCopyIn(PVOID trgt, PVOID src, ULONG size);
 APIRET APIENTRY KernCopyOut(PVOID trgt, PVOID src, ULONG size);
 

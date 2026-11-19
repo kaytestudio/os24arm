@@ -75,7 +75,7 @@ static int trace;
 static char self_path[PATH_MAX] = "/h/OS2/os2x86";
 static const char *prog_name = "os2x86";
 
-/* ── guest memory access (no longjmp: these just fail) ── */
+/* ── Guest memory access; invalid addresses return failure without unwinding. ── */
 static int ok(uint32_t a, uint32_t n) { return mem_ok(&C, a, n); }
 static uint32_t g32(uint32_t a) { uint32_t v = 0; if (ok(a, 4)) memcpy(&v, C.mem + a, 4); return v; }
 static uint16_t g16(uint32_t a) { uint16_t v = 0; if (ok(a, 2)) memcpy(&v, C.mem + a, 2); return v; }
@@ -489,9 +489,9 @@ static int unpack2(uint8_t *dst, uint32_t dsz, const uint8_t *s, uint32_t n)
 static const char *libs[64] = { "DOSCALLS", "NLS", "MSG", "QUECALLS", "SESMGR", "KBDCALLS", "VIOCALLS", "MOUCALLS", "PMWIN", "PMGPI", "PMDRAG", "PMSHAPI", "HELPMGR", "PMCTLS", "PMSPL", 0 };
 enum { L_DOS, L_NLS, L_MSG, L_QUE, L_SES, L_KBD, L_VIO, L_MOU, L_PMWIN, L_PMGPI, L_PMDRAG, L_PMSHAPI, L_HELPMGR, L_PMCTLS, L_PMSPL, NLIBS };
 static int nlibs = NLIBS;
-/* OS/2 DLLs we don't have yet: a program importing from one still starts
- * (C runtimes link PM's message box for error reports); calling into one
- * prints a note and returns 0 */
+/* These DLL imports are stubbed so programs can start even when a C runtime
+ * imports PM message-box support for error reports. Calls print a note and
+ * return 0. */
 static const char *const sysdlls[] = { "PMVIOP",
     "PMWP", "PMMERGE", "PMBIDI", "PMPIC", "PMATM", "PMPRINTF", "PMSEC", "BDCALLS", "MONCALLS",
     "NAMPIPES", "SO32DLL", "TCP32DLL", "SOM", "SOMU", "MMPM", "MDM", "UCONV", "LIBUNI", 0 };
@@ -2415,7 +2415,7 @@ static uint32_t api_DosCreateThread(void)
     t->stack = stack;
     t->state = 1;
     t->suspended = flags & CREATE_SUSPENDED;
-    /* its information blocks go just past its stack */
+    /* Place the thread information blocks immediately after the stack. */
     uint32_t top = stack + cb, ttib = top, ttib2 = top + 0x40;
     p32(ttib, 0xFFFFFFFF); p32(ttib + 4, stack); p32(ttib + 8, top); p32(ttib + 12, ttib2);
     p32(ttib + 16, 20); p32(ttib + 20, t->tid);
@@ -3020,7 +3020,7 @@ static void scroll(int up)                     /* (top, left, bot, right, lines,
     attr_out(a);
     tty_out("\0337", 2);
     if (lines >= bot - top + 1 || left > 0 || right + 1 < (uint32_t)cols) {
-        /* the whole area (if it's not full width, just clear it) */
+        /* Clear the rectangle when it does not span the full terminal width. */
         if (lines) for (uint32_t r = top; r <= bot; r++) {
             at(r, left);
             for (uint32_t k = left; k <= right; k++) tty_out((char *)&ch, 1);

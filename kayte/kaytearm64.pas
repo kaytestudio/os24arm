@@ -1,13 +1,12 @@
 (*
   KayteArm64.pas
   -------------
-  Free Pascal unit that declares the ARM64 native code compiler.
-  The Kayte compiler/VM includes this to emit native Mach-O executables.
+  Free Pascal bindings for the ARM64 native code compiler.
+  The Kayte compiler uses these to emit native Mach-O executables.
   Build:
     1. Compile the C side:
        clang -c -O2 -std=c11 kayte_arm64_emit.c -o kayte_arm64_emit.o
-    2. Link with your Kayte project:
-       Add to your .lpi or use:
+    2. Link the object into the Kayte project, for example:
          {$LINKOBJ kayte_arm64_emit.o}
 *)
 unit KayteArm64;

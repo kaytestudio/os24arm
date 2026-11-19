@@ -62,13 +62,11 @@ typedef unsigned long uint64_t;
 #define VRING_DESC_F_NEXT   1
 #define VRING_DESC_F_WRITE  2
 
-/* Only ever 2 descriptors in flight at once (cmd + resp) - see file
- * header - so this just needs to be at least 2. */
+/* Two descriptors are in flight (command and response); use a four-entry queue. */
 #define QUEUE_SIZE 4
 
-/* Bounded spin for the synchronous control-queue request/response wait,
- * so a misconfigured or absent device can't hang boot instead of just
- * failing virtio_gpu_init(). Not a real timer - just an iteration cap. */
+/* Iteration limit for synchronous control-queue requests. This is not a
+ * timer, but it prevents a missing or misconfigured GPU from hanging boot. */
 #define GPU_CTRLQ_TIMEOUT  100000000UL
 
 /* virtio-gpu control queue command types (include/uapi/linux/virtio_gpu.h) */
@@ -404,8 +402,7 @@ bool virtio_gpu_resized(uint32_t *w, uint32_t *h)
     return virtio_gpu_host_size(w, h);
 }
 
-/* Shows the tightly packed width x height buffer at fb_addr: a new
- * resource on the scanout, the old one let go of. */
+/* Bind this tightly packed framebuffer to scanout, replacing the prior resource. */
 bool virtio_gpu_set_mode(void *fb_addr, uint32_t width, uint32_t height)
 {
     uint32_t old = g_available ? g_res : 0, res = old == GPU_RESOURCE_ID ? GPU_RESOURCE_ID + 1 : GPU_RESOURCE_ID;

@@ -7,18 +7,18 @@ extern void runtime_init(Context* ctx);
 extern AST* parse_statement(Parser* p);
 extern void eval(Context* ctx, AST* node);
 
-/* Stub implementations for missing DOS functions - MUST BE BEFORE USE */
+/* Minimal DOS API hooks used by the current REXX runtime. */
 static void DosExecPgm(const char* program)
 {
     (void)program;
-    /* TODO: Implement program execution */
+    /* Program execution is not available in the current runtime. */
 }
 
 static void DosExit(int action, int result)
 {
     (void)action;
     (void)result;
-    /* TODO: Implement exit */
+    /* The runtime does not support process exit yet. */
 }
 
 __attribute__((used))

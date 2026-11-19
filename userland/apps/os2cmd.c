@@ -1,26 +1,7 @@
-/*
- * os2cmd - the OS/2 command prompt in a Linux terminal, and OS/2 commands
- * for Linux shells.
- *
- *   os2cmd                an interactive OS/2 prompt (the desktop's Alt+O)
- *   os2cmd COMMAND ...    run one OS/2 command, print its output, exit
- *                         (e.g. "/h/OS2/os2cmd dir \h" from a script)
- *
- * Every line goes to /dev/os2cmd (kernel/src/linux/linux.c), where the
- * kernel's own OS/2 command interpreter (kernel/src/main.c) runs it - DIR,
- * COPY, MOUNT, USB, MEM, TREE, ... with the same mounts and current
- * directory as the serial console's shell - and its output comes back,
- * followed by the next prompt.
- *
- * The prompt also runs Linux programs, as CMD.EXE runs .EXE files: a name
- * the OS/2 shell doesn't know is looked up as a file (C:\h\x, \h\x, or
- * relative to the current directory), then in $PATH, then as a busybox
- * applet (ls, ps, top, vi, ...), and run in this window in the current
- * directory. START prog opens it in a new terminal window instead, and
- * START /PM prog starts a graphical program with no terminal.
- *
- * Line editing is the terminal's (canonical mode). EXIT or Ctrl+D quits.
- */
+/* OS/2 command prompt for Linux terminals. Commands go through
+ * /dev/os2cmd and share the kernel shell's mounts and current directory.
+ * Unknown OS/2 commands are tried as programs, then as BusyBox applets.
+ * START opens a terminal; START /PM launches a graphical program. */
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -77,8 +58,7 @@ static void collect(int fd)
     out[out_len] = '\0';
 }
 
-/* Where the prompt starts (the text after the last newline); and the
- * session's current directory, refreshed. */
+/* Find the prompt and refresh the session's current directory. */
 static size_t prompt_at(void)
 {
     size_t p = out_len;
@@ -94,7 +74,7 @@ static int unknown_command(void)
            strstr(out, "Bad command or file name: ") < out + 8;
 }
 
-/* ── Linux programs ──────────────────────────────────────────────────── */
+/* Linux programs */
 
 static int split(char *line, char **argv, int max)
 {
@@ -237,7 +217,6 @@ static int resolve(char **argv, int argc, char *path, size_t size, char **run, i
     return 1;
 }
 
-/* an OS/2 program (LX), not a Linux one? */
 static int is_os2_program(const char *path)
 {
     char m[2] = { 0 };
@@ -288,7 +267,7 @@ static void run_here(char **argv, int argc, int prompt)
         fprintf(stderr, "\n[%s: killed by signal %d]\n", argv[0], WTERMSIG(status));
     if (!prompt) return;
     size_t p = prompt_at();
-    put(out + p, out_len - p);                        /* just the prompt again */
+    put(out + p, out_len - p);                        /* Redraw the prompt. */
 }
 
 /* START [/PM] prog args: a new terminal window (or, /PM, no terminal). */
@@ -332,7 +311,7 @@ static void start(char **argv, int argc)
         if (fork() > 0) _exit(0);
         int null = open("/dev/null", O_RDWR);
         if (null >= 0) { dup2(null, 0); dup2(null, 1); dup2(null, 2); }   /* not this window's */
-        if (chdir(cwd) != 0) { /* stay where we are */ }
+        if (chdir(cwd) != 0) { /* Keep the inherited directory if this one is unavailable. */ }
         execve(exe, full, environ);
         _exit(127);
     }
@@ -340,9 +319,9 @@ static void start(char **argv, int argc)
     printf("\n%s started\n", argv[0]);
 }
 
-/* ── main ────────────────────────────────────────────────────────────── */
+/* main */
 
-/* EXIT (any case, surrounding blanks allowed)? */
+/* Match a command word regardless of case or surrounding whitespace. */
 static int is_word(const char *s, const char *w)
 {
     while (*s == ' ' || *s == '\t') s++;
@@ -412,8 +391,7 @@ static void line_cmd(int fd, char *line, int interactive)
     put(out + a, p - a);
 }
 
-/* One-shot: the session starts where the caller is (a REXX program's commands run in its directory) - the Linux
- * directory as the drive whose root holds it, then CD there; the output of that not shown */
+/* One-shot commands from REXX should start in the caller's directory. */
 static void enter_callers_dir(int fd)
 {
     char here[512], best_root[256] = "";

@@ -365,7 +365,7 @@ static uint32_t circslider_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t
         if (mp2 && ok(mp2, 2)) p16(mp2, (uint16_t)s->tick);
         return 1;
     case CSM_QUERYRADIUS: if (mp1 && ok(mp1, 2)) p16(mp1, (uint16_t)r); return 1;
-    case CSM_SETBITMAPDATA: return 1;                            /* we draw our own buttons */
+    case CSM_SETBITMAPDATA: return 1;                            /* Buttons are drawn by the emulator. */
     }
     return 0;
 }

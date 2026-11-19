@@ -15,9 +15,8 @@
  * The first two would require maintaining CRC16/CRC32C checksums over
  * every group descriptor, block/inode bitmap, and (metadata_csum only)
  * every inode on every mutation; META_BG changes where the group-
- * descriptor table itself lives. All three are large, easy-to-get-subtly-
- * wrong subsystems in their own right and are simply out of scope here -
- * this driver only ever writes to images without them
+ * descriptor table itself lives. This driver therefore writes only images
+ * without these features
  * (e.g. `mkfs.ext4 -O ^64bit,^metadata_csum,^uninit_bg`).
  *
  * Within that gate, what IS maintained correctly: real per-group block/

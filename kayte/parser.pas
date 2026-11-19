@@ -109,7 +109,6 @@ var
 begin
   IterationCount := 0;
 
-  // Set the program title
   FAssembler.SetProgramTitle('Kayte Program');
 
   // Skip comments at the beginning of the file
@@ -375,41 +374,32 @@ end;
 
 procedure TParser.OptionStatement;
 begin
-  // Match OPTION keyword
   Advance;
 
-  // Consume the rest of the OPTION statement (e.g., "Explicit On", "Base 0", etc.)
-  // These are compile-time directives and don't generate bytecode
+  // OPTION directives affect compilation, not emitted bytecode.
   while not Check(tkEndOfLine) and not Check(tkEndOfFile) do
     Advance;
-
-  // OPTION statements just set compiler flags, no bytecode needed
 end;
 
 procedure TParser.IfStatement;
 begin
   WriteLn('DEBUG: IfStatement - Current token: ', FCurrentToken.Lexeme);
 
-  Match(tkKeyword); // Consume IF
+  Match(tkKeyword);
   WriteLn('DEBUG: IfStatement - Parsing condition');
-  Expression; // Parse the condition
-  // TODO: branching (ELSE/END IF, jump-on-false) isn't implemented yet -
-  // the condition is evaluated (so it's validated and any side effects
-  // like variable loads still occur) but its value is unused for now.
+  Expression;
+  // TODO: Emit a conditional jump; the parsed condition is currently discarded.
   FAssembler.Emit(BC_POP, []);
 
-  // Expect THEN
   if Check(tkKeyword) and (AnsiUpperCase(FCurrentToken.Lexeme) = 'THEN') then
   begin
     WriteLn('DEBUG: IfStatement - Found THEN');
-    Advance; // Consume THEN
+    Advance;
   end
   else
     Error('Expected THEN after IF condition');
 
-  // For single-line IF: IF condition THEN statement
-  // For now, just skip to end of line
-  // TODO: Handle ELSE and multi-line IF...END IF blocks
+  // TODO: Parse the THEN statement, ELSE branch, and block form.
 
   WriteLn('DEBUG: IfStatement - Complete');
 end;
@@ -433,7 +423,6 @@ begin
 
     Advance; // Consume variable name
 
-    // Check for comma (more variables)
     if Check(tkComma) then
     begin
       WriteLn('DEBUG: Found comma, expecting another variable');
@@ -477,7 +466,7 @@ procedure TParser.PrintStatement;
 begin
   Advance; // Consume PRINT keyword
 
-  // Handle empty PRINT (just prints a newline)
+  // An empty PRINT emits a newline.
   if Check(tkEndOfLine) or Check(tkEndOfFile) then
   begin
     FAssembler.Emit(BC_PRINT, []);
@@ -535,8 +524,7 @@ end;
 procedure TParser.MsgBoxStatement;
 begin
   Match(tkKeyword);
-  // TODO: no MSGBOX runtime call is emitted yet - arguments are evaluated
-  // (validated, side effects preserved) then discarded.
+  // TODO: Emit a MSGBOX runtime call; arguments are currently discarded.
   Expression;
   FAssembler.Emit(BC_POP, []);
   while Check(tkComma) do
@@ -556,8 +544,7 @@ begin
     Advance;
     if not Check(tkParenthesisClose) then
     begin
-      // TODO: no argument-passing convention exists yet for CALL - each
-      // argument is evaluated then discarded.
+      // TODO: Pass arguments to the called routine; they are currently discarded.
       Expression;
       FAssembler.Emit(BC_POP, []);
       while Check(tkComma) do
@@ -592,9 +579,8 @@ procedure TParser.WhileStatement;
 begin
   WriteLn('DEBUG: WhileStatement - Current token: ', FCurrentToken.Lexeme);
 
-  Match(tkKeyword); // Consume WHILE
-  // TODO: loop branching (jump-on-false back edge) isn't implemented yet -
-  // the condition is evaluated then discarded.
+  Match(tkKeyword);
+  // TODO: Emit the exit test and loop back edge; the condition is discarded.
   Expression;
   FAssembler.Emit(BC_POP, []);
   Match(tkEndOfLine);
@@ -605,28 +591,24 @@ begin
   begin
     WriteLn('DEBUG: WhileStatement body - token: ', FCurrentToken.Lexeme);
 
-    // Check for EOF
     if FCurrentToken.TokenType = tkEndOfFile then
     begin
       Error('Unexpected end of file in WHILE loop');
       Break;
     end;
 
-    // Skip blank lines
     if Check(tkEndOfLine) then
     begin
       Advance;
       Continue;
     end;
 
-    // Skip comments
     if Check(tkComment) then
     begin
       Advance;
       Continue;
     end;
 
-    // Process statement
     case AnsiUpperCase(FCurrentToken.Lexeme) of
       'PRINT': PrintStatement;
       'LET': AssignmentStatement;
@@ -657,7 +639,7 @@ begin
   end;
 
   WriteLn('DEBUG: WhileStatement - Found WEND');
-  Match(tkKeyword); // WEND
+  Match(tkKeyword);
   WriteLn('DEBUG: WhileStatement - Complete');
 end;
 
@@ -665,21 +647,20 @@ procedure TParser.ForStatement;
 begin
   WriteLn('DEBUG: ForStatement - Current token: ', FCurrentToken.Lexeme);
 
-  Match(tkKeyword); // Consume FOR
-  Match(tkIdentifier); // Loop variable
-  Match(tkOperator); // =
-  // TODO: loop codegen (counter init/compare/increment) isn't implemented
-  // yet - start/end/step are each evaluated then discarded.
-  Expression; // Start value
+  Match(tkKeyword);
+  Match(tkIdentifier);
+  Match(tkOperator);
+  // TODO: Generate the loop counter and bounds checks; values are discarded.
+  Expression;
   FAssembler.Emit(BC_POP, []);
-  Match(tkKeyword); // TO
-  Expression; // End value
+  Match(tkKeyword);
+  Expression;
   FAssembler.Emit(BC_POP, []);
 
   if Check(tkKeyword) and (AnsiUpperCase(FCurrentToken.Lexeme) = 'STEP') then
   begin
     Advance;
-    Expression; // Step value
+    Expression;
     FAssembler.Emit(BC_POP, []);
   end;
 
@@ -1202,7 +1183,6 @@ begin
           // Handle Property Get/Set
           Advance; // Consume PROPERTY
 
-          // Check for Get or Set
           if Check(tkKeyword) and ((AnsiUpperCase(FCurrentToken.Lexeme) = 'GET') or
                                    (AnsiUpperCase(FCurrentToken.Lexeme) = 'SET')) then
           begin
@@ -1302,9 +1282,6 @@ begin
   Match(tkIdentifier);
 end;
 
-//----------------------------------------------------------------------
-// Expression Parsing Methods (Corrected)
-//----------------------------------------------------------------------
 function TParser.Expression: TExpressionNode;
 begin
   Result := Equality;
@@ -1499,17 +1476,16 @@ begin
               FAssembler.Emit(BC_POP, []);
               while Check(tkComma) do
               begin
-                Advance; // Consume comma
+                Advance;
                 Expression;
                 FAssembler.Emit(BC_POP, []);
               end;
             end;
 
-            Match(tkParenthesisClose); // Consume ')'
+            Match(tkParenthesisClose);
           end;
 
-          // No object system yet - push a placeholder so the enclosing
-          // expression still gets exactly one value.
+          // Object construction is unsupported; keep one placeholder on the stack.
           FAssembler.Emit(BC_LOAD_STRING, [Op_StringLiteral('<object:' + ClsName + '>')]);
           Result := TLiteralNode.Create('NEW ' + ClsName, tkKeyword);
         end

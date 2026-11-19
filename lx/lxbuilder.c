@@ -15,7 +15,7 @@
 #define MAX_FIXUPS  1024
 #define PAGE_SIZE   4096
 
-/* ── Internal Structures ─────────────────────────────────────────────────── */
+/* Internal Structures */
 
 typedef struct {
     char     name[64];
@@ -403,9 +403,8 @@ int lx_builder_write(LXBuilder *builder, const char *filename)
     uint32_t entry_table_offset = resident_names_offset + resident_names_size;
 
     uint32_t data_offset = entry_table_offset + entry_table_size;
-    data_offset = (data_offset + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);  /* Align */
+    data_offset = (data_offset + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
 
-    /* Build header */
     LXHeader header = {0};
     header.signature[0] = LX_MAGIC1;
     header.signature[1] = LX_MAGIC2;
@@ -430,10 +429,8 @@ int lx_builder_write(LXBuilder *builder, const char *filename)
     header.data_pages_offset = data_offset;
     header.stack_size = builder->stack_size;
 
-    /* Write header */
     fwrite(&header, sizeof(header), 1, f);
 
-    /* Write object table */
     uint32_t page_index = 0;
     for (uint32_t i = 0; i < builder->object_count; i++) {
         LXObject obj = {0};
@@ -447,7 +444,6 @@ int lx_builder_write(LXBuilder *builder, const char *filename)
         page_index += obj.page_table_entries;
     }
 
-    /* Write page table */
     uint32_t current_data_offset = 0;
     for (uint32_t i = 0; i < builder->object_count; i++) {
         uint32_t pages = (builder->objects[i].virtual_size + PAGE_SIZE - 1) / PAGE_SIZE;
@@ -470,20 +466,17 @@ int lx_builder_write(LXBuilder *builder, const char *filename)
         }
     }
 
-    /* Write resident names + entry tables */
     fwrite(resident_names, 1, resident_names_size, f);
     fwrite(entry_table, 1, entry_table_size, f);
     free(resident_names);
     free(entry_table);
 
-    /* Pad to data offset */
     long current_pos = ftell(f);
     while (current_pos < data_offset) {
         fputc(0, f);
         current_pos++;
     }
 
-    /* Write page data */
     for (uint32_t i = 0; i < builder->object_count; i++) {
         if (builder->objects[i].data && builder->objects[i].size > 0) {
             fwrite(builder->objects[i].data, 1, builder->objects[i].virtual_size, f);
@@ -511,7 +504,6 @@ int lx_create_exe(const char *filename,
     LXBuilder *builder = lx_builder_new();
     if (!builder) return -1;
 
-    /* Set as executable */
     lx_builder_set_type(builder, LXMF_PROGRAM);
     lx_builder_set_stack_size(builder, stack_size);
 
@@ -526,10 +518,8 @@ int lx_create_exe(const char *filename,
     lx_builder_add_object(builder, ".data", data, data_size,
                          LXOBJ_READABLE | LXOBJ_WRITABLE);
 
-    /* Set entry point */
     lx_builder_set_entry_point(builder, 1, entry_offset);
 
-    /* Write file */
     int result = lx_builder_write(builder, filename);
 
     lx_builder_free(builder);
@@ -545,7 +535,6 @@ int lx_create_dll(const char *filename, const char *dll_name,
     LXBuilder *builder = lx_builder_new();
     if (!builder) return -1;
 
-    /* Set as DLL */
     lx_builder_set_type(builder, LXMF_LIBRARY | LXMF_INIT_INSTANCE);
     lx_builder_set_name(builder, dll_name);
 
@@ -565,7 +554,6 @@ int lx_create_dll(const char *filename, const char *dll_name,
         lx_builder_add_export(builder, exports[i], 1, offsets[i], i + 1);
     }
 
-    /* Write file */
     int result = lx_builder_write(builder, filename);
 
     lx_builder_free(builder);

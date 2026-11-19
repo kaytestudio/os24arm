@@ -13,9 +13,6 @@ add_subdirectory(btrfs)
 # f2fs filesystem
 add_subdirectory(f2fs)
 
-# FAT32 filesystem (if you want to move it here)
-# add_subdirectory(fat32)
-
 # HPFS filesystem (future)
 add_subdirectory(hpfs)
 

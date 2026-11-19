@@ -35,6 +35,11 @@
 #include "vfs.h"
 #include "kio.h"
 
+/* The freestanding kernel headers do not expose uint64_t in this TU. */
+#ifndef uint64_t
+typedef unsigned long uint64_t;
+#endif
+
 
 /* ── Byte-order helpers (all FAT structures are little-endian) ────────────── */
 
@@ -95,6 +100,7 @@ static uint32_t fat_entry_bytes(const fat32_mount_t *m)
  * equivalents so callers only ever compare against FAT32_* constants. */
 static uint32_t fat_get(fat32_mount_t *m, uint32_t cluster)
 {
+    if (!m || cluster < 2 || cluster >= m->total_clusters + 2) return FAT32_BAD;
     uint32_t fat_offset  = cluster * fat_entry_bytes(m);
     uint32_t fat_sector  = m->fat_start_lba + fat_offset / SECTOR_SIZE;
     uint32_t fat_off_in  = fat_offset % SECTOR_SIZE;
@@ -128,6 +134,7 @@ static void fsinfo_invalidate(fat32_mount_t *m)
 
 static int fat_set(fat32_mount_t *m, uint32_t cluster, uint32_t value)
 {
+    if (!m || cluster < 2 || cluster >= m->total_clusters + 2) return -1;
     fsinfo_invalidate(m);
     uint32_t fat_offset = cluster * fat_entry_bytes(m);
     uint32_t fat_sector = m->fat_start_lba + fat_offset / SECTOR_SIZE;
@@ -206,10 +213,12 @@ static uint32_t fat_count_free(fat32_mount_t *m, uint32_t *first_free)
 /* Follow cluster chain to nth cluster (0-based) */
 static uint32_t fat_nth(fat32_mount_t *m, uint32_t first, uint32_t n)
 {
+    if (first < 2 || first >= m->total_clusters + 2) return 0;
     uint32_t c = first;
     for (uint32_t i = 0; i < n; i++) {
         c = fat_get(m, c);
-        if (c >= FAT32_EOC || c == FAT32_BAD || c < 2) return 0;
+        if (c >= FAT32_EOC || c == FAT32_BAD || c < 2 ||
+            c >= m->total_clusters + 2) return 0;
     }
     return c;
 }
@@ -220,6 +229,7 @@ static uint32_t fat_nth(fat32_mount_t *m, uint32_t first, uint32_t n)
 
 int fat32_mount_init(fat32_mount_t *m, blkdev_t *dev)
 {
+    if (!m || !dev) return VFS_EINVAL;
     m->dev = dev;
     m->sector_buf_lba = 0xFFFFFFFF;
 
@@ -243,7 +253,8 @@ int fat32_mount_init(fat32_mount_t *m, blkdev_t *dev)
         kprintf("[FAT] Sector size %u unsupported\n", bytes_per_sector);
         return VFS_EINVAL;
     }
-    if (spc == 0 || fat_count == 0 || reserved_sectors == 0) {
+    if (spc == 0 || spc > 128 || (spc & (spc - 1)) != 0 ||
+        fat_count == 0 || reserved_sectors == 0) {
         kprintf("[FAT] Invalid BPB\n");
         return VFS_EINVAL;
     }
@@ -253,12 +264,19 @@ int fat32_mount_init(fat32_mount_t *m, blkdev_t *dev)
     uint32_t total_sectors = le16(boot + 19);
     if (!total_sectors) total_sectors = le32(boot + 32);
     uint32_t root_dir_sectors = ((uint32_t)root_entry_count * 32 + SECTOR_SIZE - 1) / SECTOR_SIZE;
-    uint32_t meta_sectors     = reserved_sectors + fat_count * fat_size + root_dir_sectors;
-    if (fat_size == 0 || total_sectors <= meta_sectors) {
+    uint64_t meta_sectors     = (uint64_t)reserved_sectors +
+                                (uint64_t)fat_count * fat_size + root_dir_sectors;
+    if (fat_size == 0 || total_sectors <= meta_sectors ||
+        (dev->num_sectors > 0 && total_sectors > (uint64_t)dev->num_sectors)) {
         kprintf("[FAT] Invalid BPB\n");
         return VFS_EINVAL;
     }
-    uint32_t clusters = (total_sectors - meta_sectors) / spc;
+    uint32_t clusters = (uint32_t)((total_sectors - meta_sectors) / spc);
+
+    if (clusters > 0x0FFFFFF5u) {
+        kprintf("[FAT] Cluster count exceeds FAT32 limits\n");
+        return VFS_EINVAL;
+    }
 
     if (clusters < 4085) {
         kprintf("[FAT] FAT12 volume (%u clusters) not supported\n", clusters);
@@ -279,6 +297,17 @@ int fat32_mount_init(fat32_mount_t *m, blkdev_t *dev)
     m->data_start_lba      = meta_sectors;
     m->root_cluster        = m->fat_bits == 32 ? le32(boot + 44) : 0;
     m->total_clusters      = clusters;
+    /* Reject geometries whose FAT cannot describe every data cluster. */
+    if ((uint64_t)fat_size * SECTOR_SIZE / fat_entry_bytes(m) <
+        (uint64_t)clusters + 2) {
+        kprintf("[FAT] FAT is too small for the data region\n");
+        return VFS_EINVAL;
+    }
+    if (m->fat_bits == 32 &&
+        (m->root_cluster < 2 || m->root_cluster >= clusters + 2)) {
+        kprintf("[FAT] Invalid FAT32 root cluster\n");
+        return VFS_EINVAL;
+    }
     uint16_t fsi = m->fat_bits == 32 ? le16(boot + 48) : 0;
     m->fsinfo_lba          = (fsi && fsi != 0xFFFF && fsi < reserved_sectors) ? fsi : 0;
     m->fsinfo_stale        = 0;

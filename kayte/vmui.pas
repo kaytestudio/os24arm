@@ -1,10 +1,9 @@
-// In VMUI.pas (or extend BytecodeTypes.pas)
 unit VMUI;
 
 interface
 
 uses
-  SysUtils, Classes, Forms, Controls, StdCtrls; // For TForm, TButton, TLabel etc.
+  SysUtils, Classes, Forms, Controls, StdCtrls;
 
 type
   TVMControlType = (
@@ -12,7 +11,6 @@ type
     vctButton,
     vctLabel,
     vctTextBox,
-    // Add more as needed
     vctUnknown
   );
 
@@ -29,9 +27,7 @@ type
     ControlType: TVMControlType;
     Properties: TVMControlProperties; // Array of properties
 
-    // Add methods for adding properties
     procedure AddProperty(const AName, AValue: String);
-    // Add helper to find property
     function GetPropertyValue(const AName: String): String;
     constructor Create;
     destructor Destroy; override;

@@ -72,7 +72,7 @@ begin
   Writeln('Executing Kayte bytecode...');
   while FRunning do
   begin
-    // Simple instruction fetch-decode-execute cycle
+    // Fetch and execute one bytecode instruction.
     case FMemory[FPC] of
       $00: begin
         Writeln('NOP');

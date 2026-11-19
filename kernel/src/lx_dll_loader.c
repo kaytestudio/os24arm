@@ -1,15 +1,6 @@
-/**
- * @file lx_dll_loader.c
- * @brief Built-in loader for OS/2 LX (.DLL) libraries — see lx_dll_loader.h
- *
- * The on-disk structs below mirror lx/lxformat.h's LXHeader/LXObject/LXPage
- * field-for-field, duplicated from kernel/src/lx_loader.c rather than
- * shared: that file's copies are static/file-local, and both duplicates
- * exist rather than #include "lxformat.h" because that header pulls in
- * <stdint.h>, which isn't reachable under the kernel's -nostdinc cross-
- * compile. Keep all three (this file, lx_loader.c, lxformat.h) in sync if
- * the LX writer (lx/lxbuilder.c) ever changes its output layout.
- */
+/* Built-in OS/2 LX DLL loader. Its on-disk structs mirror lx/lxformat.h
+ * and lx_loader.c. They stay local because the freestanding kernel can't
+ * include stdint.h; update all three copies if the format changes. */
 
 #include "lx_dll_loader.h"
 #include "lx_services.h"

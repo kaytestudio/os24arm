@@ -8,7 +8,7 @@ uses
   Math, SysUtils;
 
 type
-  { TMathLib - Comprehensive math library for Kayte Lang }
+  { Math helpers used by Kayte Lang. }
   TMathLib = class
   public
     { Basic Arithmetic Operations }
@@ -385,7 +385,7 @@ begin
   for I := 0 to Len - 1 do
     SortedValues[I] := Values[I];
 
-  // Simple bubble sort
+  // Sort the copy so the caller's array stays unchanged.
   for I := 0 to Len - 2 do
     for J := 0 to Len - I - 2 do
       if SortedValues[J] > SortedValues[J + 1] then

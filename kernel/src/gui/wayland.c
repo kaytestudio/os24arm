@@ -56,7 +56,7 @@ static void draw_cursor(void)
     }
 }
 
-/* ── Compositor ──────────────────────────────────────────────────────────── */
+/* Compositor */
 
 void wl_compositor_init(int width, int height)
 {
@@ -156,7 +156,7 @@ int wl_compositor_surface_count(void)
     return surface_count;
 }
 
-/* ── wl_surface client requests ─────────────────────────────────────────── */
+/* wl_surface client requests */
 
 void wl_surface_set_draw_callback(wl_surface_t *surface, wl_surface_draw_fn fn)
 {
@@ -204,7 +204,7 @@ void wl_surface_move(wl_surface_t *surface, int x, int y)
     surface->y = y;
 }
 
-/* ── xdg_shell-ish toplevel role ────────────────────────────────────────── */
+/* xdg_shell-ish toplevel role */
 
 wl_surface_t *xdg_toplevel_create(int x, int y, int width, int height, const char *title)
 {
@@ -230,7 +230,7 @@ void xdg_toplevel_close(wl_surface_t *surface)
     wl_surface_destroy(surface);
 }
 
-/* ── Client-side buffer drawing ─────────────────────────────────────────── */
+/* Client-side buffer drawing */
 
 void wl_buf_putpixel(wl_surface_t *surface, int x, int y, fb_color_t color)
 {
@@ -269,7 +269,7 @@ void wl_buf_drawstring(wl_surface_t *surface, int x, int y, const char *str, fb_
     }
 }
 
-/* ── Compositing ─────────────────────────────────────────────────────────── */
+/* Compositing */
 
 static void draw_decorations(wl_surface_t *s)
 {
@@ -330,7 +330,7 @@ void wl_compositor_flush(void)
     fb_present();
 }
 
-/* ── Workplaces (virtual desktops) ────────────────────────────────────────── */
+/* Workplaces (virtual desktops) */
 
 int wl_compositor_get_workplace(void)
 {
@@ -366,7 +366,7 @@ void wl_compositor_cycle_workplace(void)
     wl_compositor_set_workplace((active_workplace + 1) % WL_MAX_WORKPLACES);
 }
 
-/* ── wl_seat: pointer input ─────────────────────────────────────────────── */
+/* wl_seat: pointer input */
 
 void wl_seat_pointer_button(int x, int y, int button, bool pressed)
 {

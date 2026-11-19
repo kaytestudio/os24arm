@@ -15,7 +15,7 @@
 #define MAX_ARGS      32
 #define HISTORY_LEN   16
 
-/* ── Command history ─────────────────────────────────────────────────────── */
+/* Command history */
 static char history[HISTORY_LEN][MAX_CMD_LEN];
 static int  hist_count = 0;
 static int  hist_head  = 0;
@@ -28,7 +28,6 @@ static void hist_push(const char *cmd)
     if (hist_count < HISTORY_LEN) hist_count++;
 }
 
-// ending REXX cmd
 static int ends_with_cmd(const char* s)
 {
     size_t len = strlen(s);
@@ -43,10 +42,10 @@ static int ends_with_cmd(const char* s)
 }
 
 
-/* ── Current "directory" state (simulated) ───────────────────────────────── */
+/* Current directory, until shell commands use the VFS */
 static char cwd[128] = "C:\\OS2\\";
 
-/* Simple manual strcat for CWD */
+/* Append an uppercased path component without depending on libc strcat. */
 static void cwd_append(const char *s)
 {
     char *p = cwd + kstrlen(cwd);
@@ -58,7 +57,7 @@ static void cwd_append(const char *s)
     *p = '\0';
 }
 
-/* ── Argument parsing ────────────────────────────────────────────────────── */
+/* Split on spaces; quoted arguments and escapes are not supported. */
 static int parse_args(char *line, char *argv[])
 {
     int argc = 0;
@@ -73,9 +72,7 @@ static int parse_args(char *line, char *argv[])
     return argc;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────── */
-/*  Built-in command implementations                                           */
-/* ─────────────────────────────────────────────────────────────────────────── */
+/* Built-in command implementations */
 
 static void cmd_help(void)
 {
@@ -129,7 +126,7 @@ static void cmd_ver(void)
 static void cmd_dir(void)
 {
     kprintf(" Directory of " ANSI_YELLOW "%s" ANSI_RESET "\n\n", cwd);
-    /* Simulated directory listing */
+    /* This demo listing is static and does not read the mounted filesystem. */
     const char *entries[] = {
         ".", "..", "SYSTEM", "OS2BOOT", "CONFIG.SYS",
         "AUTOEXEC.BAT", "BASIC.EXE", "KERNEL.EXE"
@@ -205,7 +202,7 @@ static void cmd_uname(void)
 
 static void cmd_date(void)
 {
-    /* No RTC — show placeholder */
+    /* Without an RTC, report fixed fallback values. */
     kprintf("Current date: SUN 02-15-2026\n");
     kprintf("Current time: 00:00:00.00\n");
     kprintf("(No real-time clock in bare-metal build)\n");

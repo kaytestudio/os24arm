@@ -1,12 +1,6 @@
 #!/bin/bash
-# run_qemu.sh — OS/2 Warp 4.52 ARM64 QEMU Launcher
-#
-# Launches OS/2 Warp in QEMU AArch64 virtual machine
-# Compatible with Linux, macOS, and ODROID devices
-
 set -e
 
-# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 CYAN='\033[0;36m'
@@ -14,7 +8,6 @@ YELLOW='\033[1;33m'
 MAGENTA='\033[0;35m'
 NC='\033[0m'
 
-# Detect OS
 OS_TYPE="$(uname -s)"
 case "$OS_TYPE" in
     Linux*)     OS="Linux";;
@@ -22,10 +15,8 @@ case "$OS_TYPE" in
     *)          OS="Unknown";;
 esac
 
-# Detect host architecture
 HOST_ARCH="$(uname -m)"
 
-# Detect if running on ODROID
 ODROID_BOARD=""
 ODROID_SOC=""
 if [ "$OS" = "Linux" ] && [ -f /proc/device-tree/model ]; then
@@ -58,7 +49,6 @@ if [ "$OS" = "Linux" ] && [ -f /proc/device-tree/model ]; then
     esac
 fi
 
-# Print header
 echo -e "${CYAN}  OS/2 Warp 4.52 ARM64 — QEMU Launcher${NC}"
 echo -e "${CYAN}  Platform: $OS ($HOST_ARCH)${NC}"
 if [ -n "$ODROID_BOARD" ]; then
@@ -67,7 +57,6 @@ if [ -n "$ODROID_BOARD" ]; then
 fi
 echo
 
-# Check arguments
 if [ $# -lt 1 ]; then
     echo -e "${RED}Usage: $0 <disk_image> [options]${NC}"
     echo
@@ -111,7 +100,6 @@ fi
 IMAGE="$1"
 shift
 
-# Check if image exists
 if [ ! -f "$IMAGE" ]; then
     echo -e "${RED}Error: Disk image not found: $IMAGE${NC}"
     echo -e "${YELLOW}Create it with: ./scripts/mkdisk.sh $IMAGE${NC}"
@@ -155,7 +143,6 @@ ACCEL=""
 ACCEL_OPT=""
 CPU_MODEL=""
 
-# Parse options
 while [ $# -gt 0 ]; do
     case "$1" in
         -m|--memory)
@@ -198,7 +185,6 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# Check for QEMU
 echo -e "${CYAN}[1/5]${NC} Checking for QEMU..."
 if ! command -v qemu-system-aarch64 &> /dev/null; then
     echo -e "${RED}Error: qemu-system-aarch64 not found${NC}"
@@ -218,7 +204,6 @@ fi
 QEMU_VERSION=$(qemu-system-aarch64 --version | head -n1)
 echo -e "${GREEN}${NC} QEMU found: $QEMU_VERSION"
 
-# Determine accelerator
 echo -e "${CYAN}[2/5]${NC} Checking acceleration support..."
 if [ -z "$ACCEL" ]; then
     # Auto-detect best accelerator
@@ -298,7 +283,6 @@ else
     esac
 fi
 
-# Determine CPU model if not specified
 if [ -z "$CPU_MODEL" ]; then
     # Auto-detect best CPU model
     if [ "$HOST_ARCH" = "arm64" ] || [ "$HOST_ARCH" = "aarch64" ]; then
@@ -321,7 +305,6 @@ else
     echo -e "${GREEN}${NC} CPU model: $CPU_MODEL (user-specified)"
 fi
 
-# Find UEFI firmware
 echo -e "${CYAN}[3/5]${NC} Looking for UEFI firmware..."
 UEFI_PATHS=(
     # Linux paths
@@ -370,7 +353,6 @@ if [ -z "$UEFI_FW" ]; then
 fi
 echo -e "${GREEN}${NC} UEFI firmware: $UEFI_FW"
 
-# Display configuration
 echo -e "${CYAN}[4/5]${NC} Configuration:"
 echo -e "  ${CYAN}Platform:${NC}   $OS ($HOST_ARCH)"
 if [ -n "$ODROID_BOARD" ]; then
@@ -391,7 +373,6 @@ if [ -n "$DEBUG_OPT" ]; then
     echo -e "  ${YELLOW}Debug:${NC}      Enabled"
 fi
 
-# Launch QEMU
 echo -e "${CYAN}[5/5]${NC} Launching QEMU..."
 echo
 
@@ -403,7 +384,6 @@ if [ -n "$GDB_OPT" ]; then
     echo
 fi
 
-# Build QEMU command
 QEMU_CMD=(
     qemu-system-aarch64
     -machine virt,gic-version=3
@@ -416,12 +396,10 @@ QEMU_CMD=(
     -serial stdio
 )
 
-# Add accelerator if available
 if [ -n "$ACCEL_OPT" ]; then
     QEMU_CMD+=($ACCEL_OPT)
 fi
 
-# Add optional features
 if [ -n "$DISPLAY_OPT" ]; then
     QEMU_CMD+=($DISPLAY_OPT)
 fi
@@ -438,10 +416,8 @@ if [ -n "$SERIAL_MODE" ]; then
     QEMU_CMD+=($SERIAL_MODE)
 fi
 
-# macOS-specific: Add USB support for better compatibility
 if [ "$OS" = "macOS" ]; then
     QEMU_CMD+=(-device qemu-xhci -device usb-kbd -device usb-mouse)
 fi
 
-# Execute
 exec "${QEMU_CMD[@]}"

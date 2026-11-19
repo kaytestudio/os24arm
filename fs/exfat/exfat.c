@@ -177,7 +177,7 @@ static int exfat_find_entry(vfs_mount_t *mnt, uint32_t dir_cluster,
             if (fe->secondary_count < 2) continue;
 
             /* Next entry must be stream ext */
-            if (ei + 1 >= eps) continue;  /* simplified: no cross-cluster sets */
+            if (ei + 1 >= eps) continue;  /* Entry sets crossing a cluster boundary are not supported. */
             exfat_stream_ext_t *se = (exfat_stream_ext_t*)(buf + (ei+1)*32);
             if (se->type != EXFAT_ET_STREAM_EXT) continue;
 

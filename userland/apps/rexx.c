@@ -48,7 +48,7 @@
 #include <fcntl.h>
 #include <termios.h>
 
-/* ── memory: an arena for each clause's temporaries ── */
+/* memory: an arena for each clause's temporaries */
 typedef struct chunk { struct chunk *prev; size_t used, cap; char d[]; } chunk_t;
 static chunk_t *arena;
 typedef struct { chunk_t *c; size_t used; } mark_t;
@@ -81,7 +81,7 @@ static char *afmt(const char *f, ...)
     return adup(b);
 }
 
-/* ── errors ── */
+/* errors */
 static const char *src_name = "";
 static int cur_line;
 static void syntax_trap(int n, const char *msg);                 /* (SIGNAL ON SYNTAX: doesn't return when on) */
@@ -96,7 +96,7 @@ static void rx_error(int n, const char *fmt, ...)
     exit(n > 255 ? 255 : n);
 }
 
-/* ── tokens ── */
+/* tokens */
 enum { T_STR, T_SYM, T_OP, T_END };
 typedef struct { int type; char *s; size_t n; int blank; int line; } tok_t;   /* (blank: whitespace before it) */
 typedef struct { tok_t *t; int n; int line; } clause_t;
@@ -224,7 +224,7 @@ static void tokenize(const char *p)
     }
 }
 
-/* ── variables: scopes; stems; exposure ── */
+/* variables: scopes; stems; exposure */
 typedef struct var { char *name, *val; struct var *next; } var_t;
 typedef struct scope { var_t *tab[256]; struct scope *parent; char **expose; int nexpose; } scope_t;
 static scope_t *scope;
@@ -323,7 +323,7 @@ static char *var_name(const tok_t *t)
     return o;
 }
 
-/* ── numbers ── */
+/* numbers */
 static int digits = 9;
 static int is_num(const char *s, double *out)
 {
@@ -366,7 +366,7 @@ static int truthy(const char *s)
     return 0;
 }
 
-/* ── expressions ── */
+/* expressions */
 typedef struct { const tok_t *t; int i, n; } ex_t;
 static char *call_function(const char *name, char **args, int nargs, int internal_first, int line, int as_fn);
 static char *expr_or(ex_t *e);
@@ -549,7 +549,7 @@ static char *eval_toks(const tok_t *t, int i, int n)
     return v;
 }
 
-/* ── execution ── */
+/* execution */
 enum { R_NEXT, R_LEAVE, R_ITERATE, R_RETURN, R_EXIT, R_SIGNAL };
 typedef struct frame { char **args; int nargs; char *result; int has_result; int internal; struct scope *own; } frame_t;
 static frame_t *frame;
@@ -560,7 +560,7 @@ static char *source_line(void) { return afmt("OS/2 %s %s", call_type, src_name);
 static int ext_fd = -1;                                          /* (an external routine: its result to the caller through this) */
 static void ext_done(void);
 
-/* ── conditions: SIGNAL ON / CALL ON ── */
+/* conditions: SIGNAL ON / CALL ON */
 enum { C_ERROR, C_FAILURE, C_HALT, C_NOVALUE, C_SYNTAX, C_NOTREADY, C_N };
 static const char *const cond_names[C_N] = { "ERROR", "FAILURE", "HALT", "NOVALUE", "SYNTAX", "NOTREADY" };
 typedef struct { int on, call, delayed; char label[64]; } trap_t;
@@ -1103,7 +1103,7 @@ done:
     return res;
 }
 
-/* ── built-in functions ── */
+/* built-in functions */
 static char *argv1;                                              /* (the program's argument string) */
 static char **src_lines;                                         /* (the program's lines, for SOURCELINE) */
 static int nsrc;
@@ -1252,10 +1252,10 @@ static char *sys_file_tree(const char *spec, const char *stem0, const char *opt0
     var_set(afmt("%s0", stem), fmtnum((double)k));
     return adup("0");
 }
-/* ── SysIni: OS/2 profiles (.INI), in OS/2's binary format - the same files os2x86's Prf calls use (USER: $USER_INI,
+/* SysIni uses OS/2's binary .INI format, shared with os2x86's Prf calls (USER: $USER_INI,
  * else OS2.INI in $OS2X86_HOME or ~/.os2x86; SYSTEM: $SYSTEM_INI, else OS2SYS.INI). A header { 0xFFFFFFFF, first
  * application, size, 0, 0 }; applications { next, first key, 0, name length twice, name }; keys { next, 0, name
- * length twice, name, data length twice, data } - offsets from the file's start, 0 ending a list. ── */
+ * length twice, name, data length twice, data } - offsets from the file's start, 0 ending a list. */
 typedef struct { char *name; uint8_t *data; uint32_t len; } inikey_t;
 typedef struct { char *name; inikey_t *k; int nk; } iniapp_t;
 typedef struct { iniapp_t *a; int na; } ini_t;

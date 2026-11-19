@@ -15,7 +15,7 @@
 static char g_drive[UNIXROOT_DRIVE_MAX] = UNIXROOT_DEFAULT_DRIVE;
 static char g_home_user[UNIXROOT_USER_MAX] = "user";
 
-/* ── CONFIG.SYS "SET KEY=VALUE" line lookup ──────────────────────────────── */
+/* CONFIG.SYS "SET KEY=VALUE" line lookup */
 
 /* Finds a line of the form "SET <key>=<value>" (case-insensitive on both
  * "SET" and <key>) and copies <value> - up to the next CR/LF or end of
@@ -33,7 +33,6 @@ static int config_sys_get_value(const char *cfg, const char *key,
         const char *eol = strchr(line, '\n');
         size_t line_len = eol ? (size_t)(eol - line) : strlen(line);
 
-        /* Skip leading whitespace on the line. */
         const char *p = line;
         size_t rem = line_len;
         while (rem > 0 && (*p == ' ' || *p == '\t')) { p++; rem--; }
@@ -90,7 +89,7 @@ const char *unixroot_drive(void)
     return g_drive;
 }
 
-/* ── Directory tree ──────────────────────────────────────────────────────── */
+/* Directory tree */
 
 /* Fixed part of the tree, in parent-before-child order. Paths are rooted
  * at "/" - the VFS mount that UNIXROOT's drive (see unixroot_drive())
@@ -172,10 +171,14 @@ static int mkdir_logged(const char *rel)
     if (vfs_stat(path, &st) == VFS_OK) return 0;      /* there already (the usual case) */
     int r = vfs_mkdir(path);
     if (r == VFS_OK) {
+#ifdef UNIXROOT_DEBUG_LOGS
         kprintf("[UNIXROOT] %s\n", path);
+#endif
         return 0;
     }
+#ifdef UNIXROOT_DEBUG_LOGS
     kprintf("[UNIXROOT] %s: %s\n", path, (r == VFS_ERR_ROFS) ? "read-only filesystem" : "can't create");
+#endif
     return -1;
 }
 
@@ -185,7 +188,9 @@ int unixroot_create_tree(void)
 
     g_root = unixroot_root();
     if (!g_root) {
+#ifdef UNIXROOT_DEBUG_LOGS
         kprintf("[UNIXROOT] Drive %s isn't mounted yet: its tree is made when it is\n", g_drive);
+#endif
         g_root = "/";
         return 0;
     }
@@ -222,11 +227,11 @@ int unixroot_create_tree(void)
     if (mkdir_logged("/usr/share/man/mann") != 0) failures++;
     if (mkdir_logged("/usr/share/man/catn") != 0) failures++;
 
-    if (failures == 0) {
-        /* (quiet: it's there) */
-    } else {
+    if (failures != 0) {
+#ifdef UNIXROOT_DEBUG_LOGS
         kprintf("[UNIXROOT] %d director%s could not be created (read-only root?)\n",
                 failures, (failures == 1) ? "y" : "ies");
+#endif
     }
 
     return failures;

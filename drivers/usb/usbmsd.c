@@ -86,7 +86,7 @@ extern void *mem_alloc(size_t size);
 
 static void usbmsd_idc(RP_GENIOCTL *rp);
 
-/* ── Synchronous requests ─────────────────────────────────────────────── */
+/* Synchronous requests */
 static int wait_sync(sync_t *s)
 {
     u64 end = usb_ticks() + usb_ms(IO_TIMEOUT_MS);
@@ -162,7 +162,7 @@ static void reset_recovery(void)
     clear_halt(ep_out);
 }
 
-/* ── BOT command ──────────────────────────────────────────────────────── */
+/* BOT command */
 /* Run SCSI command `cb` with an optional data stage through the bounce
  * buffer (IN: device -> bounce, OUT: bounce -> device). Returns bytes
  * moved, or -1 (also on CHECK CONDITION). */
@@ -233,7 +233,7 @@ static int write10(uint32_t lba, uint16_t count)
     return put == (int)(count * SECTOR) ? 0 : -1;
 }
 
-/* ── Block device ─────────────────────────────────────────────────────── */
+/* Block device */
 /* Partitions share the disk's driver_data, so dev->driver_data is the unit
  * for both; sector is already absolute (blk_read adds start_sector). */
 static msd_unit_t *live_unit(blkdev_t *dev, int64_t sector, uint32_t count)
@@ -380,7 +380,7 @@ static void drop_unit(void)
     unit = 0;
 }
 
-/* ── CHKSERV ──────────────────────────────────────────────────────────── */
+/* CHKSERV */
 static void chkserv(USBCDServe *s)
 {
     DeviceInfo *di = s ? s->pDeviceInfo : 0;
@@ -431,7 +431,7 @@ static void chkserv(USBCDServe *s)
       addr, iface, in, out);
 }
 
-/* ── IDC entry ────────────────────────────────────────────────────────── */
+/* IDC entry */
 static void usbmsd_idc(RP_GENIOCTL *rp)
 {
     uint16_t err = 0;
@@ -479,7 +479,7 @@ static void usbmsd_idc(RP_GENIOCTL *rp)
     rp->Status = err ? (uint16_t)(STATUS_DONE | STERR | err) : STATUS_DONE;
 }
 
-/* ── Lifecycle ────────────────────────────────────────────────────────── */
+/* Lifecycle */
 static void try_register(void)
 {
     USBDClass c = { usbmsd_idc, 0 };

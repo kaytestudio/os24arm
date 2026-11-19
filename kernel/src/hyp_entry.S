@@ -1,22 +1,8 @@
-/**
- * @file hyp_entry.S
- * @brief EL2 vector table and guest/host world switch (see hyp.h)
- *
- * Everything that runs at EL2 is in this file. boot.S points VBAR_EL2 at
- * hyp_vectors before dropping to EL1, so from then on EL2 is only ever
- * entered through an exception:
- *
- *   - hvc #0 from the host kernel (TPIDR_EL2 == 0): HYP_CALL_* in x0.
- *     The host-side wrapper in hyp.c declares x0-x17 clobbered, the same
- *     as an SMCCC call, but HYP_CALL_RUN_VCPU saves all host registers
- *     anyway because it swaps the whole EL1 context out.
- *   - any trap or interrupt while a guest runs (TPIDR_EL2 == the
- *     running struct hyp_vcpu): save the guest, restore the host, and
- *     return from the host's hvc with x0 = HYP_EXIT_*.
- *
- * SP_EL2 (hyp_stack, set by boot.S) only ever holds the two registers
- * each vector entry needs to free up before it can look at TPIDR_EL2.
- */
+/* EL2 vectors and the guest/host switch (see hyp.h). boot.S installs this
+ * table before entering EL1. A host HVC has TPIDR_EL2 == 0 and a HYP_CALL_*
+ * in x0; a guest trap has its vCPU there, so we save the guest, restore the
+ * host and return a HYP_EXIT_* in x0. SP_EL2 holds two scratch registers
+ * until the vector identifies which context was interrupted. */
 
 #include "hyp.h"
 
@@ -166,7 +152,7 @@
 .balign 2048
 .global hyp_vectors
 hyp_vectors:
-    /* Current EL (EL2) with SP0 / SPx: a bug in this file */
+    /* EL2 entry with SP0 or from EL2 is unsupported. */
     bad_entry
     bad_entry
     bad_entry
@@ -179,7 +165,7 @@ hyp_vectors:
     /* Lower EL, AArch64: the host's hvc, or a guest exit */
     lower_el_entry HYP_EXIT_TRAP
     lower_el_entry HYP_EXIT_IRQ
-    lower_el_entry HYP_EXIT_IRQ      /* FIQ: same thing as far as we care */
+    lower_el_entry HYP_EXIT_IRQ      /* FIQ shares the IRQ exit path. */
     lower_el_entry HYP_EXIT_SERROR
 
     /* Lower EL, AArch32: never set up (HCR_EL2.RW = 1) */

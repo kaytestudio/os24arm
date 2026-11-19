@@ -12,7 +12,7 @@ type
     // Call stack frame for GOSUB/RETURN
   TCallFrame = record
     ReturnAddress: Integer; // Instruction pointer to return to
-    // Add fields for local variables if you implement local scope
+    // Local variables can go here when block scope is supported.
   end;
 
   // wrapper classes so records can go in a TObjectList
@@ -26,7 +26,7 @@ type
 
   TVMVariableObject = class(TObject)
   public
-    FName: String;       // <<< CONFIRMED: Field to store the variable's name
+    FName: String;
     Variable: TVMVariable; // The actual TVMVariable record (which is TBCValue)
     constructor Create;
     destructor Destroy; override;
@@ -51,7 +51,6 @@ type
     procedure PushValue(const AValue: TBCValue);
     function GetVMVariable(VarID: Integer): TBCValue;
     procedure SetVMVariable(VarID: Integer; const AValue: TBCValue);
-    (*procedure LoadBytecodeFile(const FileName: String); // Now uses TBytecodeGenerator*)
     procedure InitVMState;
     procedure CleanupVMState;
   public
@@ -63,29 +62,19 @@ type
 
   TBytecodeGenerator = class
   private
-    // Helper procedures for writing data to a stream
     procedure WriteString(FileStream: TFileStream; const S: String);
     procedure WriteLongInt(FileStream: TFileStream; const L: LongInt);
     procedure WriteInteger(FileStream: TFileStream; const I: Integer);
 
-    // Helper functions for reading data from a stream
     function ReadString(AStream: TStream): String;
     function ReadLongInt(AStream: TStream): LongInt;
     function ReadInteger(AStream: TStream): Integer;
 
   public
-    // This procedure saves a TByteCodeProgram to a file.
-    // It serializes all components of the program: title, instructions,
-    // and all associated literal and symbol maps.
-    (*procedure SaveProgramToFile(AProgram: TByteCodeProgram; const OutputFilePath: String);*)
-
-    // This function loads a TByteCodeProgram from any TStream.
-    // It reconstructs the program by reading all components in the same order
-    // they were written by SaveProgramToFile. This is the core loading logic.
+    // Read a program from a stream in the order SaveProgramToFile writes it.
     function LoadProgramFromStream(AStream: TStream): TByteCodeProgram;
 
-    // This function loads a TByteCodeProgram from a file.
-    // It now acts as a wrapper around LoadProgramFromStream.
+    // Open a file and pass it to LoadProgramFromStream.
     function LoadProgramFromFile(const InputFilePath: String): TByteCodeProgram;
   end;
 
@@ -253,32 +242,32 @@ begin
 
     // 5. Read SubroutineMap (TFPGMap<AnsiString, LongInt>)
     Count := ReadLongInt(AStream);
-    LProgram.SubroutineMap := TStringIntMap.Create; // Create instance
+    LProgram.SubroutineMap := TStringIntMap.Create;
     for i := 0 to Count - 1 do
     begin
       KeyString := ReadString(AStream);
       ValueLongInt := ReadLongInt(AStream);
-      LProgram.SubroutineMap.Add(AnsiString(KeyString), ValueLongInt); // Add to TFPGMap
+      LProgram.SubroutineMap.Add(AnsiString(KeyString), ValueLongInt);
     end;
 
     // 6. Read VariableMap (TFPGMap<AnsiString, LongInt>)
     Count := ReadLongInt(AStream);
-    LProgram.VariableMap := TStringIntMap.Create; // Create instance
+    LProgram.VariableMap := TStringIntMap.Create;
     for i := 0 to Count - 1 do
     begin
       KeyString := ReadString(AStream);
       ValueLongInt := ReadLongInt(AStream); // Read as LongInt, as TFPGMap stores LongInt
-      LProgram.VariableMap.Add(AnsiString(KeyString), ValueLongInt); // Add to TFPGMap
+      LProgram.VariableMap.Add(AnsiString(KeyString), ValueLongInt);
     end;
 
     // 7. Read FormMap (TFPGMap<AnsiString, LongInt>)
     Count := ReadLongInt(AStream);
-    LProgram.FormMap := TStringIntMap.Create; // Create instance
+    LProgram.FormMap := TStringIntMap.Create;
     for i := 0 to Count - 1 do
     begin
       KeyString := ReadString(AStream);
       ValueLongInt := ReadLongInt(AStream);
-      LProgram.FormMap.Add(AnsiString(KeyString), ValueLongInt); // Add to TFPGMap
+      LProgram.FormMap.Add(AnsiString(KeyString), ValueLongInt);
     end;
 
     Result := LProgram;
@@ -318,7 +307,7 @@ begin
   begin
     NewVarObject := TVMVariableObject.Create;
     NewVarObject.FName := FProgram.VariableMap.Keys[i];
-    NewVarObject.Variable := CreateBCValueNull; // <<< FIXED: Assign the TBCValue record directly
+    NewVarObject.Variable := CreateBCValueNull;
     FVariables.Add(NewVarObject);
   end;
 end;
@@ -363,7 +352,7 @@ begin
     raise Exception.CreateFmt('VM Runtime Error: Invalid variable ID %d', [VarID]);
 
   VarObj := TVMVariableObject(FVariables[VarID]);
-  Result := VarObj.Variable; // <<< FIXED: Assign the TBCValue record directly
+  Result := VarObj.Variable;
 end;
 
 procedure TBytecodeVM.SetVMVariable(VarID: Integer; const AValue: TBCValue);
@@ -374,7 +363,7 @@ begin
     raise Exception.CreateFmt('VM Runtime Error: Invalid variable ID %d', [VarID]);
 
   VarObj := TVMVariableObject(FVariables[VarID]);
-  VarObj.Variable := AValue; // <<< FIXED: Assign the TBCValue record directly
+  VarObj.Variable := AValue;
 end;
 
 procedure TBytecodeVM.Run;
@@ -548,11 +537,7 @@ begin
         end;
       OP_CALL:
       begin
-        // The 'Items' property of FProgram.SubroutineMap (likely a TList or similar)
-        // returns a generic Pointer. Since SubroutineTargetAddress is a LongInt,
-        // we need to explicitly cast the Pointer back to a LongInt.
-        // This assumes that the subroutine target addresses were stored as
-        // Pointer(LongIntAddress) when they were added to the map.
+        // SubroutineMap stores target addresses as pointers; recover the LongInt.
         SubroutineTargetAddress := LongInt(FProgram.SubroutineMap.Items[CurrentInstruction.Operand1]);
         FCallStack.Add(TCallFrameObject.Create(FInstructionPointer));
         FInstructionPointer := SubroutineTargetAddress;
@@ -628,10 +613,8 @@ begin
 
           if not Assigned(FoundForm) then
           begin
-            // Corrected line: TForm.Create expects a TComponent (like nil or Application) as owner.
-            // We pass nil because the VM will manage the form's lifecycle.
+            // The VM owns forms created by bytecode.
             FoundForm := TForm.Create(nil);
-            // Assign the name AFTER creation.
             FoundForm.Name := FormName;
             FRuntimeForms.Add(FoundForm);
           end;

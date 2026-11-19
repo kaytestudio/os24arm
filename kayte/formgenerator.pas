@@ -2,7 +2,7 @@ unit FormGenerator;
 
 uses
   SysUtils, Classes,
-  VMUI; // Your new unit with form/control definitions
+  VMUI;
 
 interface
 procedure SaveVMFormDefinition(const FormDef: TVMFormDefinition; const FileName: String);
@@ -34,7 +34,6 @@ begin
 end;
 
 
-// builds an example form definition
 procedure GenerateExampleForm;
 var
   Form1Def: TVMFormDefinition;
@@ -43,8 +42,7 @@ var
 begin
   Form1Def := TVMFormDefinition.Create('Form1');
 
-  // Define Form properties
-  Form1Def.Controls.Add(TVMControl.Create); // Create a control for the form itself
+  Form1Def.Controls.Add(TVMControl.Create);
   TVMControl(Form1Def.Controls[Form1Def.Controls.Count - 1]).Name := 'Form1';
   TVMControl(Form1Def.Controls[Form1Def.Controls.Count - 1]).ControlType := vctForm;
   TVMControl(Form1Def.Controls[Form1Def.Controls.Count - 1]).AddProperty('Caption', '"My First VM Form"');
@@ -54,7 +52,6 @@ begin
   TVMControl(Form1Def.Controls[Form1Def.Controls.Count - 1]).AddProperty('Left', '100');
 
 
-  // Define a Button control
   Button1 := TVMControl.Create;
   Button1.Name := 'Button1';
   Button1.ControlType := vctButton;
@@ -65,7 +62,6 @@ begin
   Button1.AddProperty('Height', '25');
   Form1Def.Controls.Add(Button1);
 
-  // Define a Label control
   Label1 := TVMControl.Create;
   Label1.Name := 'Label1';
   Label1.ControlType := vctLabel;
@@ -78,5 +74,5 @@ begin
 
   SaveVMFormDefinition(Form1Def, 'Form1.kfrm');
 
-  Form1Def.Free; // Free the form definition object
+  Form1Def.Free;
 end;

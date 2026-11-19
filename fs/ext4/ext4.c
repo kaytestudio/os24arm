@@ -649,8 +649,8 @@ static const char *find_substr(const char *hay, const char *needle)
     return NULL;
 }
 
-/* Parse a decimal "/CACHE:NNNN" option out of an IFS parameter string, if
- * present. Not fatal if absent or malformed - just keeps the default. */
+/* Parse a decimal "/CACHE:NNNN" option from IFS parameters. Missing or
+ * malformed values leave the default cache size unchanged. */
 static void parse_cache_option(const char *params)
 {
     const char *p = find_substr(params, "/CACHE:");

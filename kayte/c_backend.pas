@@ -100,7 +100,6 @@ begin
       CleanLine := Trim(StripComments(Line));
       if CleanLine = '' then Continue;
 
-      // Handle function declarations: e.g., int sum(int a, int b) {
       if (Pos('(', CleanLine) > 0) and (Pos(')', CleanLine) > 0) and (Pos('{', CleanLine) > 0) then
       begin
         p := Pos('(', CleanLine);
@@ -112,7 +111,6 @@ begin
         Continue;
       end;
 
-      // Handle variable declarations: e.g., int x = 5;
       if (Pos(';', CleanLine) > 0) and (Pos('=', CleanLine) > 0) then
       begin
         p := Pos(' ', CleanLine);
@@ -122,7 +120,6 @@ begin
         Continue;
       end;
 
-      // Fallback: Copy line as-is
       OutLines.Add(CleanLine);
     end;
 

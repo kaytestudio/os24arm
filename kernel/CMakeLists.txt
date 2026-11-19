@@ -113,6 +113,9 @@ endif()
 
 # ── Kernel executable ─────────────────────────────────────────────────────────
 add_executable(os2warp_kernel ${KERNEL_SOURCES})
+if(OS2WARP_UNIXROOT_DEBUG)
+    target_compile_definitions(os2warp_kernel PRIVATE UNIXROOT_DEBUG_LOGS)
+endif()
 if(TARGET os2warp_version)
     add_dependencies(os2warp_kernel os2warp_version)
 endif()

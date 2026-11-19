@@ -162,7 +162,7 @@ static void str_toupper(char *s)
     }
 }
 
-/* ── Commands (simplified for initial boot test) ────────────────────────── */
+/* ── Commands ───────────────────────────────────────────────────────────── */
 
 static void cmd_ver(void)
 {
@@ -317,7 +317,6 @@ static void kernel_shell(void)
 
 void kernel_main(void)
 {
-    /* Initialize UART first so we can see output */
     uart_init();
     
     print_banner();

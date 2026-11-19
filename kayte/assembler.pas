@@ -119,8 +119,7 @@ begin
   Instructions := FProgram.Instructions;
   for I := 0 to Length(Instructions) - 1 do
   begin
-    // Add your validation logic here
-    // Example: check if operands are within valid range
+    // TODO: Validate opcode-specific operand ranges.
     if Instructions[I].Operand1 < 0 then
     begin
       raise Exception.CreateFmt('Assembler Error: Invalid operand at instruction %d.', [I]);

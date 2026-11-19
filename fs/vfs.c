@@ -14,7 +14,7 @@
 #include "fs/blkdev.h"   /* Block device interface */
 #include "string.h"      /* For strlen */
 
-/* Filesystem type constants - should match what's in your fs drivers */
+/* Filesystem type constants used by the drivers below. */
 #ifndef FS_EXT4
 #define FS_EXT4   1
 #define FS_FAT32  2
@@ -39,7 +39,7 @@ extern uint8_t _bss_end;
 #define HEAP_SIZE   (8u * 1024u * 1024u)   /* 8 MB */
 extern void rexx_run_script(const char* path);
 
-/* Block device initialization - implement this in your fs/ folder */
+/* Block-device entry points. */
 extern void blk_init(void);
 extern blkdev_t *blk_get(const char *name);
 
@@ -60,20 +60,17 @@ void kernel_main(void)
     console_init();
     scheduler_init();
 
-    /* Initialize VFS - this is in fs/vfs.c */
+    /* Initialize the VFS and its registered drivers. */
     uart_puts("  [VFS] Initializing VFS and filesystem drivers...\r\n");
     vfs_init();  /* Registers ext4, fat, exfat drivers */
 
-    /* Initialize block devices - you need to implement this */
     uart_puts("  [BLK] Initializing block device subsystem...\r\n");
-    blk_init();  /* Should initialize VirtIO and create block devices */
+    blk_init();
 
     /* Small delay for device initialization */
     for (volatile int i = 0; i < 1000000; i++);
 
-    /* ─────────────────────────────────────────────────────────────────────
-     * Mount root filesystem from VirtIO disk
-     * ───────────────────────────────────────────────────────────────────── */
+    /* Mount the root filesystem from the VirtIO disk. */
     uart_puts("\r\n  [VFS] Mounting filesystems...\r\n");
 
     /* Get the block device for partition 2 (root) */
@@ -101,7 +98,6 @@ void kernel_main(void)
         /* Try to read CONFIG.SYS from disk */
         uart_puts("  [CFG] Loading CONFIG.SYS...\r\n");
 
-        /* Use vfs_file_t as struct, not pointer! */
         vfs_file_t cfg_file;
         int open_result = vfs_open("/config.sys", &cfg_file, VFS_O_RDONLY);
 
@@ -124,8 +120,7 @@ void kernel_main(void)
                         uart_put_u32((uint32_t)bytes);
                         uart_puts(" bytes)\r\n");
 
-                        /* TODO: Parse CONFIG.SYS here */
-                        /* config_parse(config_buf); */
+                        /* TODO: Pass this file to the CONFIG.SYS parser. */
                     }
                     mem_free(config_buf);
                 }

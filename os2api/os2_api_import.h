@@ -1,25 +1,6 @@
-/* ============================================================================
- * os2api/os2_api_import.h  —  DOSCALLS.DLL import table
- *
- * Declares the subset of os2_api.h's Dos* API that dos/dos_commands.c,
- * dos/cmd_main.c, and kayte/kaytevm_main.c actually call, as function
- * *pointer* variables instead of plain function prototypes - each one
- * resolved at startup from an embedded copy of DOSCALLS.DLL (built by
- * add_lx_dll() in the top-level CMakeLists.txt) via os2_api_import_init()
- * below, rather than linked in directly as compiled-in object code the
- * way os2_api.c used to be.
- *
- * Because a pointer-to-function variable is called with exactly the same
- * `Name(args...)` syntax as a real function, callers need no source
- * changes beyond including this header instead of os2_api.h - see
- * dos/dos_commands.c, dos/cmd_main.c, kayte/kaytevm_main.c.
- *
- * A plain function and a function-pointer variable of the same name
- * can't both be declared (the compiler sees conflicting declarations),
- * so this deliberately does NOT include os2_api.h - only the shared
- * types/constants (os2_api_types.h) it needs, which os2_api.h also
- * includes.
- * ========================================================================== */
+/* Function-pointer imports for the DOSCALLS API used by DOS commands and
+ * Kayte. os2_api_import_init() resolves them from the embedded DLL.
+ * Don't include os2_api.h here: it declares the same names as functions. */
 
 #ifndef OS2_API_IMPORT_H
 #define OS2_API_IMPORT_H
@@ -53,14 +34,9 @@ extern void (*DosDisplayPath)(const char *vfs_path, char *out, uint32_t out_size
 struct lx_services;
 extern APIRET (*DosSetKernelServices)(const struct lx_services *svc);
 
-/* Loads the embedded DOSCALLS.DLL (see os2api/doscalls_embed.S.in) and
- * resolves every pointer above against its exports. Callers (cmd_main.c,
- * kaytevm_main.c) must call this once, before using any Dos* call above -
- * returns 0 on success, negative on failure (a missing/unresolvable
- * export is a build-time mismatch between this file's list and
- * DOSCALLS.DLL's actual exports, not something to recover from at
- * runtime, so this prints an error and returns non-zero rather than
- * leaving a NULL pointer for a caller to crash into later). */
+/* Load the embedded DOSCALLS.DLL and resolve the pointers above. Call once
+ * before using the API. A missing export means the import list and DLL got
+ * out of sync, so initialization fails instead of leaving a null pointer. */
 int os2_api_import_init(void);
 
 #endif /* OS2_API_IMPORT_H */

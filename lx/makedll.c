@@ -105,7 +105,6 @@ int main(int argc, char **argv)
         printf("    [%d] %s @ offset %u\n", i + 1, exports[i], offsets[i]);
     }
 
-    /* Create DLL */
     int result = lx_create_dll(output, dllname, code, (uint32_t)code_size, data, (uint32_t)data_size,
                                exports, offsets, export_count);
 

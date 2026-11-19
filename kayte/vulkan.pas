@@ -116,7 +116,7 @@ var
   PipelineInfo: TVkGraphicsPipelineCreateInfo;
   ShaderStageInfo: array[0..1] of TVkPipelineShaderStageCreateInfo;
 begin
-  // Setup your pipeline creation info here
+  // TODO: Fill in the graphics pipeline state.
   FillChar(PipelineInfo, SizeOf(PipelineInfo), 0);
   PipelineInfo.sType := VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
 
@@ -126,7 +126,7 @@ begin
   ShaderStageInfo[0].module := FShaderModule;
   ShaderStageInfo[0].pName := 'main';
 
-  PipelineInfo.stageCount := 2; // Assuming two stages: vertex and fragment
+  PipelineInfo.stageCount := 2; // Vertex and fragment stages.
   PipelineInfo.pStages := @ShaderStageInfo[0];
 
   if vkCreateGraphicsPipelines(FDevice, VK_NULL_HANDLE, 1, @PipelineInfo, nil, @FPipeline) <> VK_SUCCESS then

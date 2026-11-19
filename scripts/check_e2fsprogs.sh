@@ -1,10 +1,8 @@
 #!/bin/bash
-# Quick diagnostic for e2fsprogs on macOS
 
 echo "  e2fsprogs Diagnostic Tool"
 echo
 
-# Check Homebrew
 echo "1. Checking Homebrew..."
 if command -v brew &> /dev/null; then
     echo "   Homebrew found: $(which brew)"
@@ -16,7 +14,6 @@ else
 fi
 echo
 
-# Check e2fsprogs installation
 echo "2. Checking e2fsprogs installation..."
 if brew list e2fsprogs &> /dev/null 2>&1; then
     echo "   e2fsprogs is installed"
@@ -29,7 +26,6 @@ else
 fi
 echo
 
-# Check prefix
 echo "3. Checking installation paths..."
 E2FS_PREFIX=$(brew --prefix e2fsprogs 2>/dev/null)
 if [ -n "$E2FS_PREFIX" ]; then
@@ -40,7 +36,6 @@ else
 fi
 echo
 
-# Check for mkfs.ext4
 echo "4. Checking for mkfs.ext4..."
 FOUND=0
 
@@ -61,7 +56,6 @@ if [ $FOUND -eq 0 ]; then
 fi
 echo
 
-# Check version
 echo "5. Testing mkfs.ext4..."
 if [ -n "$MKFS_EXT4" ]; then
     VERSION=$("$MKFS_EXT4" -V 2>&1 | head -n1)
@@ -72,7 +66,6 @@ else
 fi
 echo
 
-# Check if linked
 echo "6. Checking if e2fsprogs is linked..."
 if brew list e2fsprogs | grep -q "not symlinked"; then
     echo "   Warning: e2fsprogs is installed but NOT linked"
@@ -83,7 +76,6 @@ else
 fi
 echo
 
-# Summary
 echo "  SUMMARY"
 echo
 echo "e2fsprogs path: $MKFS_EXT4"

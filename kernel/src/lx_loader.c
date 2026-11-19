@@ -1,14 +1,6 @@
-/**
- * @file lx_loader.c
- * @brief Built-in loader for OS/2 LX (.EXE) executables — see lx_loader.h
- *
- * The on-disk structs below mirror lx/lxformat.h's LXHeader/LXObject/LXPage
- * field-for-field. They're duplicated (rather than #include "lxformat.h")
- * because that header pulls in <stdint.h>, which isn't reachable under the
- * kernel's -nostdinc cross-compile; this file uses the kernel's own
- * types.h builtin-based typedefs instead. Keep the two in sync if the LX
- * writer (lx/lxbuilder.c) ever changes its output layout.
- */
+/* Built-in OS/2 LX executable loader. These structs mirror lx/lxformat.h;
+ * they stay local because the freestanding kernel can't include stdint.h.
+ * Update both copies if the on-disk format changes. */
 
 #include "lx_loader.h"
 #include "lx_services.h"

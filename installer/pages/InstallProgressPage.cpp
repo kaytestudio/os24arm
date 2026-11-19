@@ -29,15 +29,12 @@ void InstallProgressPage::initializePage()
     auto *wizard = qobject_cast<InstallerWizard*>(this->wizard());
     auto *engine = wizard->engine();
 
-    // Wire up signals
     connect(engine, &InstallEngine::progressChanged, this, &InstallProgressPage::onProgress);
     connect(engine, &InstallEngine::installFinished, this, &InstallProgressPage::onInstallFinished);
 
-    // Get config from previous pages
     QString targetDisk = wizard->field("targetDisk").toString();
     QStringList components = wizard->field("components").toStringList();
 
-    // Run install in background thread
     QtConcurrent::run([engine, targetDisk, components]() {
         engine->startInstall(targetDisk, components);
     });

@@ -1,16 +1,8 @@
 #!/bin/bash
-# create_placeholder_bootloader.sh
-#
-# Creates a minimal placeholder BOOTAA64.EFI file so the build
-# system can continue. This allows you to test disk creation
-# and installation scripts.
-#
-# For a real bootloader, you'll need to implement the actual
-# UEFI boot code.
+# Writes a stub EFI file for image and installer tests; it cannot boot the OS.
 
 set -e
 
-# Colors
 GREEN='\033[0;32m'
 CYAN='\033[0;36m'
 YELLOW='\033[1;33m'
@@ -19,13 +11,11 @@ NC='\033[0m'
 echo -e "${CYAN}  Creating Placeholder Bootloader${NC}"
 echo
 
-# Create bootloader directory if it doesn't exist
 if [ ! -d "bootloader" ]; then
     mkdir -p bootloader
     echo -e "${GREEN}${NC} Created bootloader directory"
 fi
 
-# Create placeholder BOOTAA64.EFI
 cat > bootloader/BOOTAA64.EFI << 'EOFBOOT'
 MZ PLACEHOLDER BOOTLOADER - REPLACE WITH REAL UEFI APPLICATION
 This is a placeholder file to allow the build system to work.

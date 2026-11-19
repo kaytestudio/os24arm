@@ -1,9 +1,7 @@
 #include "os2.h"
 
-/* ─────────────────────────────────────────────────────────────────────────────
-   doscalls.c  -  OS/2 API stubs for bare-metal AArch64
-   All POSIX calls replaced; real drivers hook in here later.
-   ───────────────────────────────────────────────────────────────────────────── */
+/* Legacy OS/2 API placeholders. The current DOSCALLS implementation is in
+ * os2api/os2_api.c. */
 
 APIRET DosOpen(PSZ pszFileName, HFILE *phFile, ULONG *pulAction,
                ULONG cbFile, ULONG ulAttribute, ULONG fsOpenFlags,

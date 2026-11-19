@@ -211,7 +211,7 @@ static int resolve(const char *name, ip_addr_t *out)
 static int need_net(void)
 {
     if (!have_card) { net_cmd_ifconfig(0, 0); return 0; }
-    if (!net_up()) {                                    /* (just booted: DHCP may still be at it) */
+    if (!net_up()) {                                    /* DHCP may still be acquiring an address. */
         volatile int up = 0;
         unsigned long t0 = net_now_ms();
         while (!(up = net_up()) && net_now_ms() - t0 < 5000) {

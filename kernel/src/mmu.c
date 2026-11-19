@@ -3,9 +3,8 @@
  * @brief W^X-hardened ARM64 MMU bring-up for the QEMU virt target
  *
  * With the MMU disabled (SCTLR_EL1.M = 0, this kernel's state before this
- * file existed - see boot.S), the ARMv8-A architecture forces every
- * single memory access to behave as Device-nGnRnE: strictly ordered, no
- * caching, no gathering - for RAM just as much as for a UART register.
+ * file existed - see boot.S), ARMv8-A treats every access as Device-nGnRnE:
+ * strictly ordered, uncached, and with no gathering, including RAM.
  * So this kernel used to run with its data cache permanently off, even
  * for its own code/heap/stack.
  *
@@ -66,10 +65,9 @@ typedef unsigned long uint64_t;
 #define MMU_BLOCK_1GB (1UL << 30)
 #define MMU_BLOCK_2MB (1UL << 21)
 
-/* Single level-1 table: with TCR_EL1.T0SZ = 25 (39-bit VA space) and a
- * 4KB granule, the walk starts at level 1, where each of the 512 entries
- * covers 1GB - so this table alone can describe up to 512GB with no
- * level-0 table needed. We only ever populate the first few entries. */
+/* With T0SZ = 25 and a 4 KB granule, the walk starts at level 1. Each of
+ * its 512 entries covers 1 GB, so this table maps up to 512 GB without a
+ * level-0 table. Only the first few entries are populated. */
 #define MMU_L1_ENTRIES 512
 __attribute__((aligned(4096)))
 static uint64_t mmu_l1_table[MMU_L1_ENTRIES];
@@ -81,7 +79,7 @@ static uint64_t mmu_l1_table[MMU_L1_ENTRIES];
 __attribute__((aligned(4096)))
 static uint64_t mmu_l2_ram[MMU_L2_ENTRIES];
 
-/* ── MAIR_EL1 attribute encodings ─────────────────────────────────────── */
+/* MAIR_EL1 attribute encodings */
 #define MAIR_ATTR_DEVICE_NGNRNE 0x00UL /* index 0: strictly-ordered, uncached */
 #define MAIR_ATTR_NORMAL_WB     0xFFUL /* index 1: Normal, Inner+Outer WB RWA cacheable */
 #define MAIR_IDX_DEVICE 0
@@ -89,10 +87,10 @@ static uint64_t mmu_l2_ram[MMU_L2_ENTRIES];
 #define MAIR_VALUE ((MAIR_ATTR_NORMAL_WB << (8 * MAIR_IDX_NORMAL)) | \
                     (MAIR_ATTR_DEVICE_NGNRNE << (8 * MAIR_IDX_DEVICE)))
 
-/* ── Block/table descriptor bits (stage 1, 4KB granule) ────────────────── */
+/* Block/table descriptor bits (stage 1, 4KB granule) */
 #define MMU_DESC_BLOCK    (1UL << 0)          /* [1:0] = 0b01: block (leaf, level<3) */
 #define MMU_DESC_TABLE    (3UL << 0)          /* [1:0] = 0b11: table (points to next level) */
-#define MMU_DESC_AF       (1UL << 10)         /* access flag - must be set, we don't manage it in software */
+#define MMU_DESC_AF       (1UL << 10)         /* Access flag; software does not track access faults. */
 #define MMU_DESC_SH_INNER (3UL << 8)          /* SH[1:0] = 0b11: inner shareable */
 #define MMU_DESC_PXN      (1UL << 53)         /* privileged execute-never */
 #define MMU_DESC_UXN      (1UL << 54)         /* unprivileged execute-never */
@@ -105,7 +103,7 @@ static uint64_t mmu_l2_ram[MMU_L2_ENTRIES];
 #define MMU_ATTRS_DEVICE (MMU_DESC_BLOCK | MMU_ATTRINDX(MAIR_IDX_DEVICE) | \
                           MMU_DESC_AF | MMU_DESC_PXN | MMU_DESC_UXN)
 
-/* Normal RAM, writable, never executable - the default for basically
+/* Normal RAM, writable, never executable - the default for
  * everything (data, bss, heaps, stack): W^X's "not X" half. */
 #define MMU_ATTRS_NORMAL_RW_NX (MMU_DESC_BLOCK | MMU_ATTRINDX(MAIR_IDX_NORMAL) | \
                                 MMU_DESC_AF | MMU_DESC_SH_INNER | \
@@ -120,7 +118,7 @@ static uint64_t mmu_l2_ram[MMU_L2_ENTRIES];
 #define MMU_ATTRS_NORMAL_RX (MMU_DESC_BLOCK | MMU_ATTRINDX(MAIR_IDX_NORMAL) | \
                              MMU_DESC_AF | MMU_DESC_SH_INNER)
 
-/* ── User address spaces (see mmu.h) ──────────────────────────────────────
+/* User address spaces (see mmu.h).
  * Each address space has its own level-1 and level-2 tables - copies of
  * the kernel's - whose user-window entries point to its own level-3
  * tables. Those map user pages to frames from the physical pool, which

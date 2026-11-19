@@ -8,9 +8,6 @@
 #include "gpt.h"
 #include "mbr.h"
 
-/* External functions (should be in your headers) */
-/* kmemcpy, kstrcmp, kstrcpy should be in kio.h */
-
 /* Constants */
 #define MAX_BLKDEVS     16
 #define SECTOR_SIZE     512
@@ -29,8 +26,8 @@ int blkdev_register(blkdev_t *dev)
 }
 
 /* Remove a device and every partition registered on it (removable media
- * gone). The structures stay allocated - a filesystem still mounted on
- * one keeps a valid pointer whose reads simply fail. */
+ * gone). Device structures stay allocated so mounted filesystems keep a
+ * valid pointer; later reads return errors. */
 static blkdev_remove_fn remove_hook;
 
 void blkdev_set_remove_hook(blkdev_remove_fn fn) { remove_hook = fn; }
@@ -79,7 +76,7 @@ void blkdev_list(void)
     }
 }
 
-/* ── Ramdisk Implementation ────────────────────────────────────────────── */
+/* Ramdisk Implementation */
 
 typedef struct {
     uint8_t     *base;
@@ -128,7 +125,7 @@ void ramdisk_create(const char *name, void *base, size_t size)
     kprintf("[RAMDISK] Created: %s (%u KB)\n", name, (unsigned)(size / 1024));
 }
 
-/* ── VirtIO Block Device: QEMU's virtio-blk on virtio-mmio ─────────────── */
+/* VirtIO Block Device: QEMU's virtio-blk on virtio-mmio */
 /* (-drive if=none,file=disk.img,format=raw,id=c -device virtio-blk-device,drive=c)
  * version 2 (modern), polled like the kernel's other virtio drivers
  * (net/virtio_net.c): each request a chain of three - the header (type,
@@ -275,7 +272,7 @@ static int virtio_blk_probe(void)
 }
 void virtio_blk_init(void) { }                          /* (blk_init probes: disk0) */
 
-/* ── Block Device Subsystem Init ───────────────────────────────────────── */
+/* Block Device Subsystem Init */
 
 /* disk0: the first virtio-blk disk (above); without one, a block device
  * backed by a fixed physical RAM address: a disk image can be injected
@@ -315,8 +312,7 @@ void blkdev_init(void)
     /* Initialize VirtIO block devices */
     virtio_blk_init();
 
-    /* Create a ramdisk if needed (requires mem_alloc) */
-    /* Uncomment this if you have mem_alloc() available:
+    /* Create a ramdisk here once the allocator is available:
      *
      * void *ramdisk_mem = mem_alloc(1024 * 1024);
      * if (ramdisk_mem) {

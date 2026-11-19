@@ -8,7 +8,7 @@
 #include "uart.h"
 #include "kprintf.h"
 
-/* ── Demo State ────────────────────────────────────────────────────────────── */
+/* Demo State */
 static int mouse_x = 512;
 static int mouse_y = 384;
 
@@ -151,7 +151,7 @@ static void draw_flat_background(wl_surface_t *surface, fb_rect_t damage)
 }
 
 /**
- * @brief Draw mouse cursor (simple arrow)
+ * @brief Draw the mouse cursor.
  */
 static void draw_cursor(void)
 {
@@ -202,13 +202,10 @@ void gui_demo_run(void)
     kprintf("═══════════════════════════════════════════════════════════\r\n");
     kprintf("\r\n");
 
-    /* Initialize framebuffer */
     fb_init();
 
-    /* Initialize the compositor */
     wl_compositor_init(fb_get_width(), fb_get_height());
 
-    /* Create some demo toplevels */
     wl_surface_t *win1 = xdg_toplevel_create(200, 100, 400, 300, "OS/2 System");
     wl_surface_t *win2 = xdg_toplevel_create(300, 200, 350, 250, "Drive C:");
     wl_surface_t *win3 = xdg_toplevel_create(400, 300, 300, 200, "Command Prompts");
@@ -223,7 +220,6 @@ void gui_demo_run(void)
     kprintf("[GUI] Use mouse to drag windows, click X to close\r\n");
     kprintf("[GUI] Press ESC to exit demo\r\n\r\n");
 
-    /* Main event loop */
     bool running = true;
     int frame = 0;
 
@@ -233,31 +229,25 @@ void gui_demo_run(void)
         fb_clear(WPS_DESKTOP_BG);
         draw_desktop_icons();
 
-        /* Composite all mapped surfaces onto the output */
         wl_compositor_flush();
 
-        /* Draw cursor on top */
         draw_cursor();
 
-        /* TODO: Handle input events */
-        /* For now, just check for ESC key via UART */
-        /* This would be replaced with proper mouse/keyboard drivers */
+        /* Keyboard and tablet input are not wired up; cursor movement below is synthetic. */
 
-        /* Simulate mouse movement (testing) */
+        /* Move the demo cursor until real pointer input is connected. */
         frame++;
         if (frame % 100 == 0) {
             mouse_x = (mouse_x + 5) % fb_get_width();
             mouse_y = (mouse_y + 3) % fb_get_height();
         }
 
-        /* Exit after demo time (or implement real exit condition) */
         if (wl_compositor_surface_count() == 0) {
             kprintf("[GUI] All windows closed, exiting demo\r\n");
             running = false;
         }
 
-        /* Small delay to avoid maxing out CPU */
-        /* In real implementation, this would be event-driven */
+        /* Avoid spinning until the compositor has an event loop. */
         for (volatile int i = 0; i < 100000; i++);
     }
 

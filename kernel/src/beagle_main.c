@@ -14,7 +14,7 @@
  * Entered from bbb_boot.S / beaglev_boot.S with a stack, zeroed .bss and
  * interrupts masked. Brings up the console UART, the heap and the
  * scheduler stub, then runs a small command prompt on the serial console.
- * The MMU, GUI, filesystems and the LX loader are AArch64-only for now.
+ * The MMU, GUI, filesystems and LX loader are currently AArch64-only.
  *
  * With HAVE_OS2API (both boards - see kernel/CMakeLists.txt) the OS/2
  * API (os2api/) and the VFS under it are linked in too, and CD/DIR/TYPE go
@@ -64,7 +64,7 @@ extern char _heap_start[];
 #define HEAP_START  ((uintptr_t)_heap_start)
 #define HEAP_SIZE   (32u * 1024u * 1024u)   /* 32 MB */
 
-/* ── Board description ───────────────────────────────────────────────────── */
+/* Board description */
 
 #if defined(PLATFORM_BBB)
 #define BOARD_NAME     "BeagleBone Black"
@@ -94,7 +94,7 @@ extern char _heap_start[];
 static unsigned long boot_hart_id;
 static unsigned long boot_dtb_addr;
 
-/* ── String utilities ────────────────────────────────────────────────────── */
+/* String utilities */
 
 static int str_equal(const char *a, const char *b)
 {
@@ -138,7 +138,7 @@ static void str_toupper(char *s)
     }
 }
 
-/* ── Commands ────────────────────────────────────────────────────────────── */
+/* Commands */
 
 static void cmd_ver(void)
 {
@@ -464,7 +464,7 @@ static void execute_command(char *cmdline)
     }
 }
 
-/* ── Kernel shell ────────────────────────────────────────────────────────── */
+/* Kernel shell */
 
 static void print_banner(void)
 {
@@ -534,7 +534,7 @@ static void kernel_shell(void)
     }
 }
 
-/* ── Kernel entry point ──────────────────────────────────────────────────── */
+/* Kernel entry point */
 
 /**
  * @brief C entry point, called from bbb_boot.S / beaglev_boot.S

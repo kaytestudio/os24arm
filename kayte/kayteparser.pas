@@ -11,7 +11,6 @@ type
   EKayteParserError = class(Exception);
 
   TKayteASTNode = class
-    // Base class for all nodes in the Abstract Syntax Tree (AST)
   end;
 
 
@@ -87,8 +86,8 @@ end;
 
 function TKayteParser.Parse(const Content: string): string;
 begin
-  // Perform parsing logic here
-  Result := '<parsed>' + Content + '</parsed>';  // Example parsing logic
+  // TODO: Parse Content into Kayte syntax instead of wrapping it as markup.
+  Result := '<parsed>' + Content + '</parsed>';
 end;
 
 function TKayteParser.ParseFunction: TKayteFunctionNode;
@@ -100,7 +99,6 @@ begin
   try
     Line := Trim(FSource[FCurrentLine]);
 
-    // Example of parsing a function definition, like: "function foo(a, b)"
     if Pos('function', Line) = 1 then
     begin
       Delete(Line, 1, Length('function'));
@@ -112,18 +110,16 @@ begin
 
       Inc(FCurrentLine);
 
-      // Parse function body
       while (FCurrentLine < FSource.Count) and (Trim(FSource[FCurrentLine]) <> 'end') do
       begin
         FuncNode.Body.Add(Trim(FSource[FCurrentLine]));
         Inc(FCurrentLine);
       end;
 
-      // Make sure we are at 'end'
       if (FCurrentLine >= FSource.Count) or (Trim(FSource[FCurrentLine]) <> 'end') then
         raise EKayteParserError.Create('Function definition not properly closed with "end".');
 
-      Inc(FCurrentLine);  // Skip the 'end'
+      Inc(FCurrentLine);
     end
     else
       raise EKayteParserError.Create('Expected function declaration.');
@@ -157,14 +153,12 @@ begin
     begin
       Line := Trim(FSource[FCurrentLine]);
 
-      // Skip empty lines or comments
       if (Line = '') or (Line[1] = '#') then
       begin
         Inc(FCurrentLine);
         Continue;
       end;
 
-      // Parse line by line and build the AST
       Node := ParseLine(Line);
       AST.Add(Node);
 

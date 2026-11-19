@@ -10,14 +10,7 @@ uses
 type
   { TSynVBHighlighter }
 
-  // Extend TSynTextStyle (or create a custom record) to include ANSI codes
-  // For a command-line app, you'd typically pre-define ANSI color sequences
-  // and assign them based on the style.
-  // We'll simulate this by adding a property to access the ANSI start/end codes.
-  // NOTE: This TSynTextStyle in SynEdit is internal to how SynEdit renders.
-  // For CLI, we will use our own mapping from TSynIdentifier to ANSI codes.
-
-  // Let's define custom ANSI styles for our highlighter
+  // ANSI color mapping for the terminal renderer.
   TVBHighlightStyle = record
     ANSINormal: String;
     ANSIBold: String;
@@ -33,11 +26,11 @@ type
     fOperators: TStringList;
     fInCommentBlock: Boolean;
 
-    // Define ANSI escape codes for colors
+    // Terminal color codes, indexed by token type.
     FANSICodes: array[TSynIdentifier] of TVBHighlightStyle;
 
     procedure InitKeywords;
-    procedure InitANSICodes; // New procedure to set up ANSI codes
+    procedure InitANSICodes;
   protected
     procedure DoIdentifyLine(Line: Integer; var TokenOffset: Integer; var State: TSynHighlighterState); override;
     function GetDefaultKeywords(Index: Integer): String; override;
@@ -49,7 +42,6 @@ type
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
 
-    // New method to get the ANSI style for a given token
     function GetANSIStyle(Token: TSynIdentifier): TVBHighlightStyle;
   end;
 
@@ -108,9 +100,6 @@ begin
   fOperators.Free;
   inherited Destroy;
 end;
-
-// Removed SetDefaultStyles as it pertains to graphical SynEdit rendering.
-// All styling for CLI will be handled by InitANSICodes and GetANSIStyle.
 
 procedure TSynVBHighlighter.InitANSICodes;
 begin
@@ -252,7 +241,7 @@ begin
   fFunctions.Add('Fix'); fFunctions.Add('Int'); fFunctions.Add('Round');
   fFunctions.Add('CreateObject'); fFunctions.Add('GetObject');
   fFunctions.Add('Val'); fFunctions.Add('Str'); fFunctions.Add('Hex'); fFunctions.Add('Oct');
-  // From your interpreter
+  // Built-in helpers exposed by the interpreter.
   fFunctions.Add('StrToIntDef'); fFunctions.Add('IntToStr'); fFunctions.Add('SplitString');
 
   fOperators := TStringList.Create;
@@ -268,20 +257,14 @@ begin
   fOperators.Add(':'); // Statement separator
   fOperators.Add(','); // Separator
 
-  // fComments is not used as a TStringList for actual comment content,
-  // it's more for defining comment delimiters if needed, but ' and Rem are handled directly.
-  // The line fComments.Free; is kept for consistency if it was intended for other use.
 end;
 
 procedure TSynVBHighlighter.DoIdentifyLine(Line: Integer; var TokenOffset: Integer; var State: TSynHighlighterState);
 begin
   inherited DoIdentifyLine(Line, TokenOffset, State);
 
-  // For VB, multi-line comments are not standard.
-  // This part of the highlighter is more relevant for languages with /* ... */
-  // or multi-line string literals.
-  // We explicitly handle ' and Rem as single-line comments in GetToken.
-  fInCommentBlock := False; // Always reset, as VB comments are single-line
+  // VB comments end at the line boundary.
+  fInCommentBlock := False;
 end;
 
 
@@ -293,18 +276,12 @@ begin
   i := TokenPos;
   CurrentTokenOffset := i;
 
-  // --- Handle multi-line comment state (not typical for VB, but kept for general SynHighlighter structure) ---
-  // If you *were* to support a custom multi-line comment (e.g., /* ... */)
-  // this is where you'd check for its end.
-  // Since VB uses single-line ' and Rem, fInCommentBlock should generally be False.
+  // VB comments end at the line boundary; this state is normally false.
   if fInCommentBlock then
   begin
-    // For a *real* block comment, you'd scan for its end delimiter.
-    // For now, if fInCommentBlock is somehow true, just treat the rest of the line as comment
-    // and reset the state for the next line, as VB comments are always line-ending.
     SetTokenLength(Length(LineBuffer) - i + 1);
     Result := SYN_COMMENT;
-    fInCommentBlock := False; // Ensure it's reset
+    fInCommentBlock := False;
     Exit;
   end;
 
@@ -439,7 +416,7 @@ begin
     end
     else
     begin
-      // If it's just '#' followed by something else, treat as symbol
+      // A bare '#' is a symbol.
       SetTokenLength(1);
       Result := SYN_SYMBOL;
     end;
@@ -466,7 +443,7 @@ begin
     // Single-character operators/symbols
     '=', '+', '-', '*', '/', '\', '^', '&', '(', ')', '[', ']', '.', ',', ';', ':':
       SetTokenLength(1);
-      Result := SYN_OPERATOR; // Or SYN_SYMBOL if you want to differentiate
+      Result := SYN_OPERATOR;
       Exit;
     else
       // Unknown character, advance by one and treat as whitespace/default

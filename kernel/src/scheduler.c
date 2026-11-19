@@ -7,7 +7,5 @@
 
 void scheduler_init(void)
 {
-    // Scheduler initialization stub
-    // For now, OS/2 runs as a single-threaded kernel
-    // Future: Implement preemptive multitasking
+    // Scheduling is not wired up yet; the kernel currently runs one task.
 }

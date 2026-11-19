@@ -1,7 +1,7 @@
 unit n64;
 
 {$MODE OBJFPC}
-{$LINKLIB n64} // Link against your custom static library n64.a
+{$LINKLIB n64} // Link against libn64.a.
 
 interface
 

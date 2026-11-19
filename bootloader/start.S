@@ -1,7 +1,7 @@
 /* ============================================================================
  * bootloader/start.S  —  ARM64 bare-metal entry point
  * Executed by QEMU at the image load address (0x40080000 on virt machine).
- * We zero BSS, set up a stack, then call kernel_main().
+ * Clears BSS, sets the stack, and calls kernel_main().
  * ========================================================================== */
 
 .section ".text.boot"
@@ -18,7 +18,7 @@ _start:
     b       .Lspin
 
 .Lprimary:
-    /* ── Switch to EL1 if we are at EL2 ─────────────────────────────── */
+    /* Drop to EL1 when QEMU starts us at EL2. */
     mrs     x0, currentel
     lsr     x0, x0, #2
     cmp     x0, #2

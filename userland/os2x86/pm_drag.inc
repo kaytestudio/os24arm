@@ -3,7 +3,7 @@
  * and rendering checks, and DrgDrag itself. DrgDrag runs its own loop until
  * the starting button comes up: DM_DRAGOVER to the window under the pointer
  * (its DOR_ answer sets the pointer), DM_DRAGLEAVE when it leaves, DM_DROP
- * where it ends. Works between windows of one program only, for now.
+ * where it ends. Cross-window drags are currently limited to one program.
  * Moving with button 2 down sends WM_BEGINDRAG (pm_mouse), where programs
  * call DrgDrag; containers turn that into CN_INITDRAG. */
 

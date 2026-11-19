@@ -21,6 +21,7 @@
 #
 # Usage: scripts/desktop.sh [options]
 #   --hvf            run natively (Apple's Hypervisor.framework): much faster
+#   --debug          show detailed UNIXROOT directory setup messages
 #   --rebuild        every step again, even those already built
 #   --all-packages   build every UNIXROOT package, not just LLVM's
 #   --os2-demos      x86 OS/2 programs on the stick, in \OS2DEMOS: the
@@ -41,10 +42,11 @@ B="$ROOT/build"
 W="$B/userland"
 U="$ROOT/userland"
 
-HVF=0 REBUILD=0 ALLPKG=0 DEMOS=0 RUN=1
+HVF=0 REBUILD=0 ALLPKG=0 DEMOS=0 RUN=1 UNIXROOT_DEBUG=OFF
 while [ $# -gt 0 ]; do
     case "$1" in
         --hvf) HVF=1 ;;
+        --debug) UNIXROOT_DEBUG=ON ;;
         --rebuild) REBUILD=1 ;;
         --all-packages) ALLPKG=1 ;;
         --os2-demos) DEMOS=1 ;;
@@ -86,10 +88,12 @@ fi
 
 # ── 1. the kernel ────────────────────────────────────────────────────────
 say "kernel"
+# A fresh configure would pick AppleClang: select Homebrew LLVM explicitly.
+CMAKE_ARGS=("-DOS2WARP_UNIXROOT_DEBUG=$UNIXROOT_DEBUG")
 if [ ! -f "$B/CMakeCache.txt" ]; then
-    # a fresh configure would pick AppleClang: the LLVM one, explicitly
-    cmake -S "$ROOT" -B "$B" -DCMAKE_C_COMPILER="$LLVM_PREFIX/bin/clang" -DCMAKE_ASM_COMPILER="$LLVM_PREFIX/bin/clang"
+    CMAKE_ARGS+=(-DCMAKE_C_COMPILER="$LLVM_PREFIX/bin/clang" -DCMAKE_ASM_COMPILER="$LLVM_PREFIX/bin/clang")
 fi
+cmake -S "$ROOT" -B "$B" "${CMAKE_ARGS[@]}"
 cmake --build "$B" --target os2warp.img -j8
 cmake --build "$B" --target mktestdisk || echo "(no C: test disk: the desktop doesn't need it)"
 

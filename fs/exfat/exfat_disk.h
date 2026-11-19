@@ -171,7 +171,7 @@ static inline uint16_t exfat_name_hash(const uint16_t *name, uint8_t len)
     uint16_t hash = 0;
     for (uint8_t i = 0; i < len; i++) {
         uint16_t c = name[i];
-        /* Up-case: simplified ASCII range */
+        /* The up-case table currently handles ASCII lowercase letters only. */
         if (c >= 'a' && c <= 'z') c -= 32;
         hash = (uint16_t)(((hash << 15) | (hash >> 1)) + (uint8_t)c);
         hash = (uint16_t)(((hash << 15) | (hash >> 1)) + (uint8_t)(c >> 8));

@@ -9,7 +9,7 @@
 
 #include "types.h"
 
-/* ── Configuration ───────────────────────────────────────────────────────── */
+/* Configuration */
 
 #define VFS_MAX_MOUNTS   8
 #define VFS_MAX_FILES    32
@@ -17,7 +17,7 @@
 #define VFS_PATH_MAX     260
 #define VFS_NAME_MAX     255
 
-/* ── Error codes ─────────────────────────────────────────────────────────── */
+/* Error codes */
 
 #define VFS_OK           0
 #define VFS_ERR_NOSPACE  -1
@@ -40,7 +40,7 @@
 #define VFS_ENOSPC    VFS_ERR_NOSPACE
 #define VFS_EROFS     VFS_ERR_ROFS
 
-/* ── Open flags ──────────────────────────────────────────────────────────── */
+/* Open flags */
 
 #define O_RDONLY    0x0000
 #define O_WRONLY    0x0001
@@ -49,13 +49,13 @@
 #define O_TRUNC     0x0200
 #define O_APPEND    0x0400
 
-/* ── Seek whence ─────────────────────────────────────────────────────────── */
+/* Seek whence */
 
 #define SEEK_SET    0
 #define SEEK_CUR    1
 #define SEEK_END    2
 
-/* ── Forward declarations ────────────────────────────────────────────────── */
+/* Forward declarations */
 
 typedef struct vfs_mount    vfs_mount_t;
 typedef struct vfs_file     vfs_file_t;
@@ -71,7 +71,7 @@ typedef struct {
     char label[32];
 } vfs_statfs_t;
 
-/* ── Filesystem operations ───────────────────────────────────────────────── */
+/* Filesystem operations */
 
 struct vfs_fs {
     const char *name;  /* "fat32", "ext4", etc. */
@@ -105,7 +105,7 @@ struct vfs_fs {
     int (*ftruncate)(vfs_mount_t *mnt, void *fpriv, uint32_t size);
 };
 
-/* ── Mount point ─────────────────────────────────────────────────────────── */
+/* Mount point */
 
 struct vfs_mount {
     char        mountpoint[VFS_PATH_MAX];
@@ -114,7 +114,7 @@ struct vfs_mount {
     int         quiet; /* mounted under vfs_quiet: not in the shell's MOUNT list */
 };
 
-/* ── File descriptor ─────────────────────────────────────────────────────── */
+/* File descriptor */
 
 struct vfs_file {
     bool         used;
@@ -124,7 +124,7 @@ struct vfs_file {
     uint32_t     pos;
 };
 
-/* ── Directory descriptor ────────────────────────────────────────────────── */
+/* Directory descriptor */
 
 struct vfs_dir {
     bool         used;
@@ -132,20 +132,15 @@ struct vfs_dir {
     void        *dpriv;  /* Filesystem-private dir handle */
 };
 
-/* ── Directory entry ─────────────────────────────────────────────────────── */
+/* Directory entry */
 
 struct vfs_dirent {
     char name[VFS_NAME_MAX + 1];
-    /* Note: fat32.c uses .attrs field, but it's not in vfs.c */
-    /* You may want to add: uint32_t attrs; */
 };
 
-/* ── Stat structure ──────────────────────────────────────────────────────── */
+/* Stat structure */
 
 struct vfs_stat {
-    /* Note: fat32.c uses .name, .size, .attrs, .mdate, .mtime */
-    /* But vfs.c doesn't define these fields */
-    /* Add the fields your fat32.c actually needs: */
     char     name[VFS_NAME_MAX + 1];
     uint32_t size;
     uint32_t attrs;
@@ -153,7 +148,7 @@ struct vfs_stat {
     uint16_t mtime;
 };
 
-/* ── File attributes ─────────────────────────────────────────────────────── */
+/* File attributes */
 
 #define VFS_ATTR_RDONLY     0x01
 #define VFS_ATTR_HIDDEN     0x02
@@ -162,7 +157,7 @@ struct vfs_stat {
 #define VFS_ATTR_DIR        0x10
 #define VFS_ATTR_ARCHIVE    0x20
 
-/* ── VFS API ─────────────────────────────────────────────────────────────── */
+/* VFS API */
 
 /* Initialize VFS */
 void vfs_init(void);

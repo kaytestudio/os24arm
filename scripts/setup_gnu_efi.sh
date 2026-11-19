@@ -1,21 +1,12 @@
 #!/bin/bash
-# setup_gnu_efi.sh — Clone and Build gnu-efi from GitHub
-#
-# This script:
-# - Clones gnu-efi from GitHub
-# - Builds it for ARM64
-# - Installs it locally in the project
-
 set -e
 
-# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 CYAN='\033[0;36m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-# Configuration
 GNUEFI_REPO="https://github.com/ncroxon/gnu-efi.git"
 GNUEFI_DIR="external/gnu-efi"
 INSTALL_PREFIX="$(pwd)/external/gnu-efi-install"
@@ -23,7 +14,6 @@ INSTALL_PREFIX="$(pwd)/external/gnu-efi-install"
 echo -e "${CYAN}  Setting up gnu-efi from GitHub${NC}"
 echo
 
-# Check prerequisites
 echo -e "${CYAN}[1/6]${NC} Checking prerequisites..."
 
 MISSING=()
@@ -50,7 +40,6 @@ fi
 
 echo -e "${GREEN}${NC} All prerequisites found"
 
-# Clone gnu-efi
 echo
 echo -e "${CYAN}[2/6]${NC} Cloning gnu-efi from GitHub..."
 
@@ -73,13 +62,11 @@ else
     echo -e "${GREEN}${NC} Using existing gnu-efi"
 fi
 
-# Get version
 cd "$GNUEFI_DIR"
 GNUEFI_VERSION=$(git describe --tags 2>/dev/null || echo "unknown")
 echo -e "${GREEN}${NC} Version: $GNUEFI_VERSION"
 cd - > /dev/null
 
-# Detect platform and set compiler
 echo
 echo -e "${CYAN}[3/6]${NC} Detecting platform and setting up compiler..."
 
@@ -143,16 +130,13 @@ if [ "$OS" = "macOS" ]; then
     echo -e "${GREEN}${NC} Objcopy: $OBJCOPY"
 fi
 
-# Build gnu-efi for ARM64
 echo
 echo -e "${CYAN}[4/6]${NC} Building gnu-efi for ARM64..."
 
 cd "$GNUEFI_DIR"
 
-# Clean previous build
 make clean > /dev/null 2>&1 || true
 
-# Build for aarch64 with the correct compiler
 echo -e "  Building for aarch64..."
 if [ "$OS" = "macOS" ]; then
     # macOS: Use cross-compiler with explicit settings
@@ -168,31 +152,26 @@ fi
 
 echo -e "${GREEN}${NC} Build complete"
 
-# Install locally
 echo
 echo -e "${CYAN}[5/6]${NC} Installing to project directory..."
 
 cd - > /dev/null
 mkdir -p "$INSTALL_PREFIX"
 
-# Copy headers
 echo -e "  Copying headers..."
 mkdir -p "$INSTALL_PREFIX/include/efi"
 cp -r "$GNUEFI_DIR/inc/"* "$INSTALL_PREFIX/include/efi/"
 
-# Copy libraries
 echo -e "  Copying libraries..."
 mkdir -p "$INSTALL_PREFIX/lib"
 cp "$GNUEFI_DIR/aarch64/lib/"*.a "$INSTALL_PREFIX/lib/" 2>/dev/null || true
 cp "$GNUEFI_DIR/aarch64/gnuefi/"*.a "$INSTALL_PREFIX/lib/" 2>/dev/null || true
 cp "$GNUEFI_DIR/aarch64/gnuefi/"*.o "$INSTALL_PREFIX/lib/" 2>/dev/null || true
 
-# Copy linker scripts
 cp "$GNUEFI_DIR/gnuefi/"*.lds "$INSTALL_PREFIX/lib/" 2>/dev/null || true
 
 echo -e "${GREEN}${NC} Installed to: $INSTALL_PREFIX"
 
-# Create pkg-config file
 echo
 echo -e "${CYAN}[6/6]${NC} Creating configuration..."
 
@@ -213,7 +192,6 @@ EOF
 
 echo -e "${GREEN}${NC} Created pkg-config file"
 
-# Create environment script
 cat > external/gnu-efi-env.sh << EOF
 # Source this file to use project-local gnu-efi
 export PKG_CONFIG_PATH="$INSTALL_PREFIX/lib/pkgconfig:\$PKG_CONFIG_PATH"
@@ -230,7 +208,6 @@ EOF
 
 chmod +x external/gnu-efi-env.sh
 
-# Summary
 echo
 echo -e "${GREEN}gnu-efi setup complete!${NC}"
 echo

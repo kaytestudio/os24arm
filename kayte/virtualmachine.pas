@@ -26,13 +26,10 @@ implementation
 constructor TVirtualMachine.Create(AProgram: TByteCodeProgram);
 begin
   inherited Create;
-  // Store the loaded program object
   FProgram := AProgram;
-  // Initialize the instruction pointer to the start
   FInstructionPointer := 0;
 
-  // Note: We don't own AProgram's memory, as it is owned and freed
-  // by the caller (TCLIHandler.RunBytecodeFile) after the VM is done.
+  // TCLIHandler.RunBytecodeFile owns and frees AProgram.
 end;
 
 destructor TVirtualMachine.Destroy;
@@ -56,10 +53,9 @@ begin
     Exit;
   end;
 
-  // Simulation of the execution loop
   while FInstructionPointer < InstructionCount do
   begin
-    // TODO: execute FProgram.Instructions[FInstructionPointer]; this only steps the pointer
+    // TODO: Execute this instruction; currently the VM only advances the pointer.
     Writeln(Format('  [VM] Executing Instruction at IP %d...', [FInstructionPointer]));
 
     Inc(FInstructionPointer);

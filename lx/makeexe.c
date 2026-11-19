@@ -73,7 +73,6 @@ int main(int argc, char **argv)
     printf("  Output: %s\n", output);
     printf("  Entry:  0x%X\n", entry_offset);
 
-    /* Create EXE */
     int result = lx_create_exe(output, code, (uint32_t)code_size, data, (uint32_t)data_size,
                                 entry_offset, 0x10000);
 

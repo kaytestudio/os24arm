@@ -3,8 +3,8 @@
  * 32 bpp), GpiCreateBitmap and its bits, WinDrawBitmap, GpiBitBlt and
  * GpiWCBitBlt (the usual ROPs, stretching), and memory DCs (DevOpenDC,
  * GpiCreatePS, GpiSetBitmap). A bitmap is a window that's never shown, so
- * anything that draws into windows also draws into bitmaps; a memory PS is
- * just a PS on that window. */
+ * anything that draws into windows also draws into bitmaps; memory PSes
+ * target the hidden bitmap window. */
 
 /* decode bits at b into px (bottom-up rows, as in the file). The info header
  * is at info (cbFix 12 means OS/2 1.x, else 2.x), with the palette after it. */
@@ -15,7 +15,7 @@ static int bits_decode(const uint8_t *b, size_t bn, const uint8_t *info, size_t 
     int old = cbfix == 12, bpp = old ? (info[10] | info[11] << 8) : (info[14] | info[15] << 8);
     uint32_t comp = !old && cbfix >= 20 ? (uint32_t)(info[16] | info[17] << 8 | info[18] << 16 | (uint32_t)info[19] << 24) : 0;
     uint32_t nclr = !old && cbfix >= 36 ? (uint32_t)(info[32] | info[33] << 8 | info[34] << 16 | (uint32_t)info[35] << 24) : 0;
-    if (comp) return -1;                                       /* only BCA_UNCOMP for now */
+    if (comp) return -1;                                       /* compressed arrays are unsupported */
     if (bpp <= 8 && !nclr) nclr = 1u << bpp;
     const uint8_t *pal = info + cbfix;
     int pe = old ? 3 : 4;
@@ -505,7 +505,7 @@ static uint32_t sys_pointer(uint32_t id)
         for (int y = 2; y < 30; y++) for (int x = 16 - (y - 2) / 2 - 1; x <= 16 + (y - 2) / 2; x++)
             if (x >= 0 && x < 32) { p->px[y * 32 + x] = 0xFFF0C800u; m->andm[y * 32 + x] = 0; }
         mark = "!"; fg = 0; break;
-    default: {                                                 /* the arrow, also used for the rest for now */
+    default: {                                                 /* arrow cursor for unsupported pointer types */
         static const char *const arrow[] = {
             "X", "XX", "X.X", "X..X", "X...X", "X....X", "X.....X", "X......X", "X.......X", "X........X",
             "X.....XXXXX", "X..X..X", "X.X X..X", "XX  X..X", "X    X..X", "     X..X", "      X..X", "      XXX" };

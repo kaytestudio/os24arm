@@ -97,7 +97,7 @@ struct vfs_file {
 struct vfs_driver {
     char name[VFS_FSTYPE_LEN];      /* "ext4", "fat32", etc.        */
 
-    /* Detect if 'dev' contains this filesystem (return true=yes)  */
+    /* Return true if dev contains this filesystem. */
     bool     (*probe)(blkdev_t *dev, uint64_t part_lba_start);
 
     /* Mount the filesystem; fill *mount->priv                     */

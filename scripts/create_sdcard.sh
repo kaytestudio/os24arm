@@ -1,5 +1,4 @@
 #!/bin/bash
-# create_sdcard.sh - Prepare files for Raspberry Pi 3+ SD card
 
 set -e
 
@@ -9,11 +8,9 @@ SD_PREP_DIR="$BUILD_DIR/sdcard_files"
 echo "Preparing SD Card Files for Raspberry Pi 3+"
 echo ""
 
-# Create output directory
 rm -rf "$SD_PREP_DIR"
 mkdir -p "$SD_PREP_DIR"
 
-# Check if kernel exists
 if [ ! -f "$BUILD_DIR/kernel8.img" ]; then
     echo "Error: kernel8.img not found!"
     echo "Run 'make' first to build the kernel."
@@ -25,7 +22,6 @@ cp "$BUILD_DIR/kernel8.img" "$SD_PREP_DIR/"
 echo "  kernel8.img"
 echo ""
 
-# Check if config.txt exists in source
 if [ -f "config.txt" ]; then
     echo "Step 2: Copying config.txt..."
     cp config.txt "$SD_PREP_DIR/"
@@ -79,7 +75,6 @@ cp /tmp/rpi-firmware/boot/fixup.dat "$SD_PREP_DIR/"
 echo "  fixup.dat"
 echo ""
 
-# Create README
 cat > "$SD_PREP_DIR/README.txt" << 'EOF'
 OS/2 Warp 4.52 ARM64 - Raspberry Pi 3+ Boot Files
 

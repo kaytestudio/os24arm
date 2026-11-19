@@ -6,7 +6,7 @@ unit UKfrmParser;
 interface
 
 uses
-  SysUtils,          // <-- gives us ChangeFileExt / ExtractFileName
+  SysUtils,
   UKfrmTypes;
 
 type
@@ -19,7 +19,6 @@ implementation
 
 function TKfrmParser.ParseKfrmFile(const AFile: String): TKfrmFormDef;
 begin
-  { dummy empty form – just to satisfy the compiler }
   Result := TKfrmFormDef.Create;
   Result.Name    := ChangeFileExt(ExtractFileName(AFile), '');
   Result.Caption := Result.Name;

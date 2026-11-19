@@ -69,21 +69,18 @@ begin
 
   FileStream := TFileStream.Create(InputFilePath, fmOpenRead or fmShareDenyWrite);
   try
-    // 1. Read ProgramTitle
     FileStream.Read(Len, SizeOf(Len));
     SetLength(ProgramTitleBuffer, Len);
     if Len > 0 then
       FileStream.Read(ProgramTitleBuffer[1], Len);
     Result.ProgramTitle := ProgramTitleBuffer;
 
-    // 2. Read Instructions
     FileStream.Read(Len, SizeOf(Len));
     SetLength(TempInstructions, Len);
     if Len > 0 then
       FileStream.Read(TempInstructions[0], Len * SizeOf(TBCInstruction));
     Result.Instructions := TempInstructions;
 
-    // 3. Read StringLiterals
     FileStream.Read(Len, SizeOf(Len));
     for I := 0 to Len - 1 do
     begin
@@ -94,14 +91,12 @@ begin
       Result.StringLiterals.Add(Key);
     end;
 
-    // 4. Read IntegerLiterals
     FileStream.Read(Len, SizeOf(Len));
     SetLength(TempIntLiterals, Len);
     if Len > 0 then
       FileStream.Read(TempIntLiterals[0], Len * SizeOf(Int64));
     Result.IntegerLiterals := TempIntLiterals;
 
-    // 5. Read VariableMap
     FileStream.Read(Len, SizeOf(Len));
     for I := 0 to Len - 1 do
     begin
@@ -113,7 +108,6 @@ begin
       Result.VariableMap.Add(Key, Value);
     end;
 
-    // 6. Read SubroutineMap
     FileStream.Read(Len, SizeOf(Len));
     for I := 0 to Len - 1 do
     begin
@@ -125,7 +119,6 @@ begin
       Result.SubroutineMap.Add(Key, Value);
     end;
 
-    // 7. Read FormMap
     FileStream.Read(Len, SizeOf(Len));
     for I := 0 to Len - 1 do
     begin
@@ -154,20 +147,17 @@ var
 begin
   FileStream := TFileStream.Create(OutputFilePath, fmCreate);
   try
-    // 1. Write ProgramTitle
     Len := Length(AProgram.ProgramTitle);
     FileStream.Write(Len, SizeOf(Len));
     if Len > 0 then
       FileStream.Write(AProgram.ProgramTitle[1], Len);
 
-    // 2. Write Instructions
     TempInstructions := AProgram.Instructions;
     Len := Length(TempInstructions);
     FileStream.Write(Len, SizeOf(Len));
     if Len > 0 then
       FileStream.Write(TempInstructions[0], Len * SizeOf(TBCInstruction));
 
-    // 3. Write StringLiterals
     Len := AProgram.StringLiterals.Count;
     FileStream.Write(Len, SizeOf(Len));
     for I := 0 to AProgram.StringLiterals.Count - 1 do
@@ -179,14 +169,12 @@ begin
         FileStream.Write(Key[1], KeyLength);
     end;
 
-    // 4. Write IntegerLiterals
     TempIntLiterals := AProgram.IntegerLiterals;
     Len := Length(TempIntLiterals);
     FileStream.Write(Len, SizeOf(Len));
     if Len > 0 then
       FileStream.Write(TempIntLiterals[0], Len * SizeOf(Int64));
 
-    // 5. Write VariableMap
     Len := AProgram.VariableMap.Count;
     FileStream.Write(Len, SizeOf(Len));
     for I := 0 to AProgram.VariableMap.Count - 1 do
@@ -201,7 +189,6 @@ begin
       FileStream.Write(Value, SizeOf(Value));
     end;
 
-    // 6. Write SubroutineMap
     Len := AProgram.SubroutineMap.Count;
     FileStream.Write(Len, SizeOf(Len));
     for I := 0 to AProgram.SubroutineMap.Count - 1 do
@@ -216,7 +203,6 @@ begin
       FileStream.Write(Value, SizeOf(Value));
     end;
 
-    // 7. Write FormMap
     Len := AProgram.FormMap.Count;
     FileStream.Write(Len, SizeOf(Len));
     for I := 0 to AProgram.FormMap.Count - 1 do
@@ -351,10 +337,8 @@ begin
         if FOptions.Verbose then
           Writeln('Parsing source code...');
 
-        // Parse and generate the bytecode program
         BytecodeProgram := Parser.Parse;
 
-        // Determine output file path
         if OutputFile = '' then
           OutputFilePath := ChangeFileExt(InputFile, '.bytecode')
         else
@@ -363,7 +347,6 @@ begin
         if FOptions.Verbose then
           Writeln('Saving bytecode to ', OutputFilePath, '...');
 
-        // Generate and save the bytecode
         Generator := TBytecodeGenerator.Create;
         try
           Generator.SaveProgramToFile(BytecodeProgram, OutputFilePath);
@@ -372,7 +355,6 @@ begin
           Generator.Free;
         end;
 
-        // Free the generated program
         BytecodeProgram.Free;
       finally
         Parser.Free;
@@ -399,12 +381,10 @@ begin
 
   Writeln('Running ', BytecodeFile, '...');
   try
-    // Load the bytecode program from file
     Generator := TBytecodeGenerator.Create;
     try
       BytecodeProgram := Generator.LoadProgramFromFile(BytecodeFile);
       try
-        // Create VM with the loaded program and execute
         VM := TVirtualMachine.Create(BytecodeProgram);
         try
           VM.Run;

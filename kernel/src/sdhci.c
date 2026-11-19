@@ -35,7 +35,7 @@
 #error "SD_BASE_CLK_HZ must be defined by the platform (see CMakeLists.txt)"
 #endif
 
-/* ── Registers ───────────────────────────────────────────────────────────── */
+/* Registers */
 
 #ifdef SD_HOST_AM335X_MMCHS
 #define SDHCI_OFFSET        0x200u
@@ -135,7 +135,7 @@ static void delay_polls(uint32_t n)
     while (n--) (void)rd(REG_PSTATE);
 }
 
-/* ── Card state ──────────────────────────────────────────────────────────── */
+/* Card state */
 
 typedef struct {
     uint32_t rca;           /* relative card address (CMD3)              */
@@ -146,7 +146,7 @@ typedef struct {
 static sd_card_t g_card;
 static blkdev_t  g_sd_dev;
 
-/* ── Host controller ─────────────────────────────────────────────────────── */
+/* Host controller */
 
 static int wait_clear(uint32_t off, uint32_t mask)
 {
@@ -270,7 +270,7 @@ static int host_init(void)
     return 0;
 }
 
-/* ── Commands ────────────────────────────────────────────────────────────── */
+/* Commands */
 
 /* Issue one command and wait for its response (and, for R1b, for the
  * card to release DAT0). Data phases are handled by the caller. Returns 0
@@ -426,7 +426,7 @@ static int card_identify(void)
     return 0;
 }
 
-/* ── Block I/O ───────────────────────────────────────────────────────────── */
+/* Block I/O */
 
 static int wait_stat(uint32_t bit)
 {
@@ -500,7 +500,7 @@ static int sd_write(blkdev_t *dev, int64_t sector, uint32_t count, const void *b
     return 0;
 }
 
-/* ── Public entry point ──────────────────────────────────────────────────── */
+/* Public entry point */
 
 blkdev_t *sdhci_sd_init(void)
 {

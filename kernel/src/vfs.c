@@ -19,9 +19,7 @@ static int         mount_count = 0;
 static vfs_file_t files[VFS_MAX_FILES];
 static vfs_dir_t  dirs [VFS_MAX_DIRS];
 
-/* ══════════════════════════════════════════════════════════════════════════
-   INTERNAL HELPERS
-   ══════════════════════════════════════════════════════════════════════════ */
+/* Internal helpers */
 
 /* Mountpoints match case-insensitively, as OS/2 paths do ("\usb" and
  * "\USB" are the same drive); what's below the mountpoint is passed to
@@ -97,15 +95,12 @@ static int alloc_dfd(void)
     return VFS_ERR_NOSPACE;
 }
 
-/* ══════════════════════════════════════════════════════════════════════════
-   PUBLIC API
-   ══════════════════════════════════════════════════════════════════════════ */
+/* Public API */
 
 void vfs_init(void)
 {
 
-    // Arrays (mounts, files, dirs) are already zeroed by boot.S BSS clearing
-    // Just initialize the global counter
+    // The tables are zeroed in BSS; reset the active mount count.
     mount_count = 0;
 
 }

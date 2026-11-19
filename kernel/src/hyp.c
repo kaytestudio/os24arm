@@ -466,12 +466,12 @@ int hyp_init(void)
                  | (1UL << 23) | (1UL << 31); /* RES1 */
     hyp_call(HYP_CALL_INIT_MMU, (uint64_t)(uintptr_t)hyp_l1, tcr, HYP_MAIR);
 
-    /* Still answering with its MMU on? */
+    /* Verify EL2 still responds after MMU setup. */
     if (hyp_call(HYP_CALL_PROBE, 0, 0, 0) != HYP_MAGIC)
         return -4;
 
-    /* Without it guests still run, they just can't be preempted and only
-     * see their timer fire when they next trap. */
+    /* Without the GIC, guests run but cannot be preempted; timer exits wait
+     * until the guest next traps. */
     gicv3_init();
     hyp_ready = 1;
     return 0;

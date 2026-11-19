@@ -5,15 +5,13 @@ unit WinComInterop;
 interface
 
 uses
-  Windows,       // Core Windows API types, constants, and functions
-  SysUtils,      // For basic utilities like GUIDToString
-  Classes,       // For TObject, TList etc.
-  ComObj,        // For IUnknown, IDispatch, and basic COM helper functions (CoCreateInstance, CreateOleObject)
-  ActiveXs;      // For common ActiveX related interfaces (IOleObject, IOleControl, etc.)
+  Windows,
+  SysUtils,
+  Classes,
+  ComObj,
+  ActiveXs;
 
-// --- SECTION 1: COMMON WINDOWS API DECLARATIONS (Examples) ---
-// These are often already in the 'Windows' unit, but shown for illustration.
-// You might add specific API calls here if not already in 'Windows'.
+// Windows API declarations not provided by the units above.
 
 function ShowMessage(const Msg: string): Integer; stdcall; // Wrapper for MessageBox
   external user32 name 'MessageBoxA'; // Or MessageBoxW for Unicode
@@ -21,33 +19,17 @@ function ShowMessage(const Msg: string): Integer; stdcall; // Wrapper for Messag
 procedure OutputDebugString(const lpOutputString: PChar); stdcall;
   external kernel32 name 'OutputDebugStringA'; // Or OutputDebugStringW for Unicode
 
-// Example: Function to get a Windows handle
 function GetForegroundWindow: HWND; stdcall;
   external user32 name 'GetForegroundWindow';
 
 
-// --- SECTION 2: COM INTERFACE DECLARATIONS (Examples) ---
-// These are the blueprints for COM objects you might interact with.
-// Always inherit from IUnknown (or IDispatch for Automation compatible objects).
-
 const
-  // Example GUIDs (Globally Unique Identifiers)
-  // You would generate these for your own custom interfaces/classes.
-  // Tools like Lazarus's "Create GUID" tool (Tools -> Create GUID) or PowerShell's [guid]::NewGuid()
-  // are used for this.
+  // Replace these sample IDs with the server's registered IDs.
   IID_IMyCustomComInterface: TGUID = '{77A45F32-F8D3-4E40-9B79-D4A465D292E3}';
   CLSID_MyComAutomationClass: TGUID = '{12684EAF-B121-4B98-90A6-C9986C593F6F}';
 
 type
-  // IUnknown is the base interface for all COM objects.
-  // It provides reference counting (AddRef, Release) and interface querying (QueryInterface).
-  // Lazarus's ComObj unit already defines this.
-
-  // IDispatch is the base interface for Automation (OLE Automation) compatible COM objects.
-  // It allows late-bound method invocation (e.g., VBScript, JavaScript).
-  // Lazarus's ComObj unit already defines this.
-
-  // Example: A custom simple COM interface (inherits from IUnknown)
+  // IUnknown provides reference counting and interface queries.
   IMyCustomComInterface = interface(IUnknown)
   ['{YOUR-GUID-FOR-IMYCUSTOMCOMINTERFACE-HERE}'] // Interface GUID must match constant above
     function GetMessage: WideString; stdcall;
@@ -55,9 +37,7 @@ type
     function GetValue: Integer; stdcall;
   end;
 
-  // Example: A custom Automation-compatible COM interface (inherits from IDispatch)
-  // Methods for IDispatch interfaces are usually late-bound and don't need stdcall.
-  // However, if you explicitly define them, they can be early-bound too.
+  // IDispatch supports Automation clients such as VBScript.
   IMyAutomationInterface = interface(IDispatch)
   ['{YOUR-GUID-FOR-IMYAUTOMATIONINTERFACE-HERE}'] // Interface GUID
     function GetAutomatedMessage: OleVariant; safecall; // safecall for error handling
@@ -65,19 +45,16 @@ type
   end;
 
 
-// --- SECTION 3: HELPER FUNCTIONS FOR COM OBJECT INTERACTION ---
-
-// Function to create an instance of a COM object given its Class ID (CLSID) and Interface ID (IID).
-// This is low-level COM, often wrapped by higher-level functions like CreateOleObject.
+// Create an in-process or local-server COM object.
 function CreateComObject(const ClassID, InterfaceID: TGUID): IUnknown;
 var
   hr: HRESULT;
   pUnk: IUnknown;
 begin
   Result := nil;
-  // Initialize COM library for the current thread if not already initialized
-  hr := CoInitialize(nil); // CoInitializeEx is often preferred
-  if SUCCEEDED(hr) or (hr = S_FALSE) then // S_FALSE means already initialized
+  // COM must be initialized on this thread before creating objects.
+  hr := CoInitialize(nil);
+  if SUCCEEDED(hr) or (hr = S_FALSE) then
   begin
     hr := CoCreateInstance(ClassID, nil, CLSCTX_INPROC_SERVER or CLSCTX_LOCAL_SERVER, InterfaceID, Pointer(pUnk));
     if SUCCEEDED(hr) then
@@ -96,12 +73,7 @@ begin
 end;
 
 
-// --- SECTION 4: ACTIVEX-RELATED DECLARATIONS (for consumption, not building) ---
-// ActiveX controls are specific types of COM objects with UI and embedding capabilities.
-// The ActiveXs unit provides many standard interfaces like IOleObject, IOleControl, etc.
-
-// Example: Function to embed an ActiveX control into a simple form (conceptual)
-// This would typically be part of a Lazarus Form, not a standalone unit.
+// ActiveX embedding needs a client site, supplied by the host form.
 (*
 procedure EmbedActiveXControl(const AClassName: string; AParentHandle: HWND);
 var
@@ -110,7 +82,7 @@ var
   ClassID: TGUID;
   hr: HRESULT;
 begin
-  // Convert progID to CLSID (e.g., "MediaPlayer.MediaPlayer.1")
+  // Convert the registered program ID to a class ID.
   hr := CLSIDFromProgID(PWideChar(StringToOleStr(AClassName)), ClassID);
   if FAILED(hr) then
   begin
@@ -118,31 +90,21 @@ begin
     Exit;
   end;
 
-  // Create the ActiveX control
   OleControl := CreateComObject(ClassID, IOleControl) as IOleControl;
   if Assigned(OleControl) then
   begin
     OleObject := OleControl as IOleObject;
     if Assigned(OleObject) then
     begin
-      // Set the client site (container) for the control
-      // This is a complex part involving implementing IOleClientSite interface
-      // and passing it to OleObject.SetClientSite.
-      // For a simple demo, you'd typically use TActiveXContainer in Lazarus.
+      // TODO: Provide an IOleClientSite from the host form.
       Writeln('ActiveX control created, but embedding requires more code.');
     end;
   end;
 end;
 *)
 
-// --- SECTION 5: INITIALIZATION / FINALIZATION ---
-// CoInitialize and CoUninitialize manage the COM library lifecycle.
-// Call CoInitialize once per thread that uses COM.
-// CoUninitialize should be called when the thread no longer needs COM.
-
 initialization
-  // It's good practice to initialize COM in your main application's initialization
-  // block if you know you'll be using COM throughout.
+  // Initialize COM here if the application uses it on the main thread.
   // CoInitializeEx(nil, COINIT_APARTMENTTHREADED); // Preferred for UI threads
 finalization
   // CoUninitialize; // Uncomment if CoInitialize was called without CoUninitialize per thread.
