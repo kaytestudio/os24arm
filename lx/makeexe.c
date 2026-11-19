@@ -81,9 +81,9 @@ int main(int argc, char **argv)
     free(data);
 
     if (result == 0) {
-        printf("✓ Successfully created %s\n", output);
+        printf("Successfully created %s\n", output);
     } else {
-        printf("✗ Failed to create executable\n");
+        printf("Failed to create executable\n");
     }
 
     return result;

@@ -37,7 +37,7 @@ rm -f kernel/src/cli_stubs.c
 # Fix CMakeLists.txt to reference kernel_stubs.c
 sed -i.bak 's/cli_stubs\.c/kernel_stubs.c/g' kernel/CMakeLists.txt
 
-echo "✅ Fixed! Now rebuild:"
+echo "Fixed! Now rebuild:"
 echo "   cd build"
 echo "   cmake .."
 echo "   make"

@@ -81,13 +81,13 @@ void kernel_main(void)
     blkdev_t *vda2 = blk_get("vda2");
 
     if (!vda2) {
-        uart_puts("        ✗ Block device vda2 not found!\r\n");
+        uart_puts("        Block device vda2 not found.\r\n");
         uart_puts("        Implement blk_init() and blk_get() in your fs/ folder\r\n");
         uart_puts("        Operating in ramdisk mode\r\n\r\n");
         goto skip_mounts;
     }
 
-    uart_puts("        ✓ Found block device: ");
+    uart_puts("        Found block device: ");
     uart_puts(vda2->name);
     uart_puts("\r\n");
 
@@ -96,7 +96,7 @@ void kernel_main(void)
     int mount_result = vfs_mount("/", vda2, FS_EXT4);
 
     if (mount_result == VFS_OK) {
-        uart_puts("        ✓ Root filesystem mounted (C:)\r\n");
+        uart_puts("        Root filesystem mounted (C:)\r\n");
 
         /* Try to read CONFIG.SYS from disk */
         uart_puts("  [CFG] Loading CONFIG.SYS...\r\n");
@@ -111,7 +111,7 @@ void kernel_main(void)
         }
 
         if (open_result == VFS_OK) {
-            uart_puts("        ✓ CONFIG.SYS found on disk\r\n");
+            uart_puts("        CONFIG.SYS found on disk\r\n");
 
             /* Read CONFIG.SYS into buffer */
             if (cfg_file.size > 0 && cfg_file.size < 65536) {
@@ -120,7 +120,7 @@ void kernel_main(void)
                     ssize_t bytes = vfs_read(&cfg_file, config_buf, cfg_file.size);
                     if (bytes > 0) {
                         config_buf[bytes] = '\0';
-                        uart_puts("        ✓ CONFIG.SYS loaded (");
+                        uart_puts("        CONFIG.SYS loaded (");
                         uart_put_u32((uint32_t)bytes);
                         uart_puts(" bytes)\r\n");
 
@@ -133,19 +133,19 @@ void kernel_main(void)
             vfs_close(&cfg_file);
         } else {
             /* CONFIG.SYS not found - create default */
-            uart_puts("        ⚠ CONFIG.SYS not found, creating default...\r\n");
+            uart_puts("        Warning: CONFIG.SYS not found, creating default...\r\n");
 
             open_result = vfs_open("/config.sys", &cfg_file, VFS_O_WRONLY | VFS_O_CREAT);
             if (open_result == VFS_OK) {
                 ssize_t written = vfs_write(&cfg_file, default_config, strlen(default_config));
                 vfs_close(&cfg_file);
                 if (written > 0) {
-                    uart_puts("        ✓ Default CONFIG.SYS created (");
+                    uart_puts("        Default CONFIG.SYS created (");
                     uart_put_u32((uint32_t)written);
                     uart_puts(" bytes)\r\n");
                 }
             } else {
-                uart_puts("        ⚠ Could not create CONFIG.SYS: ");
+                uart_puts("        Warning: Could not create CONFIG.SYS: ");
                 uart_puts(vfs_errstr(open_result));
                 uart_puts("\r\n");
             }
@@ -159,7 +159,7 @@ void kernel_main(void)
         if (vda1) {
             uart_puts("  [VFS] Attempting: vda1 -> /boot/efi (fat32)\r\n");
             if (vfs_mount("/boot/efi", vda1, FS_FAT32) == VFS_OK) {
-                uart_puts("        ✓ EFI partition mounted\r\n");
+                uart_puts("        EFI partition mounted\r\n");
             }
         }
 
@@ -168,7 +168,7 @@ void kernel_main(void)
         if (vda3) {
             uart_puts("  [VFS] Attempting: vda3 -> /mnt/fat16 (fat16)\r\n");
             if (vfs_mount("/mnt/fat16", vda3, FS_FAT16) == VFS_OK) {
-                uart_puts("        ✓ FAT16 partition mounted (D:)\r\n");
+                uart_puts("        FAT16 partition mounted (D:)\r\n");
             }
         }
 
@@ -177,11 +177,11 @@ void kernel_main(void)
         if (vda4) {
             uart_puts("  [VFS] Attempting: vda4 -> /mnt/exfat (exfat)\r\n");
             if (vfs_mount("/mnt/exfat", vda4, FS_EXFAT) == VFS_OK) {
-                uart_puts("        ✓ exFAT partition mounted (E:)\r\n");
+                uart_puts("        exFAT partition mounted (E:)\r\n");
             }
         }
     } else {
-        uart_puts("        ✗ FAILED to mount root filesystem\r\n");
+        uart_puts("        FAILED to mount root filesystem\r\n");
         uart_puts("        Error: ");
         uart_puts(vfs_errstr(mount_result));
         uart_puts("\r\n\r\n");

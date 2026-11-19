@@ -297,10 +297,10 @@ int main(int argc, char **argv)
     
     if (result == 0) {
         if (verbose) {
-            printf("\n✓ Successfully created %s\n", output);
+            printf("\nSuccessfully created %s\n", output);
         }
     } else {
-        fprintf(stderr, "\n✗ Failed to create %s\n", output);
+        fprintf(stderr, "\nFailed to create %s\n", output);
     }
     
     return result;

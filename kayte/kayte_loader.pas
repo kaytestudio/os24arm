@@ -80,7 +80,7 @@ begin
   BasePath := AppResourcePath;
   if not DirectoryExists(BasePath) then
   begin
-    WriteLn('[kayte_loader] ❌ Resource directory not found: ', BasePath);
+    WriteLn('[kayte_loader] Resource directory not found: ', BasePath);
     Exit;
   end;
 

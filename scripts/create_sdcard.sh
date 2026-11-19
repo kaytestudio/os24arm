@@ -24,14 +24,14 @@ fi
 
 echo "Step 1: Copying kernel..."
 cp "$BUILD_DIR/kernel8.img" "$SD_PREP_DIR/"
-echo "  ✓ kernel8.img"
+echo "  kernel8.img"
 echo ""
 
 # Check if config.txt exists in source
 if [ -f "config.txt" ]; then
     echo "Step 2: Copying config.txt..."
     cp config.txt "$SD_PREP_DIR/"
-    echo "  ✓ config.txt"
+    echo "  config.txt"
 else
     echo "Step 2: Creating config.txt..."
     cat > "$SD_PREP_DIR/config.txt" << 'EOF'
@@ -59,26 +59,26 @@ device_tree=
 # Boot delay
 boot_delay=1
 EOF
-    echo "  ✓ config.txt (generated)"
+    echo "  config.txt (generated)"
 fi
 echo ""
 
 echo "Step 3: Downloading Raspberry Pi firmware..."
 if [ ! -d "/tmp/rpi-firmware" ]; then
     git clone --depth=1 https://github.com/raspberrypi/firmware /tmp/rpi-firmware
-    echo "  ✓ Firmware downloaded"
+    echo "  Firmware downloaded"
 else
-    echo "  ✓ Using cached firmware"
+    echo "  Using cached firmware"
 fi
 echo ""
 
 echo "Step 4: Copying bootloader files..."
 cp /tmp/rpi-firmware/boot/bootcode.bin "$SD_PREP_DIR/"
-echo "  ✓ bootcode.bin"
+echo "  bootcode.bin"
 cp /tmp/rpi-firmware/boot/start.elf "$SD_PREP_DIR/"
-echo "  ✓ start.elf"
+echo "  start.elf"
 cp /tmp/rpi-firmware/boot/fixup.dat "$SD_PREP_DIR/"
-echo "  ✓ fixup.dat"
+echo "  fixup.dat"
 echo ""
 
 # Create README
@@ -114,7 +114,7 @@ For more information, see RPI_BOOT_GUIDE.md
 EOF
 
 echo "════════════════════════════════════════════════════════════"
-echo "✓ SD Card Files Ready!"
+echo "SD Card Files Ready."
 echo "════════════════════════════════════════════════════════════"
 echo ""
 echo "Files prepared in: $SD_PREP_DIR"

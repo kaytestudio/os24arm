@@ -6,7 +6,7 @@ Complete CMake-based build system for creating OS/2 LX executables
 and DLLs for your OS/2 Warp ARM64 system.
 
 ═══════════════════════════════════════════════════════════════════
-  📦 FILES PROVIDED
+  FILES PROVIDED
 ═══════════════════════════════════════════════════════════════════
 
 Core Library:
@@ -26,7 +26,7 @@ Documentation:
   8. LX_BUILDER_GUIDE.txt - Detailed API guide
 
 ═══════════════════════════════════════════════════════════════════
-  🚀 INSTALLATION (5 MINUTES)
+  INSTALLATION (5 MINUTES)
 ═══════════════════════════════════════════════════════════════════
 
 Step 1: Create Tools Directory
@@ -56,8 +56,8 @@ Step 4: Test the Tools
 make test-lx
 
 This creates:
-  ✓ TEST.EXE  - Test executable
-  ✓ TEST.DLL  - Test DLL
+  TEST.EXE  - Test executable
+  TEST.DLL  - Test DLL
 
 Step 5: Install (Optional)
 --------------------------
@@ -73,7 +73,7 @@ Add to PATH:
   source ~/.bashrc
 
 ═══════════════════════════════════════════════════════════════════
-  🔧 INTEGRATION WITH MAIN PROJECT
+  INTEGRATION WITH MAIN PROJECT
 ═══════════════════════════════════════════════════════════════════
 
 Option 1: Separate Build (Recommended)
@@ -108,7 +108,7 @@ Then rebuild main project:
 Tools will be in: build/tools/
 
 ═══════════════════════════════════════════════════════════════════
-  📊 CMAKE TARGETS
+  CMAKE TARGETS
 ═══════════════════════════════════════════════════════════════════
 
 Build Targets:
@@ -129,7 +129,7 @@ Clean:
   make clean          - Remove built files
 
 ═══════════════════════════════════════════════════════════════════
-  💡 USAGE EXAMPLES
+  USAGE EXAMPLES
 ═══════════════════════════════════════════════════════════════════
 
 After building, the tools are in the build directory:
@@ -177,7 +177,7 @@ Example 4: Create Device Driver
 ./lxbuild -t sys -o MYDRV.SYS driver.bin
 
 ═══════════════════════════════════════════════════════════════════
-  🏗️  USING IN YOUR BUILD SYSTEM
+   USING IN YOUR BUILD SYSTEM
 ═══════════════════════════════════════════════════════════════════
 
 CMake Custom Command
@@ -216,7 +216,7 @@ endfunction()
 add_lx_executable(myapp myapp.bin --entry 0x1000)
 
 ═══════════════════════════════════════════════════════════════════
-  📝 CLION INTEGRATION
+  CLION INTEGRATION
 ═══════════════════════════════════════════════════════════════════
 
 If using CLion IDE:
@@ -239,7 +239,7 @@ If using CLion IDE:
    Press Build button
 
 ═══════════════════════════════════════════════════════════════════
-  🔨 DEVELOPMENT WORKFLOW
+  DEVELOPMENT WORKFLOW
 ═══════════════════════════════════════════════════════════════════
 
 Typical Workflow for Creating OS/2 Application:
@@ -269,7 +269,7 @@ Typical Workflow for Creating OS/2 Application:
    # Boot OS/2 and run HELLO.EXE
 
 ═══════════════════════════════════════════════════════════════════
-  🎯 PRACTICAL EXAMPLES
+  PRACTICAL EXAMPLES
 ═══════════════════════════════════════════════════════════════════
 
 Create System DLL (DOSCALLS.DLL)
@@ -307,7 +307,7 @@ Create REXX Interpreter
     rexx_interpreter.bin
 
 ═══════════════════════════════════════════════════════════════════
-  🐛 TROUBLESHOOTING
+  TROUBLESHOOTING
 ═══════════════════════════════════════════════════════════════════
 
 CMake Configuration Failed
@@ -331,7 +331,7 @@ Can't Find Tools After Install
   → Verify: which lxbuild
 
 ═══════════════════════════════════════════════════════════════════
-  📚 DIRECTORY STRUCTURE
+  DIRECTORY STRUCTURE
 ═══════════════════════════════════════════════════════════════════
 
 After installation:
@@ -363,7 +363,7 @@ os2/
 │       └── makedll
 
 ═══════════════════════════════════════════════════════════════════
-  ✅ VERIFICATION CHECKLIST
+  VERIFICATION CHECKLIST
 ═══════════════════════════════════════════════════════════════════
 
 After installation, verify:
@@ -377,7 +377,7 @@ After installation, verify:
 □ Can create simple EXE: ./makeexe test.bin TEST.EXE
 
 ═══════════════════════════════════════════════════════════════════
-  🚀 NEXT STEPS
+  NEXT STEPS
 ═══════════════════════════════════════════════════════════════════
 
 1. Integrate with OS/2 build system

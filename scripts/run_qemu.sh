@@ -220,7 +220,7 @@ if ! command -v qemu-system-aarch64 &> /dev/null; then
 fi
 
 QEMU_VERSION=$(qemu-system-aarch64 --version | head -n1)
-echo -e "${GREEN}✓${NC} QEMU found: $QEMU_VERSION"
+echo -e "${GREEN}${NC} QEMU found: $QEMU_VERSION"
 
 # Determine accelerator
 echo -e "${CYAN}[2/5]${NC} Checking acceleration support..."
@@ -231,36 +231,36 @@ if [ -z "$ACCEL" ]; then
         if qemu-system-aarch64 -accel help 2>&1 | grep -q hvf; then
             ACCEL="hvf"
             ACCEL_OPT="-accel hvf"
-            echo -e "${GREEN}✓${NC} Using macOS Hypervisor.framework (HVF) acceleration"
+            echo -e "${GREEN}${NC} Using macOS Hypervisor.framework (HVF) acceleration"
         else
             ACCEL="tcg"
-            echo -e "${YELLOW}⚠${NC} HVF not available, using TCG (software emulation)"
+            echo -e "${YELLOW}Warning: ${NC} HVF not available, using TCG (software emulation)"
         fi
     elif [ "$OS" = "Linux" ]; then
         # Check if KVM is available
         if [ -e /dev/kvm ] && qemu-system-aarch64 -accel help 2>&1 | grep -q kvm; then
             ACCEL="kvm"
             ACCEL_OPT="-accel kvm"
-            echo -e "${GREEN}✓${NC} Using KVM acceleration"
+            echo -e "${GREEN}${NC} Using KVM acceleration"
             if [ -n "$ODROID_BOARD" ]; then
                 echo -e "${MAGENTA}  ODROID: Native ARM64 + KVM = excellent performance!${NC}"
             fi
         else
             ACCEL="tcg"
             if [ ! -e /dev/kvm ]; then
-                echo -e "${YELLOW}⚠${NC} /dev/kvm not found, using TCG (software emulation)"
+                echo -e "${YELLOW}Warning: ${NC} /dev/kvm not found, using TCG (software emulation)"
                 if [ -n "$ODROID_BOARD" ]; then
                     echo -e "${MAGENTA}  ODROID: To enable KVM: sudo modprobe kvm${NC}"
                 else
                     echo -e "${YELLOW}  To enable KVM: modprobe kvm kvm_intel (or kvm_amd)${NC}"
                 fi
             else
-                echo -e "${YELLOW}⚠${NC} KVM not available, using TCG (software emulation)"
+                echo -e "${YELLOW}Warning: ${NC} KVM not available, using TCG (software emulation)"
             fi
         fi
     else
         ACCEL="tcg"
-        echo -e "${YELLOW}⚠${NC} Unknown OS, using TCG (software emulation)"
+        echo -e "${YELLOW}Warning: ${NC} Unknown OS, using TCG (software emulation)"
     fi
 else
     # User specified accelerator
@@ -271,7 +271,7 @@ else
                 exit 1
             fi
             ACCEL_OPT="-accel hvf"
-            echo -e "${GREEN}✓${NC} Using macOS Hypervisor.framework (HVF) acceleration"
+            echo -e "${GREEN}${NC} Using macOS Hypervisor.framework (HVF) acceleration"
             ;;
         kvm)
             if [ "$OS" != "Linux" ]; then
@@ -288,11 +288,11 @@ else
                 exit 1
             fi
             ACCEL_OPT="-accel kvm"
-            echo -e "${GREEN}✓${NC} Using KVM acceleration"
+            echo -e "${GREEN}${NC} Using KVM acceleration"
             ;;
         tcg)
             ACCEL_OPT=""
-            echo -e "${YELLOW}⚠${NC} Using TCG (software emulation, slower)"
+            echo -e "${YELLOW}Warning: ${NC} Using TCG (software emulation, slower)"
             ;;
         *)
             echo -e "${RED}Error: Unknown accelerator: $ACCEL${NC}"
@@ -310,19 +310,19 @@ if [ -z "$CPU_MODEL" ]; then
         if [ "$ACCEL" = "hvf" ] || [ "$ACCEL" = "kvm" ]; then
             # Use 'max' with hardware acceleration
             CPU_MODEL="max"
-            echo -e "${GREEN}✓${NC} CPU model: max (ARM64 native with $ACCEL)"
+            echo -e "${GREEN}${NC} CPU model: max (ARM64 native with $ACCEL)"
         else
             # TCG on ARM64 host
             CPU_MODEL="cortex-a57"
-            echo -e "${GREEN}✓${NC} CPU model: cortex-a57 (ARM64 TCG)"
+            echo -e "${GREEN}${NC} CPU model: cortex-a57 (ARM64 TCG)"
         fi
     else
         # x86 or other host - use compatible ARM model
         CPU_MODEL="cortex-a57"
-        echo -e "${GREEN}✓${NC} CPU model: cortex-a57 (cross-architecture emulation)"
+        echo -e "${GREEN}${NC} CPU model: cortex-a57 (cross-architecture emulation)"
     fi
 else
-    echo -e "${GREEN}✓${NC} CPU model: $CPU_MODEL (user-specified)"
+    echo -e "${GREEN}${NC} CPU model: $CPU_MODEL (user-specified)"
 fi
 
 # Find UEFI firmware
@@ -372,7 +372,7 @@ if [ -z "$UEFI_FW" ]; then
     fi
     exit 1
 fi
-echo -e "${GREEN}✓${NC} UEFI firmware: $UEFI_FW"
+echo -e "${GREEN}${NC} UEFI firmware: $UEFI_FW"
 
 # Display configuration
 echo -e "${CYAN}[4/5]${NC} Configuration:"

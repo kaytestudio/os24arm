@@ -52,14 +52,14 @@ if [ ${#MISSING[@]} -ne 0 ]; then
     exit 1
 fi
 
-echo -e "${GREEN}✓${NC} All prerequisites found"
+echo -e "${GREEN}${NC} All prerequisites found"
 
 # Clone gnu-efi
 echo
 echo -e "${CYAN}[2/6]${NC} Cloning gnu-efi from GitHub..."
 
 if [ -d "$GNUEFI_DIR" ]; then
-    echo -e "${YELLOW}⚠${NC} Directory $GNUEFI_DIR already exists"
+    echo -e "${YELLOW}Warning: ${NC} Directory $GNUEFI_DIR already exists"
     read -p "Delete and re-clone? [y/N] " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
@@ -72,15 +72,15 @@ fi
 if [ ! -d "$GNUEFI_DIR" ]; then
     mkdir -p external
     git clone "$GNUEFI_REPO" "$GNUEFI_DIR"
-    echo -e "${GREEN}✓${NC} Cloned gnu-efi"
+    echo -e "${GREEN}${NC} Cloned gnu-efi"
 else
-    echo -e "${GREEN}✓${NC} Using existing gnu-efi"
+    echo -e "${GREEN}${NC} Using existing gnu-efi"
 fi
 
 # Get version
 cd "$GNUEFI_DIR"
 GNUEFI_VERSION=$(git describe --tags 2>/dev/null || echo "unknown")
-echo -e "${GREEN}✓${NC} Version: $GNUEFI_VERSION"
+echo -e "${GREEN}${NC} Version: $GNUEFI_VERSION"
 cd - > /dev/null
 
 # Detect platform and set compiler
@@ -93,21 +93,21 @@ case "$OS_TYPE" in
         OS="macOS"
 
         # On macOS, we need an ELF cross-compiler, not Mach-O
-        echo -e "${YELLOW}⚠${NC} macOS detected - checking for ELF cross-compiler..."
+        echo -e "${YELLOW}Warning: ${NC} macOS detected - checking for ELF cross-compiler..."
 
         # Try to find aarch64 ELF cross-compiler
         if command -v aarch64-elf-gcc &> /dev/null; then
             CC="aarch64-elf-gcc"
             OBJCOPY="aarch64-elf-objcopy"
-            echo -e "${GREEN}✓${NC} Found aarch64-elf-gcc"
+            echo -e "${GREEN}${NC} Found aarch64-elf-gcc"
         elif command -v aarch64-linux-gnu-gcc &> /dev/null; then
             CC="aarch64-linux-gnu-gcc"
             OBJCOPY="aarch64-linux-gnu-objcopy"
-            echo -e "${GREEN}✓${NC} Found aarch64-linux-gnu-gcc"
+            echo -e "${GREEN}${NC} Found aarch64-linux-gnu-gcc"
         elif command -v aarch64-unknown-linux-gnu-gcc &> /dev/null; then
             CC="aarch64-unknown-linux-gnu-gcc"
             OBJCOPY="aarch64-unknown-linux-gnu-objcopy"
-            echo -e "${GREEN}✓${NC} Found aarch64-unknown-linux-gnu-gcc"
+            echo -e "${GREEN}${NC} Found aarch64-unknown-linux-gnu-gcc"
         else
             echo -e "${RED}Error: ELF cross-compiler not found${NC}"
             echo
@@ -141,10 +141,10 @@ case "$OS_TYPE" in
         ;;
 esac
 
-echo -e "${GREEN}✓${NC} Platform: $OS"
-echo -e "${GREEN}✓${NC} Compiler: $CC"
+echo -e "${GREEN}${NC} Platform: $OS"
+echo -e "${GREEN}${NC} Compiler: $CC"
 if [ "$OS" = "macOS" ]; then
-    echo -e "${GREEN}✓${NC} Objcopy: $OBJCOPY"
+    echo -e "${GREEN}${NC} Objcopy: $OBJCOPY"
 fi
 
 # Build gnu-efi for ARM64
@@ -170,7 +170,7 @@ else
     make ARCH=aarch64 CC=$CC -j$(nproc)
 fi
 
-echo -e "${GREEN}✓${NC} Build complete"
+echo -e "${GREEN}${NC} Build complete"
 
 # Install locally
 echo
@@ -194,7 +194,7 @@ cp "$GNUEFI_DIR/aarch64/gnuefi/"*.o "$INSTALL_PREFIX/lib/" 2>/dev/null || true
 # Copy linker scripts
 cp "$GNUEFI_DIR/gnuefi/"*.lds "$INSTALL_PREFIX/lib/" 2>/dev/null || true
 
-echo -e "${GREEN}✓${NC} Installed to: $INSTALL_PREFIX"
+echo -e "${GREEN}${NC} Installed to: $INSTALL_PREFIX"
 
 # Create pkg-config file
 echo
@@ -215,7 +215,7 @@ Libs: -L\${libdir} -lefi -lgnuefi
 Cflags: -I\${includedir}/efi -I\${includedir}/efi/aarch64
 EOF
 
-echo -e "${GREEN}✓${NC} Created pkg-config file"
+echo -e "${GREEN}${NC} Created pkg-config file"
 
 # Create environment script
 cat > external/gnu-efi-env.sh << EOF
@@ -237,7 +237,7 @@ chmod +x external/gnu-efi-env.sh
 # Summary
 echo
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}✓ gnu-efi setup complete!${NC}"
+echo -e "${GREEN}gnu-efi setup complete!${NC}"
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo
 echo -e "${CYAN}Installation:${NC}"

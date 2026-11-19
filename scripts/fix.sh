@@ -148,7 +148,7 @@ add_custom_target(all_commands DEPENDS BAS_exe CLI_exe)
 message(STATUS "Commands: BAS.EXE, CLI.EXE")
 ENDCMAKE
 
-echo "✅ Fixed! Now using linker scripts instead of lld"
+echo "Fixed! Now using linker scripts instead of lld"
 echo ""
 echo "Changes:"
 echo "  - Generates a simple linker script for each command"

@@ -25,19 +25,19 @@ echo "Step 1: Creating build directory..."
 rm -rf $BUILD_DIR
 mkdir -p $BUILD_DIR
 cd $BUILD_DIR
-echo "✅ Build directory created"
+echo "Build directory created"
 echo ""
 
 # Compile boot.S
 echo "Step 2: Compiling boot code..."
 $CC $CFLAGS -c ../rpi_boot.S -o boot.o
-echo "✅ boot.o"
+echo "boot.o"
 echo ""
 
 # Compile main.c
 echo "Step 3: Compiling kernel..."
 $CC $CFLAGS -c ../rpi_main.c -o main.o
-echo "✅ main.o"
+echo "main.o"
 echo ""
 
 # Compile kernel subsystems (stubs for now)
@@ -51,10 +51,10 @@ if [ ! -f ../kernel/src/mem.c ]; then
 void mem_init(uintptr_t start, size_t size) { (void)start; (void)size; }
 EOF
     $CC $CFLAGS -c mem_stub.c -o mem.o
-    echo "✅ mem.o (stub)"
+    echo "mem.o (stub)"
 else
     $CC $CFLAGS -c ../kernel/src/mem.c -o mem.o
-    echo "✅ mem.o"
+    echo "mem.o"
 fi
 
 if [ ! -f ../kernel/src/scheduler.c ]; then
@@ -62,10 +62,10 @@ if [ ! -f ../kernel/src/scheduler.c ]; then
 void scheduler_init(void) {}
 EOF
     $CC $CFLAGS -c scheduler_stub.c -o scheduler.o
-    echo "✅ scheduler.o (stub)"
+    echo "scheduler.o (stub)"
 else
     $CC $CFLAGS -c ../kernel/src/scheduler.c -o scheduler.o
-    echo "✅ scheduler.o"
+    echo "scheduler.o"
 fi
 
 if [ ! -f ../kernel/src/keyboard.c ]; then
@@ -73,10 +73,10 @@ if [ ! -f ../kernel/src/keyboard.c ]; then
 void kbd_init(void) {}
 EOF
     $CC $CFLAGS -c keyboard_stub.c -o keyboard.o
-    echo "✅ keyboard.o (stub)"
+    echo "keyboard.o (stub)"
 else
     $CC $CFLAGS -c ../kernel/src/keyboard.c -o keyboard.o
-    echo "✅ keyboard.o"
+    echo "keyboard.o"
 fi
 
 if [ ! -f ../kernel/src/vfs.c ]; then
@@ -84,10 +84,10 @@ if [ ! -f ../kernel/src/vfs.c ]; then
 void vfs_init(void) {}
 EOF
     $CC $CFLAGS -c vfs_stub.c -o vfs.o
-    echo "✅ vfs.o (stub)"
+    echo "vfs.o (stub)"
 else
     $CC $CFLAGS -c ../kernel/src/vfs.c -o vfs.o
-    echo "✅ vfs.o"
+    echo "vfs.o"
 fi
 
 if [ ! -f ../kernel/src/blkdev.c ]; then
@@ -95,10 +95,10 @@ if [ ! -f ../kernel/src/blkdev.c ]; then
 void blk_init(void) {}
 EOF
     $CC $CFLAGS -c blkdev_stub.c -o blkdev.o
-    echo "✅ blkdev.o (stub)"
+    echo "blkdev.o (stub)"
 else
     $CC $CFLAGS -c ../kernel/src/blkdev.c -o blkdev.o
-    echo "✅ blkdev.o"
+    echo "blkdev.o"
 fi
 
 echo ""
@@ -108,18 +108,18 @@ echo "Step 5: Linking kernel..."
 $CC $CFLAGS $LDFLAGS \
     boot.o main.o mem.o scheduler.o keyboard.o vfs.o blkdev.o \
     -o os2warp.elf
-echo "✅ os2warp.elf"
+echo "os2warp.elf"
 echo ""
 
 # Convert to binary
 echo "Step 6: Creating kernel image..."
 $OBJCOPY -O binary os2warp.elf kernel8.img
-echo "✅ kernel8.img"
+echo "kernel8.img"
 echo ""
 
 # Show results
 echo "════════════════════════════════════════════════════════════"
-echo "✅ Build Complete!"
+echo "Build Complete."
 echo "════════════════════════════════════════════════════════════"
 echo ""
 ls -lh kernel8.img

@@ -5,7 +5,7 @@ unit kayte_vm;
 interface
 
 uses
-  SysUtils; // ✅ Needed for ChangeFileExt
+  SysUtils; // Needed for ChangeFileExt
 
 procedure KayteVM_LoadModule(const Name: string; const Code: string);
 procedure KayteVM_RunAll;

@@ -26,7 +26,7 @@ echo
 # Create bootloader directory if it doesn't exist
 if [ ! -d "bootloader" ]; then
     mkdir -p bootloader
-    echo -e "${GREEN}✓${NC} Created bootloader directory"
+    echo -e "${GREEN}${NC} Created bootloader directory"
 fi
 
 # Create placeholder BOOTAA64.EFI
@@ -57,9 +57,9 @@ EOFBOOT
 
 chmod 644 bootloader/BOOTAA64.EFI
 
-echo -e "${GREEN}✓${NC} Created placeholder: bootloader/BOOTAA64.EFI"
+echo -e "${GREEN}${NC} Created placeholder: bootloader/BOOTAA64.EFI"
 echo
-echo -e "${YELLOW}⚠  NOTE: This is a PLACEHOLDER!${NC}"
+echo -e "${YELLOW}Warning: NOTE: This is a PLACEHOLDER!${NC}"
 echo -e "${YELLOW}   It will not actually boot OS/2.${NC}"
 echo -e "${YELLOW}   It's just here to unblock the build system.${NC}"
 echo

@@ -492,7 +492,7 @@ int lx_builder_write(LXBuilder *builder, const char *filename)
 
     fclose(f);
 
-    printf("✓ Created LX %s: %s (%u objects, %u pages, %u exports)\n",
+    printf("Created LX %s: %s (%u objects, %u pages, %u exports)\n",
            (builder->module_flags & LXMF_LIBRARY) ? "DLL" : "EXE",
            filename, builder->object_count, total_pages, builder->export_count);
 

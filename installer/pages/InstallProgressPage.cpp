@@ -55,8 +55,8 @@ void InstallProgressPage::onInstallFinished(bool success)
     m_done = true;
     emit completeChanged();
     if (!success) {
-        m_statusLabel->setText("❌ Installation failed. Check log above.");
+        m_statusLabel->setText("Installation failed. Check log above.");
     } else {
-        m_statusLabel->setText("✅ Installation complete!");
+        m_statusLabel->setText("Installation complete.");
     }
 }

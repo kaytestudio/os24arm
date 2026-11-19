@@ -55,7 +55,7 @@ echo
 ODROID_MODE=0
 if [ $# -eq 2 ] && [ "$2" = "--odroid" ]; then
     ODROID_MODE=1
-    echo -e "${MAGENTA}✓ ODROID mode enabled${NC}"
+    echo -e "${MAGENTA}ODROID mode enabled${NC}"
     echo
 fi
 
@@ -137,10 +137,10 @@ elif [ "$OS" = "macOS" ]; then
                 # Check all possible locations
                 if [ -f "$E2FSPROGS_PREFIX/sbin/mkfs.ext4" ]; then
                     MKFS_EXT4="$E2FSPROGS_PREFIX/sbin/mkfs.ext4"
-                    echo -e "${GREEN}✓${NC} Found e2fsprogs: $MKFS_EXT4"
+                    echo -e "${GREEN}${NC} Found e2fsprogs: $MKFS_EXT4"
                 elif [ -f "$E2FSPROGS_PREFIX/bin/mkfs.ext4" ]; then
                     MKFS_EXT4="$E2FSPROGS_PREFIX/bin/mkfs.ext4"
-                    echo -e "${GREEN}✓${NC} Found e2fsprogs: $MKFS_EXT4"
+                    echo -e "${GREEN}${NC} Found e2fsprogs: $MKFS_EXT4"
                 fi
             fi
         fi
@@ -148,7 +148,7 @@ elif [ "$OS" = "macOS" ]; then
         # Fallback: check if mkfs.ext4 is in PATH
         if [ -z "$MKFS_EXT4" ] && command -v mkfs.ext4 &> /dev/null; then
             MKFS_EXT4="mkfs.ext4"
-            echo -e "${GREEN}✓${NC} Found mkfs.ext4 in PATH"
+            echo -e "${GREEN}${NC} Found mkfs.ext4 in PATH"
         fi
 
         # If still not found, show installation message
@@ -176,9 +176,9 @@ else
 fi
 
 if [ -z "$MKFS_EXT4" ]; then
-    echo -e "${YELLOW}⚠${NC} EXT4 formatting will be skipped (e2fsprogs not available)"
+    echo -e "${YELLOW}Warning: ${NC} EXT4 formatting will be skipped (e2fsprogs not available)"
 else
-    echo -e "${GREEN}✓${NC} All dependencies found (including EXT4 support)"
+    echo -e "${GREEN}${NC} All dependencies found (including EXT4 support)"
 fi
 
 # Disk size: 6 GiB
@@ -188,13 +188,13 @@ DISK_SIZE=$((6 * 1024 * 1024 * 1024))
 echo -e "${CYAN}[2/10]${NC} Creating 6 GiB disk image..."
 dd if=/dev/zero of="$IMAGE" bs=1M count=0 seek=6144 status=none 2>/dev/null || \
     dd if=/dev/zero of="$IMAGE" bs=1m count=0 seek=6144 2>/dev/null
-echo -e "${GREEN}✓${NC} Created $IMAGE (6 GiB)"
+echo -e "${GREEN}${NC} Created $IMAGE (6 GiB)"
 
 # Create GPT partition table
 echo -e "${CYAN}[3/10]${NC} Creating GPT partition table..."
 sgdisk -Z "$IMAGE" > /dev/null 2>&1
 sgdisk -o "$IMAGE" > /dev/null 2>&1
-echo -e "${GREEN}✓${NC} GPT initialized"
+echo -e "${GREEN}${NC} GPT initialized"
 
 # Create partitions
 echo -e "${CYAN}[4/10]${NC} Creating partitions..."
@@ -208,25 +208,25 @@ if [ $ODROID_MODE -eq 1 ]; then
 
     # P1: EFI (FAT32, 100 MiB) - starts at 32 MiB
     sgdisk -n 1:65536:+100M -t 1:EF00 -c 1:"EFI" "$IMAGE" > /dev/null 2>&1
-    echo -e "${GREEN}  ✓${NC} P1: EFI (FAT32, 100 MiB) @ 32 MiB offset"
+    echo -e "${GREEN}  ${NC} P1: EFI (FAT32, 100 MiB) @ 32 MiB offset"
 else
     # Standard mode: Normal partition layout
     # P1: EFI (FAT32, 100 MiB)
     sgdisk -n 1:2048:+100M -t 1:EF00 -c 1:"EFI" "$IMAGE" > /dev/null 2>&1
-    echo -e "${GREEN}  ✓${NC} P1: EFI (FAT32, 100 MiB)"
+    echo -e "${GREEN}  ${NC} P1: EFI (FAT32, 100 MiB)"
 fi
 
 # P2: OS2ROOT (EXT4, 4 GiB)
 sgdisk -n 2:0:+4G -t 2:8300 -c 2:"OS2ROOT" "$IMAGE" > /dev/null 2>&1
-echo -e "${GREEN}  ✓${NC} P2: OS2ROOT (EXT4, 4 GiB)"
+echo -e "${GREEN}  ${NC} P2: OS2ROOT (EXT4, 4 GiB)"
 
 # P3: FAT16DATA (FAT16, 512 MiB)
 sgdisk -n 3:0:+512M -t 3:0700 -c 3:"FAT16DATA" "$IMAGE" > /dev/null 2>&1
-echo -e "${GREEN}  ✓${NC} P3: FAT16DATA (FAT16, 512 MiB)"
+echo -e "${GREEN}  ${NC} P3: FAT16DATA (FAT16, 512 MiB)"
 
 # P4: EXFATUSB (exFAT, remaining space)
 sgdisk -n 4:0:0 -t 4:0700 -c 4:"EXFATUSB" "$IMAGE" > /dev/null 2>&1
-echo -e "${GREEN}  ✓${NC} P4: EXFATUSB (exFAT, remaining)"
+echo -e "${GREEN}  ${NC} P4: EXFATUSB (exFAT, remaining)"
 
 # Print partition table
 echo -e "${CYAN}[5/10]${NC} Partition table:"
@@ -249,7 +249,7 @@ if [ "$OS" = "Linux" ]; then
         echo -e "${RED}Error: Failed to create loop device${NC}"
         exit 1
     fi
-    echo -e "${GREEN}✓${NC} Loop device: $LOOP"
+    echo -e "${GREEN}${NC} Loop device: $LOOP"
 
     # Ensure partitions are detected
     sleep 1
@@ -269,7 +269,7 @@ elif [ "$OS" = "macOS" ]; then
         echo -e "${RED}Error: Failed to attach disk image${NC}"
         exit 1
     fi
-    echo -e "${GREEN}✓${NC} Disk device: $DISK_DEV"
+    echo -e "${GREEN}${NC} Disk device: $DISK_DEV"
 
     # Wait for partitions to appear
     sleep 2
@@ -289,7 +289,7 @@ if [ -e "$PART1" ]; then
     elif [ "$OS" = "macOS" ]; then
         $SUDO newfs_msdos -F 32 -v EFI "$PART1" > /dev/null 2>&1
     fi
-    echo -e "${GREEN}✓${NC} FAT32 filesystem created"
+    echo -e "${GREEN}${NC} FAT32 filesystem created"
 else
     echo -e "${RED}Error: $PART1 not found${NC}"
 fi
@@ -299,10 +299,10 @@ if [ -e "$PART2" ]; then
     if [ -n "$MKFS_EXT4" ]; then
         # EXT4 support available
         $SUDO "$MKFS_EXT4" -q -L OS2ROOT -O ^has_journal "$PART2" 2>&1 | grep -v "^mke2fs" || true
-        echo -e "${GREEN}✓${NC} EXT4 filesystem created"
+        echo -e "${GREEN}${NC} EXT4 filesystem created"
     else
         # No EXT4 support
-        echo -e "${YELLOW}⚠${NC} EXT4 skipped (install e2fsprogs: brew install e2fsprogs)"
+        echo -e "${YELLOW}Warning: ${NC} EXT4 skipped (install e2fsprogs: brew install e2fsprogs)"
         echo -e "${YELLOW}  You can format this partition later on Linux${NC}"
     fi
 else
@@ -316,7 +316,7 @@ if [ -e "$PART3" ]; then
     elif [ "$OS" = "macOS" ]; then
         $SUDO newfs_msdos -F 16 -v FAT16DATA "$PART3" > /dev/null 2>&1
     fi
-    echo -e "${GREEN}✓${NC} FAT16 filesystem created"
+    echo -e "${GREEN}${NC} FAT16 filesystem created"
 else
     echo -e "${RED}Error: $PART3 not found${NC}"
 fi
@@ -328,7 +328,7 @@ if [ -e "$PART4" ]; then
     elif [ "$OS" = "macOS" ]; then
         $SUDO newfs_exfat -v EXFATUSB "$PART4" > /dev/null 2>&1
     fi
-    echo -e "${GREEN}✓${NC} exFAT filesystem created"
+    echo -e "${GREEN}${NC} exFAT filesystem created"
 else
     echo -e "${RED}Error: $PART4 not found${NC}"
 fi
@@ -348,18 +348,18 @@ if [ -f "build/bootloader/BOOTAA64.EFI" ] || [ -f "bootloader/BOOTAA64.EFI" ]; t
 
     if [ -f "build/bootloader/BOOTAA64.EFI" ]; then
         $SUDO cp build/bootloader/BOOTAA64.EFI "$MOUNT_POINT/EFI/BOOT/"
-        echo -e "${GREEN}  ✓${NC} Copied BOOTAA64.EFI"
+        echo -e "${GREEN}  ${NC} Copied BOOTAA64.EFI"
     elif [ -f "bootloader/BOOTAA64.EFI" ]; then
         $SUDO cp bootloader/BOOTAA64.EFI "$MOUNT_POINT/EFI/BOOT/"
-        echo -e "${GREEN}  ✓${NC} Copied BOOTAA64.EFI"
+        echo -e "${GREEN}  ${NC} Copied BOOTAA64.EFI"
     fi
 
     if [ -f "build/kernel/kernel8.img" ]; then
         $SUDO cp build/kernel/kernel8.img "$MOUNT_POINT/"
-        echo -e "${GREEN}  ✓${NC} Copied kernel8.img"
+        echo -e "${GREEN}  ${NC} Copied kernel8.img"
     elif [ -f "kernel/kernel8.img" ]; then
         $SUDO cp kernel/kernel8.img "$MOUNT_POINT/"
-        echo -e "${GREEN}  ✓${NC} Copied kernel8.img"
+        echo -e "${GREEN}  ${NC} Copied kernel8.img"
     fi
 
     $SUDO umount "$MOUNT_POINT"
@@ -382,7 +382,7 @@ if [ $ODROID_MODE -eq 1 ] && [ "$OS" = "Linux" ]; then
         if [ -n "$UBOOT_FILE" ]; then
             # Write U-Boot to sector 512 (256 KiB offset) for Amlogic
             $SUDO dd if="$UBOOT_FILE" of="$IMAGE" bs=512 seek=512 conv=notrunc status=none
-            echo -e "${MAGENTA}  ✓${NC} U-Boot written to sector 512"
+            echo -e "${MAGENTA}  ${NC} U-Boot written to sector 512"
         fi
     else
         echo -e "${YELLOW}Note: U-Boot not found. You may need to install it manually${NC}"
@@ -394,16 +394,16 @@ fi
 echo -e "${CYAN}[CLEANUP]${NC} Detaching disk device..."
 if [ "$OS" = "Linux" ]; then
     $SUDO losetup -d "$LOOP"
-    echo -e "${GREEN}✓${NC} Loop device detached"
+    echo -e "${GREEN}${NC} Loop device detached"
 elif [ "$OS" = "macOS" ]; then
     $SUDO hdiutil detach "$DISK_DEV" > /dev/null 2>&1
-    echo -e "${GREEN}✓${NC} Disk device detached"
+    echo -e "${GREEN}${NC} Disk device detached"
 fi
 
 # Final summary
 echo
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}✓ Disk image created successfully!${NC}"
+echo -e "${GREEN}Disk image created successfully!${NC}"
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo
 echo -e "${CYAN}Image:${NC}      $IMAGE"

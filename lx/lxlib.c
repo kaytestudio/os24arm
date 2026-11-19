@@ -109,7 +109,7 @@ int lxlib_verify(const char *filename)
     /* Read and verify LX header */
     lx_header_t header;
     if (fread(&header, sizeof(header), 1, f) != 1) {
-        fprintf(stderr, "✗ Error: Cannot read LX header\n");
+        fprintf(stderr, "Error: Cannot read LX header\n");
         fclose(f);
         return 1;
     }
@@ -119,35 +119,35 @@ int lxlib_verify(const char *filename)
 
     /* Check magic */
     if (header.magic[0] == 'L' && header.magic[1] == 'X') {
-        printf("✓ Magic signature valid\n");
+        printf("Magic signature valid\n");
     } else {
-        printf("✗ Invalid magic signature\n");
+        printf("Invalid magic signature\n");
         fclose(f);
         return 1;
     }
 
     /* Check version */
     if (header.byte_order == 0) {
-        printf("✓ Byte order: Little-endian\n");
+        printf("Byte order: Little-endian\n");
     } else {
-        printf("⚠ Byte order: Unknown (0x%04X)\n", header.byte_order);
+        printf("Warning: Byte order: Unknown (0x%04X)\n", header.byte_order);
     }
 
     /* Check object count */
     if (header.module_num_objects > 0 && header.module_num_objects < 256) {
-        printf("✓ Object count: %u\n", header.module_num_objects);
+        printf("Object count: %u\n", header.module_num_objects);
     } else {
-        printf("⚠ Object count suspicious: %u\n", header.module_num_objects);
+        printf("Warning: Object count suspicious: %u\n", header.module_num_objects);
     }
 
     /* Check page size */
     if (header.page_size == 4096 || header.page_size == 8192) {
-        printf("✓ Page size: %u bytes\n", header.page_size);
+        printf("Page size: %u bytes\n", header.page_size);
     } else {
-        printf("⚠ Non-standard page size: %u bytes\n", header.page_size);
+        printf("Warning: Non-standard page size: %u bytes\n", header.page_size);
     }
 
-    printf("\n✓ LX file structure appears valid\n");
+    printf("\nLX file structure appears valid\n");
 
     fclose(f);
     return 0;

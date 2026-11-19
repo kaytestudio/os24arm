@@ -6,7 +6,7 @@ This guide shows you how to create OS/2 LX format executables and DLLs
 for your OS/2 Warp ARM64 system.
 
 ═══════════════════════════════════════════════════════════════════
-  📁 FILES PROVIDED
+  FILES PROVIDED
 ═══════════════════════════════════════════════════════════════════
 
 1. lxformat.h          - LX format specification and API (400+ lines)
@@ -16,7 +16,7 @@ for your OS/2 Warp ARM64 system.
 5. LX_BUILDER_GUIDE.txt - This file
 
 ═══════════════════════════════════════════════════════════════════
-  🚀 QUICK START
+  QUICK START
 ═══════════════════════════════════════════════════════════════════
 
 Step 1: Create tools directory
@@ -58,7 +58,7 @@ Step 5: Create first executable
 ./hello_example HELLO.EXE
 
 ═══════════════════════════════════════════════════════════════════
-  📚 LX BUILDER API REFERENCE
+  LX BUILDER API REFERENCE
 ═══════════════════════════════════════════════════════════════════
 
 CREATING A BUILDER
@@ -160,7 +160,7 @@ int lx_builder_write(LXBuilder *builder, const char *filename);
   Returns: 0 on success, -1 on error
 
 ═══════════════════════════════════════════════════════════════════
-  💡 EXAMPLE 1: CREATE SIMPLE EXECUTABLE
+  EXAMPLE 1: CREATE SIMPLE EXECUTABLE
 ═══════════════════════════════════════════════════════════════════
 
 #include "lxformat.h"
@@ -180,7 +180,7 @@ int main(void)
 }
 
 ═══════════════════════════════════════════════════════════════════
-  💡 EXAMPLE 2: CREATE DLL WITH EXPORTS
+  EXAMPLE 2: CREATE DLL WITH EXPORTS
 ═══════════════════════════════════════════════════════════════════
 
 #include "lxformat.h"
@@ -210,7 +210,7 @@ int main(void)
 }
 
 ═══════════════════════════════════════════════════════════════════
-  💡 EXAMPLE 3: ADVANCED EXECUTABLE WITH MULTIPLE SECTIONS
+  EXAMPLE 3: ADVANCED EXECUTABLE WITH MULTIPLE SECTIONS
 ═══════════════════════════════════════════════════════════════════
 
 #include "lxformat.h"
@@ -255,7 +255,7 @@ int main(void)
 }
 
 ═══════════════════════════════════════════════════════════════════
-  💡 EXAMPLE 4: CREATE DEVICE DRIVER
+  EXAMPLE 4: CREATE DEVICE DRIVER
 ═══════════════════════════════════════════════════════════════════
 
 #include "lxformat.h"
@@ -284,7 +284,7 @@ int main(void)
 }
 
 ═══════════════════════════════════════════════════════════════════
-  🔧 INTEGRATION WITH BUILD SYSTEM
+  INTEGRATION WITH BUILD SYSTEM
 ═══════════════════════════════════════════════════════════════════
 
 CMake Integration
@@ -308,7 +308,7 @@ add_custom_command(
 )
 
 ═══════════════════════════════════════════════════════════════════
-  📊 LX FILE FORMAT STRUCTURE
+  LX FILE FORMAT STRUCTURE
 ═══════════════════════════════════════════════════════════════════
 
 Offset   Size   Description
@@ -327,7 +327,7 @@ Offset   Size   Description
          var    Data Pages (actual code/data)
 
 ═══════════════════════════════════════════════════════════════════
-  🎯 USE CASES
+  USE CASES
 ═══════════════════════════════════════════════════════════════════
 
 1. Kernel Modules
@@ -355,7 +355,7 @@ Offset   Size   Description
    Create REXX function libraries
 
 ═══════════════════════════════════════════════════════════════════
-  ⚙️  COMMAND LINE TOOL (TODO)
+  COMMAND LINE TOOL (TODO)
 ═══════════════════════════════════════════════════════════════════
 
 Future enhancement: Create lxbuild command-line tool
@@ -379,7 +379,7 @@ Examples:
   lxbuild --driver -o MYDRV.SYS driver.o
 
 ═══════════════════════════════════════════════════════════════════
-  📚 REFERENCES
+  REFERENCES
 ═══════════════════════════════════════════════════════════════════
 
 LX Format Documentation:

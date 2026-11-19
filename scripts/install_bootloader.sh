@@ -69,7 +69,7 @@ if [ "$OS" = "Linux" ]; then
     # P1 starts at sector 2048, sector size = 512 bytes
     OFFSET=$((2048 * 512))
     $SUDO mount -o loop,offset=$OFFSET "$IMAGE" "$MOUNT_POINT"
-    echo -e "${GREEN}✓${NC} EFI partition mounted"
+    echo -e "${GREEN}${NC} EFI partition mounted"
 
 elif [ "$OS" = "macOS" ]; then
     # macOS: Use hdiutil
@@ -83,7 +83,7 @@ elif [ "$OS" = "macOS" ]; then
     # Mount partition 1 (s1) - FAT32
     PART="${DISK_DEV}s1"
     $SUDO mount -t msdos "$PART" "$MOUNT_POINT"
-    echo -e "${GREEN}✓${NC} EFI partition mounted"
+    echo -e "${GREEN}${NC} EFI partition mounted"
 else
     echo -e "${RED}Error: Unsupported OS: $OS_TYPE${NC}"
     rmdir "$MOUNT_POINT"
@@ -93,7 +93,7 @@ fi
 # Create EFI directory structure
 echo -e "${CYAN}[3/4]${NC} Creating EFI directory structure..."
 $SUDO mkdir -p "$MOUNT_POINT/EFI/BOOT"
-echo -e "${GREEN}✓${NC} Directory created: /EFI/BOOT"
+echo -e "${GREEN}${NC} Directory created: /EFI/BOOT"
 
 # Copy bootloader
 echo -e "${CYAN}[4/4]${NC} Installing BOOTAA64.EFI..."
@@ -103,7 +103,7 @@ $SUDO chmod 755 "$MOUNT_POINT/EFI/BOOT/BOOTAA64.EFI"
 # Also copy to root for fallback
 $SUDO cp "$BOOTLOADER" "$MOUNT_POINT/BOOTAA64.EFI"
 
-echo -e "${GREEN}✓${NC} Bootloader installed to:"
+echo -e "${GREEN}${NC} Bootloader installed to:"
 echo -e "    /EFI/BOOT/BOOTAA64.EFI"
 echo -e "    /BOOTAA64.EFI (fallback)"
 
@@ -119,12 +119,12 @@ elif [ "$OS" = "macOS" ]; then
 fi
 
 rmdir "$MOUNT_POINT"
-echo -e "${GREEN}✓${NC} Unmounted and cleaned up"
+echo -e "${GREEN}${NC} Unmounted and cleaned up"
 
 # Summary
 echo
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}✓ Bootloader successfully installed!${NC}"
+echo -e "${GREEN}Bootloader successfully installed!${NC}"
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo
 echo -e "${CYAN}Disk image:${NC}   $IMAGE"

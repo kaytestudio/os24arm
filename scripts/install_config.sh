@@ -67,7 +67,7 @@ if [ "$OS" = "Linux" ]; then
     # P2 starts at sector 206848, sector size = 512 bytes
     OFFSET=$((206848 * 512))
     $SUDO mount -o loop,offset=$OFFSET "$IMAGE" "$MOUNT_POINT"
-    echo -e "${GREEN}✓${NC} Partition mounted"
+    echo -e "${GREEN}${NC} Partition mounted"
 
 elif [ "$OS" = "macOS" ]; then
     # macOS: Use hdiutil
@@ -85,9 +85,9 @@ elif [ "$OS" = "macOS" ]; then
     if command -v fuse-ext2 &> /dev/null; then
         # Using FUSE-EXT2 for macOS
         fuse-ext2 "$PART" "$MOUNT_POINT" -o rw+
-        echo -e "${GREEN}✓${NC} Partition mounted (via FUSE-EXT2)"
+        echo -e "${GREEN}${NC} Partition mounted (via FUSE-EXT2)"
     else
-        echo -e "${YELLOW}⚠${NC} Cannot mount EXT4 on macOS without fuse-ext2"
+        echo -e "${YELLOW}Warning: ${NC} Cannot mount EXT4 on macOS without fuse-ext2"
         echo -e "${YELLOW}Install with: brew install fuse-ext2${NC}"
         $SUDO hdiutil detach "$DISK_DEV" > /dev/null 2>&1
         rmdir "$MOUNT_POINT"
@@ -104,7 +104,7 @@ echo -e "${CYAN}[3/4]${NC} Creating /etc directory..."
 $SUDO mkdir -p "$MOUNT_POINT/etc"
 $SUDO mkdir -p "$MOUNT_POINT/os2"
 $SUDO mkdir -p "$MOUNT_POINT/os2/system"
-echo -e "${GREEN}✓${NC} Directories created"
+echo -e "${GREEN}${NC} Directories created"
 
 # Copy CONFIG.SYS
 echo -e "${CYAN}[4/4]${NC} Installing CONFIG.SYS..."
@@ -117,7 +117,7 @@ $SUDO chmod 644 "$MOUNT_POINT/etc/config.sys"
 $SUDO chmod 644 "$MOUNT_POINT/config.sys"
 $SUDO chmod 644 "$MOUNT_POINT/os2/config.sys"
 
-echo -e "${GREEN}✓${NC} CONFIG.SYS installed to:"
+echo -e "${GREEN}${NC} CONFIG.SYS installed to:"
 echo -e "    /etc/config.sys"
 echo -e "    /config.sys"
 echo -e "    /os2/config.sys"
@@ -136,12 +136,12 @@ elif [ "$OS" = "macOS" ]; then
 fi
 
 rmdir "$MOUNT_POINT"
-echo -e "${GREEN}✓${NC} Unmounted and cleaned up"
+echo -e "${GREEN}${NC} Unmounted and cleaned up"
 
 # Summary
 echo
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}✓ CONFIG.SYS successfully installed!${NC}"
+echo -e "${GREEN}CONFIG.SYS successfully installed!${NC}"
 echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
 echo
 echo -e "${CYAN}Disk image:${NC}    $IMAGE"

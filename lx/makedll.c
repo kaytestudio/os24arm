@@ -113,9 +113,9 @@ int main(int argc, char **argv)
     free(data);
 
     if (result == 0) {
-        printf("✓ Successfully created %s\n", output);
+        printf("Successfully created %s\n", output);
     } else {
-        printf("✗ Failed to create DLL\n");
+        printf("Failed to create DLL\n");
     }
 
     return result;
