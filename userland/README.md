@@ -338,241 +338,101 @@ platform-specific are new code.
    themselves). `RUN` at the system console starts them the same way,
    in the shell's directory, the console raw while they run.
 
-   16-bit OS/2 1.x programs (NE executables) run too (`ne16.inc`): each
-   segment in a 64 KB tile of its own (its selector the tile's), the
-   relocations applied (offsets, selectors, far pointers; chained or
-   additive; internal, by entry ordinal, imported by ordinal or name),
-   started as OS/2 starts them (AX the environment's selector, BX the
-   command line's offset, DS the automatic data); about 50 of the 16-bit
-   DOSCALLS and NLS calls (DosOpen, DosRead, DosWrite, DosChgFilePtr,
-   DosFindFirst/Next, DosAllocSeg, DosGetInfoSeg, DosGetEnv, DosScanEnv
-   ...) - most of them the 32-bit calls underneath, their arguments and
-   results converted - and the 16-bit KBD/VIO/MOU calls the 32-bit
-   programs use. The kernel and the Workplace Shell hand NE programs to
-   os2x86 as they do LX ones. A program's own 16-bit DLLs load too (found
-   as 32-bit ones are: its directory, the current one, LIBPATH; imported
-   by ordinal or name, their imports in turn; each one's initialisation
-   called with OS/2's registers - DS its data, DI its handle - before the
-   program starts), and DosLoadModule, DosGetProcAddr, DosGetModHandle,
-   DosGetModName; DosExecPgm and DosCWait (a 16-bit child runs through
-   os2x86 again). Threads (DosCreateThread: the program's function on its
-   stack, a far return or DosExit(EXIT_THREAD) ending it; suspend,
-   resume, critical sections) and semaphores - RAM ones (a far pointer
-   to the program's doubleword) and system ones (DosCreateSem,
-   DosOpenSem) - that really wait: DosSemRequest (an owner may request
-   again), DosSemClear, DosSemSet, DosSemWait, DosSemSetWait,
-   DosMuxSemWait, with timeouts. And 16-bit Presentation Manager
-   (`pm16.inc`): ~80 PMWIN and PMGPI calls go to the 32-bit ones - one
-   wrapper reading their arguments by a format (long, word, signed word,
-   far pointer made flat, WC_ atoms kept), results in DX:AX - and QMSG
-   converted (WinGetMsg, WinPeekMsg, WinDispatchMsg); a class a 16-bit
-   program registers keeps its 16-bit window procedure, which PM calls
-   far, Pascal, on the program's stack (nesting: a procedure's own calls,
-   their callbacks). The Workplace Shell starts 16-bit PM programs
-   without a terminal. Their resources come from the NE (its last
-   segments, the resource table giving their types and ids): menus
-   (FCF_MENU, WinLoadMenu), dialogs (WinDlgBox, WinLoadDlg, WinCreateDlg:
-   their procedures 16-bit too, WM_INITDLG's create parameters 16:16),
-   strings, pointers, accelerators, DosGetResource (the segment's
-   selector); the messages a 16-bit program sends the list boxes and
-   menus with pointers (LM_INSERTITEM, LM_QUERYITEMTEXT, MM_INSERTITEM
-   ...) have them made flat. (A 16-bit DLL built with OpenWatcom wants -zu -zdp: SS isn't
-   its data, and its exports put the caller's DS back.)
-   `OS2X86_ITRACE=1` traces every instruction (CS:IP, its bytes, the
-   registers); `OS2X86_WATCH=address` (hex, flat) names each instruction
-   or call that changes the four bytes there.
-   32-bit x86 OS/2 programs (real OS/2 2.x-4.x console .EXEs: LX, usually
-   after a DOS "MZ" stub, CPU type 386-586) run through an emulator,
-   `userland/os2x86` (`\OS2\os2x86` on the stick): the kernel's execve
-   treats one like a `#!/h/OS2/os2x86` script. `cpu.c` is an i386 in
-   software (the 386/486 integer instructions, CMOV, BSWAP, CPUID, the
-   x87 with doubles inside) with a flat 4 GB address space of its own (512
-   MB of it backed, `OS2X86_MEM=MB` for more); `os2x86.c` places the LX
-   objects where they're linked (or elsewhere, if they have fixups),
-   unpacks EXEPACK pages, applies the fixups, and turns the imports from
-   DOSCALLS, NLS and MSG into addresses at the top, where the interpreter
-   stops and the call is done with this system's own calls: about 100 of
-   them - files (DosOpen ... DosFindFirst, any case on any file system),
-   directories and drives (C: is /, D: the stick at /h, or
-   `OS2X86_DRIVES="C=/;D=/h;E=/mnt"`), memory (DosAllocMem, in 64 KB),
-   the environment and command line (DosGetInfoBlocks, the TIB at FS),
-   DosExecPgm/DosWaitChild (fork and exec: x86 programs run through
-   os2x86 again), exception handlers (DosSetExceptionHandler: an access
-   violation, a division by zero, an illegal instruction go to the
-   program's handlers, as on OS/2; unhandled, a SYS3175 report with the
-   registers), threads (DosCreateThread, DosWaitThread, Suspend/Resume/
-   Kill, DosEnterCritSec: each a thread here with its CPU of its own; one
-   lock lets one run at a time, given up while a call waits and every
-   32768 instructions), event, mutex and muxwait semaphores that really
-   wait, exit lists, x86 DLLs it brings along (the program's directory,
-   the current one, LIBPATH; their initialisation runs), and the 16-bit
-   console calls the C runtimes reach through a 16-bit thunk (getch,
-   kbhit, cgets, putch: KbdCharIn/Peek/StringIn, VioWrtTTY, VioGetMode,
-   VioSetCurPos/GetCurPos, VioScrollUp/Dn, VioWrtCharStr(Att)/NChar/NCell/
-   CellStr, cursor type: on this terminal, ANSI): for those the CPU has
-   OS/2's tiled LDT (selector n*8+7 is the 64 KB at n*64K), 16-bit code
-   and stacks, far jumps, calls and returns, LSS/LDS/LES, and the call is
-   Pascal (the callee pops, the result in AX). A 16-bit call it doesn't
-   have stops the program, naming it. Queues (QUECALLS: FIFO, LIFO,
-   priority) and DosStartSession (a child on the same terminal; a
-   related one's end goes to its termination queue, as spawn() in the C
-   runtimes waits for it). The mouse (MOUCALLS: MouOpen, MouReadEventQue,
-   MouGetNumQueEl, event masks, ...) from the terminal's own mouse reports
-   (SGR, asked for while a program has the mouse open; the keys that come
-   in between still reach KbdCharIn). And the start of Presentation
-   Manager (`pm.inc`, `pm_wl.inc`): PMWIN's windows, classes, message
-   queues (WinGetMsg/PeekMsg/DispatchMsg/PostMsg/SendMsg), window
-   procedures called back in the program, WM_CREATE/SIZE/PAINT/CHAR/
-   BUTTONn/MOUSEMOVE/TIMER/CLOSE, painting (WinBeginPaint, WinFillRect,
-   WinDrawText), window words and text, timers, WinMessageBox; PMGPI's
-   text (DejaVu Sans from \OS2\fonts, through stb_truetype), lines,
-   boxes, colours. A frame window (WinCreateStdWindow) is a window of the
-   desktop: the Workplace Shell draws its OS/2 frame, os2x86 the inside
-   (an xdg-shell toplevel; the pointer and keys become PM's messages);
-   the desktop starts an x86 PM program without a terminal. With
-   OS2X86_PM=headless it runs without one, OS2X86_PM_SCRIPT giving it
-   input ("click X Y; key abc; esc; close; shot F.ppm"). Then
-   (`pm_ctl.inc`) resources (the LX resource table: DosGetResource,
-   WinLoadString), menus from their templates (FCF_MENU, WinLoadMenu: a
-   bar at the top of the frame, drop-downs, WM_COMMAND, MM_SETITEMATTR
-   & co.), dialogs from theirs (WinDlgBox, WinLoadDlg, WinCreateDlg,
-   WinProcessDlg, WinDismissDlg, WinDefDlgProc: Enter for the default
-   button, Esc, Tab between the controls; WinSendDlgItemMsg & co.) and
-   the controls in them: push buttons, check boxes, radio buttons (by
-   group), static text and group boxes, entry fields, list boxes, with
-   their BM_/EM_/LM_ messages and WM_CONTROL notifications; scroll bars
-   (a control, or the frame's: FCF_VERTSCROLL/HORZSCROLL; arrows, track,
-   the thumb dragged; WM_VSCROLL/HSCROLL, SBM_ messages), combo boxes (a
-   drop-down list over the dialog), accelerators (FCF_ACCELTABLE,
-   WinLoadAccelTable & co.) and the menu by the keyboard (Alt+its letter,
-   F10, the arrows, Enter, Esc), the multi-line edit control (typing,
-   the keys, its scroll bar; MLM_IMPORT/EXPORT, MLM_INSERT, selections,
-   line queries; CR LF out) and spin buttons (numbers in a range, or an
-   array of strings). Bitmaps (`pm_gpi.inc`): from resources and files
-   (OS/2 1.x and 2.x BMPs, bitmap arrays; 1 to 32 bits a pixel),
-   GpiCreateBitmap and its bits, WinDrawBitmap (stretched too),
-   GpiBitBlt/GpiWCBitBlt with the usual ROPs, memory device contexts and
-   presentation spaces (DevOpenDC, GpiCreatePS, GpiSetBitmap): a bitmap
-   is a window never shown, so whatever draws into windows draws into
-   bitmaps. Icons and pointers: WinLoadPointer from ICON/POINTER
-   resources (bitmap arrays, the device-independent image; colour and
-   monochrome; the AND mask the first half of the mask, the XOR the
-   second), WinDrawPointer (DP_MINI, DP_INVERTED, DP_HALFTONED), system
-   icons (WinQuerySysPointer: information, question, warning, error,
-   drawn here; message boxes show theirs), SS_ICON, SS_SYSICON and
-   SS_BITMAP statics. Fonts: DejaVu Sans, Sans Bold, Sans Mono and Sans
-   Mono Bold at any size, OS/2's faces (Helv, Helvetica, Tms Rmn,
-   Courier, System Proportional/VIO/Monospaced) mapped onto them -
-   GpiQueryFonts, GpiCreateLogFont (bitmap ones by lMatch, outline ones
-   sized by GpiSetCharBox), GpiSetCharSet, the metrics; presentation
-   parameters (PP_FONTNAMESIZE, PP_FOREGROUNDCOLOR, PP_BACKGROUNDCOLOR:
-   WinSetPresParam, a dialog template's PRESPARAMS; a parent's go to its
-   children). Notebooks (tabs along the top, a status line, the page
-   arrows; pages from dialog resources - WinLoadDlg into a window makes a
-   dialog that's a child of it - BKM_INSERTPAGE & co., BKN_PAGESELECTED)
-   and sliders (ticks, scale text, buttons, the arm clicked, dragged or
-   moved by the keys; SLM_SET/QUERYSLIDERINFO, SLN_CHANGE). Containers
-   (`pm_cnr.inc`): records and field descriptions in the program's own
-   memory (CM_ALLOCRECORD, CM_ALLOCDETAILFIELDINFO), the icon, name,
-   text and details views (string, number, date, time and icon columns,
-   titles, separators), selection (CN_EMPHASIS), opening (CN_ENTER: a
-   double-click or Enter), CM_SORTRECORD with the program's compare
-   function, CM_SEARCHSTRING, a scroll bar. Double-clicks
-   (WM_BUTTONnDBLCLK) for every window. The clipboard (WinOpenClipbrd,
-   WinSetClipbrdData, WinQueryClipbrdData & co.; CF_TEXT, CF_BITMAP):
-   on the desktop the Wayland selection, so text goes between PM
-   programs and the others (Latin-1 one side, UTF-8 the other); entry
-   fields (with selections now: Shift and the keys, a drag, a double-click
-   for a word) and MLEs cut, copy and paste through it (Ctrl+X/C/V, Shift+Del,
-   Ctrl+Ins, Shift+Ins). WinSetPointer: the desktop's pointer over the
-   program's windows takes that shape (its hot spot from the file), PM's
-   arrow by default. Value sets (`pm_vs.inc`: a grid of colours, text,
-   icons or bitmaps; VM_SETITEM, VM_SETITEMATTR, VM_SELECTITEM,
-   VN_SELECT, VN_ENTER) and circular sliders (a dial turned by dragging,
-   its buttons or the keys; CSM_SETRANGE, CSM_SETVALUE, CSN_CHANGED,
-   CSN_TRACKING). The container's tree view: records under records
-   (RECORDINSERT's parent), the + and - buttons, tree lines, the keys
-   (Right and + open, Left and - close), CM_EXPANDTREE/COLLAPSETREE,
-   CN_EXPANDTREE/COLLAPSETREE, CM_QUERYRECORD by parent and child,
-   sorting and removing whole branches. Editing a record's text in place
-   (Alt+click, CM_OPENEDIT: an entry field over it; Enter or a click
-   elsewhere keeps it - CN_REALLOCPSZ for the program to make room, then
-   the text into its string, CN_ENDEDIT - Esc drops it; CN_BEGINEDIT
-   first). Owner drawing: list boxes with LS_OWNERDRAW (WM_MEASUREITEM
-   for the items' height, LM_SETITEMHEIGHT; WM_DRAWITEM for each, with an
-   OWNERITEM and a presentation space of the list box - a selection the
-   owner leaves to it is inverted), menu items with MIS_OWNERDRAW
-   (measured, drawn, MIA_HILITED for the lit one) and value set items
-   with VIA_OWNERDRAW. Drag and drop (`pm_drag.inc`, PMDRAG): button 2
-   pressed and moved gives WM_BEGINDRAG (containers: CN_INITDRAG);
-   DrgAllocDraginfo, DrgSetDragitem, string handles, DrgVerifyType/RMF
-   and the other queries; DrgDrag follows the pointer - DM_DRAGOVER to
-   the window under it (containers: CN_DRAGOVER with the record there),
-   the pointer showing whether it may drop (OS/2's no-entry sign when
-   not), Ctrl to copy, Shift to move, Esc to give up - and ends with
-   DM_DROP (CN_DROP) or DM_DRAGLEAVE. Between one program's windows; not
-   yet to and from other programs or the Workplace Shell. GPI's geometry
-   (`pm_geo.inc`): lines with types (dotted, dashed, ...), widths and
-   mixes (XOR, invert, OR, AND, ...); arcs - GpiFullArc, GpiPartialArc,
-   GpiPointArc, with GpiSetArcParams' transform -, boxes with rounded
-   corners, polylines, fillets, splines, polygons (alternate or winding);
-   areas (GpiBeginArea/EndArea) and paths (GpiBeginPath ... GpiFillPath,
-   GpiStrokePath) filled with the patterns (dense, hatched, halftone,
-   ...); markers; a clip rectangle (GpiIntersectClipRectangle).
-   Page units and transforms: a presentation space in PU_LOMETRIC,
-   HIMETRIC, LOENGLISH, HIENGLISH, TWIPS or ARBITRARY (GpiCreatePS, on a
-   window's DC - WinOpenWindowDC - or a memory one; GpiSetPageViewport),
-   the model, viewing and default view matrices (GpiSet/Query...Matrix,
-   REPLACE, ADD, PREEMPT), GpiTranslate, GpiScale, GpiRotate, GpiConvert
-   between world, model, page and device: positions stay the program's,
-   lines, areas, text, markers, pels and the clip made the device's.
-   Printing (`pm_print.inc`): one printer, PDF - a queued or direct
-   printer DC is an A4 page at 150 dpi that the presentation space on it
-   draws into (page units at its resolution, the default font too);
-   DevEscape STARTDOC, NEWFRAME, ENDDOC (ABORTDOC, GETJOBID) make the
-   document a PDF of its pages (images, RunLengthDecode) in
-   $OS2X86_PRINT - on the desktop D:\\PRINT on the stick - named after
-   it; SplEnumQueue, SplQueryQueue, DevQueryHardcopyCaps, DevQueryCaps
-   and DevQueryDeviceNames tell of it.
-   Profiles (`pm_prf.inc`, PMSHAPI): PrfQueryProfileString/Int/Data/Size,
-   PrfWriteProfileString/Data (deleting keys and applications too),
-   enumerating them, PrfOpenProfile for a program's own .INI files - in
-   OS/2's own binary .INI format, written back at each change; the
-   user's OS2.INI and the system's OS2SYS.INI are USER_INI and
-   SYSTEM_INI, else in $OS2X86_HOME (on the desktop \OS2 on the stick),
-   else ~/.os2x86. The help manager (HELPMGR): an instance programs can
-   create, associate and destroy; asked to show help, it says the help
-   (IPF .HLP files) can't be shown yet. The standard file dialog
-   (`pm_fdlg.inc`, PMCTLS' WinFileDlg): Open and Save As, the file name,
-   the directory's subdirectories and the drives, the files that match
-   the filter (szFullFile's: "*.TXT", "D:\\DOCS\\*.C"), double-clicks
-   and Enter; Open wants a file that's there. The font dialog
-   (WinFontDlg): the families (as GpiQueryFonts has them, filtered by
-   FNTS_FIXEDWIDTHONLY & co.), the sizes (the program's list or ours),
-   bold, italic, underline, strikeout, a preview of the program's text;
-   the family, point size, weight and an FATTRS for GpiCreateLogFont back.
-   Not yet: custom dialog templates and procedures, several files at
-   once, modeless dialogs. PM's names (messages, notifications, styles,
-   keys, colours, ...) are in one place, `pm_api.inc`, each with the value
-   OS/2's headers give it, as the DOS calls' are in `dos_api.inc`
-   (`test/check-api.py` checks both against OpenWatcom's). OS/2's DLLs that aren't
-   here (PMSHAPI, HELPMGR, TCP32DLL, ...) load as stubs, so a program
-   that only links them in runs; a call into one says so and returns 0. Calls it doesn't have yet print
-   one line on stderr and return error 1; `OS2X86_TRACE=1` lists every
-   call. `userland/os2x86/test/run-tests.sh` runs its test program
-   (freestanding C, `os2test.c`, made an LX .EXE by `elf2lx.py`) on the
-   build machine, and, when OpenWatcom is there (`WATCOM`, or its snapshot
-   unpacked in `build/os2x86-test/ow`), real OpenWatcom programs from
-   `test/ow`: the C runtime (files, directories, maths, signals through
-   OS/2 exceptions and longjmp, _beginthread, spawnl), C++ (static
-   constructors, iostreams, the STL, exceptions), conio (getch and putch
-   through its 16-bit thunks), the mouse (fed terminal mouse reports), a
-   DLL of its own (moved, initialised, DosLoadModule) and two PM
-   programs (headless, scripted: a window, its painting checked; a menu,
-   a dialog from a resource with its controls, by mouse and by keys;
-   scroll bars, a combo box, accelerators, the menu by keys; an MLE and
-   spin buttons; bitmaps and icons - a real OS/2 one from OpenWatcom's
-   samples - their pixels checked). They pass on the system too.
+   **x86 OS/2 programs** run through an emulator, `userland/os2x86`
+   (`\OS2\os2x86` on the stick). The kernel's execve treats an x86 LX or
+   NE file like a `#!/h/OS2/os2x86` script, and the Workplace Shell starts
+   PM programs without a terminal.
+
+   - *The CPU* (`cpu.c`): a software i386 with the 386/486 integer
+     instructions, CMOV, BSWAP, CPUID and an x87 that computes in doubles.
+     Programs get a flat 4 GB address space, 512 MB of it backed
+     (`OS2X86_MEM=MB` for more). For 16-bit code it also has OS/2's tiled
+     LDT: selector n*8+7 is the 64 KB at n*64K.
+   - *Loading* (`os2x86.c`): LX objects go where they're linked (or
+     elsewhere if they have fixups), EXEPACK pages are unpacked, fixups
+     applied. Imports from DOSCALLS, NLS, MSG and the rest become thunk
+     addresses; when the interpreter reaches one it stops and the call is
+     done with host calls. x86 DLLs the program brings are found in its
+     directory, the current one, or LIBPATH, and initialised.
+   - *DOS calls*: about 100 of them. Files and directories (any case on
+     any file system), drives (C: is /, D: is the stick at /h, or
+     `OS2X86_DRIVES="C=/;D=/h;E=/mnt"`), memory in 64 KB units, the
+     environment and command line (DosGetInfoBlocks, the TIB at FS),
+     DosExecPgm/DosWaitChild (x86 children run through os2x86 again),
+     exception handlers (access violations, division by zero and illegal
+     instructions reach the program's handlers; unhandled ones print a
+     SYS3175 report), threads (each a host thread with its own CPU; one
+     lock lets one run at a time, released while a call waits and every
+     32768 instructions), event/mutex/muxwait semaphores, exit lists,
+     queues (FIFO, LIFO, priority) and DosStartSession.
+   - *Console*: the 16-bit KBD, VIO and MOU calls the C runtimes use
+     (getch, kbhit, cgets, putch, cursor and scrolling, colour text as
+     ANSI). The mouse comes from the terminal's SGR mouse reports. These
+     are Pascal calls through a 16-bit thunk; one that isn't implemented
+     stops the program and names it.
+   - *16-bit OS/2 1.x programs* (NE, `ne16.inc`): each segment gets its
+     own tile, relocations are applied, and the program starts with
+     OS/2's registers (AX the environment selector, BX the command line
+     offset, DS the automatic data). About 50 16-bit DOSCALLS and NLS
+     calls map onto the 32-bit ones. Its own 16-bit DLLs load and
+     initialise, and DosLoadModule, DosGetProcAddr, DosExecPgm, threads
+     and RAM/system semaphores work. A 16-bit DLL built with OpenWatcom
+     needs `-zu -zdp` (SS isn't its data, and its exports restore the
+     caller's DS).
+
+   **Presentation Manager** (`pm.inc` and the `pm_*.inc` files). A frame
+   window is a desktop window: the Workplace Shell draws the OS/2 frame and
+   os2x86 draws the inside, as an xdg-shell toplevel (`pm_wl.inc`). With
+   `OS2X86_PM=headless` there's no display, and `OS2X86_PM_SCRIPT` feeds
+   input ("click X Y; key abc; esc; close; shot F.ppm") - that's how the
+   tests run. What's there:
+
+   - windows, classes, message queues, window procedures called back in
+     the program, painting, timers, window words, message boxes,
+     double-clicks, the clipboard (the Wayland selection, so text moves
+     between PM and other programs), WinSetPointer;
+   - resources, menus (also by keyboard), accelerators, dialogs from
+     templates, and the controls: buttons, statics, entry fields, list
+     boxes, combo boxes, scroll bars, MLEs, spin buttons, notebooks,
+     sliders, value sets, circular sliders, and containers (icon, name,
+     text, details and tree views, sorting, searching, editing in place);
+   - owner drawing for list boxes, menus and value sets, and drag and
+     drop between one program's windows (`pm_drag.inc`);
+   - GPI: text in DejaVu Sans with OS/2's faces mapped onto it, lines,
+     arcs, boxes, splines, areas and paths with patterns, markers,
+     clipping (`pm_geo.inc`), page units and transforms, bitmaps, icons
+     and pointers (`pm_gpi.inc`), presentation parameters;
+   - printing to PDF (`pm_print.inc`; files go to `$OS2X86_PRINT`, on the
+     desktop `D:\PRINT`), profiles in OS/2's .INI format (`pm_prf.inc`;
+     `$OS2X86_HOME`, on the desktop `\OS2` on the stick), the file and
+     font dialogs (`pm_fdlg.inc`);
+   - the help manager with an IPF viewer (`pm_help.inc`): help tables, F1,
+     the HM_ messages, and a window showing .HLP/.INF panels with their
+     styles, links, Contents and Index. `os2x86 --view FILE.INF [topic]`
+     is VIEW;
+   - 16-bit PM (`pm16.inc`): ~80 PMWIN/PMGPI calls forwarded to the 32-bit
+     ones, 16-bit window and dialog procedures, and resources from the NE.
+
+   Not done yet: custom file dialog templates and procedures, multiple
+   selection and modeless file dialogs, pictures in help, drag and drop
+   to other programs. The PM and DOS constants are in `pm_api.inc` and
+   `dos_api.inc`, with OS/2's header values (`test/check-api.py` checks
+   them against OpenWatcom's). OS/2 DLLs that aren't here (TCP32DLL, ...)
+   load as stubs: a call into one prints a note and returns 0. Calls that
+   aren't implemented print one line on stderr and return error 1.
+
+   *Debugging*: `OS2X86_TRACE=1` logs every call, `OS2X86_ITRACE=1` every
+   instruction (CS:IP, bytes, registers), and `OS2X86_WATCH=address` (hex,
+   flat) reports whatever writes the four bytes there.
+
+   *Tests*: `userland/os2x86/test/run-tests.sh` runs `os2test.c` (built as
+   an LX by `elf2lx.py`) on the build machine. When OpenWatcom is there
+   (`WATCOM`, or its snapshot in `build/os2x86-test/ow`) it also runs real
+   OpenWatcom programs from `test/ow`: the C runtime (files, maths,
+   signals via OS/2 exceptions, threads, spawn), C++ (constructors,
+   iostreams, the STL, exceptions), conio, the mouse, a DLL, and the PM
+   programs, run headless and scripted with their screenshots and output
+   checked. They pass on the real system too.
 
    `userland/apps/rexx.c` is REXX: `.CMD` files starting with `/*` run
    through it (the kernel's execve, as it hands x86 programs to os2x86;
