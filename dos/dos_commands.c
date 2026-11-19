@@ -29,8 +29,8 @@
 #include "string.h"
 #include "a64.h"
 
-/* The last command's result, as CMD.EXE's: 0 when it worked, else an OS/2 error code (or 1) - for os2cmd's exit
- * code, so a REXX program's RC after a command */
+/* result of the last command, like CMD.EXE's: 0 on success, else an OS/2 error code (or 1). Used as os2cmd's exit
+ * code, so it's a REXX program's RC after a command */
 int dos_cmd_rc;
 
 static void print_dos_error(const char *cmd, APIRET rc)
@@ -569,7 +569,7 @@ static void debug_cmd_hex(int argc, char **argv)
     uart_puts("\r\n");
 }
 
-/* U [address [end | Llength]]: disassembly - 8 instructions by default, on from the last U */
+/* U [address [end | Llength]]: disassemble, 8 instructions by default, continuing from the last U */
 static unsigned long debug_u_next;
 static void debug_cmd_unassemble(int argc, char **argv)
 {
@@ -593,7 +593,7 @@ static void debug_cmd_unassemble(int argc, char **argv)
     debug_u_next = start + count * 4;
 }
 
-/* A [address]: assembly, a line an instruction (the address the prompt) until an empty one */
+/* A [address]: assemble one instruction per line (the prompt shows the address) until an empty line */
 static unsigned long debug_a_next;
 static void debug_cmd_assemble(int argc, char **argv)
 {
@@ -615,7 +615,7 @@ static void debug_cmd_assemble(int argc, char **argv)
         uint32_t w;
         if (!a64_asm(p, a, &w, err, sizeof err)) { uart_puts("\r\n^ "); uart_puts(err); uart_puts("\r\n"); continue; }
         *(volatile uint32_t *)a = w;
-        if (!uart_user_services())                       /* (code changed: the instruction cache too) */
+        if (!uart_user_services())                       /* code changed: sync the instruction cache too */
             __asm__ volatile("dc cvau, %0\n\tdsb ish\n\tic ivau, %0\n\tdsb ish\n\tisb" :: "r"(a) : "memory");
         uart_puts("\r\n");
         a += 4;
@@ -624,10 +624,10 @@ static void debug_cmd_assemble(int argc, char **argv)
     uart_puts("\r\n");
 }
 
-/* ── G, P, T: running code (kernel/src/debug_entry.S - the kernel's console only) ──
- * A context of its own: x0-x30, sp (its own stack), pc, pstate; x30 starts at debug_return_trap, so code that
- * returns comes back. Breakpoints are the processor's (DBGBVRn/DBGBCRn: nothing written into the code - the
- * kernel's own read-only code too), a step its software step. */
+/* ── G, P, T: running code (kernel/src/debug_entry.S; kernel console only) ──
+ * The code runs in its own context: x0-x30, sp (its own stack), pc, pstate. x30 starts at debug_return_trap, so
+ * returning comes back here. Breakpoints use the hardware (DBGBVRn/DBGBCRn), so nothing is written into the code
+ * and read-only kernel code works too; stepping uses software step. */
 extern unsigned long debug_go(unsigned long *ctx, int step) __attribute__((weak));
 extern void debug_return_trap(void) __attribute__((weak));
 extern int mmu_kernel_allow_exec(unsigned long addr) __attribute__((weak));
@@ -692,7 +692,7 @@ static void debug_set_bp(int n, unsigned long addr, int on)
     }
     __asm__ volatile("isb");
 }
-/* Runs the context (step: one instruction) with these breakpoints; then says why it stopped. 0: it returned. */
+/* run the context (one instruction if step) with these breakpoints, then say why it stopped; 0 if it returned */
 static int debug_run(int step, const unsigned long *bps, int nbp)
 {
     if (!debug_go || uart_user_services()) { uart_puts("G, P and T run code at EL1: at the kernel's console only\r\n"); return -1; }
@@ -715,7 +715,7 @@ static int debug_run(int step, const unsigned long *bps, int nbp)
         return 0;
     }
     if (ec == 0x31) uart_puts("breakpoint\r\n");
-    else if (ec == 0x33) { }                              /* (a step: just where it is) */
+    else if (ec == 0x33) { }                              /* single step: just show where it is */
     else if (ec == 0x3c) { uart_puts("brk #"); debug_print_hex(esr & 0xffff); uart_puts("\r\n"); }
     else {
         const char *w = ec == 0x25 ? "data abort" : ec == 0x21 ? "instruction abort" : ec == 0x22 ? "PC alignment fault" :
@@ -725,7 +725,7 @@ static int debug_run(int step, const unsigned long *bps, int nbp)
     debug_show_context();
     return 1;
 }
-/* "=address": where to start (else where it is) */
+/* "=address": where to start (default: where it is) */
 static int debug_start_at(int *argc, char ***argv)
 {
     dctx_init();
@@ -767,7 +767,7 @@ static void debug_cmd_registers(void)
 {
     unsigned long sp, currentel = 0, daif = 0;
     __asm__ volatile("mov %0, sp" : "=r"(sp));
-    if (!uart_user_services()) {                    /* (a process, at EL0, may not read these) */
+    if (!uart_user_services()) {                    /* a process at EL0 can't read these */
         __asm__ volatile("mrs %0, CurrentEL" : "=r"(currentel));
         __asm__ volatile("mrs %0, DAIF" : "=r"(daif));
     }
@@ -2174,7 +2174,7 @@ void dos_chkdsk(int argc, char **argv)
 {
     const char *path = ".";
     for (int i = 1; i < argc; i++)
-        if (argv[i][0] != '/') path = argv[i];          /* (/F: the shell's HPFS check) */
+        if (argv[i][0] != '/') path = argv[i];          /* /F is the shell's HPFS check */
     FSINFOPATH fi;
     APIRET rc = DosQueryFSInfoPath(path, &fi);
     if (rc != NO_ERROR) { print_dos_error("CHKDSK", rc); return; }
@@ -2396,7 +2396,7 @@ void dos_find(int argc, char **argv)
         int n = for_each_file(argv[i], find_in_file, &o);
         if (n < 0) print_dos_error("FIND", (APIRET)-n);
     }
-    if (!o.total && !dos_cmd_rc) dos_cmd_rc = 1;                  /* (nothing found: 1, as FIND.EXE) */
+    if (!o.total && !dos_cmd_rc) dos_cmd_rc = 1;                  /* nothing found: 1, like FIND.EXE */
 }
 
 /* ── MORE ────────────────────────────────────────────────────────────────── */

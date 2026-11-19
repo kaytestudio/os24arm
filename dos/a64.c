@@ -1,26 +1,25 @@
-/* dos/a64.c - an AArch64 (A64) disassembler and assembler (see a64.h), for
- * DEBUG's U and A. Freestanding: no libc, only <stdint.h> - the same file
- * builds into the kernel and, for its test against LLVM, on the build
- * machine (dos/tests/test_a64.sh).
+/* dos/a64.c - AArch64 (A64) disassembler and assembler (see a64.h) for DEBUG's
+ * U and A commands. Freestanding (only <stdint.h>): the same file builds into
+ * the kernel and, for the LLVM comparison test, on the build machine
+ * (dos/tests/test_a64.sh).
  *
- * Covered: branches (B, BL, B.cond, CBZ/CBNZ, TBZ/TBNZ, BR/BLR/RET/ERET),
- * exceptions (SVC/HVC/SMC/BRK/HLT), system (hints, barriers, MRS/MSR -
- * names from a table llvm-mc generated -, PSTATE fields, SYS aliases for
- * DC/IC/TLBI), ADR/ADRP, add/sub (immediate, shifted and extended
- * register, with carry), logical (immediate and shifted register), move
- * wide, bitfield and extract, conditional compare and select, data
- * processing (1, 2, 3 sources), and loads/stores (unsigned offset,
- * unscaled, pre/post index, register offset, literal, pairs, exclusive and
- * acquire/release), the FP/SIMD registers' too, LSE atomics, pointer
- * authentication; floating point and Advanced SIMD (a64_simd.inc). LLVM's
- * alias rules decide the spelling (mov, cmp, cmn, tst, neg, mvn,
- * lsl/lsr/asr, ubfx, sxtw, cset, cinc, mul, ...). SVE, SME, ARMv8.9's
- * 128-bit system instructions: ".inst 0x...".
+ * Disassembles: branches (B, BL, B.cond, CBZ/CBNZ, TBZ/TBNZ, BR/BLR/RET/ERET),
+ * exceptions (SVC/HVC/SMC/BRK/HLT), system (hints, barriers, MRS/MSR with names
+ * from an llvm-mc generated table, PSTATE fields, SYS aliases for DC/IC/TLBI),
+ * ADR/ADRP, add/sub (immediate, shifted and extended register, with carry),
+ * logical (immediate and shifted register), move wide, bitfield and extract,
+ * conditional compare and select, data processing (1, 2, 3 sources),
+ * loads/stores (unsigned offset, unscaled, pre/post index, register offset,
+ * literal, pairs, exclusive, acquire/release, FP/SIMD registers too), LSE
+ * atomics, pointer authentication, and FP/Advanced SIMD (a64_simd.inc).
+ * Spelling follows LLVM's alias rules (mov, cmp, cmn, tst, neg, mvn,
+ * lsl/lsr/asr, ubfx, sxtw, cset, cinc, mul, ...). SVE, SME and ARMv8.9's
+ * 128-bit system instructions come out as ".inst 0x...".
  *
- * The assembler encodes the integer instructions and scalar floating point
- * directly; FP/SIMD's other forms by search: a group's varying bits tried,
- * with the registers in their fields, until the disassembly of one is the
- * line's instruction (the disassembler being exact, that's its encoding). */
+ * The assembler encodes integer instructions and scalar FP directly. Other
+ * FP/SIMD forms are found by search: try a group's varying bits with the
+ * registers filled in until the disassembly matches the line (the
+ * disassembler is exact, so that's the encoding). */
 #include "a64.h"
 
 #include "a64_sysregs.inc"
@@ -82,7 +81,7 @@ static int decode_bitmask(int n, int immr, int imms, int sf, a64_u64 *out)
     *out = sf ? res : res & 0xffffffffull;
     return 1;
 }
-/* MOVZ/MOVN can make it (LLVM then prefers mov via those, not the bitmask form) */
+/* MOVZ/MOVN can build it (LLVM then prefers mov via those over the bitmask form) */
 static int move_wide_ok(a64_u64 v, int sf)
 {
     int w = sf ? 64 : 32;
@@ -104,7 +103,7 @@ static const char *sysreg_name(a64_u32 key)
 static void sysreg(buf_t *b, a64_u32 insn)
 {
     a64_u32 key = bits(insn, 19, 5);
-    const char *n = bits(insn, 20, 20) ? sysreg_name(key) : 0;    /* (the table: op0 2 and 3) */
+    const char *n = bits(insn, 20, 20) ? sysreg_name(key) : 0;    /* the table covers op0 2 and 3 */
     if (n) { put(b, n); return; }
     put(b, "S"); putdec(b, bits(insn, 20, 19)); put(b, "_"); putdec(b, bits(insn, 18, 16));
     put(b, "_C"); putdec(b, bits(insn, 15, 12)); put(b, "_C"); putdec(b, bits(insn, 11, 8)); put(b, "_"); putdec(b, bits(insn, 7, 5));
@@ -137,7 +136,7 @@ static int dp_imm(a64_u32 i, a64_u64 pc, buf_t *b)
         int opc = bits(i, 30, 29);
         a64_u64 v;
         if (!decode_bitmask(bits(i, 22, 22), bits(i, 21, 16), bits(i, 15, 10), sf, &v)) return 0;
-        if (opc == 1 && rn == 31 && !move_wide_ok(v, sf)) {        /* (mov: the value signed) */
+        if (opc == 1 && rn == 31 && !move_wide_ok(v, sf)) {        /* mov: show the value signed */
             mn(b, "mov"); reg(b, rd, sf, 1); sep(b);
             imm_hex(b, sf ? (a64_s64)v : (a64_s64)(int)(a64_u32)v); return 1;
         }
@@ -155,7 +154,7 @@ static int dp_imm(a64_u32 i, a64_u64 pc, buf_t *b)
         if (opc == 1 || (!sf && hw > 1)) return 0;
         if (opc == 3) { mn(b, "movk"); reg(b, rd, sf, 0); sep(b); imm_hex(b, (a64_s64)imm); if (hw) { put(b, ", lsl #"); putdec(b, (a64_u64)hw * 16); } return 1; }
         int alias = !(imm == 0 && hw != 0);
-        if (opc == 0 && !sf && imm == 0xffff) alias = 0;          /* (movn w, #0xffff: not mov) */
+        if (opc == 0 && !sf && imm == 0xffff) alias = 0;          /* movn w, #0xffff isn't shown as mov */
         if (alias) {
             a64_u64 v = imm << (hw * 16);
             if (opc == 0) v = ~v;
@@ -254,7 +253,7 @@ static int branch_sys(a64_u32 i, a64_u64 pc, buf_t *b)
         if (!m) return 0;
         if (opc == 5 && !imm) { put(b, m); return 1; }
         mn(b, m);
-        if (opc == 0 && !imm) put(b, "#0"); else imm_hex(b, imm);   /* (svc/hvc/smc #0: as LLVM) */
+        if (opc == 0 && !imm) put(b, "#0"); else imm_hex(b, imm);   /* svc/hvc/smc #0, like LLVM */
         return 1;
     }
     if (bits(i, 31, 22) == 0x354) {                              /* system */
@@ -311,7 +310,7 @@ static int branch_sys(a64_u32 i, a64_u64 pc, buf_t *b)
             if (!l && rt != 31) { sep(b); reg(b, rt, 1, 0); }
             return 1;
         }
-        if (op0 >= 2 || op0 == 0) {                              /* MRS / MSR (register; op0 0: the generic names, as LLVM) */
+        if (op0 >= 2 || op0 == 0) {                              /* MRS / MSR (register; op0 0 uses the generic names, like LLVM) */
             if (l) { mn(b, "mrs"); reg(b, rt, 1, 0); sep(b); sysreg(b, i); }
             else { mn(b, "msr"); sysreg(b, i); sep(b); reg(b, rt, 1, 0); }
             return 1;
@@ -354,7 +353,7 @@ static void mem_imm(buf_t *b, int rn, a64_s64 off, int mode)    /* mode 0 offset
     put(b, "]");
     if (mode == 1) put(b, "!");
 }
-static void prfop(buf_t *b, int t)                              /* (pld/pli/pst, l1 l2 l3 slc, keep/strm; 24: ir) */
+static void prfop(buf_t *b, int t)                              /* pld/pli/pst, l1 l2 l3 slc, keep/strm; 24 is ir */
 {
     static const char *const ty[3] = { "pld", "pli", "pst" }, *const lv[4] = { "l1", "l2", "l3", "slc" };
     if (t == 24) { put(b, "ir"); return; }
@@ -386,7 +385,7 @@ static int ldst_atomic(a64_u32 i, buf_t *b)
         }
         if (o3 && aop) return 0;
         static const char *const ops[8] = { "add", "clr", "eor", "set", "smax", "smin", "umax", "umin" };
-        int st = !o3 && rt == 31 && !a;                          /* (ST<op>: the result not wanted) */
+        int st = !o3 && rt == 31 && !a;                          /* ST<op>: the result isn't wanted */
         put(&mb, o3 ? "swp" : st ? "st" : "ld"); if (!o3) put(&mb, ops[aop]);
         if (a) put(&mb, "a"); if (r) put(&mb, "l"); put(&mb, sfx2[size]);
         mn(b, m); reg(b, rs, sf, 0); sep(b);
@@ -400,7 +399,7 @@ static int ldst_atomic(a64_u32 i, buf_t *b)
 static int ldst(a64_u32 i, a64_u64 pc, buf_t *b)
 {
     int rt = bits(i, 4, 0), rn = bits(i, 9, 5), v = bits(i, 26, 26);
-    if (v && bits(i, 29, 27) == 1) return simd_ldst(i, b);           /* (structures: a64_simd.inc) */
+    if (v && bits(i, 29, 27) == 1) return simd_ldst(i, b);           /* structures: a64_simd.inc */
     /* load literal */
     if (bits(i, 29, 27) == 3 && bits(i, 25, 24) == 0) {
         int opc = bits(i, 31, 30);
@@ -491,7 +490,7 @@ static int ldst(a64_u32 i, a64_u64 pc, buf_t *b)
         if (!base) return 0;
         scale = size;
         kind = size == 3 && opc == 2 ? 2 : opc != 0;
-        sf = size == 3 ? 1 : (opc == 2);                         /* (ldrsb/ldrsh x for opc 2, w for 3; ldrsw x) */
+        sf = size == 3 ? 1 : (opc == 2);                         /* ldrsb/ldrsh: x for opc 2, w for 3; ldrsw: x */
         if (size == 2 && opc == 2) sf = 1;
     }
     #define RT() do { if (kind == 2) prfop(b, rt); else if (v) vreg(b, rt, scale); else reg(b, rt, sf, 0); } while (0)
@@ -693,7 +692,7 @@ static int streq_ci(const char *a, const char *b) { while (*a && lower(*a) == lo
 static int is_sp(char c) { return c == ' ' || c == '\t'; }
 static void skipsp(const char **p) { while (is_sp(**p)) (*p)++; }
 
-/* #n: decimal (0x: hex); a number without #: an address - hex, DEBUG's way (0x optional) */
+/* #n is decimal (0x for hex); a number without # is an address, hex the DEBUG way (0x optional) */
 static int parse_num(const char **p, a64_s64 *v)
 {
     const char *s = *p; int neg = 0, hash = *s == '#';
@@ -759,7 +758,7 @@ static int parse_shift_ext(const char *s, opnd_t *o)
     while (s[n] && !is_sp(s[n]) && s[n] != '#' && n < 7) { w[n] = (char)lower(s[n]); n++; }
     w[n] = 0;
     int sh = find_name(shifts, 4, w), ex = find_name(extends, 8, w);
-    if (streq_ci(w, "msl")) sh = 4;                          /* (msl: movi's shifting ones) */
+    if (streq_ci(w, "msl")) sh = 4;                          /* msl: movi's shifting forms */
     if (sh < 0 && ex < 0) return 0;
     const char *p = s + n;
     skipsp(&p);
@@ -795,8 +794,8 @@ static int parse_vec(const char *s, opnd_t *o, const char **after)
     static const char *const an[8] = { "8b", "16b", "4h", "8h", "2s", "4s", "1d", "2d" };
     int a = -1;
     for (int k = 0; k < 8; k++) { const char *x = an[k], *y = t; while (*x && *x == *y) { x++; y++; } if (!*x && !*y) a = k; }
-    if (t[0] == '1' && t[1] == 'q' && !t[2]) a = 8;              /* (pmull's 128-bit result) */
-    if (a < 0) {                                                 /* (in a single-structure list: v0.s, no lanes) */
+    if (t[0] == '1' && t[1] == 'q' && !t[2]) a = 8;              /* pmull's 128-bit result */
+    if (a < 0) {                                                 /* in a single-structure list: v0.s with no lane count */
         int es = !t[1] ? (t[0] == 'b' ? 0 : t[0] == 'h' ? 1 : t[0] == 's' ? 2 : t[0] == 'd' ? 3 : -1) : -1;
         if (es < 0) return 0;
         o->kind = O_VELEM; o->vscale = es; o->eidx = -1;
@@ -805,7 +804,7 @@ static int parse_vec(const char *s, opnd_t *o, const char **after)
     o->kind = O_VEC; o->arr = a;
     *after = p; return 1;
 }
-/* "#1.25", "#-0.328125": the value * 10^8 (exact for every FP8 immediate) */
+/* "#1.25", "#-0.328125" as value * 10^8 (exact for every FP8 immediate) */
 static int parse_fimm(const char *s, a64_s64 *v)
 {
     if (*s != '#') return 0;
@@ -1135,7 +1134,7 @@ static int assemble(const char *m, opnd_t *o, int n, a64_u64 pc, a64_u32 *out, c
         else if (IS("cmp")) { op = 1; s = 1; cmp = 1; } else if (IS("cmn")) { op = 0; s = 1; cmp = 1; }
         else if (IS("neg")) { op = 1; neg = 1; } else if (IS("negs")) { op = 1; s = 1; neg = 1; }
         if (op >= 0) {
-            opnd_t full[4];                                      /* (as rd, rn, operand[, shift]) */
+            opnd_t full[4];                                      /* as rd, rn, operand[, shift] */
             int k = 0;
             if (cmp) { full[k].kind = O_REG; full[k].r = 31; full[k].sf = o[0].sf; full[k].sp = 0; full[k].zr = 1; k++; }
             for (int j = 0; j < n && k < 4; j++) {
@@ -1487,7 +1486,7 @@ static int assemble(const char *m, opnd_t *o, int n, a64_u64 pc, a64_u32 *out, c
             if (o[1].kind != O_MEM) E("an address: [xn{, #imm}], [xn, #imm]!, [xn], #imm or [xn, xm{, lsl #n}]");
             a64_u32 rn = R(o[1].base) << 5;
             if (o[1].mode == 3) {                                /* register offset */
-                int s = 0;                                       /* (an amount written, the access size: S - "#0" too, for bytes) */
+                int s = 0;                                       /* amount given, or the access size: S (also "#0" for bytes) */
                 if (o[1].ext_has) { if (o[1].ext_amt != scale && o[1].ext_amt != 0) E("the shift: 0 or the access size"); s = o[1].ext_amt == scale; }
                 int option = o[1].ext;
                 if (option != 2 && option != 3 && option != 6 && option != 7) E("uxtw, sxtw, sxtx or lsl");
@@ -1549,7 +1548,7 @@ static int assemble(const char *m, opnd_t *o, int n, a64_u64 pc, a64_u32 *out, c
     #undef REGN
 }
 
-/* the operands of a line (after its mnemonic), split at commas outside [] and {} ("[xn], #imm": one) */
+/* split a line's operands at commas outside [] and {} ("[xn], #imm" stays one) */
 static int parse_operands(const char *p, opnd_t *o, int *nout, char *err, unsigned errsize)
 {
     int n = 0;
@@ -1574,9 +1573,11 @@ static int parse_operands(const char *p, opnd_t *o, int *nout, char *err, unsign
     return 1;
 }
 
-/* ── FP/SIMD by search: the disassembler being exact, a candidate encoding whose disassembly is the same
- * instruction - mnemonic, operands compared as values - is the encoding. Each group: the bits that are always
- * set, the bits to try, and where the registers go. ── */
+/* ── FP/SIMD by search ──
+ * Since the disassembler is exact, a candidate encoding whose disassembly is
+ * the same instruction (mnemonic, operands compared as values) is the
+ * encoding. Each group lists the bits always set, the bits to try, and where
+ * the registers go. */
 static int same_opnd(const opnd_t *a, const opnd_t *b)
 {
     if (a->kind != b->kind) return 0;
@@ -1617,7 +1618,7 @@ static int simd_search(const char *m, opnd_t *o, int n, a64_u64 pc, a64_u32 *out
         }
         if (k == O_MEM) { base = o[j].base; if (o[j].mode == 2) post = 31; }
     }
-    if (nr == 2) r[2] = r[1];                                    /* (mov v0.16b, v1.16b: orr's rm is rn) */
+    if (nr == 2) r[2] = r[1];                                    /* mov v0.16b, v1.16b: orr's rm is rn */
     static const struct { a64_u32 base, vary; int layout; } g[] = {   /* layout: 0 d,n,m; 1 d,n,m(4 bits); 2 d; 3 t,base,post; 4 d,n */
         { 0x0e200400u, 0x60c0f800u, 0 }, { 0x0e400400u, 0x60803800u, 0 }, { 0x0e008400u, 0x60c07800u, 0 },
         { 0x0e200000u, 0x60c0f000u, 0 }, { 0x0e200800u, 0x60c1f000u, 4 }, { 0x0e300800u, 0x60c1f000u, 4 },
@@ -1668,12 +1669,12 @@ int a64_asm(const char *line, a64_u64 pc, a64_u32 *insn, char *err, unsigned err
         if (o[j].kind == O_VEC || o[j].kind == O_VELEM || o[j].kind == O_VLIST) vec = 1;
         if (o[j].kind == O_VREG || o[j].kind == O_FIMM) fp = 1;
     }
-    if (vec) {                                                   /* (vector operands: the search) */
+    if (vec) {                                                   /* vector operands: search */
         if (simd_search(m, o, n, pc, insn)) return 1;
         seterr(err, errsize, "not an instruction (or form) this assembler can make");
         return 0;
     }
     if (assemble(m, o, n, pc, insn, err, errsize)) return 1;
-    if (fp && simd_search(m, o, n, pc, insn)) return 1;          /* (scalar SIMD: d0, s1, ...) */
+    if (fp && simd_search(m, o, n, pc, insn)) return 1;          /* scalar SIMD (d0, s1, ...) */
     return 0;
 }
