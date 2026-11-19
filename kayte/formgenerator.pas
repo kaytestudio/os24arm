@@ -34,7 +34,7 @@ begin
 end;
 
 
-// Example Usage (where you would call this from your compiler):
+// builds an example form definition
 procedure GenerateExampleForm;
 var
   Form1Def: TVMFormDefinition;

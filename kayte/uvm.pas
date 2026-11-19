@@ -132,7 +132,7 @@ begin
     if Assigned(FCallback) then
         FCallback.Log('VM: (Simulating) Login logic for HandleLoginButton.');
 
-    // Replace with actual logic when FKfrmRuntime is accessible
+    // TODO: once FKfrmRuntime is accessible:
     // if Assigned(LoadedLoginForm) and Assigned(UsernameEdit) and Assigned(PasswordEdit) then
     // begin
     //   FCallback.Log(SysUtils.Format('Interpreted Login - Username: "%s", Password: "%s"', [UsernameEdit.Text, PasswordEdit.Text]));

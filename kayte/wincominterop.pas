@@ -35,8 +35,8 @@ const
   // You would generate these for your own custom interfaces/classes.
   // Tools like Lazarus's "Create GUID" tool (Tools -> Create GUID) or PowerShell's [guid]::NewGuid()
   // are used for this.
-  IID_IMyCustomComInterface: TGUID = '{YOUR-GUID-FOR-IMYCUSTOMCOMINTERFACE-HERE}'; // Replace with a real GUID
-  CLSID_MyComAutomationClass: TGUID = '{YOUR-GUID-FOR-MYCOMAUTOMATIONCLASS-HERE}'; // Replace with a real GUID
+  IID_IMyCustomComInterface: TGUID = '{77A45F32-F8D3-4E40-9B79-D4A465D292E3}';
+  CLSID_MyComAutomationClass: TGUID = '{12684EAF-B121-4B98-90A6-C9986C593F6F}';
 
 type
   // IUnknown is the base interface for all COM objects.

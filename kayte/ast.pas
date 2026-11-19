@@ -5,7 +5,7 @@ unit AST;
 interface
 
 uses
-  SysUtils, Classes, TokenDefs; // Make sure TokenDefs is also included here
+  SysUtils, Classes, TokenDefs;
 
 // Define the core AST node types as classes
 type

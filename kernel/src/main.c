@@ -802,7 +802,6 @@ static void execute_command(char *cmdline)
     else if (my_strcmp(argv[0], "AI") == 0) {
         ai_run(argc, argv);
     }
-    // In command handler:
     else if (my_strcmp(argv[0], "GUI") == 0) {
         cmd_gui();
     }

@@ -49,8 +49,7 @@ begin
     begin
       WriteLn('Library loaded successfully: ', FilePath);
       Result := True;
-      // Remember to free the library after use
-      FreeLibrary(LibraryHandle);
+      FreeLibrary(LibraryHandle);   // only checking that it loads
     end
     else
       WriteLn('Error: Failed to load library - ', FilePath);
