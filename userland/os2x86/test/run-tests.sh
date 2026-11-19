@@ -61,6 +61,13 @@ if [ -x "$W/armo64/wcl386" ] || [ -x "$W/binl64/wcl386" ]; then
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmprint.c" >/dev/null
     wrc -q -r -bt=os2 -i="$S" "$S/pmowner.rc" -fo=pmowner.res >/dev/null
     wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmowner.c" >/dev/null && wrc -q -bt=os2 pmowner.res pmowner.exe >/dev/null
+    wrc -q -r -bt=os2 -i="$S" "$S/pmhelp.rc" -fo=pmhelp.res >/dev/null
+    wcl386 -q -za99 -bt=os2 -l=os2v2_pm "$S/pmhelp.c" >/dev/null && wrc -q -bt=os2 pmhelp.res pmhelp.exe >/dev/null
+    # (its help: OpenWatcom's OS/2 wipfc, run here, from its snapshot's archive if it's here; two of its books too)
+    [ -f wipfc-os2/binp/wipfc.exe ] || { [ -f "$ROOT/build/os2x86-test/dl/ow.tar.xz" ] && mkdir -p wipfc-os2 &&
+        tar xJf "$ROOT/build/os2x86-test/dl/ow.tar.xz" -C wipfc-os2 ./binp/wipfc.exe ./wipfc ./binp/help/cmix.inf ./binp/help/cpplib.inf 2>/dev/null; }
+    rm -f pmhelp.hlp
+    [ -f wipfc-os2/binp/wipfc.exe ] && cp "$S/pmhelp.ipf" . && WIPFC="$PWD/wipfc-os2/wipfc" ../os2x86 wipfc-os2/binp/wipfc.exe -q pmhelp.ipf >/dev/null 2>&1
     owfail=0
     echo "== OpenWatcom programs"
     ../os2x86 owtest.exe </dev/null | grep -E "^FAIL|passed|failed" || owfail=1
@@ -231,6 +238,19 @@ PY
     if grep -q 'open: shown, OK, "C:.*\\fdtest\\B.TXT", 1$' <<< "$fdout" && grep -q 'save: OK, "C:.*\\fdtest\\sub\\new.txt"$' <<< "$fdout" &&
        grep -q 'font: OK, Courier 14 pt, weight 7, face "Courier Bold", selection 20, use c' <<< "$fdout"
     then echo "PM file and font dialogs: ok"; else echo "PM file and font dialogs: FAIL"; echo "$fdout"; owfail=1; fi
+    # IPF help: F1 on a control (the help table's panel), on the client (HM_HELPSUBITEM_NOT_FOUND, the extended help),
+    # an inform link, a link, the program's HM_ messages; VIEW (--view) on a book, a link into another book
+    if [ -f pmhelp.hlp ]; then
+        hlpout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf OS2X86_PM_SCRIPT="click 50 295; vkey f1; shot help1.ppm; vkey esc; click 300 100; vkey f1; vkey tab; enter; vkey tab; enter; shot help2.ppm; vkey esc; vkey esc; key c; vkey esc; key i; shot help3.ppm; vkey esc; key n; vkey esc; key r; key q" ../os2x86 pmhelp.exe 2>&1 | tr -d '\r')"
+        viewout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf OS2X86_PM_SCRIPT="click 160 420; click 20 20; shot view1.ppm; vkey esc; shot view2.ppm; close" ../os2x86 --view pmhelp.hlp button 2>&1)"
+        [ -f wipfc-os2/binp/help/cmix.inf ] && viewout="$viewout
+$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf OS2X86_PM_SCRIPT="vkey tab; enter; shot view3.ppm; close; close" ../os2x86 --view wipfc-os2/binp/help/cmix.inf "Header Files" 2>&1)"
+        if [ "$(grep -v '^\[pm\]' <<< "$hlpout" | tr '\n' '|')" = "instance made, associated 1|not found: window 1, item 32776|inform 77|contents: 0|index: 0|by name: 0|error 2010|panel 999: 2010|" ] &&
+           grep -q '"Help test - The button")' <<< "$hlpout" && grep -q '"Help test - Second panel")' <<< "$hlpout" && grep -q '"Help test - Index")' <<< "$hlpout" &&
+           grep -q 'view1.ppm.*"Help test - Using the test")' <<< "$viewout" && grep -q 'view2.ppm.*"Help test - Contents")' <<< "$viewout" &&
+           { [ ! -f wipfc-os2/binp/help/cmix.inf ] || grep -q 'view3.ppm.*"Open Watcom 2.0 C++ Class Library Reference - Header Files")' <<< "$viewout"; }
+        then echo "PM help (IPF): ok"; else echo "PM help (IPF): FAIL"; echo "$hlpout"; echo "$viewout"; owfail=1; fi
+    else echo "PM help (IPF): skipped (no wipfc)"; fi
     # the pointer and points between windows: key state (synchronous), pointer position, mapping, window from point, class, capture
     qout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf OS2X86_PM_SCRIPT="shift click 30 40; close" ../os2x86 pmquery.exe 2>&1 | tr -d '\r')"
     if [ "$(tr '\n' '|' <<< "$qout")" = "down 1, shift 1; at 30 79, mapped back 30 79|from point: the button, the client; class #3; child 1|capture ours|thread 1|" ]

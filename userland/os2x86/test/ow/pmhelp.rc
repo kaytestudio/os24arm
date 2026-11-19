@@ -1,0 +1,9 @@
+#include <os2.h>
+HELPTABLE 1000
+{
+    HELPITEM 1, 1001, 300
+}
+HELPSUBTABLE 1001
+{
+    HELPSUBITEM 10, 210
+}

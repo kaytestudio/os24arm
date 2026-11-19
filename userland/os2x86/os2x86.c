@@ -3775,7 +3775,9 @@ int main(int argc, char **argv)
 {
     if (argc < 2 || !strcmp(argv[1], "-h") || !strcmp(argv[1], "--help")) {
         fprintf(stderr, "usage: os2x86 PROGRAM.EXE [arguments]\n"
-                        "  runs a 32-bit x86 OS/2 program (OS2X86_TRACE=1: its system calls on stderr)\n");
+                        "  runs a 32-bit x86 OS/2 program (OS2X86_TRACE=1: its system calls on stderr)\n"
+                        "       os2x86 --view FILE.INF [topic]\n"
+                        "  shows an OS/2 help file (.INF, .HLP), as VIEW does\n");
         return 2;
     }
     if (strchr(argv[0], '/') && realpath(argv[0], self_path)) { }
@@ -3811,6 +3813,10 @@ int main(int argc, char **argv)
     uused[0] = uused[nunits - 1] = uused[C.thunk_lo / UNIT] = 1;
     memset(C.mem + C.thunk_lo, 0xCC, UNIT);
     drives_init();
+    if (!strcmp(argv[1], "--view")) {                        /* VIEW: an .INF (.HLP) file, a topic */
+        if (argc < 3) die(2, "usage: os2x86 --view FILE.INF [topic]");
+        return help_view_main(argv[2], argc > 3 ? argv[3] : 0);
+    }
 
     /* the program: as this system names it, else as OS/2 does */
     char h[PATH_MAX], err[1024];

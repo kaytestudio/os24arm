@@ -738,8 +738,10 @@ static uint32_t api_WinRegisterClass(void)    /* (hab, pszClass, pfnWndProc, flS
 }
 static pmwin_t *menu_load(pmwin_t *f, uint32_t hmod, uint32_t id);
 static uint32_t accel_new(uint32_t t);
+static void help_request(pmwin_t *top, uint32_t id);
 static uint32_t frame_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
 {
+    if (msg == 0x0022) { help_request(w, mp1); return 0; }   /* WM_HELP: the help manager's */
     if (msg == WM_COMMAND && w->client) { post(w->client, w->client->hwnd, msg, mp1, mp2); return 0; }
     if ((msg == 0x0031 || msg == 0x0032 || msg == WM_CONTROL) && w->client) return pm_send(w->client, msg, mp1, mp2);   /* WM_VSCROLL, WM_HSCROLL */
     if (msg == WM_CLOSE) { if (w->client) post(w->client, w->client->hwnd, WM_CLOSE, 0, 0); else post(w, 0, WM_QUIT, 0, 0); }
@@ -751,7 +753,7 @@ static uint32_t api_WinCreateStdWindow(void)
     uint32_t style = A(1), pfl = A(2), pcls = A(3), ptitle = A(4), cstyle = A(5), hmod = A(6), idres = A(7), pclient = A(8);
     uint32_t fcf = pfl ? g32(pfl) : 0;
     if (!pm_start()) return 0;
-    pmwin_t *f = win_new(0, "#1", style & ~WS_VISIBLE_, 0);
+    pmwin_t *f = win_new(0, "#1", style & ~WS_VISIBLE_, idres);   /* (its id: idResources, as help tables know it) */
     if (!f) return 0;
     f->top = 1;
     f->iproc = frame_proc;
@@ -872,6 +874,10 @@ static uint32_t def_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
     case WM_CLOSE: post(w, 0, WM_QUIT, 0, 0); return 0;
     case WM_PAINT: w->invalid = 0; return 0;
     case WM_CHAR: return !w->top && w->owner ? pm_send(w->owner, msg, mp1, mp2) : 0;   /* (a key nobody took: up to the owner) */
+    case 0x0022:                                             /* WM_HELP: up to the frame, the help manager's there */
+        if (w->top) help_request(w, mp1);
+        else if (w->owner ? w->owner : w->parent) pm_send(w->owner ? w->owner : w->parent, msg, mp1, mp2);
+        return 0;
     case WM_MOUSEMOVE: pm_set_pointer(sys_pointer(1)); return 1;                        /* (the arrow, as PM's) */
     case WM_ERASEBACKGROUND: return 0;
     }
@@ -1540,6 +1546,7 @@ static pmwin_t *ptr_get(uint32_t h);
 #include "pm_geo.inc"
 #include "pm_prf.inc"
 #include "pm_fdlg.inc"
+#include "pm_help.inc"
 #include "pm_print.inc"
 
 /* ── the clipboard (WinOpenClipbrd & co.): CF_TEXT, CF_BITMAP; on the

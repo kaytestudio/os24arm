@@ -928,6 +928,7 @@ static uint32_t def_dlg_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp
     case WM_PAINT: dlg_paint_bg(w); return 0;
     case WM_COMMAND: w->dlg_done = 1; w->dlg_result = mp1 & 0xFFFF; return 0;
     case WM_CLOSE: post(w, w->hwnd, WM_COMMAND, 2, 0); return 0;   /* DID_CANCEL */
+    case 0x0022: help_request(w, mp1); return 0;             /* WM_HELP */
     case WM_CHAR: {
         if (mp1 & KC_KEYUP) return 0;
         int ch = (int)(mp2 & 0xFFFF), vk = (mp1 & KC_VIRTUALKEY) ? (int)(mp2 >> 16) : 0;
@@ -1524,11 +1525,13 @@ static int menu_key(pmwin_t *f, int ch, int vk, int kc)
     return 1;
 }
 /* before a key becomes WM_CHAR: the menu's, an accelerator's (pm_key) */
+static int help_key(pmwin_t *f);
 static int key_hook(pmwin_t *f, int ch, int vk, int scan, int kc)
 {
     if (menu_key(f, ch, vk, kc)) return 1;
     uint32_t cmd = accel_match(accel_get(f->haccel), ch, vk, scan, kc);
     if (!cmd) cmd = accel_match(accel_get(q_accel[f->tid - 1]), ch, vk, scan, kc);
+    if (!cmd && vk == 0x20 && !(kc & (KC_ALT | KC_CTRL | KC_SHIFT | KC_KEYUP))) return help_key(f);   /* F1 */
     if (!cmd) return 0;
     pmwin_t *t = f->client ? f->client : f;
     post(t, t->hwnd, (cmd & 0x10000) ? WM_SYSCOMMAND : WM_COMMAND, cmd & 0xFFFF, 3);   /* CMDSRC_ACCELERATOR */

@@ -120,7 +120,7 @@ if [ "$DEMOS" = 1 ]; then
     EXTRA="$W/os2demos/OS2DEMOS"
     rm -rf "$W/os2demos"; mkdir -p "$EXTRA"
     n=0
-    for f in "$O"/*.exe "$O"/*.dll "$B"/os2x86-test/OS2TEST.EXE; do
+    for f in "$O"/*.exe "$O"/*.dll "$O"/*.hlp "$B"/os2x86-test/OS2TEST.EXE; do
         [ -f "$f" ] || continue
         b="$(basename "$f" | tr a-z A-Z)"
         cp "$f" "$EXTRA/$b"; chmod +x "$EXTRA/$b"; n=$((n + 1))
