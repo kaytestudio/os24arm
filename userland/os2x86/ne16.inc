@@ -54,7 +54,7 @@ static uint32_t T(int i)                                     /* (results' room: 
 }
 #define L(o) g32(a16 + (o))
 
-static uint32_t d16_DosExit(void) { if (W(2) == 0) thread_end(W(0)); do_exit(W(0)); }   /* (EXIT_THREAD 0, EXIT_PROCESS 1) */
+static uint32_t d16_DosExit(void) { if (W(2) == EXIT_THREAD) thread_end(W(0)); do_exit(W(0)); }   /* (else EXIT_PROCESS) */
 static uint32_t d16_DosGetInfoSeg(void)       /* (PSEL global, PSEL local) */
 {
     time_t now = time(0);
@@ -120,7 +120,7 @@ static uint32_t ne_find(uint32_t hdir, uint32_t buf, uint32_t cb, uint32_t pc, i
         p32(cp, 1);
         if (first && !got) {
             p32(hp, hdir == 0xFFFF ? 0xFFFFFFFF : hdir);
-            uint32_t a[] = { spec, hp, attr, t, 300, cp, 1 };   /* FIL_STANDARD */
+            uint32_t a[] = { spec, hp, attr, t, 300, cp, FIL_STANDARD };
             r = call32(api_DosFindFirst, 7, a);
             if (r) break;
             hdir = g32(hp);
@@ -230,7 +230,7 @@ static uint32_t d16_DosScanEnv(void)          /* (name, PSZ far *ppValue) */
             p32(FP(0), (uint32_t)(p + l + 1 - ne_env) | (uint32_t)sel16(ne_env) << 16);
             return 0;
         }
-    return 203;                                              /* ERROR_ENVVAR_NOT_FOUND */
+    return ERROR_ENVVAR_NOT_FOUND;
 }
 /* semaphores: RAM ones (an HSEM: a far pointer to a doubleword of the program's) and system ones (DosCreateSem,
  * DosOpenSem: a handle, kept here); both as owner thread (high word) and count (low word) - a request waits until
@@ -250,12 +250,12 @@ static uint32_t sem_wait16(uint32_t h, int32_t timeout, int take)
     clock_gettime(CLOCK_REALTIME, &dl);
     if (timeout > 0) { dl.tv_sec += timeout / 1000; dl.tv_nsec += (long)(timeout % 1000) * 1000000L; if (dl.tv_nsec >= 1000000000L) { dl.tv_sec++; dl.tv_nsec -= 1000000000L; } }
     uint32_t *v = sem_ptr(h);
-    if (!v) return 187;                                      /* ERROR_INVALID_SEMAPHORE... (ERROR_SEM_NOT_FOUND) */
+    if (!v) return ERROR_SEM_NOT_FOUND;                      /* ERROR_INVALID_SEMAPHORE... */
     for (;;) {
         v = sem_ptr(h);
         uint32_t cur = v ? *v : 0;
         if (!cur || (take && (cur >> 16) == me->tid)) break;
-        if (!timeout) return 121;                            /* ERROR_SEM_TIMEOUT */
+        if (!timeout) return ERROR_SEM_TIMEOUT;
         if (timeout < 0) pthread_cond_wait(&gcv, &gil);
         else if (pthread_cond_timedwait(&gcv, &gil, &dl) == ETIMEDOUT) return 121;
         if (me->kill) thread_end(0);
@@ -285,7 +285,7 @@ static uint32_t d16_DosCreateSem(void)                      /* (USHORT fExclusiv
 {
     char *n = gs(FP(0));
     if (!n) return 87;
-    for (int i = 0; i < 64; i++) if (sysems[i].used && !strcasecmp(sysems[i].name, n)) return 183;   /* ERROR_ALREADY_EXISTS */
+    for (int i = 0; i < 64; i++) if (sysems[i].used && !strcasecmp(sysems[i].name, n)) return ERROR_ALREADY_EXISTS;
     for (int i = 0; i < 64; i++)
         if (!sysems[i].used) {
             memset(&sysems[i], 0, sizeof sysems[i]);
@@ -294,14 +294,14 @@ static uint32_t d16_DosCreateSem(void)                      /* (USHORT fExclusiv
             p32(FP(4), (uint32_t)i + 1);
             return 0;
         }
-    return 100;                                              /* ERROR_TOO_MANY_SEMAPHORES */
+    return ERROR_TOO_MANY_SEMAPHORES;
 }
 static uint32_t d16_DosOpenSem(void)                        /* (PHSEM phsem, PSZ name) */
 {
     char *n = gs(FP(0));
     if (!n) return 87;
     for (int i = 0; i < 64; i++) if (sysems[i].used && !strcasecmp(sysems[i].name, n)) { sysems[i].refs++; p32(FP(4), (uint32_t)i + 1); return 0; }
-    return 187;                                              /* ERROR_SEM_NOT_FOUND */
+    return ERROR_SEM_NOT_FOUND;
 }
 static uint32_t d16_DosCloseSem(void)                       /* (HSEM) */
 {
@@ -336,7 +336,7 @@ static uint32_t d16_DosCreateThread(void)
     uint32_t pfn = L(8), stk = L(0);
     int i;
     for (i = 1; i < MAXTHR && thrs[i] && thrs[i]->state != 3; i++) { }
-    if (i == MAXTHR) return 164;                             /* ERROR_MAX_THRDS_REACHED */
+    if (i == MAXTHR) return ERROR_MAX_THRDS_REACHED;
     if (!(pfn >> 16) || !(stk >> 16)) return 87;
     thr_t *t = thrs[i] ? thrs[i] : calloc(1, sizeof *t);
     if (!t) return 8;
@@ -695,7 +695,7 @@ static uint32_t d16_DosLoadModule(void)
     if (d && !ne_init(d, err, sizeof err)) d = 0;
     if (!d) {
         if (W(8) && FP(10)) snprintf((char *)C.mem + FP(10), W(8), "%s", b);
-        return 2;                                            /* ERROR_FILE_NOT_FOUND */
+        return ERROR_FILE_NOT_FOUND;
     }
     p16(FP(0), ne_hmod(d));
     return 0;
@@ -710,7 +710,7 @@ static uint32_t d16_DosGetProcAddr(void)
         else if (nm) target = thunk_for((int)(h - 0x8000), 0, nm);
     } else {
         nemod_t *m = ne_mod_of(h);
-        if (!m || !(byord ? ne_entry(m, pn & 0xFFFF, &target) : nm && ne_entry_name(m, nm, &target))) return 182;   /* ERROR_INVALID_ORDINAL */
+        if (!m || !(byord ? ne_entry(m, pn & 0xFFFF, &target) : nm && ne_entry_name(m, nm, &target))) return ERROR_INVALID_ORDINAL;
     }
     if (!target) return 182;
     p32(FP(0), (uint32_t)(target & 0xFFFF) | (uint32_t)sel16(target) << 16);
@@ -724,15 +724,15 @@ static uint32_t d16_DosGetModHandle(void)
     for (int i = 0; i < nnemods; i++) if (!strcasecmp(nemods[i]->name, nm)) { p16(FP(0), ne_hmod(nemods[i])); return 0; }
     int lib = ne_find_lib(nm);
     if (lib >= 0) { p16(FP(0), (uint16_t)(0x8000 + lib)); return 0; }
-    return 123;                                              /* ERROR_INVALID_NAME */
+    return ERROR_INVALID_NAME;
 }
 static uint32_t d16_DosGetModName(void)                    /* (hmod, cb, buf): its file, OS/2's name */
 {
     nemod_t *m = ne_mod_of(W(6));
-    if (!m) return 6;                                        /* ERROR_INVALID_HANDLE */
+    if (!m) return ERROR_INVALID_HANDLE;
     char o[PATH_MAX];
     host_to_os2(m->path, o, sizeof o);
-    if ((uint32_t)strlen(o) + 1 > W(4)) return 24;          /* ERROR_BAD_LENGTH */
+    if ((uint32_t)strlen(o) + 1 > W(4)) return ERROR_BAD_LENGTH;
     snprintf((char *)C.mem + FP(0), W(4), "%s", o);
     return 0;
 }

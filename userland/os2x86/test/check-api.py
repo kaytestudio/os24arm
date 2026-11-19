@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-# userland/os2x86/test/check-api.py - the names of pm_api.inc against OS/2's
-# own headers (OpenWatcom's h/os2: pmwin.h, pmgpi.h, pmstddlg.h, ...): each
-# enum or #define there with the value the headers give it.
-#   check-api.py HEADERDIR pm_api.inc
+# userland/os2x86/test/check-api.py - the names of pm_api.inc or dos_api.inc
+# against OS/2's own headers (OpenWatcom's h/os2: pmwin.h, pmgpi.h,
+# bseerr.h, bsedos.h, ...): each enum or #define there with the value the
+# headers give it.
+#   check-api.py HEADERDIR pm_api.inc|dos_api.inc
 # Names ending in _ are ours (WS_VISIBLE_, HWND_DESKTOP_), not checked; a
 # name the headers don't have is listed, and fails unless it's in OURS.
 import glob, re, sys
@@ -34,7 +35,7 @@ def our_values(path):
     s = re.sub(r'/\*.*?\*/', '', open(path).read(), flags=re.S)
     ours = {}
     def ev(e):
-        e = re.sub(r'(\d)u\b', r'\1', e)
+        e = re.sub(r'\b(0x[0-9a-fA-F]+|\d+)[uU]\b', r'\1', e)
         return eval(re.sub(r'\b[A-Za-z_][A-Za-z0-9_]*\b', lambda m: str(ours[m.group(0)]), e))
     for body in re.findall(r'enum\s*\{(.*?)\}', s, re.S):        # (C's counting: one more than the last)
         v = -1

@@ -70,9 +70,11 @@ if [ -x "$W/armo64/wcl386" ] || [ -x "$W/binl64/wcl386" ]; then
     rm -f pmhelp.hlp
     [ -f wipfc-os2/binp/wipfc.exe ] && cp "$S/pmhelp.ipf" . && WIPFC="$PWD/wipfc-os2/wipfc" ../os2x86 wipfc-os2/binp/wipfc.exe -q pmhelp.ipf >/dev/null 2>&1
     owfail=0
-    # pm_api.inc's names: as OS/2's headers (OpenWatcom's) have them
-    python3 -I "$T/test/check-api.py" "$W/h/os2" "$T/pm_api.inc" >apicheck.out && echo "PM names (pm_api.inc): ok" ||
-        { echo "PM names (pm_api.inc): FAIL"; cat apicheck.out; owfail=1; }
+    # pm_api.inc's and dos_api.inc's names: as OS/2's headers (OpenWatcom's) have them
+    for f in pm_api dos_api; do
+        python3 -I "$T/test/check-api.py" "$W/h/os2" "$T/$f.inc" >apicheck.out && echo "OS/2 names ($f.inc): ok" ||
+            { echo "OS/2 names ($f.inc): FAIL"; cat apicheck.out; owfail=1; }
+    done
     echo "== OpenWatcom programs"
     ../os2x86 owtest.exe </dev/null | grep -E "^FAIL|passed|failed" || owfail=1
     ../os2x86 cpptest.exe </dev/null | grep -E "^FAIL|passed|failed" || owfail=1

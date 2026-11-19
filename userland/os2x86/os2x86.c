@@ -46,41 +46,7 @@
 
 extern char **environ;
 
-/* OS/2 error codes */
-#define NO_ERROR                 0
-#define ERROR_INVALID_FUNCTION   1
-#define ERROR_FILE_NOT_FOUND     2
-#define ERROR_PATH_NOT_FOUND     3
-#define ERROR_TOO_MANY_OPEN_FILES 4
-#define ERROR_ACCESS_DENIED      5
-#define ERROR_INVALID_HANDLE     6
-#define ERROR_NOT_ENOUGH_MEMORY  8
-#define ERROR_INVALID_DRIVE      15
-#define ERROR_NOT_SAME_DEVICE    17
-#define ERROR_NO_MORE_FILES      18
-#define ERROR_SHARING_VIOLATION  32
-#define ERROR_FILE_EXISTS        80
-#define ERROR_INVALID_PARAMETER  87
-#define ERROR_BROKEN_PIPE        109
-#define ERROR_OPEN_FAILED        110
-#define ERROR_BUFFER_OVERFLOW    111
-#define ERROR_DISK_FULL          112
-#define ERROR_INVALID_NAME       123
-#define ERROR_INVALID_LEVEL      124
-#define ERROR_MOD_NOT_FOUND      126
-#define ERROR_PROC_NOT_FOUND     127
-#define ERROR_WAIT_NO_CHILDREN   128
-#define ERROR_CHILD_NOT_COMPLETE 129
-#define ERROR_NEGATIVE_SEEK      131
-#define ERROR_BAD_EXE_FORMAT     193
-#define ERROR_ENVVAR_NOT_FOUND   203
-#define ERROR_FILENAME_EXCED_RANGE 206
-#define ERROR_NOT_OWNER          288
-#define ERROR_ALREADY_POSTED     299
-#define ERROR_ALREADY_RESET      300
-#define ERROR_INVALID_PROCID     303
-#define ERROR_INVALID_ADDRESS    487
-#define ERROR_TIMEOUT            640
+#include "dos_api.inc"
 #define ERROR_INVALID_HANDLE_SEM 6
 
 #define UNIT    0x10000u                /* OS/2 allocates memory in 64 KB */
@@ -1112,7 +1078,7 @@ static void do_exit(uint32_t code)
         while (nexit) {
             int best = 0;
             for (int i = 1; i < nexit; i++) if (exitlist[i].order < exitlist[best].order) best = i;
-            uint32_t fn = exitlist[best].fn, arg = 0;    /* TC_EXIT */
+            uint32_t fn = exitlist[best].fn, arg = TC_EXIT;
             exitlist[best] = exitlist[--nexit];
             guest_call(fn, 1, &arg);
         }
@@ -1185,12 +1151,6 @@ static void api_call(int idx)
 }
 
 /* ── exceptions ──────────────────────────────────────────────────────── */
-#define XCPT_ACCESS_VIOLATION       0xC0000005
-#define XCPT_ILLEGAL_INSTRUCTION    0xC000001C
-#define XCPT_INTEGER_DIVIDE_BY_ZERO 0xC000009B
-#define XCPT_INTEGER_OVERFLOW       0xC000009C
-#define XCPT_PRIVILEGED_INSTRUCTION 0xC000009D
-#define XCPT_BREAKPOINT             0xC000009F
 #define xcpt_depth (me->xcpt_depth)
 
 static void where(uint32_t a, char *out, size_t n)
@@ -1250,7 +1210,7 @@ static void dispatch(uint32_t num, uint32_t np, uint32_t p0, uint32_t p1, uint32
         C.r[ESP] = sp;
         if (trace) fprintf(stderr, "[os2x86] exception %08x at %08x: handler %08x (record %08x) says %08x\n",
                            num, addr, g32(rec + 4), rec, r);
-        if (r == 0xFFFFFFFF) {              /* XCPT_CONTINUE_EXECUTION: as the context says */
+        if (r == XCPT_CONTINUE_EXECUTION) { /* as the context says */
             C.r[EDI] = g32(ctx + 128); C.r[ESI] = g32(ctx + 132); C.r[EAX] = g32(ctx + 136);
             C.r[EBX] = g32(ctx + 140); C.r[EDX] = g32(ctx + 144); C.r[ECX] = g32(ctx + 148);
             C.r[EBP] = g32(ctx + 152); C.eip = g32(ctx + 156); C.eflags = (g32(ctx + 164) & 0x00254FD5) | 0x202;
@@ -1447,7 +1407,7 @@ static uint32_t api_DosQueryFHState(void)
     if (fl < 0) return ERROR_INVALID_HANDLE;
     uint32_t m = (fl & O_ACCMODE) == O_WRONLY ? 1 : (fl & O_ACCMODE) == O_RDWR ? 2 : 0;
     if (fd & FD_CLOEXEC) m |= 0x80;
-    m |= 0x40;                               /* OPEN_SHARE_DENYNONE */
+    m |= OPEN_SHARE_DENYNONE;
     return p32(A(1), m) ? 0 : ERROR_INVALID_PARAMETER;
 }
 static uint32_t api_DosSetFHState(void)
@@ -1602,7 +1562,7 @@ static uint32_t api_DosQueryPathInfo(void)
     if (!s) return ERROR_INVALID_PARAMETER;
     uint32_t r = os2_to_host(s, h, sizeof h, 0);
     if (r) return r;
-    if (level == 5) {                        /* FIL_QUERYFULLNAME */
+    if (level == FIL_QUERYFULLNAME) {
         char o[PATH_MAX];
         host_to_os2(h, o, sizeof o);
         uint32_t n = (uint32_t)strlen(o) + 1;
@@ -1739,7 +1699,7 @@ static uint32_t api_DosFindFirst(void)
     int slot;
     if (hd == 0xFFFFFFFF) {
         for (slot = 1; slot < 64 && finds[slot].used; slot++) { }
-        if (slot == 64) return 113;          /* ERROR_NO_MORE_SEARCH_HANDLES */
+        if (slot == 64) return ERROR_NO_MORE_SEARCH_HANDLES;
     } else if (hd >= 1 && hd <= 64) slot = (int)hd - 1;
     else return ERROR_INVALID_HANDLE;
     find_close(&finds[slot]);
@@ -1828,7 +1788,7 @@ static uint32_t api_DosQueryMem(void)
     if (!uused[u]) {
         uint32_t e = u;
         while (e < nunits && !uused[e]) e++;
-        size = e * UNIT - a; fl = 0x4000;    /* PAG_FREE */
+        size = e * UNIT - a; fl = PAG_FREE;
     } else {
         uint32_t s = u;
         while (s > 0 && !ulen[s] && uused[s - 1]) s--;
@@ -1908,7 +1868,7 @@ static uint32_t api_DosQuerySysInfo(void)
     for (uint32_t i = s; i <= e; i++) {
         uint32_t v = 0;
         switch (i) {
-        case 1: v = 260; break;              /* QSV_MAX_PATH_LENGTH */
+        case QSV_MAX_PATH_LENGTH: v = 260; break;
         case 2: v = 16; break;
         case 3: v = 16; break;
         case 4: v = 0; break;
@@ -1917,7 +1877,7 @@ static uint32_t api_DosQuerySysInfo(void)
         case 7: v = 3; break;
         case 8: v = 32; break;
         case 9: v = 248; break;
-        case 10: v = 4096; break;            /* QSV_PAGE_SIZE */
+        case QSV_PAGE_SIZE: v = 4096; break;
         case 11: v = 20; break;              /* version 20.45: Warp 4.52 */
         case 12: v = 45; break;
         case 13: v = 0; break;
@@ -1926,10 +1886,10 @@ static uint32_t api_DosQuerySysInfo(void)
         case 16: v = 0; break;
         case 17: case 18: case 19: case 20: case 21: v = C.size; break;
         case 22: v = 32; break;
-        case 23: v = 255; break;             /* QSV_MAX_COMP_LENGTH */
+        case QSV_MAX_COMP_LENGTH: v = 255; break;
         case 24: v = 1; break;
         case 25: v = (uint32_t)getpid(); break;
-        case 26: v = 1; break;               /* QSV_NUMPROCESSORS */
+        case QSV_NUMPROCESSORS: v = 1; break;
         }
         p32(b + (i - s) * 4, v);
     }
@@ -2045,7 +2005,7 @@ static uint32_t api_DosQueryModuleName(void)
     else if (h >= 0x1000 && h < 0x1000 + (uint32_t)nlibs) snprintf(o, sizeof o, "C:\\OS2\\DLL\\%s.DLL", libs[h - 0x1000]);
     else return ERROR_INVALID_HANDLE;
     uint32_t n = (uint32_t)strlen(o) + 1;
-    if (n > cb || !ok(b, n)) return 24;      /* ERROR_BAD_LENGTH */
+    if (n > cb || !ok(b, n)) return ERROR_BAD_LENGTH;
     memcpy(C.mem + b, o, n);
     return 0;
 }
@@ -2091,7 +2051,7 @@ static uint32_t api_DosQueryProcAddr(void)
     if (!m) return ERROR_INVALID_HANDLE;
     if (name) { int o = export_ord(m, name); if (o < 0) return ERROR_PROC_NOT_FOUND; ord = (uint32_t)o; }
     uint32_t a;
-    if (entry_addr(m, ord, &a, err, sizeof err)) return 182;   /* ERROR_INVALID_ORDINAL */
+    if (entry_addr(m, ord, &a, err, sizeof err)) return ERROR_INVALID_ORDINAL;
     return p32(pp, a) ? 0 : ERROR_INVALID_PARAMETER;
 }
 static uint32_t api_DosQueryProcType(void) { return p32(A(3), 1) ? 0 : ERROR_INVALID_PARAMETER; }
@@ -2203,7 +2163,7 @@ static uint32_t api_DosExecPgm(void)
     }
     pid_t pid = start_child(h, astr, penv);
     if (pid < 0) return ERROR_NOT_ENOUGH_MEMORY;
-    if ((flags & 7) == 0) {                  /* EXEC_SYNC */
+    if ((flags & 7) == EXEC_SYNC) {
         int st;
         UNLOCKED(while (waitpid(pid, &st, 0) < 0 && errno == EINTR) { });
         if (pres) put_result(pres, st);
@@ -2215,7 +2175,6 @@ static uint32_t api_DosExecPgm(void)
 }
 
 /* QUECALLS: queues (in this process; a session's end is written to one) */
-#define ERROR_QUE_EMPTY 342
 typedef struct { uint32_t pid, req, cb, buf, prio; } qel_t;
 typedef struct { int used, order; char name[128]; qel_t *el; int n, cap; } queue_t;
 static queue_t queues[32];
@@ -2230,7 +2189,7 @@ static uint32_t api_DosCreateQueue(void)      /* (phq, priority, name) */
 {
     char *n = gs(A(2));
     if (!n || !ok(A(0), 4)) return ERROR_INVALID_PARAMETER;
-    if (que_named(n, 0)) return 332;             /* ERROR_QUE_DUPLICATE */
+    if (que_named(n, 0)) return ERROR_QUE_DUPLICATE;
     for (int i = 0; i < 32; i++)
         if (!queues[i].used) {
             memset(&queues[i], 0, sizeof queues[i]);
@@ -2240,14 +2199,14 @@ static uint32_t api_DosCreateQueue(void)      /* (phq, priority, name) */
             p32(A(0), 0x20000 + (uint32_t)i);
             return 0;
         }
-    return 334;                                  /* ERROR_QUE_NO_MEMORY */
+    return ERROR_QUE_NO_MEMORY;
 }
 static uint32_t api_DosOpenQueue(void)        /* (ppid, phq, name) */
 {
     char *n = gs(A(2));
     uint32_t h;
     if (!n) return ERROR_INVALID_PARAMETER;
-    if (!que_named(n, &h)) return 343;           /* ERROR_QUE_NAME_NOT_EXIST */
+    if (!que_named(n, &h)) return ERROR_QUE_NAME_NOT_EXIST;
     if (A(0)) p32(A(0), (uint32_t)getpid());
     return p32(A(1), h) ? 0 : ERROR_INVALID_PARAMETER;
 }
@@ -2266,7 +2225,7 @@ static uint32_t que_put(queue_t *q, uint32_t pid, uint32_t req, uint32_t cb, uin
 static uint32_t api_DosWriteQueue(void)       /* (hq, request, cb, pbuf, priority) */
 {
     queue_t *q = que_get(A(0));
-    if (!q) return 337;                          /* ERROR_QUE_INVALID_HANDLE */
+    if (!q) return ERROR_QUE_INVALID_HANDLE;
     return que_put(q, (uint32_t)getpid(), A(1), A(2), A(3), A(4));
 }
 static int que_pick(queue_t *q)
@@ -2443,7 +2402,7 @@ static uint32_t api_DosCreateThread(void)
     uint32_t ptid = A(0), fn = A(1), param = A(2), flags = A(3), cb = A(4);
     int i;
     for (i = 1; i < MAXTHR && thrs[i] && thrs[i]->state != 3; i++) { }
-    if (i == MAXTHR) return 164;             /* ERROR_MAX_THRDS_REACHED */
+    if (i == MAXTHR) return ERROR_MAX_THRDS_REACHED;
     if (!ok(ptid, 4)) return ERROR_INVALID_PARAMETER;
     if (cb < 0x10000) cb = 0x10000;
     if (cb > 0x4000000) cb = 0x4000000;
@@ -2458,7 +2417,7 @@ static uint32_t api_DosCreateThread(void)
     t->tid = (uint32_t)i + 1;
     t->stack = stack;
     t->state = 1;
-    t->suspended = flags & 1;                /* CREATE_SUSPENDED */
+    t->suspended = flags & CREATE_SUSPENDED;
     /* its information blocks just past its stack */
     uint32_t top = stack + cb, ttib = top, ttib2 = top + 0x40;
     p32(ttib, 0xFFFFFFFF); p32(ttib + 4, stack); p32(ttib + 8, top); p32(ttib + 12, ttib2);
@@ -2501,8 +2460,8 @@ static uint32_t api_DosWaitThread(void)
             }
             others++;
         }
-        if (!others) return 309;                 /* ERROR_INVALID_THREADID */
-        if (option == 1) return 294;             /* ERROR_THREAD_NOT_TERMINATED */
+        if (!others) return ERROR_INVALID_THREADID;
+        if (option == DCWW_NOWAIT) return ERROR_THREAD_NOT_TERMINATED;
         pthread_cond_wait(&gcv, &gil);
     }
 }
@@ -2547,7 +2506,7 @@ static sem_t2 *sem_new(uint32_t pname, uint32_t ph, int kind, uint32_t *err)
     char *n = pname ? gs(pname) : 0;
     if (n && *n)
         for (int i = 0; i < 256; i++)
-            if (sems[i].used && !strcasecmp(sems[i].name, n)) { *err = 285; return 0; }   /* ERROR_DUPLICATE_NAME */
+            if (sems[i].used && !strcasecmp(sems[i].name, n)) { *err = ERROR_DUPLICATE_NAME; return 0; }
     for (int i = 0; i < 256; i++)
         if (!sems[i].used) {
             memset(&sems[i], 0, sizeof sems[i]);
@@ -2557,7 +2516,7 @@ static sem_t2 *sem_new(uint32_t pname, uint32_t ph, int kind, uint32_t *err)
             if (!p32(ph, 0x10000 + (uint32_t)i)) { sems[i].used = 0; *err = ERROR_INVALID_PARAMETER; return 0; }
             return &sems[i];
         }
-    *err = 290;                                  /* ERROR_TOO_MANY_HANDLES */
+    *err = ERROR_TOO_MANY_HANDLES;
     return 0;
 }
 static sem_t2 *sem_get(uint32_t h, int kind)
@@ -2572,20 +2531,20 @@ static uint32_t api_DosOpenSem(void)
     if (!n || !*n) return sem_get(g32(ph), 0) ? 0 : ERROR_INVALID_HANDLE;
     for (int i = 0; i < 256; i++)
         if (sems[i].used && !strcasecmp(sems[i].name, n)) return p32(ph, 0x10000 + (uint32_t)i) ? 0 : ERROR_INVALID_PARAMETER;
-    return 187;                                  /* ERROR_SEM_NOT_FOUND */
+    return ERROR_SEM_NOT_FOUND;
 }
 static uint32_t api_DosCloseSem(void)
 {
     sem_t2 *s = sem_get(A(0), 0);
     if (!s) return ERROR_INVALID_HANDLE;
-    if (s->kind == SEM_MUTEX && s->owner && s->owner != me->tid && thr_get(s->owner)) return 301;   /* ERROR_SEM_BUSY */
+    if (s->kind == SEM_MUTEX && s->owner && s->owner != me->tid && thr_get(s->owner)) return ERROR_SEM_BUSY;
     s->used = 0;
     pthread_cond_broadcast(&gcv);
     return 0;
 }
 static struct timespec *deadline(uint32_t ms, struct timespec *ts)
 {
-    if (ms == 0xFFFFFFFF) return 0;              /* SEM_INDEFINITE_WAIT */
+    if (ms == SEM_INDEFINITE_WAIT) return 0;
     clock_gettime(CLOCK_REALTIME, ts);
     ts->tv_sec += ms / 1000;
     ts->tv_nsec += (long)(ms % 1000) * 1000000L;
@@ -2655,7 +2614,7 @@ static uint32_t api_DosRequestMutexSem(void)
         sem_t2 *s = sem_get(h, SEM_MUTEX);
         if (!s) return ERROR_INVALID_HANDLE;
         if (!s->owner || s->owner == me->tid) { s->owner = me->tid; s->count++; return 0; }
-        if (!thr_get(s->owner)) { s->owner = me->tid; s->count = 1; return 105; }   /* ERROR_SEM_OWNER_DIED */
+        if (!thr_get(s->owner)) { s->owner = me->tid; s->count = 1; return ERROR_SEM_OWNER_DIED; }
         if (!t || wait_until(dl) == ETIMEDOUT) return ERROR_TIMEOUT;
     }
 }
@@ -2685,7 +2644,7 @@ static uint32_t api_DosCreateMuxWaitSem(void)
     sem_t2 *s = sem_new(pname, ph, SEM_MUX, &err);
     if (!s) return err;
     s->nrec = n;
-    s->any = !(fl & 4);                          /* DCMW_WAIT_ALL: else any */
+    s->any = !(fl & DCMW_WAIT_ALL);              /* else any */
     for (uint32_t k = 0; k < n; k++) { s->rec[k][0] = g32(recs + 8 * k); s->rec[k][1] = g32(recs + 8 * k + 4); }
     return 0;
 }
@@ -2924,7 +2883,7 @@ static uint32_t api_MouClose(void) { mou_report(0); moun = 0; return 0; }
 static uint32_t api_MouReadEventQue(void)     /* (pevent, pfwait, hmou) */
 {
     uint32_t pe = FP(6);
-    int wait = g16(FP(2)) == 1;                  /* MOU_WAIT */
+    int wait = g16(FP(2)) == MOU_WAIT;
     struct termios old;
     int tty = tty_raw(&old);
     while (!moun && pump(wait ? -1 : 0)) { }
@@ -3012,7 +2971,7 @@ static uint32_t api_VioGetMode(void)          /* (pvmi, hvio) */
     int rows, cols;
     screen_size(&rows, &cols);
     uint8_t m[34] = { 0 };
-    m[2] = 1;                                     /* VGMT_OTHER: colour text */
+    m[2] = VGMT_OTHER;                            /* colour text */
     m[3] = 4;                                     /* 16 colours */
     m[4] = (uint8_t)cols; m[5] = (uint8_t)(cols >> 8);
     m[6] = (uint8_t)rows; m[7] = (uint8_t)(rows >> 8);

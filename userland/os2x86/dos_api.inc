@@ -1,0 +1,84 @@
+/* userland/os2x86/dos_api.inc - OS/2's names for the DOS calls' (and VIO's,
+ * MOU's) values, as its headers (bseerr.h, bsedos.h, bsexcpt.h, bsesub.h)
+ * give them: error codes, flags, exception codes (included by os2x86.c;
+ * test/check-api.py checks them against OpenWatcom's headers). */
+/* OS/2 error codes */
+#define NO_ERROR                 0
+#define ERROR_INVALID_FUNCTION   1
+#define ERROR_FILE_NOT_FOUND     2
+#define ERROR_PATH_NOT_FOUND     3
+#define ERROR_TOO_MANY_OPEN_FILES 4
+#define ERROR_ACCESS_DENIED      5
+#define ERROR_INVALID_HANDLE     6
+#define ERROR_NOT_ENOUGH_MEMORY  8
+#define ERROR_INVALID_DRIVE      15
+#define ERROR_NOT_SAME_DEVICE    17
+#define ERROR_NO_MORE_FILES      18
+#define ERROR_BAD_LENGTH         24
+#define ERROR_SHARING_VIOLATION  32
+#define ERROR_FILE_EXISTS        80
+#define ERROR_INVALID_PARAMETER  87
+#define ERROR_TOO_MANY_SEMAPHORES 100
+#define ERROR_SEM_OWNER_DIED     105
+#define ERROR_BROKEN_PIPE        109
+#define ERROR_OPEN_FAILED        110
+#define ERROR_BUFFER_OVERFLOW    111
+#define ERROR_DISK_FULL          112
+#define ERROR_NO_MORE_SEARCH_HANDLES 113
+#define ERROR_SEM_TIMEOUT        121
+#define ERROR_INVALID_NAME       123
+#define ERROR_INVALID_LEVEL      124
+#define ERROR_MOD_NOT_FOUND      126
+#define ERROR_PROC_NOT_FOUND     127
+#define ERROR_WAIT_NO_CHILDREN   128
+#define ERROR_CHILD_NOT_COMPLETE 129
+#define ERROR_NEGATIVE_SEEK      131
+#define ERROR_MAX_THRDS_REACHED  164
+#define ERROR_INVALID_ORDINAL    182
+#define ERROR_ALREADY_EXISTS     183
+#define ERROR_SEM_NOT_FOUND      187
+#define ERROR_BAD_EXE_FORMAT     193
+#define ERROR_ENVVAR_NOT_FOUND   203
+#define ERROR_FILENAME_EXCED_RANGE 206
+#define ERROR_DUPLICATE_NAME     285
+#define ERROR_NOT_OWNER          288
+#define ERROR_TOO_MANY_HANDLES   290
+#define ERROR_THREAD_NOT_TERMINATED 294
+#define ERROR_ALREADY_POSTED     299
+#define ERROR_ALREADY_RESET      300
+#define ERROR_SEM_BUSY           301
+#define ERROR_INVALID_PROCID     303
+#define ERROR_INVALID_THREADID   309
+#define ERROR_QUE_DUPLICATE      332
+#define ERROR_QUE_NO_MEMORY      334
+#define ERROR_QUE_INVALID_HANDLE 337
+#define ERROR_QUE_EMPTY          342
+#define ERROR_QUE_NAME_NOT_EXIST 343
+#define ERROR_INVALID_ADDRESS    487
+#define ERROR_TIMEOUT            640
+/* flags and values of the DOS calls' (bsedos.h, bsexcpt.h, bsesub.h) */
+#define CREATE_SUSPENDED         1
+#define DCMW_WAIT_ALL            4
+#define DCWW_NOWAIT              1
+#define EXEC_SYNC                0
+#define EXIT_THREAD              0
+#define FIL_QUERYFULLNAME        5
+#define FIL_STANDARD             1
+#define MOU_WAIT                 1
+#define OPEN_SHARE_DENYNONE      64
+#define PAG_FREE                 0x4000
+#define QSV_MAX_COMP_LENGTH      23
+#define QSV_MAX_PATH_LENGTH      1
+#define QSV_NUMPROCESSORS        26
+#define QSV_PAGE_SIZE            10
+#define SEM_INDEFINITE_WAIT      0xFFFFFFFFu
+#define TC_EXIT                  0
+#define VGMT_OTHER               1
+#define XCPT_CONTINUE_EXECUTION  0xFFFFFFFFu
+/* exception codes (bsexcpt.h) */
+#define XCPT_ACCESS_VIOLATION       0xC0000005
+#define XCPT_ILLEGAL_INSTRUCTION    0xC000001C
+#define XCPT_INTEGER_DIVIDE_BY_ZERO 0xC000009B
+#define XCPT_INTEGER_OVERFLOW       0xC000009C
+#define XCPT_PRIVILEGED_INSTRUCTION 0xC000009D
+#define XCPT_BREAKPOINT             0xC000009F

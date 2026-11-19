@@ -554,8 +554,8 @@ platform-specific are new code.
    Not yet: custom dialog templates and procedures, several files at
    once, modeless dialogs. PM's names (messages, notifications, styles,
    keys, colours, ...) are in one place, `pm_api.inc`, each with the value
-   OS/2's headers give it (`test/check-api.py` checks them against
-   OpenWatcom's). OS/2's DLLs that aren't
+   OS/2's headers give it, as the DOS calls' are in `dos_api.inc`
+   (`test/check-api.py` checks both against OpenWatcom's). OS/2's DLLs that aren't
    here (PMSHAPI, HELPMGR, TCP32DLL, ...) load as stubs, so a program
    that only links them in runs; a call into one says so and returns 0. Calls it doesn't have yet print
    one line on stderr and return error 1; `OS2X86_TRACE=1` lists every
