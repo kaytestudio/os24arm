@@ -340,7 +340,7 @@ begin
     if FOptions.Verbose then
       Writeln('Creating lexer...');
 
-    // FIXED: Pass SourceCode (TStringList) not SourceCode.Text (string)
+    // pass the TStringList, not SourceCode.Text
     Lexer := TLexer.Create(SourceCode);
     try
       if FOptions.Verbose then

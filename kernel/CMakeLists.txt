@@ -12,17 +12,17 @@ set(KERNEL_SOURCES
         src/vfs.c
         src/blkdev.c
         src/gpt.c
-        src/mbr.c               # ← MBR + extended partitions (OS/2 disks, USB sticks)
-        src/fat32.c             # ← FAT16/FAT32 (the GPT "BOOT" partition)
+        src/mbr.c               # MBR + extended partitions (OS/2 disks, USB sticks)
+        src/fat32.c             # FAT16/FAT32 (the GPT "BOOT" partition)
         src/string.c
         src/kprintf.c
-        src/ifs_loader.c        # ← IFS loader
-        src/ai.c                # ← on-box AI assistant command
+        src/ifs_loader.c        # IFS loader
+        src/ai.c                # AI command: command usage and tips
         src/basic.c
         src/kio.c
-        src/lx_loader.c         # ← built-in OS/2 LX (.EXE) loader
-        src/stack_protector.c   # ← -fstack-protector-strong runtime support
-        src/unixroot.c          # ← EMX-style UNIXROOT directory tree (SET UNIXROOT=)
+        src/lx_loader.c         # built-in OS/2 LX (.EXE) loader
+        src/stack_protector.c   # -fstack-protector-strong runtime support
+        src/unixroot.c          # EMX-style UNIXROOT directory tree (SET UNIXROOT=)
 
         # Add GUI sources:
         src/gui/framebuffer.c
@@ -50,23 +50,23 @@ else()
     list(APPEND KERNEL_SOURCES
             src/boot.S
             src/main.c
-            src/mmu.c    # ← identity-mapped MMU bring-up (QEMU virt memory map only)
-            src/linux/linux.c   # ← Linux-ABI user mode: ELF loader + syscalls (userland/README.md)
-            src/linux/el0.S     # ← EL0 entry/exit and trap frame
-            src/linux/lx_stubs.S # ← OS/2 programs as processes: their services (EL0 code)
-            src/ramfs.c         # ← in-memory file system for /TMP
-            src/hyp.c           # ← EL2 hypervisor: stage 2, vCPU run loop, VM command
-            src/hyp_entry.S     # ← EL2 vectors + guest/host world switch
-            src/vgic.c          # ← emulated GICv2 the guest sees
-            src/gicv3.c         # ← host GICv3: timer PPIs -> EL2 (preemption), each CPU's redistributor, SGIs
-            src/smp.c           # ← the other CPUs: PSCI CPU_ON, the big kernel lock
-            src/debug_entry.S   # ← DEBUG's G/P/T: running code until a breakpoint, a step, its return
-            src/vm_pl011.c      # ← emulated PL011 device model
-            src/vm_cmd.c        # ← VM shell command / VM run loop
-            src/vm_guest_hello.S  # ← built-in test guest for VM TEST
-            src/net/virtio_net.c  # ← network card: virtio-net (virtio-mmio)
-            src/net/net.c         # ← lwIP glue: lan0, DHCP, polling, PING/IFCONFIG/HOST
-            src/net/sock.c        # ← Internet sockets (TCP, UDP) for the Linux-ABI programs
+            src/mmu.c    # identity-mapped MMU bring-up (QEMU virt memory map only)
+            src/linux/linux.c   # Linux-ABI user mode: ELF loader + syscalls (userland/README.md)
+            src/linux/el0.S     # EL0 entry/exit and trap frame
+            src/linux/lx_stubs.S # OS/2 programs as processes: their services (EL0 code)
+            src/ramfs.c         # in-memory file system for /TMP
+            src/hyp.c           # EL2 hypervisor: stage 2, vCPU run loop, VM command
+            src/hyp_entry.S     # EL2 vectors + guest/host world switch
+            src/vgic.c          # emulated GICv2 the guest sees
+            src/gicv3.c         # host GICv3: timer PPIs -> EL2 (preemption), each CPU's redistributor, SGIs
+            src/smp.c           # the other CPUs: PSCI CPU_ON, the big kernel lock
+            src/debug_entry.S   # DEBUG's G/P/T: running code until a breakpoint, a step, its return
+            src/vm_pl011.c      # emulated PL011 device model
+            src/vm_cmd.c        # VM shell command / VM run loop
+            src/vm_guest_hello.S  # built-in test guest for VM TEST
+            src/net/virtio_net.c  # network card: virtio-net (virtio-mmio)
+            src/net/net.c         # lwIP glue: lan0, DHCP, polling, PING/IFCONFIG/HOST
+            src/net/sock.c        # Internet sockets (TCP, UDP) for the Linux-ABI programs
     )
     set(LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/linker.ld)
 endif()
@@ -80,23 +80,23 @@ else()
             src/scheduler.c
             src/string.c
             src/stack_protector.c
-            src/ns16550.c           # ← 16550 UART (AM335x UART0 / TH1520 UART0)
-            src/beagle_main.c       # ← kernel_main + serial shell for both boards
-            src/vfs.c               # ← VFS under the OS/2 API
+            src/ns16550.c           # 16550 UART (AM335x UART0 / TH1520 UART0)
+            src/beagle_main.c       # kernel_main + serial shell for both boards
+            src/vfs.c               # VFS under the OS/2 API
             src/kprintf.c
             src/kio.c
-            src/sdhci.c             # ← microSD (AM335x MMCHS / TH1520 DWC MSHC)
+            src/sdhci.c             # microSD (AM335x MMCHS / TH1520 DWC MSHC)
             src/blkdev.c
-            src/mbr.c               # ← MBR partitions (SD cards)
+            src/mbr.c               # MBR partitions (SD cards)
             src/gpt.c
-            src/fat32.c             # ← FAT32 (the cards' boot partition)
+            src/fat32.c             # FAT32 (the cards' boot partition)
             ${CMAKE_SOURCE_DIR}/fs/ext4/ext4.c
             ${CMAKE_SOURCE_DIR}/fs/ext4/ext4_write.c
     )
     if(TARGET_PLATFORM STREQUAL "BBB")
         list(APPEND KERNEL_SOURCES
                 src/bbb_boot.S
-                src/arm_aeabi.c     # ← __aeabi_mem* helpers clang emits on ARMv7
+                src/arm_aeabi.c     # __aeabi_mem* helpers clang emits on ARMv7
         )
         set(LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/bbb_linker.ld)
     else()
@@ -105,7 +105,7 @@ else()
         # to the script below as a symbol).
         list(APPEND KERNEL_SOURCES src/beaglev_boot.S)
         if(TARGET_PLATFORM STREQUAL "QEMU_RISCV")
-            list(APPEND KERNEL_SOURCES src/qemu_pci.c)   # ← finds sdhci-pci, assigns its BAR
+            list(APPEND KERNEL_SOURCES src/qemu_pci.c)   # finds sdhci-pci, assigns its BAR
         endif()
         set(LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/beaglev_linker.ld)
     endif()
@@ -145,13 +145,13 @@ endif()
 if(TARGET_ARCH STREQUAL "aarch64")
     target_link_libraries(os2warp_kernel
             os2api
-            dos             # ← DOS command set (calls os2api, not vfs_* directly)
+            dos             # DOS command set (calls os2api, not vfs_* directly)
             rexx
-            ext4            # ← ext4 filesystem driver
-            btrfs           # ← btrfs filesystem driver
-            f2fs            # ← f2fs filesystem driver
-            hpfs            # ← HPFS filesystem driver
-            usb             # ← USB stack: USBD + USBXHCD + USBKBD
+            ext4            # ext4 filesystem driver
+            btrfs           # btrfs filesystem driver
+            f2fs            # f2fs filesystem driver
+            hpfs            # HPFS filesystem driver
+            usb             # USB stack: USBD + USBXHCD + USBKBD
     )
     target_compile_definitions(os2warp_kernel PRIVATE HAVE_USB)
 else()

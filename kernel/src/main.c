@@ -1074,7 +1074,7 @@ void kernel_main(void)
     uart_puts("[IPC]    Semaphores   : stub\r\n");
 
     uart_puts("[VFS]    Initializing VFS and filesystem drivers...\r\n");
-    vfs_init();  // ← Call vfs_init first
+    vfs_init();
 
     uart_puts("[BLK]    Initializing block devices...\r\n");
     blk_init();

@@ -107,7 +107,7 @@ begin
   if FEOF then
   begin
     Result := #0;
-    Exit;  // ← IMPORTANT: Was missing!
+    Exit;
   end;
 
   NextCharIndex := FCurrentCharIndex + 1;

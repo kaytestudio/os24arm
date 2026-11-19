@@ -34,14 +34,14 @@ type
     procedure IfStatement;
     procedure WhileStatement;
     procedure ForStatement;
-    procedure WithStatement;  // NEW: Handle WITH blocks for object member access
+    procedure WithStatement;  // WITH blocks (object member access)
     procedure SubDefinition;
     procedure FunctionDefinition;
-    procedure ClassDefinition;  // NEW: Handle CLASS definitions
+    procedure ClassDefinition;  // CLASS definitions
     procedure FormDefinition;
     procedure ShowStatement;
     procedure HideStatement;
-    procedure OptionStatement;  // NEW: Handle OPTION directives
+    procedure OptionStatement;  // OPTION directives
 
     // Recursive-descent expression parsing methods
     function Expression: TExpressionNode;

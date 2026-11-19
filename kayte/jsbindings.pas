@@ -28,10 +28,9 @@ type
   PJSRuntime = Pointer;
   PJSContext = Pointer;
   JSValue = UInt64; // QuickJS uses a 64-bit value type. Be careful with conversions!
-  PJSValue = ^JSValue; // FIX: Define PJSValue
+  PJSValue = ^JSValue;
 
-  // QuickJS's JS_NewCFunction func type (for exposing Pascal funcs to JS)
-  // This is a simplified signature. Real one involves argc and argv.
+  // QuickJS's JS_CFunction, for exposing Pascal functions to JS:
   // JS_CFunction (JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
   TJSCCallbackProc = function(ctx: PJSContext; this_val: JSValue; argc: Integer; argv: PJSValue): JSValue; cdecl;
 
@@ -209,13 +208,9 @@ const
 
 procedure ExposeNativePascalObject(ctx: PJSContext; jsObj: JSValue; PascalObj: TObject);
 begin
-  // This is a simplified way to link a Pascal object.
-  // In QuickJS, you'd typically use 'private_data' or a specific type of object.
-  // For demonstration, we'll store its pointer as a property.
-  // THIS IS NOT ROBUST FOR PRODUCTION! Use JS_SetOpaque for proper linking in QuickJS.
-  // It's better to create a custom JS class or use JS_SetOpaque for robust linking.
-  // But for quick example:
-  JS_SetPropertyStr(ctx, jsObj, PAnsiChar(AnsiString(PascalObjKey)), JS_NewFloat64(Double(NativeUInt(PascalObj)))); // FIX: Corrected type cast
+  // TODO: use a JS class with JS_SetOpaque. For now the object's pointer is
+  // stored as a number property.
+  JS_SetPropertyStr(ctx, jsObj, PAnsiChar(AnsiString(PascalObjKey)), JS_NewFloat64(Double(NativeUInt(PascalObj))));
 end;
 
 function GetNativePascalObject(ctx: PJSContext; jsObj: JSValue): TObject;
@@ -224,7 +219,7 @@ var
   Res: Integer;
 begin
   Result := nil;
-  PtrVal := 0.0; // FIX: Initialize PtrVal to silence hint
+  PtrVal := 0.0; // silences a compiler hint
   // This is also NOT ROBUST for production. See note in ExposeNativePascalObject.
   Res := JS_ToFloat64(ctx, PtrVal, JS_GetPropertyStr(ctx, jsObj, PAnsiChar(AnsiString(PascalObjKey))));
   if Res = 0 then

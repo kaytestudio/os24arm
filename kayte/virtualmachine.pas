@@ -59,14 +59,12 @@ begin
   // Simulation of the execution loop
   while FInstructionPointer < InstructionCount do
   begin
-    // In a real VM, you would fetch and execute FProgram.Instructions[FInstructionPointer]
-    // For now, we simulate by advancing the pointer
+    // TODO: execute FProgram.Instructions[FInstructionPointer]; this only steps the pointer
     Writeln(Format('  [VM] Executing Instruction at IP %d...', [FInstructionPointer]));
 
     Inc(FInstructionPointer);
 
-    // Add a small pause or check for a 'halt' instruction here in a real implementation
-    if FInstructionPointer >= 10 then // Limit simulation output for brevity
+    if FInstructionPointer >= 10 then // stop after 10 until there's a halt instruction
     begin
        Writeln('  ... (Simulating remaining execution) ...');
        FInstructionPointer := InstructionCount; // End simulation

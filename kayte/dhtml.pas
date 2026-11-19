@@ -4,7 +4,7 @@ unit dhtml;
 interface
 uses
   Classes, SysUtils, contnrs,
-  // NEW: Add a unit for your QuickJS/Duktape bindings
+  // QuickJS/Duktape bindings
   JSBindings; // This would be the unit you create in step 2
 
 type
@@ -38,7 +38,7 @@ type
     function FindElementById(const ID: String): THTMLElement;
     property Root: THTMLElement read FRoot;
 
-    // NEW: JavaScript integration methods
+    // JavaScript integration
     constructor Create; // Updated constructor to initialize JS engine
     destructor Destroy; override;
     procedure ExecuteScript(const Script: String);
@@ -92,7 +92,7 @@ procedure TFormElement.TriggerChange;
 begin
   if Assigned(OnChange) then
     OnChange(Self);
-  // NEW: Also trigger a JavaScript 'change' event if a JS handler is attached
+  // also fire a JavaScript 'change' event if a handler is attached
   // This requires looking up event listeners in the JS engine
   // JSBindings.TriggerJSHTMLEvent(JSObjectRef, 'change'); // Example
 end;

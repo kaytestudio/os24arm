@@ -15,7 +15,7 @@ type
     // Add fields for local variables if you implement local scope
   end;
 
-  // IMPORTANT: Wrapper classes for records to be stored in TObjectList
+  // wrapper classes so records can go in a TObjectList
   // TObjectList can only hold descendants of TObject.
   TBCValueObject = class(TObject)
   public

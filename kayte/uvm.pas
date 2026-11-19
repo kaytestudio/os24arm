@@ -14,9 +14,7 @@ type
   // TMainInterpreterForm = class;
 
   IInterpreterCallback = interface
-    // IMPORTANT: Generate a new unique GUID for your interface!
-    // You can do this in Lazarus: Tools -> Generate GUID
-    ['{PUT-YOUR-GENERATED-GUID-HERE}'] // Example: ['{5181D5E9-2C62-427D-A104-511B612C208E}']
+    ['{CAE57563-0966-441C-AE68-DBE489DB3467}']
     procedure Log(const Msg: String);
   end;
 
