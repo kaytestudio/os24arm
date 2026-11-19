@@ -1,16 +1,16 @@
 /* userland/os2x86/cpu.c - the i386 interpreter (see cpu.h).
  *
- * One instruction at a time: prefixes, the opcode, ModRM/SIB, then the
- * work, flags computed as it goes. A bad memory access longjmps out of
- * the instruction to cpu_run, which reports it (EIP back at the
- * instruction's start, as a trap would leave it). 32-bit addressing
- * and 16-bit (0x67, and 16-bit code: the thunks to the 16-bit calls). */
+ * One instruction at a time: prefixes, opcode, ModRM/SIB, then the work, with
+ * flags computed along the way. A bad memory access longjmps out of the
+ * instruction to cpu_run, which reports it with EIP back at the instruction's
+ * start, as a trap would leave it. Handles 32-bit and 16-bit addressing
+ * (0x67, and 16-bit code: the thunks for the 16-bit calls). */
 #include "cpu.h"
 #include <math.h>
 #include <setjmp.h>
 #include <string.h>
 
-static _Thread_local jmp_buf *trap_jb;    /* (each OS/2 thread: a host thread) */
+static _Thread_local jmp_buf *trap_jb;    /* one per OS/2 thread (each is a host thread) */
 static uint8_t parity[256];
 static const uint8_t is_prefix[256] = { [0x66] = 1, [0x67] = 1, [0x26] = 1, [0x2E] = 1, [0x36] = 1, [0x3E] = 1, [0x64] = 1, [0x65] = 1, [0xF0] = 1, [0xF2] = 1, [0xF3] = 1 };
 
@@ -33,7 +33,7 @@ void wr16(cpu_t *c, uint32_t a, uint16_t v) { if (!LIKELY(mem_ok(c, a, 2))) faul
 void wr32(cpu_t *c, uint32_t a, uint32_t v) { if (!LIKELY(mem_ok(c, a, 4))) fault(c, a); memcpy(c->mem + a, &v, 4); }
 static void wr64(cpu_t *c, uint32_t a, uint64_t v) { if (!mem_ok(c, a, 8)) fault(c, a); memcpy(c->mem + a, &v, 8); }
 
-/* the stack: SS:ESP, or SS:SP in a 16-bit stack segment */
+/* stack pointer: SS:ESP, or SS:SP for a 16-bit stack segment */
 static uint32_t sp_get(cpu_t *c) { return c->stack16 ? c->r[ESP] & 0xFFFF : c->r[ESP]; }
 static void sp_set(cpu_t *c, uint32_t v) { c->r[ESP] = c->stack16 ? (c->r[ESP] & 0xFFFF0000) | (v & 0xFFFF) : v; }
 static uint32_t sp_at(cpu_t *c, uint32_t sp) { return c->ss_base + (c->stack16 ? sp & 0xFFFF : sp); }
@@ -98,7 +98,7 @@ static uint32_t segbase(cpu_t *c, int s)
     default: return c->ds_base;
     }
 }
-/* the selectors a program has: flat code and data, the TIB's, the tiles */
+/* selectors a program has: flat code and data, the TIB, the tiles */
 static int sel_valid(cpu_t *c, uint16_t sel)
 {
     if (sel & 4) return ((uint32_t)(sel >> 3) << 16) < c->size;
@@ -118,7 +118,7 @@ static void modrm(cpu_t *c, ins_t *in)
     in->mod = m >> 6; in->reg = (m >> 3) & 7; in->rm = m & 7;
     if (in->mod == 3) return;
     uint32_t a;
-    int ss = 0;                             /* (E)BP or ESP based: SS's */
+    int ss = 0;                             /* EBP or ESP based: SS */
     if (in->as == 16) {
         static const int8_t b1[8] = { EBX, EBX, EBP, EBP, ESI, EDI, EBP, EBX }, b2[8] = { ESI, EDI, ESI, EDI, -1, -1, -1, -1 };
         if (in->mod == 0 && in->rm == 6) a = fetch16(c);
@@ -391,7 +391,7 @@ static int64_t fint(cpu_t *c, double v, int bits, int *bad)
 {
     double r = fround(c, v);
     double lim = ldexp(1.0, bits - 1);
-    if (isnan(r) || r >= lim || r < -lim) { *bad = 1; return 0; }      /* (the callers store the "integer indefinite") */
+    if (isnan(r) || r >= lim || r < -lim) { *bad = 1; return 0; }      /* callers store the "integer indefinite" value */
     *bad = 0;
     return (int64_t)r;
 }
@@ -614,7 +614,7 @@ static void string_op(cpu_t *c, ins_t *in, uint8_t op)
 {
     int bits = (op & 1) ? in->os : 8, n = bits / 8;
     int32_t d = (c->eflags & F_DF) ? -n : n;
-    uint32_t sb = dseg(c, in), db = c->es_base;   /* (DS:ESI may be overridden; ES:EDI not) */
+    uint32_t sb = dseg(c, in), db = c->es_base;   /* DS:ESI can be overridden, ES:EDI can't */
     uint32_t am = in->as == 16 ? 0xFFFF : 0xFFFFFFFF;
 #define SI (c->r[ESI] & am)
 #define DI (c->r[EDI] & am)
@@ -708,7 +708,7 @@ static void muldiv(cpu_t *c, int op, uint32_t v, int bits)
     }
 }
 
-/* IMUL r, r/m(, imm): the low half, CF=OF if it didn't fit */
+/* IMUL r, r/m(, imm): low half; CF=OF if it didn't fit */
 static uint32_t imul2(cpu_t *c, uint32_t a, uint32_t b, int bits)
 {
     int64_t r = (int64_t)(int32_t)sext(a, bits) * (int32_t)sext(b, bits);
@@ -738,8 +738,8 @@ static uint32_t shxd(cpu_t *c, int left, uint32_t dst, uint32_t src, unsigned n,
     return r;
 }
 
-/* BT BTS BTR BTC: op 4 5 6 7 (as grp8); the bit's address from a register
- * index may reach past the operand (memory forms) */
+/* BT BTS BTR BTC: op 4 5 6 7 (as grp8). With a register index, the bit can be
+ * beyond the operand (memory forms). */
 static void bitop(cpu_t *c, ins_t *in, int op, uint32_t idx, int from_reg)
 {
     int bits = in->os;
@@ -808,7 +808,7 @@ static void step(cpu_t *c)
     case 0x07: case 0x17: case 0x1F:             /* POP ES/SS/DS */
         cpu_load_seg(c, op >> 3, os == 16 ? pop16(c) : (uint16_t)pop32(c));
         return;
-    case 0x0F: break;                            /* (below) */
+    case 0x0F: break;                            /* handled below */
     case 0x27: case 0x2F: {                      /* DAA DAS */
         uint8_t al = c->r[EAX] & 0xFF, oal = al;
         int cf = (c->eflags & F_CF) != 0, ncf = 0;
@@ -887,7 +887,7 @@ static void step(cpu_t *c)
     case 0x8E: modrm(c, &in); if (in.reg > 5 || in.reg == 1) trap(c, CPU_ILLEGAL); cpu_load_seg(c, in.reg, (uint16_t)getE(c, &in, 16)); return;
     case 0x8F: {
         uint32_t x = os == 16 ? pop16(c) : pop32(c);
-        modrm(c, &in);                              /* (ESP already up, as the CPU does) */
+        modrm(c, &in);                              /* ESP is already incremented, like the CPU does */
         setE(c, &in, os, x);
         return;
     }
@@ -899,7 +899,7 @@ static void step(cpu_t *c)
     case 0x9B: return;                           /* FWAIT */
     case 0x9C: v = (c->eflags & 0x00FCFFFF) | 2; if (os == 16) push16(c, (uint16_t)v); else push32(c, v); return;
     case 0x9D: {
-        uint32_t keep = F_IF | 0x3000 | 0x20000;     /* (IF, IOPL, VM: not the program's) */
+        uint32_t keep = F_IF | 0x3000 | 0x20000;     /* IF, IOPL, VM aren't the program's to change */
         v = os == 16 ? (c->eflags & 0xFFFF0000) | pop16(c) : pop32(c);
         c->eflags = (c->eflags & keep) | (v & ~keep & 0x00254FD5) | 2;
         return;
@@ -963,7 +963,7 @@ static void step(cpu_t *c)
     }
     case 0xC6: modrm(c, &in); setE(c, &in, 8, fetch8(c)); return;
     case 0xC7: modrm(c, &in); setE(c, &in, os, fetchv(c, os)); return;
-    case 0xC8: {                                 /* ENTER: (16-bit operands: BP, 2 bytes each; a 16-bit stack: SP) */
+    case 0xC8: {                                 /* ENTER (16-bit operands: 2 bytes each from BP; 16-bit stack: SP) */
         uint16_t size = fetch16(c);
         uint8_t level = fetch8(c) & 31;
         int o16 = os == 16;
@@ -1041,7 +1041,7 @@ static void step(cpu_t *c)
     }
     case 0xF8: c->eflags &= ~F_CF; return;
     case 0xF9: c->eflags |= F_CF; return;
-    case 0xFA: case 0xFB: return;                /* CLI STI: not the program's to do (ignored) */
+    case 0xFA: case 0xFB: return;                /* CLI STI: ignored, not the program's to do */
     case 0xFC: c->eflags &= ~F_DF; return;
     case 0xFD: c->eflags |= F_DF; return;
     case 0xFE:
@@ -1078,7 +1078,7 @@ static void step(cpu_t *c)
     op = fetch8(c);
     switch (op) {
     case 0x05: case 0x0B: trap(c, CPU_ILLEGAL); return;
-    case 0x00: {                                 /* SLDT STR VERR VERW (OpenWatcom's longjmp checks FS so) */
+    case 0x00: {                                 /* SLDT STR VERR VERW (OpenWatcom's longjmp checks FS this way) */
         modrm(c, &in);
         if (in.reg < 2) { setE(c, &in, in.mod == 3 ? os : 16, in.reg == 0 ? 0x28 : 0x30); return; }
         if (in.reg != 4 && in.reg != 5) trap(c, CPU_ILLEGAL);
@@ -1122,7 +1122,7 @@ static void step(cpu_t *c)
         setr(c, in.reg, os, v);
         return;
     }
-    case 0xA2: {                                 /* CPUID: a Pentium with an FPU, TSC, CX8, CMOV */
+    case 0xA2: {                                 /* CPUID: a Pentium with FPU, TSC, CX8, CMOV */
         uint32_t leaf = c->r[EAX];
         if (leaf == 0) { c->r[EAX] = 1; c->r[EBX] = 0x756E6547; c->r[EDX] = 0x49656E69; c->r[ECX] = 0x6C65746E; }
         else if (leaf == 1) { c->r[EAX] = 0x543; c->r[EBX] = 0; c->r[ECX] = 0; c->r[EDX] = 0x00008111; }
@@ -1192,7 +1192,7 @@ int cpu_run(cpu_t *c, long steps)
     int why = setjmp(jb);
     if (why) {
         trap_jb = outer;
-        if (why == CPU_FAULT || why == CPU_ILLEGAL || why == CPU_DIVIDE) c->eip = c->op_eip;   /* (at the instruction) */
+        if (why == CPU_FAULT || why == CPU_ILLEGAL || why == CPU_DIVIDE) c->eip = c->op_eip;   /* EIP back at the instruction */
         return why;
     }
     for (long i = 0; i < steps; i++) {

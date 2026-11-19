@@ -1,31 +1,29 @@
-/* userland/os2x86/ne16.inc - 16-bit OS/2 1.x programs (NE executables;
- * included by os2x86.c after the 16-bit console calls).
+/* userland/os2x86/ne16.inc - 16-bit OS/2 1.x programs (NE executables),
+ * included by os2x86.c after the 16-bit console calls.
  *
- * Each segment goes into a 64 KB tile of its own, so its selector is
- * the tile's (n*8+7) and 16:16 pointers work as on OS/2 2.x. The
- * relocations (offsets, selectors, far pointers; chained or additive;
- * internal - by segment, or by entry ordinal for movable ones - or
- * imported by ordinal or name) are applied; imports from the system's
- * DLLs become thunks, as a 32-bit program's 16-bit calls are. It starts
- * as OS/2 starts it: CS:IP, SS:SP, DS the automatic data segment, AX
- * the environment's selector, BX the command line's offset in it, CX
- * the automatic data's size.
+ * Each segment gets its own 64 KB tile, so its selector is the tile's
+ * (n*8+7) and 16:16 pointers work as on OS/2 2.x. Relocations are applied
+ * (offsets, selectors, far pointers; chained or additive; internal by segment
+ * or by entry ordinal for movable segments; imports by ordinal or name).
+ * Imports from system DLLs become thunks, the same as a 32-bit program's
+ * 16-bit calls. The program starts the way OS/2 starts it: CS:IP, SS:SP, DS
+ * the automatic data segment, AX the environment selector, BX the command
+ * line's offset in it, CX the automatic data size.
  *
- * The 16-bit DOSCALLS (Pascal, far: DosOpen, DosRead, DosWrite,
- * DosFindFirst ...) mostly turn their arguments into the 32-bit calls'
- * - put on a stack of their own, with 32-bit results copied back into
- * the program's 16-bit ones. Not yet: the program's own 16-bit DLLs,
- * DosExecPgm, threads, semaphores, Presentation Manager's 16-bit calls. */
+ * Most 16-bit DOSCALLS (far Pascal: DosOpen, DosRead, DosWrite, DosFindFirst,
+ * ...) convert their arguments and call the 32-bit versions on a stack of
+ * their own, copying 32-bit results back into the program's 16-bit ones. */
 
-static _Thread_local uint32_t ne_scr;         /* (the 32-bit calls' arguments and results: each thread its own) */
-static uint32_t ne_env, ne_cmd;               /* (the environment segment: flat; the command line's offset) */
-static uint32_t ne_ginfo, ne_linfo;           /* (the information segments) */
+static _Thread_local uint32_t ne_scr;         /* per-thread scratch for the 32-bit calls' arguments and results */
+static uint32_t ne_env, ne_cmd;               /* environment segment (flat) and the command line's offset */
+static uint32_t ne_ginfo, ne_linfo;           /* global and local information segments */
 static uint16_t sel16(uint32_t flat) { return (uint16_t)(((flat >> 16) << 3) | 7); }
 static uint32_t fp16(uint16_t sel, uint16_t off) { return ((uint32_t)(sel >> 3) << 16) + off; }
 
-/* a 32-bit call, its arguments on a stack of their own. They nest (a window procedure called back makes calls of
- * its own): each level its frame below the last, and its own room for results; the 16-bit caller's SP is kept,
- * for the callbacks (they run on the program's stack, below it) */
+/* make a 32-bit call with its arguments on a separate stack. Calls nest (a
+ * window procedure called back makes calls of its own), each level below the
+ * last with its own room for results. The 16-bit caller's SP is kept for
+ * callbacks, which run on the program's stack below it. */
 static _Thread_local int c32_depth;
 static _Thread_local uint32_t c32_sp, c32_prog_esp;
 static uint32_t call32(api_fn fn, int n, const uint32_t *a)
@@ -33,8 +31,8 @@ static uint32_t call32(api_fn fn, int n, const uint32_t *a)
     if (!ne_scr && !(ne_scr = mem_alloc(UNIT))) return 8;
     if (!c32_depth) c32_sp = ne_scr + 0xF000;
     uint32_t save = C.r[ESP], save_sp = c32_sp, save_prog = c32_prog_esp, sp = (c32_sp - 4 - 4 * (uint32_t)n - 0x40) & ~3u;
-    c32_prog_esp = C.r[ESP];                                 /* (the 16-bit caller's: a callback's stack) */
-    if (sp < ne_scr + 0x9000) return 8;                      /* (too deep) */
+    c32_prog_esp = C.r[ESP];                                 /* 16-bit caller's SP, for callbacks */
+    if (sp < ne_scr + 0x9000) return 8;                      /* nested too deep */
     p32(sp, 0);
     for (int i = 0; i < n; i++) p32(sp + 4 + 4 * (uint32_t)i, a[i]);
     c32_sp = sp;
@@ -47,7 +45,7 @@ static uint32_t call32(api_fn fn, int n, const uint32_t *a)
     c32_prog_esp = save_prog;
     return r;
 }
-static uint32_t T(int i)                                     /* (results' room: this level's) */
+static uint32_t T(int i)                                     /* this level's room for results */
 {
     if (!ne_scr) ne_scr = mem_alloc(UNIT);
     return ne_scr + 0x100 + 0x1000 * (uint32_t)(c32_depth & 7) + 0x200 * (uint32_t)i;
@@ -63,7 +61,7 @@ static uint32_t d16_DosGetInfoSeg(void)       /* (PSEL global, PSEL local) */
     uint32_t g = ne_ginfo;
     p32(g, (uint32_t)now); p32(g + 4, 0);
     C.mem[g + 8] = (uint8_t)tm.tm_hour; C.mem[g + 9] = (uint8_t)tm.tm_min; C.mem[g + 10] = (uint8_t)tm.tm_sec; C.mem[g + 11] = 0;
-    p16(g + 14, 310);                                        /* (cusecTimerInterval: tenths of ms) */
+    p16(g + 14, 310);                                        /* cusecTimerInterval, in tenths of a ms */
     C.mem[g + 16] = (uint8_t)tm.tm_mday; C.mem[g + 17] = (uint8_t)(tm.tm_mon + 1); p16(g + 18, (uint16_t)(tm.tm_year + 1900));
     C.mem[g + 20] = (uint8_t)tm.tm_wday; C.mem[g + 21] = 20; C.mem[g + 22] = 40;   /* OS/2 20.40 */
     p16(ne_linfo, (uint16_t)getpid()); p16(ne_linfo + 2, (uint16_t)getppid()); p16(ne_linfo + 4, 0x200); p16(ne_linfo + 6, 1);
@@ -79,9 +77,9 @@ static uint32_t d16_DosAllocSeg(void)         /* (USHORT size, PSEL psel, USHORT
     p16(FP(2), sel16(m));
     return 0;
 }
-static uint32_t d16_DosReallocSeg(void) { return 0; }          /* (a tile is 64 KB already) */
+static uint32_t d16_DosReallocSeg(void) { return 0; }          /* a tile is already 64 KB */
 static uint32_t d16_DosFreeSeg(void) { return mem_free(fp16(W(0), 0)) ? 5 : 0; }
-static uint32_t d16_DosGetHugeShift(void) { p16(FP(0), 3); return 0; }   /* (the next tile: the selector + 8) */
+static uint32_t d16_DosGetHugeShift(void) { p16(FP(0), 3); return 0; }   /* next tile = selector + 8 */
 static uint32_t d16_DosGetMachineMode(void) { C.mem[FP(0)] = 1; return 0; }   /* MODE_PROTECTED */
 static uint32_t d16_DosBeep(void) { uint32_t a[] = { W(2), W(0) }; return call32(api_DosBeep, 2, a); }
 static uint32_t d16_DosBufReset(void) { uint32_t a[] = { W(0) }; return call32(api_DosResetBuffer, 1, a); }
@@ -101,7 +99,7 @@ static uint32_t d16_DosDupHandle(void)        /* (HFILE old, PHFILE pnew) */
     if (!r) p16(pn, (uint16_t)g32(t));
     return r;
 }
-/* FILEFINDBUF (16-bit: dates and times, cbFile, cbFileAlloc, USHORT attrFile, cchName, achName[13]) from FILEFINDBUF3's */
+/* fill a 16-bit FILEFINDBUF (dates/times, cbFile, cbFileAlloc, USHORT attrFile, cchName, achName[13]) from a FILEFINDBUF3 */
 static void ne_ffb(uint32_t to, uint32_t from)
 {
     memcpy(C.mem + to, C.mem + from + 4, 20);
@@ -168,7 +166,7 @@ static uint32_t d16_DosQCurDisk(void)         /* (pdrive, pmap) */
 }
 static uint32_t d16_DosQFHandState(void) { uint32_t t = T(0), a[] = { W(4), t }, r = call32(api_DosQueryFHState, 2, a); p16(FP(0), (uint16_t)g32(t)); return r; }
 static uint32_t d16_DosSetFHandState(void) { uint32_t a[] = { W(2), W(0) }; return call32(api_DosSetFHState, 2, a); }
-/* FILESTATUS (16-bit: dates and times, cbFile, cbFileAlloc, USHORT attrFile) from FILESTATUS3's */
+/* 16-bit FILESTATUS (dates/times, cbFile, cbFileAlloc, USHORT attrFile) from FILESTATUS3 */
 static uint32_t d16_DosQFileInfo(void)        /* (hf, level, buf, cb) */
 {
     uint32_t t = T(0), a[] = { W(8), 1, t, 24 }, r = call32(api_DosQueryFileInfo, 4, a);
@@ -232,9 +230,9 @@ static uint32_t d16_DosScanEnv(void)          /* (name, PSZ far *ppValue) */
         }
     return ERROR_ENVVAR_NOT_FOUND;
 }
-/* semaphores: RAM ones (an HSEM: a far pointer to a doubleword of the program's) and system ones (DosCreateSem,
- * DosOpenSem: a handle, kept here); both as owner thread (high word) and count (low word) - a request waits until
- * it's clear or its own; a clear releases one level (and wakes the waiters); a wait waits until it's clear */
+/* semaphores: RAM ones (an HSEM is a far pointer to a doubleword in the program) and system ones (DosCreateSem,
+ * DosOpenSem: handles kept here). Both hold the owner thread (high word) and a count (low word). A request waits
+ * until it's clear or already ours; a clear releases one level and wakes waiters; a wait waits until it's clear. */
 typedef struct { int used, refs; char name[128]; uint32_t v; } sysem_t;
 static sysem_t sysems[64];
 static uint32_t *sem_ptr(uint32_t h)
@@ -243,14 +241,14 @@ static uint32_t *sem_ptr(uint32_t h)
     h -= 1;
     return h < 64 && sysems[h].used ? &sysems[h].v : 0;
 }
-/* until it's free (or ours), up to timeout ms (-1: for ever; 0: not at all); then take it, when asked */
+/* wait until free (or ours) for up to timeout ms (-1 forever, 0 not at all), then take it if asked */
 static uint32_t sem_wait16(uint32_t h, int32_t timeout, int take)
 {
     struct timespec dl;
     clock_gettime(CLOCK_REALTIME, &dl);
     if (timeout > 0) { dl.tv_sec += timeout / 1000; dl.tv_nsec += (long)(timeout % 1000) * 1000000L; if (dl.tv_nsec >= 1000000000L) { dl.tv_sec++; dl.tv_nsec -= 1000000000L; } }
     uint32_t *v = sem_ptr(h);
-    if (!v) return ERROR_SEM_NOT_FOUND;                      /* ERROR_INVALID_SEMAPHORE... */
+    if (!v) return ERROR_SEM_NOT_FOUND;                      /* ERROR_INVALID_SEMAPHORE, really */
     for (;;) {
         v = sem_ptr(h);
         uint32_t cur = v ? *v : 0;
@@ -274,11 +272,11 @@ static uint32_t d16_DosSemClear(void)                       /* (HSEM) */
 }
 static uint32_t d16_DosSemSet(void) { uint32_t *v = sem_ptr(L(0)); if (!v) return 187; if (!*v) *v = (me->tid << 16) | 1; return 0; }
 static uint32_t d16_DosSemWait(void) { return sem_wait16(L(4), (int32_t)L(0), 0); }
-static uint32_t d16_DosSemSetWait(void)                     /* (HSEM, LONG timeout): set it, then wait for its clear */
+static uint32_t d16_DosSemSetWait(void)                     /* (HSEM, LONG timeout): set it, then wait for a clear */
 {
     uint32_t *v = sem_ptr(L(4));
     if (!v) return 187;
-    *v = 0xFFFF0001u;                                        /* (an owner that's no thread: only a clear frees it) */
+    *v = 0xFFFF0001u;                                        /* owner that isn't a thread: only a clear frees it */
     return sem_wait16(L(4), (int32_t)L(0), 0);
 }
 static uint32_t d16_DosCreateSem(void)                      /* (USHORT fExclusive, PHSYSSEM phsem, PSZ name) */
@@ -310,7 +308,7 @@ static uint32_t d16_DosCloseSem(void)                       /* (HSEM) */
     if (--sysems[h].refs <= 0) sysems[h].used = 0;
     return 0;
 }
-/* DosMuxSemWait (PUSHORT pisemCleared, PVOID pmsxl: { USHORT count, { USHORT reserved, HSEM }[] }, LONG timeout): the first that's clear */
+/* DosMuxSemWait (PUSHORT pisemCleared, PVOID pmsxl: { USHORT count, { USHORT reserved, HSEM }[] }, LONG timeout): returns the first that's clear */
 static uint32_t d16_DosMuxSemWait(void)
 {
     uint32_t list = FP(4), n = g16(list);
@@ -328,8 +326,8 @@ static uint32_t d16_DosMuxSemWait(void)
         else if (pthread_cond_timedwait(&gcv, &gil, &dl) == ETIMEDOUT) return 121;
     }
 }
-/* threads: DosCreateThread (PFNTHREAD pfn - far, PTID ptid, PBYTE pstack - its stack's top, far): the caller's DS; a far
- * return from the function ends the thread (as DosExit(EXIT_THREAD) does) */
+/* threads: DosCreateThread (PFNTHREAD pfn (far), PTID ptid, PBYTE pstack (far top of stack)) uses the caller's DS;
+ * a far return from the function ends the thread, like DosExit(EXIT_THREAD) */
 static void *thr_main(void *arg);
 static uint32_t d16_DosCreateThread(void)
 {
@@ -350,7 +348,7 @@ static uint32_t d16_DosCreateThread(void)
     cpu_load_seg(&t->cpu, 2, (uint16_t)(stk >> 16));
     cpu_load_seg(&t->cpu, 3, C.sreg[3]);
     cpu_load_seg(&t->cpu, 0, C.sreg[0]);
-    uint32_t sp = (stk & 0xFFFF) - 4, back = thunk_addr(T_THREXIT);   /* (a far return: to the thread's end) */
+    uint32_t sp = (stk & 0xFFFF) - 4, back = thunk_addr(T_THREXIT);   /* far return to the thread's end */
     p16(t->cpu.ss_base + (sp & 0xFFFF), (uint16_t)(back & 0xFFFF)); p16(t->cpu.ss_base + ((sp + 2) & 0xFFFF), sel16(back));
     t->cpu.r[ESP] = sp & 0xFFFF;
     cpu_load_seg(&t->cpu, 1, (uint16_t)(pfn >> 16));
@@ -372,10 +370,10 @@ static uint32_t d16_DosEnterCritSec(void) { return call32(api_DosEnterCritSec, 0
 static uint32_t d16_DosExitCritSec(void) { return call32(api_DosExitCritSec, 0, 0); }
 static uint32_t d16_DosSuspendThread(void) { uint32_t a[] = { W(0) }; return call32(api_DosSuspendThread, 1, a); }
 static uint32_t d16_DosResumeThread(void) { uint32_t a[] = { W(0) }; return call32(api_DosResumeThread, 1, a); }
-static uint32_t d16_DosSizeSeg(void) { p32(FP(0), 0x10000); return 0; }                             /* (SEL, PULONG): a tile */
+static uint32_t d16_DosSizeSeg(void) { p32(FP(0), 0x10000); return 0; }                             /* (SEL, PULONG): always a tile */
 static uint32_t d16_DosMemAvail(void) { p32(FP(0), 64u << 20); return 0; }
-/* DosExecPgm (failname, cbFail, flags, args, env, RESULTCODES (16-bit: two USHORTs), program), DosCWait (scope, wait,
- * RESULTCODES, PPID, PID): the 32-bit ones (an x86 child runs through os2x86 again, 16-bit or 32-bit) */
+/* DosExecPgm (failname, cbFail, flags, args, env, RESULTCODES (two USHORTs), program) and DosCWait (scope, wait,
+ * RESULTCODES, PPID, PID) map to the 32-bit calls; an x86 child runs through os2x86 again, 16- or 32-bit */
 static uint32_t d16_DosExecPgm(void)
 {
     uint32_t t = T(0), a[] = { FP(20), W(18), W(16), FP(12), FP(8), t, FP(0) }, r = call32(api_DosExecPgm, 7, a);
@@ -403,7 +401,7 @@ static uint32_t n16_DosGetCtryInfo(void)      /* (USHORT cb, PCOUNTRYCODE, PCOUN
     return r;
 }
 
-/* ── loading: the program and its own 16-bit DLLs ── */
+/* ── loading: the program and its 16-bit DLLs ── */
 typedef struct {
     char name[16], path[PATH_MAX];
     uint8_t *f; size_t n; uint32_t ne, nseg;
@@ -420,7 +418,7 @@ static int ne_find_lib(const char *name)
     int l = builtin_lib(name);
     return l >= 0 ? l : stub_lib(name);
 }
-/* an exported entry: by ordinal (the entry table), its flat address */
+/* flat address of an exported entry, by ordinal (entry table) */
 static int ne_entry(nemod_t *m, uint32_t ord, uint32_t *flat)
 {
     const uint8_t *f = m->f;
@@ -442,7 +440,7 @@ static int ne_entry(nemod_t *m, uint32_t ord, uint32_t *flat)
     }
     return 0;
 }
-/* ... by name: the resident names, then the non-resident ones (Pascal strings, each followed by its ordinal) */
+/* ... by name: resident names, then non-resident ones (Pascal strings, each followed by its ordinal) */
 static int ne_entry_name(nemod_t *m, const char *name, uint32_t *flat)
 {
     uint32_t tabs[2] = { m->ne + MNE16(m, 0x26), (uint32_t)(m->f[m->ne + 0x2C] | m->f[m->ne + 0x2D] << 8 | m->f[m->ne + 0x2E] << 16 | (uint32_t)m->f[m->ne + 0x2F] << 24) };
@@ -457,7 +455,7 @@ static int ne_entry_name(nemod_t *m, const char *name, uint32_t *flat)
         }
     return 0;
 }
-/* a far call into 16-bit code (a DLL's initialisation): AX its result */
+/* far call into 16-bit code (a DLL's init); returns AX */
 static uint32_t ne_call16(uint32_t target, uint32_t ax, uint32_t cx, uint32_t di, uint16_t ds)
 {
     uint32_t r[8], eip = C.eip, fl = C.eflags;
@@ -505,14 +503,14 @@ static nemod_t *ne_load(const char *path, int dll, char *err, size_t errn)
     nemod_t *m = calloc(1, sizeof *m);
     m->f = f; m->n = n; m->ne = ne; m->dll = dll;
     snprintf(m->path, sizeof m->path, "%s", path);
-    uint32_t rn = ne + MNE16(m, 0x26);                       /* (the module's name: the first resident name) */
+    uint32_t rn = ne + MNE16(m, 0x26);                       /* module name: the first resident name */
     if (rn < n) snprintf(m->name, sizeof m->name, "%.*s", f[rn] < 15 ? f[rn] : 15, (char *)f + rn + 1);
     nemods[nnemods++] = m;
     uint32_t nseg = MNE16(m, 0x1C), st = ne + MNE16(m, 0x22), shift = MNE16(m, 0x32) ? MNE16(m, 0x32) : 9;
     uint32_t modref = ne + MNE16(m, 0x28), impn = ne + MNE16(m, 0x2A), nmod = MNE16(m, 0x1E);
     if (nseg > 255 || st + 8 * nseg > n) { snprintf(err, errn, "SYS0193: %s is damaged.", path); return 0; }
     m->nseg = nseg;
-    for (uint32_t i = 0; i < nseg; i++) {                    /* the segments: a tile each */
+    for (uint32_t i = 0; i < nseg; i++) {                    /* segments: one tile each */
         uint32_t e = st + 8 * i, sec = (uint32_t)(f[e] | f[e + 1] << 8), l = (uint32_t)(f[e + 2] | f[e + 3] << 8);
         if (!l && sec) l = 0x10000;
         if (!(m->base[i] = mem_alloc(UNIT))) { snprintf(err, errn, "SYS0008: no memory for %s", path); return 0; }
@@ -520,7 +518,7 @@ static nemod_t *ne_load(const char *path, int dll, char *err, size_t errn)
         uint32_t off = sec << shift;
         if (sec && l && off + l <= n) memcpy(C.mem + m->base[i], f + off, l);
     }
-    for (uint32_t i = 0; i < nseg; i++) {                    /* the relocations */
+    for (uint32_t i = 0; i < nseg; i++) {                    /* relocations */
         uint32_t e = st + 8 * i, sec = (uint32_t)(f[e] | f[e + 1] << 8), flags = (uint32_t)(f[e + 4] | f[e + 5] << 8);
         if (!(flags & 0x100) || !sec) continue;
         uint32_t r = (sec << shift) + m->len[i];
@@ -538,7 +536,7 @@ static nemod_t *ne_load(const char *path, int dll, char *err, size_t errn)
                 else { if (!sg || sg > nseg) continue; target = m->base[sg - 1] + t2; }
                 break;
             }
-            case 1: case 2: {                                /* imported: by ordinal or by name - the system's, or a DLL of its own */
+            case 1: case 2: {                                /* imported by ordinal or name: from a system DLL or one of its own */
                 char mod[64] = "", nm[64] = "";
                 if (t1 >= 1 && t1 <= nmod) {
                     uint32_t mo = impn + (uint32_t)(f[modref + 2 * (t1 - 1)] | f[modref + 2 * (t1 - 1) + 1] << 8);
@@ -558,11 +556,11 @@ static nemod_t *ne_load(const char *path, int dll, char *err, size_t errn)
                 }
                 break;
             }
-            default: continue;                               /* OS fixups (the floating point emulator's): not needed */
+            default: continue;                               /* OS fixups (floating point emulator): not needed */
             }
             uint16_t tsel = sel16(target), toff = (uint16_t)(target & 0xFFFF);
             uint32_t sb = m->base[i];
-            for (int guard = 0; guard < 0x10000 && at < 0x10000; guard++) {   /* a chain (each place holds the next), or one (additive) */
+            for (int guard = 0; guard < 0x10000 && at < 0x10000; guard++) {   /* a chain (each place holds the next) or a single additive one */
                 uint32_t a = sb + at, next = g16(a);
                 switch (src) {
                 case 0: C.mem[a] = (fl8 & 4) ? (uint8_t)(C.mem[a] + toff) : (uint8_t)toff; break;   /* LOBYTE */
@@ -579,7 +577,7 @@ static nemod_t *ne_load(const char *path, int dll, char *err, size_t errn)
     }
     return m;
 }
-/* a DLL's initialisation (its CS:IP): AX and DI the module's handle, DS its automatic data, CX the heap; 0 back: it failed */
+/* DLL initialisation at its CS:IP: AX and DI get the module handle, DS its automatic data, CX the heap; returns 0 on failure */
 static int ne_init(nemod_t *m, char *err, size_t errn)
 {
     if (m->inited || !m->dll) return 1;
@@ -599,7 +597,7 @@ static void ne_main(const char *path, uint8_t *f0, size_t n0, uint32_t ne0, int 
     nemod_t *m = ne_load(path, 0, err, sizeof err);
     if (!m) die(err[0] == 'S' && !strncmp(err, "SYS0008", 7) ? 8 : 193, "%s", err);
     if (MNE16(m, 0x0C) & 0x8000) die(193, "SYS0193: %s is a library (DLL), not a program.", path);
-    /* the environment segment: the strings, an empty one, the program, the command line */
+    /* environment segment: the strings, an empty one, the program name, the command line */
     if (!(ne_env = mem_alloc(UNIT)) || !(ne_ginfo = mem_alloc(UNIT)) || !(ne_linfo = mem_alloc(UNIT))) die(8, "SYS0008: no memory");
     uint32_t at = ne_env, end = ne_env + 0xF000;
     for (char **e = environ; *e && at + strlen(*e) + 1 < end; e++) guest_strcpy(&at, *e);
@@ -622,11 +620,11 @@ static void ne_main(const char *path, uint8_t *f0, size_t n0, uint32_t ne0, int 
     }
     guest_strcpy(&at, args);
     guest_strcpy(&at, "");
-    if (!(tib = mem_alloc(UNIT))) die(8, "SYS0008: no memory");   /* (a TIB for FS: the 32-bit calls that want one) */
+    if (!(tib = mem_alloc(UNIT))) die(8, "SYS0008: no memory");   /* a TIB for FS, for 32-bit calls that want one */
     p32(tib, 0xFFFFFFFF);
     C.tib = tib;
     process_ready = 1;
-    /* the stack: SS:SP (SP 0: the top of the automatic data); DS the automatic data */
+    /* stack: SS:SP (SP 0 means the top of the automatic data); DS is the automatic data */
     uint32_t nseg = m->nseg, st = m->ne + MNE16(m, 0x22);
     uint32_t ad = MNE16(m, 0x0E), ip = MNE16(m, 0x14), cs = MNE16(m, 0x16), sp = MNE16(m, 0x18), ss = MNE16(m, 0x1A);
     if (!cs || cs > nseg) die(193, "SYS0193: %s has no starting point.", path);
@@ -639,9 +637,9 @@ static void ne_main(const char *path, uint8_t *f0, size_t n0, uint32_t ne0, int 
     }
     cpu_load_seg(&C, 2, sel16(m->base[ss - 1]));
     C.r[ESP] = sp;
-    /* its DLLs' initialisations, the first loaded first (on its stack) */
+    /* run its DLLs' initialisation, first loaded first, on its stack */
     for (int i = 0; i < nnemods; i++) if (!ne_init(nemods[i], err, sizeof err)) die(193, "%s", err);
-    /* the start: CS:IP, DS the automatic data, AX the environment, BX the command line, CX the automatic data's size */
+    /* start: CS:IP, DS automatic data, AX environment, BX command line, CX automatic data size */
     cpu_load_seg(&C, 1, sel16(m->base[cs - 1]));
     cpu_load_seg(&C, 3, ad ? sel16(m->base[ad - 1]) : 0);
     cpu_load_seg(&C, 0, 0);
@@ -653,7 +651,7 @@ static void ne_main(const char *path, uint8_t *f0, size_t n0, uint32_t ne0, int 
     run(0);
     do_exit(0);
 }
-/* resources: the last segments (NE 0x34 of them), the resource table (0x24) giving each one's type and id */
+/* resources: the last segments (NE offset 0x34 says how many), with the resource table (0x24) giving type and id */
 static int ne_find_resource(uint32_t hmod, uint32_t type, uint32_t id, uint32_t *addr, uint32_t *size)
 {
     nemod_t *m = hmod ? ne_mod_of(hmod) : (nnemods && !nemods[0]->dll ? nemods[0] : 0);
@@ -678,7 +676,7 @@ static uint32_t d16_DosGetResource(void)                   /* (HMODULE, USHORT t
 }
 
 /* DosLoadModule (failname, cb, modname, phmod), DosGetProcAddr (hmod, procname or 0:ordinal, ppfn), DosFreeModule,
- * DosGetModHandle (modname, phmod), DosGetModName (hmod, cb, buf): the 16-bit DLLs (and the system's: their thunks) */
+ * DosGetModHandle (modname, phmod), DosGetModName (hmod, cb, buf): for 16-bit DLLs, and system ones via their thunks */
 static uint32_t d16_DosLoadModule(void)
 {
     char *nm = gs(FP(4)), err[512];
@@ -690,7 +688,7 @@ static uint32_t d16_DosLoadModule(void)
     char *dot = strrchr(b, '.');
     if (dot && !strcasecmp(dot, ".DLL")) *dot = 0;
     int lib = ne_find_lib(b);
-    if (lib >= 0) { p16(FP(0), (uint16_t)(0x8000 + lib)); return 0; }   /* (a system DLL: its imports are ours) */
+    if (lib >= 0) { p16(FP(0), (uint16_t)(0x8000 + lib)); return 0; }   /* system DLL: its imports are ours */
     nemod_t *d = ne_load_dll(nm, err, sizeof err);
     if (d && !ne_init(d, err, sizeof err)) d = 0;
     if (!d) {
@@ -703,7 +701,7 @@ static uint32_t d16_DosLoadModule(void)
 static uint32_t d16_DosGetProcAddr(void)
 {
     uint32_t h = W(8), pn = g32(a16 + 4), target = 0;
-    int byord = (pn >> 16) == 0;                             /* (0:ordinal) */
+    int byord = (pn >> 16) == 0;                             /* 0:ordinal */
     char *nm = byord ? 0 : gs(FP(4));
     if (h >= 0x8000) {
         if (byord) target = thunk_for((int)(h - 0x8000), pn & 0xFFFF, 0);
@@ -716,7 +714,7 @@ static uint32_t d16_DosGetProcAddr(void)
     p32(FP(0), (uint32_t)(target & 0xFFFF) | (uint32_t)sel16(target) << 16);
     return 0;
 }
-static uint32_t d16_DosFreeModule(void) { return 0; }      /* (they stay) */
+static uint32_t d16_DosFreeModule(void) { return 0; }      /* modules stay loaded */
 static uint32_t d16_DosGetModHandle(void)
 {
     char *nm = gs(FP(4));
@@ -726,7 +724,7 @@ static uint32_t d16_DosGetModHandle(void)
     if (lib >= 0) { p16(FP(0), (uint16_t)(0x8000 + lib)); return 0; }
     return ERROR_INVALID_NAME;
 }
-static uint32_t d16_DosGetModName(void)                    /* (hmod, cb, buf): its file, OS/2's name */
+static uint32_t d16_DosGetModName(void)                    /* (hmod, cb, buf): its file, by its OS/2 name */
 {
     nemod_t *m = ne_mod_of(W(6));
     if (!m) return ERROR_INVALID_HANDLE;
@@ -737,7 +735,7 @@ static uint32_t d16_DosGetModName(void)                    /* (hmod, cb, buf): i
     return 0;
 }
 
-/* is it one? (MZ, then NE at its offset): the NE header's place */
+/* is it an NE (MZ, then NE at its offset)? returns the NE header's offset */
 static uint32_t ne_header(const uint8_t *f, size_t n)
 {
     if (n < 0x40 || f[0] != 'M' || f[1] != 'Z') return 0;

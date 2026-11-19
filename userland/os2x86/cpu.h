@@ -1,14 +1,13 @@
-/* userland/os2x86/cpu.h - an i386 in software, for 32-bit OS/2 programs.
+/* userland/os2x86/cpu.h - a software i386 for 32-bit OS/2 programs.
  *
- * Flat memory model as OS/2 2.x+ gives its programs: CS, DS, ES, SS all
- * cover the whole 4 GB from 0, FS points at the thread's information
- * block. And, for the 16-bit calls (VIO, KBD: the C runtimes go through
- * a 16-bit stack and code segment to reach them), OS/2's tiled LDT:
- * selector n*8+7 is the 64 KB at n*64K, as 16-bit code or stack. The guest's memory is one block of the host's (mem, size bytes:
- * guest address 0 is mem[0]); an access outside it, or below lo, is a
- * trap. Integer
- * instructions of the 386/486 (and CMOV, BSWAP, CPUID, RDTSC) and the
- * x87, with doubles inside. */
+ * Uses the flat model OS/2 2.x gives its programs: CS, DS, ES and SS cover
+ * all 4 GB from 0, and FS points at the thread information block. For the
+ * 16-bit calls (VIO, KBD; C runtimes reach them through a 16-bit stack and
+ * code segment) it also has OS/2's tiled LDT: selector n*8+7 is the 64 KB at
+ * n*64K, as 16-bit code or stack. Guest memory is one host block (mem, size
+ * bytes; guest address 0 is mem[0]); anything outside it or below lo traps.
+ * Implements the 386/486 integer instructions (plus CMOV, BSWAP, CPUID, RDTSC)
+ * and the x87, using doubles internally. */
 #ifndef OS2X86_CPU_H
 #define OS2X86_CPU_H
 #include <stdint.h>
@@ -40,20 +39,20 @@ typedef struct cpu {
     uint32_t r[8];
     uint32_t eip, eflags;
     uint32_t fs_base, gs_base;
-    uint32_t es_base, cs_base, ss_base, ds_base;   /* 0, unless a tiled selector's in */
-    int code16, stack16;            /* CS, SS: a tiled (16-bit) segment */
-    uint32_t tib;                   /* FS's base for a GDT selector (0x150b) */
-    uint16_t sreg[6];               /* ES CS SS DS FS GS: the selectors */
+    uint32_t es_base, cs_base, ss_base, ds_base;   /* 0 unless a tiled selector is loaded */
+    int code16, stack16;            /* CS / SS is a tiled 16-bit segment */
+    uint32_t tib;                   /* FS base for the GDT selector 0x150b */
+    uint16_t sreg[6];               /* ES CS SS DS FS GS selectors */
     uint8_t *mem;
     uint32_t size;                  /* bytes of guest memory */
-    uint32_t lo;                    /* below this: no memory (the NULL page's 64 KB) */
+    uint32_t lo;                    /* below this there's no memory (the 64 KB NULL area) */
     uint32_t thunk_lo, thunk_hi;    /* EIP in [lo, hi): CPU_THUNK */
-    uint32_t fault_addr, op_eip;    /* the trap's address; the instruction's */
+    uint32_t fault_addr, op_eip;    /* address that trapped; start of the current instruction */
     int int_no;
     /* x87 */
     double st[8];
     int top;
-    uint16_t fcw, fsw, ftw;         /* control, status, tag (0: empty slots in tag_empty) */
+    uint16_t fcw, fsw, ftw;         /* control, status, tag (empty slots are in tag_empty) */
     uint8_t empty[8];
     uint64_t tsc;
 } cpu_t;

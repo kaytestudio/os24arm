@@ -2,21 +2,19 @@
  *
  *   os2x86 PROGRAM.EXE [arguments]
  *
- * The program's objects go where they're linked, in a guest memory of
- * their own (cpu.h: an i386 in software). Its imports from DOSCALLS & co.
- * become addresses in a thunk area at the top of that memory: when EIP
- * gets there, the interpreter stops and the C function below does the
- * call with this system's own (POSIX) calls. DLLs it needs that are x86
- * LX files too load the same way, from the program's directory, the
- * current one or LIBPATH.
+ * The program's objects are loaded at their link addresses in a guest memory
+ * of their own (cpu.h: a software i386). Imports from DOSCALLS and friends
+ * become addresses in a thunk area at the top of that memory: when EIP lands
+ * there the interpreter stops and the matching C function below does the
+ * call with POSIX calls. DLLs that are x86 LX files too load the same way,
+ * from the program's directory, the current one, or LIBPATH.
  *
- * Drives: C: is /, D: is /h (the stick) when it's there, or as
- * OS2X86_DRIVES says ("C=/;D=/h;E=/mnt"). Each OS/2 thread is a thread
- * here, with a CPU of its own; one lock (gil) lets one at a time run the
- * program or the calls, given up around those that wait and every so many
- * instructions. OS2X86_MEM: the guest's memory
- * in MB (512). OS2X86_TRACE=1: every system call on stderr.
- * The kernel runs x86 LX files through this (as it does #! scripts). */
+ * Drives: C: is /, D: is /h (the stick) if present, or as OS2X86_DRIVES says
+ * ("C=/;D=/h;E=/mnt"). Each OS/2 thread is a host thread with its own CPU;
+ * one lock (gil) lets one run at a time, released around blocking calls and
+ * every so many instructions. OS2X86_MEM sets guest memory in MB (512).
+ * OS2X86_TRACE=1 logs every system call to stderr. The kernel runs x86 LX
+ * files through this, the same way it runs #! scripts. */
 #define _GNU_SOURCE
 #include "cpu.h"
 #include <ctype.h>
@@ -54,7 +52,7 @@ extern char **environ;
 #define SEL_CODE 0x5B
 #define SEL_DATA 0x53
 
-/* the threads: thread 1 is the program's first */
+/* threads; thread 1 is the program's first */
 typedef struct thr {
     cpu_t cpu;
     uint32_t tid, stack, exitcode;
@@ -71,13 +69,13 @@ static thr_t *thrs[MAXTHR] = { &thr0 };
 static int nlive = 1;
 static uint32_t crit_tid, crit_n;       /* DosEnterCritSec: only this one runs */
 static pthread_mutex_t gil = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t gcv = PTHREAD_COND_INITIALIZER;   /* a semaphore, a thread changed */
+static pthread_cond_t gcv = PTHREAD_COND_INITIALIZER;   /* signalled when a semaphore or a thread changes */
 #define UNLOCKED(stmt) do { pthread_mutex_unlock(&gil); stmt; pthread_mutex_lock(&gil); } while (0)
 static int trace;
 static char self_path[PATH_MAX] = "/h/OS2/os2x86";
 static const char *prog_name = "os2x86";
 
-/* ── the guest's memory, from here (no longjmp: these just say no) ──── */
+/* ── guest memory access (no longjmp: these just fail) ── */
 static int ok(uint32_t a, uint32_t n) { return mem_ok(&C, a, n); }
 static uint32_t g32(uint32_t a) { uint32_t v = 0; if (ok(a, 4)) memcpy(&v, C.mem + a, 4); return v; }
 static uint16_t g16(uint32_t a) { uint16_t v = 0; if (ok(a, 2)) memcpy(&v, C.mem + a, 2); return v; }
@@ -85,17 +83,17 @@ static int p32(uint32_t a, uint32_t v) { if (!ok(a, 4)) return 0; memcpy(C.mem +
 static int p16(uint32_t a, uint16_t v) { if (!ok(a, 2)) return 0; memcpy(C.mem + a, &v, 2); return 1; }
 static int p8(uint32_t a, uint8_t v) { if (!ok(a, 1)) return 0; C.mem[a] = v; return 1; }
 static void *gp(uint32_t a, uint32_t n) { return ok(a, n ? n : 1) ? C.mem + a : 0; }
-static char *gs(uint32_t a)             /* a NUL-terminated string */
+static char *gs(uint32_t a)             /* NUL-terminated string at a */
 {
     if (!ok(a, 1)) return 0;
     return memchr(C.mem + a, 0, C.size - a) ? (char *)C.mem + a : 0;
 }
 static int gpush(uint32_t v) { if (!p32(C.r[ESP] - 4, v)) return 0; C.r[ESP] -= 4; return 1; }
-/* the API's arguments: _System, on the stack after the return address */
+/* API arguments: _System convention, on the stack after the return address */
 static uint32_t A(int n) { return g32(C.r[ESP] + 4 + 4 * n); }
 
 static void die(int code, const char *fmt, ...) __attribute__((noreturn, format(printf, 2, 3)));
-/* the terminal as it was: no mouse reports (MouOpen), the cursor shown */
+/* restore the terminal: mouse reports off (MouOpen), cursor visible */
 static volatile int tty_mouse, tty_nocursor;
 static void tty_restore(void)
 {
@@ -115,7 +113,7 @@ static void die(int code, const char *fmt, ...)
     _exit(code);
 }
 
-/* 64 KB units: taken or not, and at an allocation's first one its length */
+/* 64 KB units: used or not, and the allocation length at its first unit */
 static uint32_t nunits;
 static uint8_t *uused;
 static uint32_t *ulen;
@@ -144,7 +142,7 @@ static uint32_t mem_free(uint32_t a)
     uint32_t u = a / UNIT, n = ulen[u];
     memset(uused + u, 0, n);
     ulen[u] = 0;
-    /* fresh zero pages for the next one */
+    /* zero the pages for the next use */
     if (mmap(C.mem + a, (size_t)n * UNIT, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0) == MAP_FAILED)
         memset(C.mem + a, 0, (size_t)n * UNIT);
     return NO_ERROR;
@@ -159,13 +157,13 @@ static int mem_reserve(uint32_t a, uint32_t size)
 }
 
 /* ── drives and paths ────────────────────────────────────────────────── */
-static char droot[26][PATH_MAX];        /* "" : no such drive */
-static char dcwd[26][PATH_MAX];         /* each drive's current directory (host) */
+static char droot[26][PATH_MAX];        /* "" means no such drive */
+static char dcwd[26][PATH_MAX];         /* current directory of each drive (host path) */
 static int curdrv = 2;
 
 static int is_dir(const char *p) { struct stat st; return stat(p, &st) == 0 && S_ISDIR(st.st_mode); }
 
-static void norm(char *p)               /* an absolute path: no //, ., .. */
+static void norm(char *p)               /* normalise an absolute path: no //, . or .. */
 {
     char out[PATH_MAX];
     size_t o = 1;
@@ -192,7 +190,7 @@ static void norm(char *p)               /* an absolute path: no //, ., .. */
     strcpy(p, out);
 }
 
-/* OS/2 file names don't care about case; this file system does */
+/* OS/2 file names are case-insensitive; the host file system isn't */
 static void casefix(char *p)
 {
     struct stat st;
@@ -262,7 +260,7 @@ static const char *host_cwd(int d, char *buf, size_t n)
     return dcwd[d][0] ? dcwd[d] : droot[d];
 }
 
-/* an OS/2 file name to this system's; *drv its drive */
+/* OS/2 file name to host path; *drv gets its drive */
 static uint32_t os2_to_host(const char *in, char *out, size_t n, int *drv)
 {
     const char *s = in;
@@ -286,7 +284,7 @@ static uint32_t os2_to_host(const char *in, char *out, size_t n, int *drv)
     }
     char buf[PATH_MAX * 2], cw[PATH_MAX];
     if (*s == '/' && strcmp(droot[d], "/") != 0) {
-        /* "/tmp/x": this system's own path, when /tmp is there */
+        /* "/tmp/x": a host path, when /tmp exists */
         char first[NAME_MAX + 2] = "/";
         size_t i = 1;
         while (s[i] && s[i] != '/' && i < sizeof first - 1) { first[i] = s[i]; i++; }
@@ -300,7 +298,7 @@ static uint32_t os2_to_host(const char *in, char *out, size_t n, int *drv)
     {
         size_t rl = strlen(droot[d]);
         if (!(rl == 1 || (strncmp(buf, droot[d], rl) == 0 && (buf[rl] == '/' || !buf[rl]))))
-            snprintf(buf, sizeof buf, "%s", droot[d]);   /* (no .. above the drive's root) */
+            snprintf(buf, sizeof buf, "%s", droot[d]);   /* no going above the drive's root */
     }
 have:
     norm(buf);
@@ -355,10 +353,10 @@ static uint32_t oserr(int e)
 #define MAXOBJ 64
 typedef struct mod {
     char name[64];                      /* "HELLO", "FOO" */
-    char path[PATH_MAX];                /* this system's */
+    char path[PATH_MAX];                /* host path */
     uint8_t *f;
     size_t fsz;
-    uint32_t lx;                        /* the LX header's offset */
+    uint32_t lx;                        /* offset of the LX header */
     int nobj;
     uint32_t obase[MAXOBJ], osize[MAXOBJ], oflags[MAXOBJ];
     uint32_t hmod;
@@ -367,7 +365,7 @@ typedef struct mod {
 static mod_t *mods[64];
 static int nmods;
 static mod_t *exe;
-static char exe_dir[PATH_MAX];          /* the program's directory: its DLLs first */
+static char exe_dir[PATH_MAX];          /* the program's directory, searched first for its DLLs */
 static mod_t *pending_init[64];
 static int npending;
 static int process_ready;
@@ -391,7 +389,7 @@ static int lx_offset(const uint8_t *f, size_t n)
     if (o + 0xC4 > n || f[o] != 'L' || f[o + 1] != 'X') return -1;
     return (int)o;
 }
-/* an x86 LX file? (2: a DLL) */
+/* is it an x86 LX file? (2 = DLL) */
 static int x86_lx(const char *path, uint32_t *mflags)
 {
     uint8_t h[0x200];
@@ -407,10 +405,10 @@ static int x86_lx(const char *path, uint32_t *mflags)
             uint32_t fl = h[0x10] | h[0x11] << 8 | h[0x12] << 16 | (uint32_t)h[0x13] << 24;
             if (cpu >= 1 && cpu <= 4) { r = (fl & 0x8000) ? 2 : 1; if (mflags) *mflags = fl; }
         }
-        uint8_t ne[0x38];                    /* (a 16-bit OS/2 one, NE: ours too - 1 a program, 2 a DLL) */
+        uint8_t ne[0x38];                    /* 16-bit OS/2 (NE) works too: 1 program, 2 DLL */
         if (o && pread(fd, ne, sizeof ne, o) == (ssize_t)sizeof ne && ne[0] == 'N' && ne[1] == 'E' && (ne[0x36] == 1 || !ne[0x36])) {
             r = (ne[0x0D] & 0x80) ? 2 : 1;
-            if (mflags) *mflags = (uint32_t)((ne[0x0D] & 7) << 8);   /* (the application type, as LX keeps it) */
+            if (mflags) *mflags = (uint32_t)((ne[0x0D] & 7) << 8);   /* application type, as LX keeps it */
         }
     }
     close(fd);
@@ -487,19 +485,19 @@ static int unpack2(uint8_t *dst, uint32_t dsz, const uint8_t *s, uint32_t n)
     return 0;
 }
 
-/* ── thunks: the imports from the system ────────────────────────────── */
+/* ── thunks: imports from the system ── */
 static const char *libs[64] = { "DOSCALLS", "NLS", "MSG", "QUECALLS", "SESMGR", "KBDCALLS", "VIOCALLS", "MOUCALLS", "PMWIN", "PMGPI", "PMDRAG", "PMSHAPI", "HELPMGR", "PMCTLS", "PMSPL", 0 };
 enum { L_DOS, L_NLS, L_MSG, L_QUE, L_SES, L_KBD, L_VIO, L_MOU, L_PMWIN, L_PMGPI, L_PMDRAG, L_PMSHAPI, L_HELPMGR, L_PMCTLS, L_PMSPL, NLIBS };
 static int nlibs = NLIBS;
-/* OS/2's own DLLs that aren't here (yet): a program that imports from one
- * still starts (C runtimes link Presentation Manager's message box in for
- * their error reports); a call into one says so and returns 0 */
+/* OS/2 DLLs we don't have yet: a program importing from one still starts
+ * (C runtimes link PM's message box for error reports); calling into one
+ * prints a note and returns 0 */
 static const char *const sysdlls[] = { "PMVIOP",
     "PMWP", "PMMERGE", "PMBIDI", "PMPIC", "PMATM", "PMPRINTF", "PMSEC", "BDCALLS", "MONCALLS",
     "NAMPIPES", "SO32DLL", "TCP32DLL", "SOM", "SOMU", "MMPM", "MDM", "UCONV", "LIBUNI", 0 };
 
 typedef uint32_t (*api_fn)(void);
-typedef struct { int lib; uint16_t ord; const char *name; api_fn fn; uint8_t a16; } api_t;   /* a16: a 16-bit call, its arguments' bytes (0xFF: none) */
+typedef struct { int lib; uint16_t ord; const char *name; api_fn fn; uint8_t a16; } api_t;   /* a16: a 16-bit call and its argument bytes (0xFF: none) */
 static const api_t apis[];
 
 enum { T_EXIT, T_CBRET, T_THREXIT, T_FIRST };
@@ -740,7 +738,7 @@ static mod_t *load_module(const char *path, int dll, char *err, size_t errn)
     if (cpu < 1 || cpu > 4) { snprintf(err, errn, "SYS0193: %s isn't for an x86 CPU.", path); return 0; }
     snprintf(m->path, sizeof m->path, "%s", path);
     m->dll = dll;
-    /* the name: the resident names' first */
+    /* name: the first resident name */
     uint32_t rn = m->lx + H(m, LX_RESNAME), rl = fu8(m, rn);
     if (rl && rl < sizeof m->name && rn + 1 + rl <= m->fsz) { memcpy(m->name, m->f + rn + 1, rl); m->name[rl] = 0; }
     else {
@@ -751,8 +749,7 @@ static mod_t *load_module(const char *path, int dll, char *err, size_t errn)
     }
     for (char *q = m->name; *q; q++) *q = (char)toupper((unsigned char)*q);
 
-    /* objects: all of them together, where linked or (if they can be
-     * moved) wherever there's room */
+    /* objects: all together, at their link address or, if movable, wherever there's room */
     m->nobj = (int)H(m, LX_OBJCNT);
     if (m->nobj > MAXOBJ) { snprintf(err, errn, "%s: %d objects", path, m->nobj); return 0; }
     uint32_t ot = m->lx + H(m, LX_OBJTAB), lo_a = 0xFFFFFFFF, hi_a = 0;
@@ -761,23 +758,23 @@ static mod_t *load_module(const char *path, int dll, char *err, size_t errn)
         m->obase[i] = fu32(m, ot + 24 * i + 4);
         m->oflags[i] = fu32(m, ot + 24 * i + 8);
         uint32_t sz = m->osize[i] ? m->osize[i] : 1;
-        if (m->oflags[i] & 8) continue;                /* (resources: on their own, below) */
+        if (m->oflags[i] & 8) continue;                /* resources are placed separately, below */
         if (m->obase[i] < lo_a) lo_a = m->obase[i];
         if ((uint64_t)m->obase[i] + sz > hi_a) hi_a = m->obase[i] + sz;
     }
     if (!m->nobj || !hi_a) { snprintf(err, errn, "%s: no objects", path); return 0; }
     uint32_t span = hi_a - lo_a;
     if (!mem_reserve(lo_a, span)) {
-        /* (an EXE without its internal fixups stays where it's linked;
-         * DLLs move - OS/2 puts them in its shared area - and keep theirs) */
+        /* an EXE without internal fixups has to stay at its link address; DLLs move
+ * (OS/2 puts them in its shared area) and keep their fixups */
         if (!dll && (H(m, LX_MFLAGS) & 0x10)) { snprintf(err, errn, "SYS0192: %s can't go where it's linked (0x%x).", path, lo_a); return 0; }
         uint32_t at = mem_alloc(span + (lo_a % UNIT));
         if (!at) { snprintf(err, errn, "SYS0008: no memory for %s", path); return 0; }
-        ulen[at / UNIT] = 0;                           /* (not DosFreeMem's) */
+        ulen[at / UNIT] = 0;                           /* not DosFreeMem's */
         int32_t delta = (int32_t)(at + lo_a % UNIT - lo_a);
         for (int i = 0; i < m->nobj; i++) if (!(m->oflags[i] & 8)) m->obase[i] += (uint32_t)delta;
     }
-    /* the resource objects (linked at 0, often): wherever there's room */
+    /* resource objects (often linked at 0): wherever there's room */
     for (int i = 0; i < m->nobj; i++)
         if (m->oflags[i] & 8) {
             uint32_t at = mem_alloc(m->osize[i] ? m->osize[i] : 1);
@@ -809,7 +806,7 @@ static mod_t *load_module(const char *path, int dll, char *err, size_t errn)
     }
     mods[nmods++] = m;
     m->hmod = 0x100 + (uint32_t)nmods;
-    /* then the fixups (after every page is in: they cross pages) */
+    /* then the fixups, after all pages are in (they cross pages) */
     for (int i = 0; i < m->nobj; i++) {
         uint32_t first = fu32(m, ot + 24 * i + 12), n = fu32(m, ot + 24 * i + 16);
         for (uint32_t k = 0; k < n; k++)
@@ -845,7 +842,7 @@ static void run_inits(void)
     }
 }
 
-/* a DLL's file: by its path, else in the program's directory, the current one, LIBPATH */
+/* find a DLL: by its path, else in the program's directory, the current one, LIBPATH */
 static int dll_path(const char *name, char *h, size_t hn)
 {
     char file[NAME_MAX + 1];
@@ -883,7 +880,7 @@ static mod_t *load_dll(const char *name, char *err, size_t errn)
     snprintf(file, sizeof file, "%s%s", b, strchr(b, '.') ? "" : ".DLL");
     int found = 0;
     if (b != name) found = !os2_to_host(name, h, sizeof h, 0) && access(h, R_OK) == 0;
-    /* the program's directory, the current one, then LIBPATH */
+    /* program directory, current directory, then LIBPATH */
     char dirs[8192] = "";
     snprintf(dirs, sizeof dirs, "%s", exe_dir);
     size_t l = strlen(dirs);
@@ -932,7 +929,7 @@ static void setup_process(int argc, char **argv)
         if (!(stack_lo = mem_alloc(sz))) die(8, "SYS0008: no memory for the stack");
         stack_top = stack_lo + sz;
     }
-    /* the environment, then the program's name; the command line */
+    /* environment, then the program name and command line */
     size_t need = 64 + PATH_MAX * 2;
     for (char **e = environ; *e; e++) need += strlen(*e) + 1;
     for (int i = 1; i < argc; i++) need += strlen(argv[i]) * 2 + 3;
@@ -962,8 +959,8 @@ static void setup_process(int argc, char **argv)
     guest_strcpy(&at, args);
     guest_strcpy(&at, "");
     free(args);
-    /* the thread's and process's information blocks */
-    p32(tib, 0xFFFFFFFF);                   /* exception handlers: none */
+    /* thread and process information blocks */
+    p32(tib, 0xFFFFFFFF);                   /* no exception handlers */
     p32(tib + 4, stack_lo);
     p32(tib + 8, stack_top);
     p32(tib + 12, tib2);
@@ -984,7 +981,7 @@ static void setup_process(int argc, char **argv)
     process_ready = 1;
 }
 
-/* ── running: interpreter, then system call, then interpreter ... ────── */
+/* ── running: interpreter, system call, interpreter, ... ── */
 #define api_noret (me->api_noret)
 static int running_exitlist;
 static void exception(int why);
@@ -992,8 +989,8 @@ static void api_call(int idx);
 static void api16(thunk_t *t);
 static void thread_end(uint32_t code) __attribute__((noreturn));
 
-/* another thread's turn; then as DosSuspendThread, DosEnterCritSec,
- * DosKillThread say */
+/* let another thread run, honouring DosSuspendThread, DosEnterCritSec
+ * and DosKillThread */
 static void checkpoint(void)
 {
     UNLOCKED(sched_yield());
@@ -1001,8 +998,8 @@ static void checkpoint(void)
     if (me->kill) thread_end(0);
 }
 
-static int itrace;                          /* OS2X86_ITRACE=1: every instruction's place and bytes, on stderr */
-static uint32_t watch_at;                   /* OS2X86_WATCH=flat address (hex): who changes the 4 bytes there */
+static int itrace;                          /* OS2X86_ITRACE=1: every instruction's address and bytes to stderr */
+static uint32_t watch_at;                   /* OS2X86_WATCH=flat address (hex): report who writes the 4 bytes there */
 static void run(int nested)
 {
     for (;;) {
@@ -1012,7 +1009,7 @@ static void run(int nested)
             if (g32(watch_at) != before)
                 fprintf(stderr, "[os2x86] watch %08x: %08x -> %08x at %04x:%04x\n", watch_at, before, g32(watch_at), cs, ip);
             if (r == CPU_STEPS) continue;
-            C.eip = C.eip;                   /* (the rest as below: a thunk, an exception) */
+            C.eip = C.eip;                   /* the rest as below: a thunk or an exception */
             if (r == CPU_THUNK) {
                 uint32_t o = C.cs_base + C.eip - C.thunk_lo;
                 int idx = (int)(o / T_SLOT);
@@ -1065,7 +1062,7 @@ static uint32_t guest_call(uint32_t fn, int n, const uint32_t *args)
     return ret;
 }
 
-/* exit list: DosExitList */
+/* DosExitList */
 typedef struct { uint32_t fn; uint32_t order; } exitfn_t;
 static exitfn_t exitlist[32];
 static int nexit;
@@ -1089,7 +1086,7 @@ static void do_exit(uint32_t code)
 
 static void thread_end(uint32_t code)
 {
-    if (me->tid == 1) do_exit(code);        /* (thread 1's end is the process's) */
+    if (me->tid == 1) do_exit(code);        /* thread 1 ending ends the process */
     me->state = 2;
     me->exitcode = code;
     nlive--;
@@ -1099,10 +1096,10 @@ static void thread_end(uint32_t code)
     pthread_exit(0);
 }
 
-/* a 16-bit call (far, Pascal): SS:SP the return address, then the
- * arguments, the last one first; it pops them; the result in AX */
+/* 16-bit call (far Pascal): SS:SP has the return address, then the arguments,
+ * last one first; the callee pops them; result in AX */
 static _Thread_local uint32_t a16;
-static _Thread_local const api_t *cur16;    /* (the 16-bit call being made: pm16.inc's generic wrapper reads it) */
+static _Thread_local const api_t *cur16;    /* the 16-bit call in progress (pm16.inc's generic wrapper reads it) */
 static void api16(thunk_t *t)
 {
     uint32_t sp = C.stack16 ? C.r[ESP] & 0xFFFF : C.r[ESP];
@@ -1115,8 +1112,8 @@ static void api16(thunk_t *t)
     uint32_t rv = t->api->fn();
     if (trace) fprintf(stderr, "[os2x86] %s.%s (16-bit) = %u\n", libs[t->lib], t->api->name, rv);
     C.r[EAX] = (C.r[EAX] & 0xFFFF0000) | (rv & 0xFFFF);
-    C.r[EDX] = (C.r[EDX] & 0xFFFF0000) | (rv >> 16);   /* (DX:AX: a 32-bit result - a handle, an MRESULT; else DX 0) */
-    sp += 4 + (t->api->a16 == 0xFF ? 0 : t->api->a16);   /* (0xFF: a 16-bit call without arguments) */
+    C.r[EDX] = (C.r[EDX] & 0xFFFF0000) | (rv >> 16);   /* DX:AX for 32-bit results (handles, MRESULTs); otherwise DX is 0 */
+    sp += 4 + (t->api->a16 == 0xFF ? 0 : t->api->a16);   /* 0xFF: a 16-bit call without arguments */
     C.r[ESP] = C.stack16 ? (C.r[ESP] & 0xFFFF0000) | (sp & 0xFFFF) : sp;
     cpu_load_seg(&C, 1, (uint16_t)cs);
     C.eip = ip;
@@ -1138,7 +1135,7 @@ static void api_call(int idx)
                     libs[t->lib], t->ord, t->name[0] ? " " : "", t->name, t->lib <= L_MOU);
             t->warned = 1;
         }
-        rv = t->lib <= L_MOU ? ERROR_INVALID_FUNCTION : 0;   /* (Dos*: an error; PM: no handle, FALSE) */
+        rv = t->lib <= L_MOU ? ERROR_INVALID_FUNCTION : 0;   /* Dos*: an error; PM: no handle / FALSE */
     }
     if (trace)
         fprintf(stderr, "[os2x86] %s.%s(%x, %x, %x, %x) = %u\n", libs[t->lib],
@@ -1191,13 +1188,13 @@ static void dispatch(uint32_t num, uint32_t np, uint32_t p0, uint32_t p1, uint32
     if (!ok(rep, 48 + 176)) fatal_trap(num, p0, p1, addr);
     memset(C.mem + rep, 0, 48 + 176);
     p32(rep, num); p32(rep + 12, addr); p32(rep + 16, np); p32(rep + 20, p0); p32(rep + 24, p1);
-    p32(ctx, 7);                            /* control, integer, segments */
+    p32(ctx, 7);                            /* control, integer and segment registers */
     p32(ctx + 112, C.sreg[5]); p32(ctx + 116, C.sreg[4]); p32(ctx + 120, C.sreg[0]); p32(ctx + 124, C.sreg[3]);
     p32(ctx + 128, C.r[EDI]); p32(ctx + 132, C.r[ESI]); p32(ctx + 136, C.r[EAX]); p32(ctx + 140, C.r[EBX]);
     p32(ctx + 144, C.r[EDX]); p32(ctx + 148, C.r[ECX]); p32(ctx + 152, C.r[EBP]); p32(ctx + 156, C.eip);
     p32(ctx + 160, SEL_CODE); p32(ctx + 164, C.eflags); p32(ctx + 168, C.r[ESP]); p32(ctx + 172, SEL_DATA);
-    /* a handler that leaves by DosUnwindException (longjmp out of a
-     * signal handler) comes back here, its nested calls abandoned */
+    /* a handler leaving through DosUnwindException (longjmp out of a signal
+ * handler) comes back here, abandoning its nested calls */
     jmp_buf jb, *prev = me->unwind_jb;
     int d0 = xcpt_depth;
     me->unwind_jb = &jb;
@@ -1210,7 +1207,7 @@ static void dispatch(uint32_t num, uint32_t np, uint32_t p0, uint32_t p1, uint32
         C.r[ESP] = sp;
         if (trace) fprintf(stderr, "[os2x86] exception %08x at %08x: handler %08x (record %08x) says %08x\n",
                            num, addr, g32(rec + 4), rec, r);
-        if (r == XCPT_CONTINUE_EXECUTION) { /* as the context says */
+        if (r == XCPT_CONTINUE_EXECUTION) { /* continue as the context says */
             C.r[EDI] = g32(ctx + 128); C.r[ESI] = g32(ctx + 132); C.r[EAX] = g32(ctx + 136);
             C.r[EBX] = g32(ctx + 140); C.r[EDX] = g32(ctx + 144); C.r[ECX] = g32(ctx + 148);
             C.r[EBP] = g32(ctx + 152); C.eip = g32(ctx + 156); C.eflags = (g32(ctx + 164) & 0x00254FD5) | 0x202;
@@ -1464,7 +1461,7 @@ static uint32_t api_DosMove(void)
     if (stat(a, &sa)) return oserr(errno);
     if (stat(b, &sb) == 0 && (sa.st_ino != sb.st_ino || sa.st_dev != sb.st_dev)) return ERROR_ACCESS_DENIED;
     if (sa.st_ino == sb.st_ino && strcmp(a, b) == 0) {
-        /* only the case differs: the name as given */
+        /* only the case differs: keep the name as given */
         char *s = gs(A(1)), *base = strrchr(b, '/');
         const char *nb = s;
         for (const char *q = s; *q; q++) if (*q == '\\' || *q == '/' || *q == ':') nb = q + 1;
@@ -1823,7 +1820,7 @@ static uint32_t api_DosExitList(void)
         return 0;
     case 3:
         if (!running_exitlist) return ERROR_INVALID_FUNCTION;
-        C.eip = thunk_addr(T_CBRET);         /* back to do_exit, for the next */
+        C.eip = thunk_addr(T_CBRET);         /* back to do_exit for the next one */
         api_noret = 1;
         return 0;
     }
@@ -1872,13 +1869,13 @@ static uint32_t api_DosQuerySysInfo(void)
         case 2: v = 16; break;
         case 3: v = 16; break;
         case 4: v = 0; break;
-        case 5: v = 3; break;                /* boot drive C: */
+        case 5: v = 3; break;                /* boot drive is C: */
         case 6: v = 1; break;
         case 7: v = 3; break;
         case 8: v = 32; break;
         case 9: v = 248; break;
         case QSV_PAGE_SIZE: v = 4096; break;
-        case 11: v = 20; break;              /* version 20.45: Warp 4.52 */
+        case 11: v = 20; break;              /* version 20.45 = Warp 4.52 */
         case 12: v = 45; break;
         case 13: v = 0; break;
         case 14: v = (uint32_t)ms_now(); break;
@@ -1937,8 +1934,8 @@ static uint32_t api_DosQueryExtLIBPATH(void) { p8(A(0), 0); return 0; }
 static uint32_t api_DosFlatToSel(void) { uint32_t a = C.r[EAX]; return ((a >> 16) << 19 | 7 << 16) | (a & 0xFFFF); }
 static uint32_t api_DosSelToFlat(void) { uint32_t v = C.r[EAX]; return ((v >> 19) << 16) | (v & 0xFFFF); }
 static uint32_t api_DosEnterMustComplete(void) { if (A(0)) p32(A(0), 1); return 0; }
-/* the times a program has asked for Ctrl+C/Break as exceptions: OS/2 counts
- * them (spawn() takes the focus away, then gives it back as often) */
+/* how many times the program asked for Ctrl+C/Break as exceptions; OS/2
+ * counts them (spawn() takes the focus away and gives it back as often) */
 static uint32_t sig_focus;
 static uint32_t api_DosSetSignalExceptionFocus(void)
 {
@@ -1963,7 +1960,7 @@ static uint32_t api_DosUnsetExceptionHandler(void)
     uint32_t rec = A(0), at = C.fs_base;
     for (int i = 0; i < 1000; i++) {
         uint32_t cur = g32(at);
-        if (!cur || cur == 0xFFFFFFFF) return 0x6A3;    /* ERROR_INVALID_EXCEPTION_HANDLER... */
+        if (!cur || cur == 0xFFFFFFFF) return 0x6A3;    /* ERROR_INVALID_EXCEPTION_HANDLER, possibly */
         if (cur == rec) { p32(at, g32(rec)); return 0; }
         at = cur;
     }
@@ -1977,7 +1974,7 @@ static uint32_t api_DosUnwindException(void)
         C.r[ESP] += 4;
         C.eip = target;
         api_noret = 1;
-        if (me->unwind_jb) longjmp(*me->unwind_jb, 1);   /* (out of the handler's nested calls too) */
+        if (me->unwind_jb) longjmp(*me->unwind_jb, 1);   /* out of the handler's nested calls too */
     }
     return 0;
 }
@@ -1986,7 +1983,7 @@ static uint32_t api_DosRaiseException(void)
     uint32_t r = A(0);
     if (!ok(r, 24)) return ERROR_INVALID_PARAMETER;
     uint32_t sp = C.r[ESP], ret = g32(sp);
-    C.eip = ret; C.r[ESP] = sp + 4;          /* (continuing goes back to the caller) */
+    C.eip = ret; C.r[ESP] = sp + 4;          /* continuing returns to the caller */
     C.op_eip = ret;
     api_noret = 1;
     dispatch(g32(r), g32(r + 16), g32(r + 20), g32(r + 24), g32(r + 12) ? g32(r + 12) : ret);
@@ -2056,7 +2053,7 @@ static uint32_t api_DosQueryProcAddr(void)
 }
 static uint32_t api_DosQueryProcType(void) { return p32(A(3), 1) ? 0 : ERROR_INVALID_PARAMETER; }
 
-/* programs: runnable here, or an x86 OS/2 one (OS/2 has no x bit) */
+/* programs: host executables, or x86 OS/2 ones (OS/2 has no x bit) */
 static int runnable(const char *p) { return !is_dir(p) && (access(p, X_OK) == 0 || (access(p, R_OK) == 0 && x86_lx(p, 0))); }
 static int find_program(const char *name, char *out, size_t n)
 {
@@ -2114,8 +2111,8 @@ static void put_result(uint32_t pres, int status)
     else { p32(pres, WTERMSIG(status) == SIGSEGV || WTERMSIG(status) == SIGILL ? 2 : 3); p32(pres + 4, (uint32_t)WTERMSIG(status)); }
 }
 
-/* a program (this system's path h) with an argument string and an
- * environment block (guest, 0: ours); x86 OS/2 ones through os2x86 */
+/* run a program (host path h) with an argument string and an environment
+ * block (guest address, 0 for ours); x86 OS/2 ones go through os2x86 */
 static pid_t start_child(const char *h, const char *astr, uint32_t penv)
 {
     char *abuf = malloc(strlen(astr) + 2), *av[256 + 3];
@@ -2174,7 +2171,7 @@ static uint32_t api_DosExecPgm(void)
     return 0;
 }
 
-/* QUECALLS: queues (in this process; a session's end is written to one) */
+/* QUECALLS: queues (within this process; a session's end is written to one) */
 typedef struct { uint32_t pid, req, cb, buf, prio; } qel_t;
 typedef struct { int used, order; char name[128]; qel_t *el; int n, cap; } queue_t;
 static queue_t queues[32];
@@ -2271,9 +2268,9 @@ static uint32_t api_DosCloseQueue(void)
     return 0;
 }
 
-/* SESMGR: DosStartSession - a program in a "session" of its own: here a
- * child on the same terminal; when it ends, a related one's end goes to
- * its termination queue ({session, result}, as OS/2 writes it) */
+/* SESMGR: DosStartSession runs the program as a child on the same terminal;
+ * when a related one ends, {session, result} goes to its termination queue
+ * like OS/2 does */
 typedef struct { pid_t pid; uint32_t session; char termq[128]; } sess_t;
 static void *sess_watch(void *arg)
 {
@@ -2301,7 +2298,7 @@ static uint32_t api_DosStartSession(void)     /* (psd, psession, ppid) */
     char *name = g32(sd + 12) ? gs(g32(sd + 12)) : 0, *in = g32(sd + 16) ? gs(g32(sd + 16)) : 0;
     char *tq = len >= 24 && g32(sd + 20) ? gs(g32(sd + 20)) : 0, h[PATH_MAX];
     uint32_t env = len >= 28 ? g32(sd + 24) : 0;
-    if (!name || !*name) {                       /* none: a command shell */
+    if (!name || !*name) {                       /* no name: a command shell */
         name = getenv("COMSPEC");
         if (!name) name = "CMD.EXE";
     }
@@ -2368,7 +2365,7 @@ static mod_t *mod_by_handle(uint32_t h);
 static int ne_find_resource(uint32_t hmod, uint32_t type, uint32_t id, uint32_t *addr, uint32_t *size);
 static int find_resource(uint32_t hmod, uint32_t type, uint32_t id, uint32_t *addr, uint32_t *size)
 {
-    int nr = ne_find_resource(hmod, type, id, addr, size);   /* (a 16-bit module's: ne16.inc; -1 not one) */
+    int nr = ne_find_resource(hmod, type, id, addr, size);   /* a 16-bit module's (ne16.inc); -1 if it isn't one */
     if (nr >= 0) return nr;
     mod_t *m = hmod ? mod_by_handle(hmod) : exe;
     if (!m) return 0;
@@ -2387,7 +2384,7 @@ static int find_resource(uint32_t hmod, uint32_t type, uint32_t id, uint32_t *ad
 static uint32_t api_DosGetResource(void)      /* (hmod, idType, idName, ppb) */
 {
     uint32_t a, n;
-    if (!find_resource(A(0), A(1), A(2), &a, &n)) return ERROR_INVALID_PARAMETER;   /* (no such resource) */
+    if (!find_resource(A(0), A(1), A(2), &a, &n)) return ERROR_INVALID_PARAMETER;   /* no such resource */
     return p32(A(3), a) ? 0 : ERROR_INVALID_PARAMETER;
 }
 static uint32_t api_DosQueryResourceSize(void) /* (hmod, idType, idName, pcb) */
@@ -2418,13 +2415,13 @@ static uint32_t api_DosCreateThread(void)
     t->stack = stack;
     t->state = 1;
     t->suspended = flags & CREATE_SUSPENDED;
-    /* its information blocks just past its stack */
+    /* its information blocks go just past its stack */
     uint32_t top = stack + cb, ttib = top, ttib2 = top + 0x40;
     p32(ttib, 0xFFFFFFFF); p32(ttib + 4, stack); p32(ttib + 8, top); p32(ttib + 12, ttib2);
     p32(ttib + 16, 20); p32(ttib + 20, t->tid);
     p32(ttib2, t->tid); p32(ttib2 + 4, 0x200); p32(ttib2 + 8, 20);
     t->cpu.fs_base = t->cpu.tib = ttib;
-    /* fn(param), returning to the end of the thread */
+    /* call fn(param), returning to the thread's end */
     p32(top - 4, param);
     p32(top - 8, thunk_addr(T_THREXIT));
     t->cpu.r[ESP] = top - 8;
@@ -2448,7 +2445,7 @@ static uint32_t api_DosWaitThread(void)
     if (!ok(ptid, 4)) return ERROR_INVALID_PARAMETER;
     uint32_t want = g32(ptid);
     for (;;) {
-        int others = want == 1 && me->tid != 1;      /* (thread 1: till the end) */
+        int others = want == 1 && me->tid != 1;      /* thread 1 waits until the end */
         for (int i = 1; i < MAXTHR; i++) {
             thr_t *t = thrs[i];
             if (!t || t->state == 3 || t == me || (want && t->tid != want)) continue;
@@ -2497,7 +2494,7 @@ static uint32_t api_DosExitCritSec(void)
     return 0;
 }
 
-/* semaphores: event, mutex, muxwait; waiting gives up the lock (gcv) */
+/* semaphores: event, mutex, muxwait; waiting releases the lock (gcv) */
 enum { SEM_EVENT = 1, SEM_MUTEX, SEM_MUX };
 typedef struct { int used, kind; char name[64]; uint32_t count, owner, nrec, any; uint32_t rec[64][2]; } sem_t2;
 static sem_t2 sems[256];
@@ -2644,7 +2641,7 @@ static uint32_t api_DosCreateMuxWaitSem(void)
     sem_t2 *s = sem_new(pname, ph, SEM_MUX, &err);
     if (!s) return err;
     s->nrec = n;
-    s->any = !(fl & DCMW_WAIT_ALL);              /* else any */
+    s->any = !(fl & DCMW_WAIT_ALL);              /* otherwise any */
     for (uint32_t k = 0; k < n; k++) { s->rec[k][0] = g32(recs + 8 * k); s->rec[k][1] = g32(recs + 8 * k + 4); }
     return 0;
 }
@@ -2721,12 +2718,12 @@ static uint32_t api_DosPutMessage(void)
     return 0;
 }
 
-/* ── KBDCALLS, VIOCALLS: the 16-bit console calls, on this terminal ─── */
+/* ── KBDCALLS, VIOCALLS: the 16-bit console calls, on this terminal ── */
 static uint16_t W(uint32_t o) { return g16(a16 + o); }
-static uint32_t FP(uint32_t o) { uint32_t v = g32(a16 + o); return ((v >> 19) << 16) + (v & 0xFFFF); }   /* 16:16: flat */
+static uint32_t FP(uint32_t o) { uint32_t v = g32(a16 + o); return ((v >> 19) << 16) + (v & 0xFFFF); }   /* 16:16 to flat */
 
-static int kbd_pend_ch = -1, kbd_pend_scan;    /* a key KbdPeek saw */
-static int rd1(int ms)                          /* a byte from stdin, waiting ms (-1: as long as it takes) */
+static int kbd_pend_ch = -1, kbd_pend_scan;    /* a key KbdPeek already read */
+static int rd1(int ms)                          /* read a byte from stdin, waiting up to ms (-1: forever) */
 {
     struct pollfd p = { 0, POLLIN, 0 };
     int r;
@@ -2738,11 +2735,11 @@ static int rd1(int ms)                          /* a byte from stdin, waiting ms
     return n == 1 ? ch : -2;
 }
 
-/* stdin carries the keys and, while MouOpen has it on, the terminal's
- * mouse reports (SGR: ESC [ < b ; col ; row M/m): pump() sorts them */
+/* stdin has the keys and, while MouOpen has turned them on, the terminal's
+ * mouse reports (SGR: ESC [ < b ; col ; row M/m); pump() separates them */
 typedef struct { uint16_t fs; uint32_t time; int16_t row, col; } mouev_t;
 static mouev_t mouq[64];
-static int moun, mou_on, mou_buttons;           /* (buttons: 1 left, 2 right, 4 middle, as OS/2 numbers them) */
+static int moun, mou_on, mou_buttons;           /* buttons: 1 left, 2 right, 4 middle, as OS/2 numbers them */
 static uint16_t mou_mask = 0x7F;
 static int mou_row, mou_col;
 static unsigned char kbuf[64];
@@ -2750,8 +2747,8 @@ static int kn;
 static void kpush(int b) { if (b >= 0 && kn < (int)sizeof kbuf) kbuf[kn++] = (unsigned char)b; }
 static void mou_event(int b, int col, int row, int press)
 {
-    if (b & 64) return;                          /* (the wheel: OS/2's mice haven't one) */
-    static const int map[3] = { 1, 4, 2 };       /* SGR left, middle, right */
+    if (b & 64) return;                          /* wheel: OS/2 mice don't have one */
+    static const int map[3] = { 1, 4, 2 };       /* SGR order: left, middle, right */
     int motion = (b & 32) != 0, btn = b & 3;
     if (!motion && btn < 3) {
         if (press) mou_buttons |= map[btn]; else mou_buttons &= ~map[btn];
@@ -2766,7 +2763,7 @@ static void mou_event(int b, int col, int row, int press)
     if (moun == 64) memmove(mouq, mouq + 1, 63 * sizeof *mouq), moun--;
     mouq[moun++] = (mouev_t){ fs, (uint32_t)ms_now(), (int16_t)(row - 1), (int16_t)(col - 1) };
 }
-static int pump(int ms)                         /* 1: a byte or a mouse event came */
+static int pump(int ms)                         /* returns 1 if a byte or a mouse event came in */
 {
     int b = rd1(ms);
     if (b < 0) return 0;
@@ -2783,7 +2780,7 @@ static int pump(int ms)                         /* 1: a byte or a mouse event ca
     if (c == 'M' || c == 'm') mou_event(v[0], v[1], v[2], c == 'M');
     return 1;
 }
-static int kbyte(int ms)                        /* the next byte that's a key's */
+static int kbyte(int ms)                        /* next byte that belongs to a key */
 {
     for (;;) {
         if (kn) { int b = kbuf[0]; memmove(kbuf, kbuf + 1, (size_t)--kn); return b; }
@@ -2799,7 +2796,7 @@ static int tty_raw(struct termios *old)
     tcsetattr(0, TCSANOW, &raw);
     return 1;
 }
-/* a key: its character (0xE0 for the extended ones) and scan code */
+/* read a key: its character (0xE0 for extended keys) and scan code */
 static int kbd_key(int wait, int *scan)
 {
     if (kbd_pend_ch >= 0) { int ch = kbd_pend_ch; *scan = kbd_pend_scan; kbd_pend_ch = -1; return ch; }
@@ -2807,7 +2804,7 @@ static int kbd_key(int wait, int *scan)
     int tty = tty_raw(&old);
     int ch = kbyte(wait ? -1 : 0);
     *scan = 0;
-    if (ch == 27) {                             /* ESC [ A ...: the cursor keys */
+    if (ch == 27) {                             /* ESC [ A ...: cursor keys */
         int c2 = kbyte(40);
         if (c2 == '[' || c2 == 'O') {
             int c3 = kbyte(40), n = 0;
@@ -2835,7 +2832,7 @@ static void put_keyinfo(uint32_t p, int ch, int scan)
     memset(C.mem + p, 0, 10);
     if (ch < 0) return;
     p8(p, (uint8_t)ch); p8(p + 1, (uint8_t)scan);
-    p8(p + 2, (uint8_t)(0x40 | (ch == 0 || ch == 0xE0 ? 2 : 0)));      /* final character; extended */
+    p8(p + 2, (uint8_t)(0x40 | (ch == 0 || ch == 0xE0 ? 2 : 0)));      /* final character; extended key */
     p32(p + 6, (uint32_t)ms_now());
 }
 static uint32_t api_KbdCharIn(void)           /* (pkbci, fWait, hkbd) */
@@ -2949,7 +2946,7 @@ static void screen_size(int *rows, int *cols)
     *rows = 25; *cols = 80;
     if (ioctl(1, TIOCGWINSZ, &ws) == 0 && ws.ws_row && ws.ws_col) { *rows = ws.ws_row; *cols = ws.ws_col; }
 }
-static void attr_out(uint8_t a)                  /* a text attribute: CGA colours as ANSI ones */
+static void attr_out(uint8_t a)                  /* text attribute: CGA colours as ANSI ones */
 {
     static const int map[8] = { 0, 4, 2, 6, 1, 5, 3, 7 };
     tty_printf("\033[0;%d;%dm", (a & 8 ? 90 : 30) + map[a & 7], 40 + map[(a >> 4) & 7]);
@@ -2996,7 +2993,7 @@ static uint32_t api_VioGetCurPos(void)        /* (prow, pcol, hvio) */
         raw = old;
         raw.c_lflag &= ~(tcflag_t)(ICANON | ECHO);
         tcsetattr(0, TCSANOW, &raw);
-        tty_out("\033[6n", 4);                    /* the terminal says: ESC [ row ; col R */
+        tty_out("\033[6n", 4);                    /* the terminal answers ESC [ row ; col R */
         int r = 0, cl = 0, ch, *v = &r;
         if (rd1(200) == 27 && rd1(200) == '[') {
             while ((ch = rd1(200)) >= 0 && ch != 'R') {
@@ -3023,7 +3020,7 @@ static void scroll(int up)                     /* (top, left, bot, right, lines,
     attr_out(a);
     tty_out("\0337", 2);
     if (lines >= bot - top + 1 || left > 0 || right + 1 < (uint32_t)cols) {
-        /* the whole area (or not the full width: cleared) */
+        /* the whole area (if it's not full width, just clear it) */
         if (lines) for (uint32_t r = top; r <= bot; r++) {
             at(r, left);
             for (uint32_t k = left; k <= right; k++) tty_out((char *)&ch, 1);
@@ -3079,7 +3076,7 @@ static uint32_t api_VioWrtCellStr(void)       /* (pcells, cb, row, col, hvio) */
     tty_out("\033[0m\0338", 6);
     return 0;
 }
-static uint32_t api_VioReadCellStr(void)      /* (pcells, pcb, row, col, hvio): not readable here: blanks */
+static uint32_t api_VioReadCellStr(void)      /* (pcells, pcb, row, col, hvio): the screen can't be read back, so blanks */
 {
     uint32_t pcb = FP(6), b = FP(10), n = g16(pcb) & ~1u;
     if (!ok(b, n ? n : 1)) return ERROR_INVALID_PARAMETER;
@@ -3763,7 +3760,7 @@ int main(int argc, char **argv)
     cpu_reset(&C);
     C.size = (uint32_t)size;
     C.lo = UNIT;
-    /* the thunks: below 512 MB, where 16:16 pointers (tiles) reach */
+    /* thunks go below 512 MB, where 16:16 (tiled) pointers can reach */
     C.thunk_lo = (C.size < 0x20000000u ? C.size : 0x20000000u) - UNIT;
     C.thunk_hi = C.thunk_lo + UNIT;
     nunits = C.size / UNIT;
@@ -3772,12 +3769,12 @@ int main(int argc, char **argv)
     uused[0] = uused[nunits - 1] = uused[C.thunk_lo / UNIT] = 1;
     memset(C.mem + C.thunk_lo, 0xCC, UNIT);
     drives_init();
-    if (!strcmp(argv[1], "--view")) {                        /* VIEW: an .INF (.HLP) file, a topic */
+    if (!strcmp(argv[1], "--view")) {                        /* VIEW: show an .INF/.HLP file at a topic */
         if (argc < 3) die(2, "usage: os2x86 --view FILE.INF [topic]");
         return help_view_main(argv[2], argc > 3 ? argv[3] : 0);
     }
 
-    /* the program: as this system names it, else as OS/2 does */
+    /* the program: by host name, else by OS/2 name */
     char h[PATH_MAX], err[1024];
     if (access(argv[1], R_OK) == 0 && realpath(argv[1], h)) { }
     else if (!find_program(argv[1], h, sizeof h)) die(2, "SYS1041: The name %s is not recognized as a program.", argv[1]);
@@ -3809,7 +3806,7 @@ int main(int argc, char **argv)
     if (!eo || (int)eo > exe->nobj) die(193, "SYS0193: %s has no starting point.", h);
     setup_process(argc, argv);
     run_inits();
-    /* main: [esp] back to DosExit, the module, 0, environment, command line */
+    /* main's stack: [esp] returns to DosExit; then the module, 0, environment, command line */
     C.r[ESP] = stack_top;
     gpush(cmdp); gpush(envp); gpush(0); gpush(exe->hmod); gpush(thunk_addr(T_EXIT));
     C.r[EAX] = C.r[EBX] = C.r[ECX] = C.r[EDX] = C.r[ESI] = C.r[EDI] = C.r[EBP] = 0;
