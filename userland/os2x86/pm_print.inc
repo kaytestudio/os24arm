@@ -95,10 +95,10 @@ static uint32_t api_DevEscape(void)
     if (!b) return 0;
     prdoc_t *p = &prdocs[d - pmdcs < 8 ? (int)(d - pmdcs) : 0];
     switch (A(1)) {
-    case 0:                                                  /* DEVESC_QUERYESCSUPPORT: (the code, in pbIn) */
+    case DEVESC_QUERYESCSUPPORT:                             /* (the code, in pbIn) */
         if (A(3) && ok(A(3), 4)) { uint32_t c = g32(A(3)); return c == 8150 || c == 8151 || c == 8153 || c == 16300 || c == 8160; }
         return 0;
-    case 8150: {                                             /* DEVESC_STARTDOC: the document's name */
+    case DEVESC_STARTDOC: {                                  /* the document's name */
         pr_free(p);
         char *n = A(3) && A(2) ? gp(A(3), A(2)) : 0;
         snprintf(p->doc, sizeof p->doc, "%.*s", n ? (int)strnlen(n, A(2)) : 0, n ? n : "");
@@ -106,13 +106,13 @@ static uint32_t api_DevEscape(void)
         pr_clear(b);
         return 1;
     }
-    case 16300:                                              /* DEVESC_NEWFRAME: the page done, a new one */
+    case DEVESC_NEWFRAME:                                    /* the page done, a new one */
         pr_keep(p, b);
         pr_clear(b);
         return 1;
-    case 8153: pr_free(p); p->started = 0; pr_clear(b); return 1;   /* DEVESC_ABORTDOC */
-    case 8160: if (A(4) && A(5) && ok(A(5), 2)) { p16(A(5), (uint16_t)pr_jobs); p32(A(4), 2); } return 1;   /* DEVESC_GETJOBID */
-    case 8151: {                                             /* DEVESC_ENDDOC: the last page, the PDF; its job id back */
+    case DEVESC_ABORTDOC: pr_free(p); p->started = 0; pr_clear(b); return 1;
+    case DEVESC_GETJOBID: if (A(4) && A(5) && ok(A(5), 2)) { p16(A(5), (uint16_t)pr_jobs); p32(A(4), 2); } return 1;
+    case DEVESC_ENDDOC: {                                    /* the last page, the PDF; its job id back */
         int blank = 1;
         for (int i = 0; i < b->pw * b->ph && blank; i++) if (b->px[i] != 0xFFFFFFFFu) blank = 0;
         if (!blank || !p->npages) pr_keep(p, b);
@@ -141,10 +141,10 @@ static uint32_t api_DevQueryHardcopyCaps(void)
     snprintf((char *)C.mem + h, 32, "A4");
     p32(h + 32, 210); p32(h + 36, 297);                      /* (mm) */
     p32(h + 40, 0); p32(h + 44, 0); p32(h + 48, 210); p32(h + 52, 297);
-    p32(h + 56, PR_W); p32(h + 60, PR_H); p32(h + 64, 1);    /* HCAPS_CURRENT */
+    p32(h + 56, PR_W); p32(h + 60, PR_H); p32(h + 64, HCAPS_CURRENT);
     return 1;
 }
-static uint32_t api_DevPostDeviceModes(void) { return 1; }  /* (no job properties to ask: DEV_OK) */
+static uint32_t api_DevPostDeviceModes(void) { return DEV_OK; }  /* (no job properties to ask) */
 static uint32_t api_DevQueryDeviceNames(void)               /* (hab, pszDriver, pldn, aDeviceName, aDeviceDesc, pldt, aDataType) */
 {
     if (A(2) && ok(A(2), 4)) { if (g32(A(2)) && A(3) && ok(A(3), 32)) snprintf((char *)C.mem + A(3), 32, "PDF"); if (g32(A(2)) && A(4) && ok(A(4), 64)) snprintf((char *)C.mem + A(4), 64, "PDF file"); p32(A(2), 1); }
@@ -170,7 +170,7 @@ static uint32_t api_SplEnumQueue(void)  /* (pszComputer, ulLevel, pBuf, cbBuf, p
 {
     uint32_t need;
     if (A(5)) p32(A(5), 1);
-    if (A(1) != 3 && A(1) != 4 && A(1) != 6) { if (A(4)) p32(A(4), 0); if (A(6)) p32(A(6), 0); return 124; }   /* ERROR_INVALID_LEVEL */
+    if (A(1) != 3 && A(1) != 4 && A(1) != 6) { if (A(4)) p32(A(4), 0); if (A(6)) p32(A(6), 0); return ERROR_INVALID_LEVEL; }
     int got = pr_queue_info(A(2), A(3), &need);
     if (A(6)) p32(A(6), need);
     if (A(4)) p32(A(4), got ? 1 : 0);
@@ -179,7 +179,7 @@ static uint32_t api_SplEnumQueue(void)  /* (pszComputer, ulLevel, pBuf, cbBuf, p
 static uint32_t api_SplQueryQueue(void)  /* (pszComputer, pszQueueName, ulLevel, pBuf, cbBuf, pcbNeeded) */
 {
     char *n = gs(A(1));
-    if (!n || strcasecmp(n, "PDF")) return 2150;             /* NERR_QNotFound */
+    if (!n || strcasecmp(n, "PDF")) return NERR_QNotFound;
     uint32_t need;
     int got = pr_queue_info(A(3), A(4), &need);
     if (A(5)) p32(A(5), need);

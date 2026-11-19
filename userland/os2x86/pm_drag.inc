@@ -38,7 +38,7 @@ static uint32_t api_DrgAllocDraginfo(void)          /* (cditem) */
 {
     uint32_t n = A(0) ? A(0) : 1, d = galloc(DI_SIZE + DITEM * n);
     if (!d) return 0;
-    p32(d, DI_SIZE + DITEM * n); p16(d + 4, DITEM); p16(d + 6, 0xBFFE);   /* DO_DEFAULT */
+    p32(d, DI_SIZE + DITEM * n); p16(d + 4, DITEM); p16(d + 6, DO_DEFAULT);
     p16(d + 16, (uint16_t)A(0));
     return d;
 }
@@ -141,7 +141,7 @@ static uint32_t api_DrgFreeDragtransfer(void) { return 1; }
 
 /* the drag */
 static int drg_active;
-static uint32_t api_DrgQueryDragStatus(void) { return drg_active ? 1 : 0; }   /* DGS_DRAGINPROGRESS */
+static uint32_t api_DrgQueryDragStatus(void) { return drg_active ? DGS_DRAGINPROGRESS : 0; }
 static void drg_desktop_xy(pmwin_t *w, uint32_t mp1, int *x, int *y)    /* a mouse message's place, the desktop's */
 {
     int ax, ay;
@@ -152,13 +152,13 @@ static void drg_desktop_xy(pmwin_t *w, uint32_t mp1, int *x, int *y)    /* a mou
 }
 static uint32_t api_DrgDrag(void)   /* (hwndSource, pdinfo, pdimg, cdimg, vkTerminate, pRsvd): the target, or 0 */
 {
-    uint32_t d = A(1), term = A(4) == 0x01 ? 1 : A(4) == 0x03 ? 3 : 2;   /* VK_BUTTON1, VK_BUTTON3; else button 2 (VK_BUTTON2, VK_ENDDRAG) */
+    uint32_t d = A(1), term = A(4) == VK_BUTTON1 ? 1 : A(4) == VK_BUTTON3 ? 3 : 2;   /* (else button 2: VK_BUTTON2, VK_ENDDRAG) */
     pmq_t *q = myq();
     if (!drg_ok(d) || !q || drg_active) return 0;
     p32(d + 8, A(0));                                        /* hwndSource */
     /* DRAGIMAGE: cb, cptl (16 bits), hImage, sizlStretch, fl (DRG_ICON: hImage an icon - the pointer while it's dragged) */
     uint32_t img = A(2) && ok(A(2), 20) ? g32(A(2) + 4) : 0;
-    uint32_t ptr_drag = img && (g32(A(2) + 16) & 1) && ptr_get(img) ? img : sys_pointer(1), ptr_no = sys_pointer(18);
+    uint32_t ptr_drag = img && (g32(A(2) + 16) & 1) && ptr_get(img) ? img : sys_pointer(SPTR_ARROW), ptr_no = sys_pointer(SPTR_ILLEGAL);
     uint32_t target = 0, answer = 0, before = pm_pointer;
     drg_active = 1;
     pm_capture = 0;
@@ -168,8 +168,8 @@ static uint32_t api_DrgDrag(void)   /* (hwndSource, pdinfo, pdimg, cdimg, vkTerm
         pm_wait_msg(q, 0, 0, 0, &m);
         if (m.msg == WM_QUIT) { post(0, 0, WM_QUIT, 0, 0); answer = 0; break; }
         pmwin_t *t = win(m.hwnd);
-        int up = (term == 1 && m.msg == WM_BUTTON1UP) || (term == 2 && m.msg == WM_BUTTON2UP) || (term == 3 && m.msg == 0x0078);
-        if (m.msg == WM_CHAR && (m.mp1 & KC_VIRTUALKEY) && (m.mp2 >> 16) == 0x0f && !(m.mp1 & KC_KEYUP)) { answer = 0; break; }   /* Esc: no drop */
+        int up = (term == 1 && m.msg == WM_BUTTON1UP) || (term == 2 && m.msg == WM_BUTTON2UP) || (term == 3 && m.msg == WM_BUTTON3UP);
+        if (m.msg == WM_CHAR && (m.mp1 & KC_VIRTUALKEY) && (m.mp2 >> 16) == VK_ESC && !(m.mp1 & KC_KEYUP)) { answer = 0; break; }   /* Esc: no drop */
         if (m.msg == WM_MOUSEMOVE || up) {
             int x, y;
             if (!t) continue;
@@ -178,25 +178,25 @@ static uint32_t api_DrgDrag(void)   /* (hwndSource, pdinfo, pdimg, cdimg, vkTerm
             int kc = (int)(m.mp2 >> 16);                       /* the keys: Ctrl copies, Shift moves, both link */
             p16(d + 6, (kc & KC_CTRL) && (kc & KC_SHIFT) ? 0x18 : (kc & KC_CTRL) ? 0x10 : (kc & KC_SHIFT) ? 0x20 : 0xBFFE);
             if (t->hwnd != target) {
-                if (win(target)) pm_send(win(target), 0x032d, d, 0);   /* DM_DRAGLEAVE */
+                if (win(target)) pm_send(win(target), DM_DRAGLEAVE, d, 0);
                 target = t->hwnd;
             }
-            answer = pm_send(t, 0x032e, d, (uint32_t)(x & 0xFFFF) | (uint32_t)(y & 0xFFFF) << 16);   /* DM_DRAGOVER: (DOR_*, DO_*) */
+            answer = pm_send(t, DM_DRAGOVER, d, (uint32_t)(x & 0xFFFF) | (uint32_t)(y & 0xFFFF) << 16);   /* (DOR_*, DO_*) */
             pm_set_pointer((answer & 0xFFFF) == 1 ? ptr_drag : ptr_no);
             if (up) break;
             continue;
         }
-        if (m.msg >= WM_BUTTON1DOWN && m.msg <= 0x0079) continue;   /* (other presses during it: nothing) */
+        if (m.msg >= WM_BUTTON1DOWN && m.msg <= WM_BUTTON3DBLCLK) continue;   /* (other presses during it: nothing) */
         if (t) pm_send(t, m.msg, m.mp1, m.mp2);
     }
-    pm_set_pointer(win(before) ? before : sys_pointer(1));
+    pm_set_pointer(win(before) ? before : sys_pointer(SPTR_ARROW));
     drg_active = 0;
     pmwin_t *t = win(target);
-    if (t && (answer & 0xFFFF) == 1) {                       /* DOR_DROP */
+    if (t && (answer & 0xFFFF) == DOR_DROP) {
         if (answer >> 16) p16(d + 6, (uint16_t)(answer >> 16));   /* (the operation the target said) */
-        pm_send(t, 0x032f, d, 0);                            /* DM_DROP */
+        pm_send(t, DM_DROP, d, 0);
         return target;
     }
-    if (t) pm_send(t, 0x032d, d, 0);                         /* DM_DRAGLEAVE */
+    if (t) pm_send(t, DM_DRAGLEAVE, d, 0);
     return 0;
 }

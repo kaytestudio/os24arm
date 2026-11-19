@@ -121,7 +121,7 @@ static uint32_t d16_gen(void)
 static uint32_t guest_call16(uint32_t fp, uint32_t hwnd, uint32_t msg, uint32_t mp1, uint32_t mp2)
 {
     if (msg == WM_CREATE) { mp1 = to_far16(mp1); mp2 = to_far16(mp2); }
-    if (msg == 0x003b) mp2 = to_far16(mp2);                  /* WM_INITDLG: its create parameters */
+    if (msg == WM_INITDLG) mp2 = to_far16(mp2);              /* (its create parameters) */
     uint32_t r[8], eip = C.eip, fl = C.eflags;
     uint16_t sr[6];
     for (int i = 0; i < 6; i++) sr[i] = C.sreg[i];
@@ -207,10 +207,10 @@ static void ptr_params16(uint32_t hwnd, uint32_t msg, uint32_t *mp1, uint32_t *m
     pmwin_t *w = win(hwnd);
     if (!w || !w->iproc) return;
     switch (msg) {
-    case 0x0161: case 0x0168: case 0x0166: case 0x016b:      /* LM_INSERTITEM, QUERYITEMTEXT, SETITEMTEXT, SEARCHSTRING */
-    case 0x018e: case 0x018b: case 0x0182: case 0x0183:      /* MM_SETITEMTEXT, QUERYITEMTEXT, QUERYITEM, SETITEM (MENUITEM: the same both ways) */
+    case LM_INSERTITEM: case LM_QUERYITEMTEXT: case LM_SETITEMTEXT: case LM_SEARCHSTRING:
+    case MM_SETITEMTEXT: case MM_QUERYITEMTEXT: case MM_QUERYITEM: case MM_SETITEM:      /* (MENUITEM: the same both ways) */
         *mp2 = to_flat16(*mp2); break;
-    case 0x0180: *mp1 = to_flat16(*mp1); *mp2 = to_flat16(*mp2); break;   /* MM_INSERTITEM: the MENUITEM, the text */
+    case MM_INSERTITEM: *mp1 = to_flat16(*mp1); *mp2 = to_flat16(*mp2); break;   /* the MENUITEM, the text */
     }
 }
 static uint32_t d16_WinSendMsg(void)                       /* (hwnd, USHORT msg, mp1, mp2) */

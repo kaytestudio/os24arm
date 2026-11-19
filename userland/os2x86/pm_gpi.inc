@@ -93,21 +93,21 @@ static uint32_t getpel(pmwin_t *w, int x, int y)          /* a window's (or a bi
 static uint32_t rop(uint32_t r, uint32_t s, uint32_t d, uint32_t p)
 {
     switch (r) {
-    case 0xCC: return s;                                       /* ROP_SRCCOPY */
-    case 0x33: return ~s & 0xFFFFFF;                           /* ROP_NOTSRCCOPY */
-    case 0x88: return s & d;                                   /* ROP_SRCAND */
-    case 0xEE: return s | d;                                   /* ROP_SRCPAINT */
-    case 0x66: return s ^ d;                                   /* ROP_SRCINVERT */
-    case 0x44: return s & ~d & 0xFFFFFF;                       /* ROP_SRCERASE */
-    case 0x11: return ~(s | d) & 0xFFFFFF;                     /* ROP_NOTSRCERASE */
-    case 0xBB: return (~s | d) & 0xFFFFFF;                     /* ROP_MERGEPAINT */
-    case 0xC0: return s & p;                                   /* ROP_MERGECOPY */
-    case 0x55: return ~d & 0xFFFFFF;                           /* ROP_DSTINVERT */
-    case 0xF0: return p;                                       /* ROP_PATCOPY */
-    case 0x5A: return p ^ d;                                   /* ROP_PATINVERT */
-    case 0xFB: return (p | ~s | d) & 0xFFFFFF;                 /* ROP_PATPAINT */
-    case 0x00: return 0;                                       /* ROP_ZERO */
-    case 0xFF: return 0xFFFFFF;                                /* ROP_ONE */
+    case ROP_SRCCOPY: return s;
+    case ROP_NOTSRCCOPY: return ~s & 0xFFFFFF;
+    case ROP_SRCAND: return s & d;
+    case ROP_SRCPAINT: return s | d;
+    case ROP_SRCINVERT: return s ^ d;
+    case ROP_SRCERASE: return s & ~d & 0xFFFFFF;
+    case ROP_NOTSRCERASE: return ~(s | d) & 0xFFFFFF;
+    case ROP_MERGEPAINT: return (~s | d) & 0xFFFFFF;
+    case ROP_MERGECOPY: return s & p;
+    case ROP_DSTINVERT: return ~d & 0xFFFFFF;
+    case ROP_PATCOPY: return p;
+    case ROP_PATINVERT: return p ^ d;
+    case ROP_PATPAINT: return (p | ~s | d) & 0xFFFFFF;
+    case ROP_ZERO: return 0;
+    case ROP_ONE: return 0xFFFFFF;
     }
     return s;
 }
@@ -128,13 +128,13 @@ static void blit(pmwin_t *t, int tx0, int ty0, int tx1, int ty1, pmwin_t *s, int
 static uint32_t api_GpiLoadBitmap(void)           /* (hps, hmod, idBitmap, lWidth, lHeight) */
 {
     uint32_t a, n;
-    if (!find_resource(A(1), 2, A(2), &a, &n) || !ok(a, n)) return 0;   /* RT_BITMAP */
+    if (!find_resource(A(1), RT_BITMAP, A(2), &a, &n) || !ok(a, n)) return 0;
     pmwin_t *b = bmp_from_file(C.mem + a, n);
     if (!b) return 0;
     int w = (int32_t)A(3), h = (int32_t)A(4);
     if (w > 0 && h > 0 && (w != b->cx || h != b->cy)) {      /* stretched to the size asked */
         pmwin_t *s = bmp_new(w, h);
-        if (s) { blit(s, 0, 0, w, h, b, 0, 0, b->cx, b->cy, 0xCC, 0); win_destroy(b); b = s; }
+        if (s) { blit(s, 0, 0, w, h, b, 0, 0, b->cx, b->cy, ROP_SRCCOPY, 0); win_destroy(b); b = s; }
     }
     return b->hwnd;
 }
@@ -164,7 +164,7 @@ static uint32_t api_GpiCreateBitmap(void)     /* (hps, pbmpNew, flOptions, pbIni
     pmwin_t *b = bmp_new(w, h);
     if (!b) return 0;
     for (int i = 0; i < w * h; i++) b->px[i] = 0xFF000000u;
-    if ((A(2) & 4) && A(3) && A(4)) {                        /* CBM_INIT */
+    if ((A(2) & CBM_INIT) && A(3) && A(4)) {
         uint32_t info = A(4), icb = g32(info);
         uint32_t *tmp = calloc((size_t)w * (size_t)h, 4);
         if (tmp && ok(info, icb + pal_size(C.mem + info)) && ok(A(3), 1)) {
@@ -217,15 +217,13 @@ static uint32_t api_DevQueryCaps(void)            /* (hdc, lStart, lCount, alArr
         pmdc_t *d = dc_get(A(0));
         int pr = d && d->printer;
         switch (k) {
-        case 2: v = pr ? 3 : 2; break;           /* CAPS_TECHNOLOGY: RASTER_PRINTER, RASTER_DISPLAY */
-        case 4: v = pr ? 1240 : 1920; break;     /* CAPS_WIDTH */
-        case 5: v = pr ? 1754 : 1080; break;     /* CAPS_HEIGHT */
-        case 8: v = pr ? 5906 : 3780; break;     /* (pels a metre) */
-        case 9: v = pr ? 5906 : 3780; break;
-        case 12: v = 1; break;                   /* CAPS_COLOR_PLANES */
-        case 13: v = 24; break;                  /* CAPS_COLOR_BITCOUNT */
-        case 14: v = 16777216; break;            /* CAPS_COLORS */
-        case 15: v = 16777216; break;
+        case CAPS_TECHNOLOGY: v = pr ? CAPS_TECH_RASTER_PRINTER : CAPS_TECH_RASTER_DISPLAY; break;
+        case CAPS_WIDTH: v = pr ? 1240 : 1920; break;
+        case CAPS_HEIGHT: v = pr ? 1754 : 1080; break;
+        case CAPS_HORIZONTAL_RESOLUTION: case CAPS_VERTICAL_RESOLUTION: v = pr ? 5906 : 3780; break;   /* (pels a metre) */
+        case CAPS_COLORS: v = 16777216; break;
+        case CAPS_COLOR_PLANES: v = 1; break;
+        case CAPS_COLOR_BITCOUNT: v = 24; break;
         }
         p32(p + 4 * i, v);
     }
@@ -256,7 +254,7 @@ static uint32_t api_GpiAssociate(void)
 static uint32_t api_GpiSetBitmap(void)            /* (hps, hbm): the one before */
 {
     pmps_t *ps = ps_get(A(0));
-    if (!ps) return 0xFFFFFFFF;                   /* HBM_ERROR */
+    if (!ps) return (uint32_t)HBM_ERROR;
     uint32_t old = bmp_get(ps->hwnd) ? ps->hwnd : 0;
     ps->hwnd = bmp_get(A(1)) ? A(1) : 0;
     return old;
@@ -324,9 +322,9 @@ static uint32_t api_WinDrawBitmap(void)       /* (hpsDst, hbm, pwrcSrc, pptlDst,
     int sx0 = 0, sy0 = 0, sx1 = b->cx, sy1 = b->cy;
     if (src && ok(src, 16)) { sx0 = (int32_t)g32(src); sy0 = (int32_t)g32(src + 4); sx1 = (int32_t)g32(src + 8); sy1 = (int32_t)g32(src + 12); }
     int tx0 = (int32_t)g32(dst), ty0 = (int32_t)g32(dst + 4), tx1, ty1;
-    if ((fl & 4) && ok(dst, 16)) { tx1 = (int32_t)g32(dst + 8); ty1 = (int32_t)g32(dst + 12); }   /* DBM_STRETCH: a rectangle */
+    if ((fl & DBM_STRETCH) && ok(dst, 16)) { tx1 = (int32_t)g32(dst + 8); ty1 = (int32_t)g32(dst + 12); }   /* a rectangle */
     else { tx1 = tx0 + (sx1 - sx0); ty1 = ty0 + (sy1 - sy0); }
-    blit(t, tx0, ty0, tx1, ty1, b, sx0, sy0, sx1, sy1, (fl & 1) ? 0x33 : 0xCC, 0);   /* (DBM_INVERT) */
+    blit(t, tx0, ty0, tx1, ty1, b, sx0, sy0, sx1, sy1, (fl & DBM_INVERT) ? ROP_NOTSRCCOPY : ROP_SRCCOPY, 0);
     present(t);
     return 1;
 }
@@ -342,7 +340,7 @@ static uint32_t bitblt(pmps_t *tps, pmwin_t *s, uint32_t n, uint32_t pts, uint32
     if (n < 3) { sx0 = sy0 = sx1 = sy1 = 0; s = 0; }
     blit(t, v[0], v[1], v[2], v[3], s, sx0, sy0, sx1, sy1, r & 0xFF, pm_rgb(tps->color, tps->rgb, 0));
     present(t);
-    return 1;                                     /* GPI_OK */
+    return GPI_OK;
 }
 static uint32_t api_GpiBitBlt(void)           /* (hpsTarget, hpsSource, lCount, aptlPoints, lRop, flOptions) */
 {
@@ -453,8 +451,8 @@ static void ptr_draw(pmwin_t *t, int x, int y, pmwin_t *p, uint32_t fs)
             if (a && !xo) continue;                                         /* transparent */
             if (a && xo) c = ~getpel(t, px, py) & 0xFFFFFF;                 /* the screen, inverted */
             else c = m->mono ? (xo ? 0xFFFFFF : 0) : p->px[i] & 0xFFFFFF;
-            if ((fs & 2) && !(a && xo)) c = ~c & 0xFFFFFF;                  /* DP_INVERTED */
-            if ((fs & 1) && ((px + py) & 1)) continue;                      /* DP_HALFTONED */
+            if ((fs & DP_INVERTED) && !(a && xo)) c = ~c & 0xFFFFFF;
+            if ((fs & DP_HALFTONED) && ((px + py) & 1)) continue;
             pel(t, px, py, c);
         }
 }
@@ -479,10 +477,10 @@ static uint32_t sys_pointer(uint32_t id)
     const char *mark = 0;
     uint32_t bg = 0, fg = 0xFFFFFF;
     switch (id) {
-    case 11: bg = 0x2050C0; mark = "i"; break;                 /* SPTR_ICONINFORMATION */
-    case 12: bg = 0x2050C0; mark = "?"; break;                 /* SPTR_ICONQUESTION */
-    case 13: bg = 0xC02020; mark = "X"; break;                 /* SPTR_ICONERROR */
-    case 18:                                                   /* SPTR_ILLEGAL: a red ring, struck through */
+    case SPTR_ICONINFORMATION: bg = 0x2050C0; mark = "i"; break;
+    case SPTR_ICONQUESTION: bg = 0x2050C0; mark = "?"; break;
+    case SPTR_ICONERROR: bg = 0xC02020; mark = "X"; break;
+    case SPTR_ILLEGAL:                                         /* a red ring, struck through */
         for (int y = 0; y < 32; y++) for (int x = 0; x < 32; x++) {
             int dx = 2 * x + 1 - 32, dy = 2 * y + 1 - 32, d2 = dx * dx + dy * dy, slash = abs(dx + dy) <= 5;
             if (d2 <= 26 * 26 && (d2 >= 18 * 18 || slash)) { p->px[y * 32 + x] = 0xFFD02020u; m->andm[y * 32 + x] = 0; }
@@ -490,7 +488,7 @@ static uint32_t sys_pointer(uint32_t id)
         }
         m->hotx = m->hoty = 16;
         break;
-    case 19: case 21:                                          /* SPTR_FILE, SPTR_MULTFILE: a page, its corner folded */
+    case SPTR_FILE: case SPTR_MULTFILE:                        /* a page, its corner folded */
         for (int y = 2; y < 30; y++) for (int x = 7; x < 25; x++) {
             int edge = x == 7 || x == 24 || y == 2 || y == 29, corner = x > 18 && y < 8 && x - 18 > y - 2;
             if (corner) continue;
@@ -498,7 +496,7 @@ static uint32_t sys_pointer(uint32_t id)
             m->andm[y * 32 + x] = 0;
         }
         break;
-    case 20:                                                   /* SPTR_FOLDER */
+    case SPTR_FOLDER:
         for (int y = 6; y < 28; y++) for (int x = 3; x < 29; x++) {
             if (y < 10 && x > 14) continue;
             int edge = x == 3 || x == 28 || y == 6 || y == 27 || (y == 10 && x > 14) || (x == 14 && y < 10);
@@ -506,7 +504,7 @@ static uint32_t sys_pointer(uint32_t id)
             m->andm[y * 32 + x] = 0;
         }
         break;
-    case 14:                                                   /* SPTR_ICONWARNING: a triangle */
+    case SPTR_ICONWARNING:                                     /* a triangle */
         for (int y = 2; y < 30; y++) for (int x = 16 - (y - 2) / 2 - 1; x <= 16 + (y - 2) / 2; x++)
             if (x >= 0 && x < 32) { p->px[y * 32 + x] = 0xFFF0C800u; m->andm[y * 32 + x] = 0; }
         mark = "!"; fg = 0; break;
@@ -531,7 +529,7 @@ static uint32_t sys_pointer(uint32_t id)
 static uint32_t api_WinLoadPointer(void)          /* (hwndDesktop, hmod, idres) */
 {
     uint32_t a, n;
-    if (!find_resource(A(1), 1, A(2), &a, &n) || !ok(a, n)) return 0;   /* RT_POINTER */
+    if (!find_resource(A(1), RT_POINTER, A(2), &a, &n) || !ok(a, n)) return 0;
     pmwin_t *p = ptr_from_file(C.mem + a, n);
     return p ? p->hwnd : 0;
 }
@@ -555,7 +553,7 @@ static uint32_t api_WinDrawPointer(void)          /* (hps, x, y, hptr, fs) */
 static uint32_t api_WinQuerySysPointer(void) { return sys_pointer(A(1)); }   /* (hwndDesktop, iptr, fCopy) */
 static void pm_set_pointer(uint32_t hptr);
 static uint32_t pm_pointer;
-static uint32_t api_WinQueryPointer(void) { return pm_pointer ? pm_pointer : sys_pointer(1); }
+static uint32_t api_WinQueryPointer(void) { return pm_pointer ? pm_pointer : sys_pointer(SPTR_ARROW); }
 static uint32_t api_WinSetPointer(void) { if (!ptr_get(A(1))) return 0; pm_set_pointer(A(1)); return 1; }   /* (hwndDesktop, hptr) */
 static uint32_t api_WinQueryPointerInfo(void)     /* (hptr, pptriPointerInfo) */
 {

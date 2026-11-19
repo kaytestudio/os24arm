@@ -30,18 +30,7 @@
 #pragma clang diagnostic pop
 #endif
 
-enum {
-    WM_CREATE = 0x0001, WM_DESTROY = 0x0002, WM_SHOW = 0x0005, WM_MOVE = 0x0006, WM_SIZE = 0x0007,
-    WM_ACTIVATE = 0x000d, WM_SETFOCUS = 0x000f, WM_COMMAND = 0x0020, WM_SYSCOMMAND = 0x0021,
-    WM_PAINT = 0x0023, WM_TIMER = 0x0024, WM_CLOSE = 0x0029, WM_QUIT = 0x002a, WM_CONTROL = 0x0030,
-    WM_ERASEBACKGROUND = 0x004f, WM_MOUSEMOVE = 0x0070, WM_BUTTON1DOWN = 0x0071, WM_BUTTON1UP = 0x0072,
-    WM_BUTTON1DBLCLK = 0x0073, WM_BUTTON2DOWN = 0x0074, WM_BUTTON2UP = 0x0075, WM_BUTTON3DOWN = 0x0077,
-    WM_BUTTON3UP = 0x0078, WM_CHAR = 0x007a, WM_BUTTON1CLICK = 0x0413,
-};
-enum { KC_CHAR = 1, KC_VIRTUALKEY = 2, KC_SCANCODE = 4, KC_SHIFT = 8, KC_CTRL = 0x10, KC_ALT = 0x20, KC_KEYUP = 0x40, KC_PREVDOWN = 0x80 };
-#define HWND_DESKTOP_ 1
-#define FID_CLIENT 0x8008
-#define WS_VISIBLE_ 0x80000000u
+#include "pm_api.inc"
 
 /* ── fonts: DejaVu Sans, Sans Bold, Sans Mono, Sans Mono Bold (\OS2\fonts)
  * at the sizes asked, OS/2's faces mapped onto them; pmf: the one text is
@@ -172,6 +161,7 @@ struct pmwin {
     int has_fg, has_bg;                 /* ... its colours (PP_FOREGROUNDCOLOR, PP_BACKGROUNDCOLOR) */
     uint32_t pp_fg, pp_bg;
     uint32_t dlg_result;
+    uint32_t helpi;                     /* its help instance (WinAssociateHelpInstance, pm_help.inc) */
 };
 #define MAXWIN 1024                     /* (windows, controls, and bitmaps: they're hidden windows) */
 static pmwin_t pmwins[MAXWIN];
@@ -187,6 +177,11 @@ static pmwin_t *win(uint32_t h)
 {
     uint32_t i = h - 0x80000100u;
     return i < MAXWIN && pmwins[i].used ? &pmwins[i] : 0;
+}
+static pmwin_t *win_child(pmwin_t *p, uint32_t id)         /* (WinWindowFromID's) */
+{
+    for (int i = 0; p && i < MAXWIN; i++) if (pmwins[i].used && pmwins[i].parent == p && pmwins[i].id == id) return &pmwins[i];
+    return 0;
 }
 static pmwin_t *frame_of(pmwin_t *w) { while (w && !w->top) w = w->parent; return w; }
 static int shown(pmwin_t *w) { for (; w && !w->top; w = w->parent) if (!w->visible) return 0; return w != 0; }   /* (it and every parent up to its frame) */
@@ -233,8 +228,8 @@ static uint32_t pm_send(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
         pmfont_t *save = pmf;
         pmf = win_font(w);
         uint32_t r = w->iproc(w, msg, mp1, mp2);
-        if (!r && (msg == WM_BUTTON1DBLCLK || msg == 0x0076 || msg == 0x0079))   /* (a double-click a control doesn't take: one more press) */
-            r = w->iproc(w, msg == WM_BUTTON1DBLCLK ? WM_BUTTON1DOWN : msg == 0x0076 ? WM_BUTTON2DOWN : WM_BUTTON3DOWN, mp1, mp2);
+        if (!r && (msg == WM_BUTTON1DBLCLK || msg == WM_BUTTON2DBLCLK || msg == WM_BUTTON3DBLCLK))   /* (a double-click a control doesn't take: one more press) */
+            r = w->iproc(w, msg == WM_BUTTON1DBLCLK ? WM_BUTTON1DOWN : msg == WM_BUTTON2DBLCLK ? WM_BUTTON2DOWN : WM_BUTTON3DOWN, mp1, mp2);
         pmf = save;
         return r;
     }
@@ -249,26 +244,34 @@ typedef struct { int used; uint32_t hwnd, id, ms; uint64_t next; } pmtimer_t;
 static pmtimer_t pmtimers[64];
 
 /* ── pixels ──────────────────────────────────────────────────────────── */
+/* the look: buttons, dialogs, menus (the face, its light and dark edges), text, the highlight; windows, frames, the desktop */
+#define C_FACE    0xCCCCCC
+#define C_LIGHT   0xFFFFFF
+#define C_DARK    0x808080
+#define C_TEXT    0x000000
+#define C_HILITE  0x2050A0
+#define C_WINDOW  0xFFFFFF
+#define C_FRAME   0x404040
+#define C_DESKTOP 0x4A7EBB
 static uint32_t pm_rgb(int32_t c, int rgbmode, int back)
 {
     if (rgbmode && c >= 0) return (uint32_t)c & 0xFFFFFF;
-    static const uint32_t base[16] = { 0xFFFFFF, 0x0000FF, 0xFF0000, 0xFF00FF, 0x00FF00, 0x00FFFF, 0xFFFF00, 0x000000,
-                                       0x808080, 0x000080, 0x800000, 0x800080, 0x008000, 0x008080, 0x808000, 0xCCCCCC };
+    static const uint32_t base[16] = {   /* (CLR_BACKGROUND, BLUE, RED, PINK, GREEN, CYAN, YELLOW, NEUTRAL; the dark ones; PALEGRAY) */
+        0xFFFFFF, 0x0000FF, 0xFF0000, 0xFF00FF, 0x00FF00, 0x00FFFF, 0xFFFF00, 0x000000,
+        0x808080, 0x000080, 0x800000, 0x800080, 0x008000, 0x008080, 0x808000, 0xCCCCCC };
     if (c >= 0 && c < 16) return base[c];
     switch (c) {
-    case -1: return 0x000000;                 /* CLR_BLACK */
-    case -2: return 0xFFFFFF;                 /* CLR_WHITE */
-    case -3: return back ? 0xFFFFFF : 0x000000;   /* CLR_DEFAULT */
-    case -17: case -18: case -26: return 0x000000;   /* window, menu, static text */
-    case -19: return 0x404040;                /* window frame */
-    case -20: case -42: return 0xFFFFFF;      /* window, field background */
-    case -23: return 0x2050A0;                /* active title */
-    case -24: return 0x4A7EBB;                /* the desktop */
-    case -32: return 0x2050A0;                /* highlight */
-    case -33: return 0xFFFFFF;
-    case -39: return 0x808080;                /* button dark */
-    case -41: return 0xFFFFFF;                /* button light */
-    default: return 0xCCCCCC;                 /* button middle, dialogs, menus, ... */
+    case CLR_BLACK: return 0x000000;
+    case CLR_WHITE: return 0xFFFFFF;
+    case CLR_DEFAULT: return back ? C_WINDOW : C_TEXT;
+    case SYSCLR_WINDOWTEXT: case SYSCLR_MENUTEXT: case SYSCLR_WINDOWSTATICTEXT: return C_TEXT;
+    case SYSCLR_WINDOWFRAME: return C_FRAME;
+    case SYSCLR_WINDOW: case SYSCLR_FIELDBACKGROUND: return C_WINDOW;
+    case SYSCLR_ACTIVETITLE: case SYSCLR_HILITEBACKGROUND: return C_HILITE;
+    case SYSCLR_BACKGROUND: return C_DESKTOP;
+    case SYSCLR_HILITEFOREGROUND: case SYSCLR_BUTTONLIGHT: return C_LIGHT;
+    case SYSCLR_BUTTONDARK: return C_DARK;
+    default: return C_FACE;                  /* (button middle, dialogs, menus, ...) */
     }
 }
 
@@ -341,6 +344,20 @@ static void line(pmwin_t *w, int x0, int y0, int x1, int y1, uint32_t rgb)
         if (e2 >= dy) { e += dy; x0 += sx; }
         if (e2 <= dx) { e += dx; y0 += sy; }
     }
+}
+static void bevel(pmwin_t *w, int x0, int y0, int x1, int y1, int raised)   /* [x0, x1) x [y0, y1) */
+{
+    uint32_t tl = raised ? C_LIGHT : C_DARK, br = raised ? C_DARK : C_LIGHT;
+    line(w, x0, y1 - 1, x1 - 1, y1 - 1, tl); line(w, x0, y0, x0, y1 - 1, tl);
+    line(w, x0, y0, x1 - 1, y0, br); line(w, x1 - 1, y0, x1 - 1, y1 - 1, br);
+}
+/* a push button's edges in [x0, x1) x [y0, y1): raised (or pressed) inside; the default's, black around it */
+static void button_frame(pmwin_t *w, int x0, int y0, int x1, int y1, int down, int def)
+{
+    bevel(w, x0 + 1, y0 + 1, x1 - 1, y1 - 1, !down);
+    if (!def) return;
+    line(w, x0, y0, x1 - 1, y0, C_TEXT); line(w, x0, y1 - 1, x1 - 1, y1 - 1, C_TEXT);
+    line(w, x0, y0, x0, y1 - 1, C_TEXT); line(w, x1 - 1, y0, x1 - 1, y1 - 1, C_TEXT);
 }
 
 static void present(pmwin_t *w)
@@ -479,7 +496,7 @@ static void pm_mouse(pmwin_t *f, int px, int py, int button, int down)
         if (pm_b2_hwnd && !pm_b2_began && (abs(x - pm_b2_x) > 3 || abs(y - pm_b2_y) > 3)) {   /* button 2 held, moved: a drag starts */
             pmwin_t *s = win(pm_b2_hwnd);
             pm_b2_began = 1;
-            if (s) { int sx, sy; win_abs(s, &sx, &sy); post(s, s->hwnd, 0x0420, 1, (uint32_t)((pm_b2_x - sx) & 0xFFFF) | (uint32_t)((pm_b2_y - sy) & 0xFFFF) << 16); }   /* WM_BEGINDRAG */
+            if (s) { int sx, sy; win_abs(s, &sx, &sy); post(s, s->hwnd, WM_BEGINDRAG, 1, (uint32_t)((pm_b2_x - sx) & 0xFFFF) | (uint32_t)((pm_b2_y - sy) & 0xFFFF) << 16); }
         }
         post(w, w->hwnd, WM_MOUSEMOVE, mp1, mp2);
         return;
@@ -487,7 +504,7 @@ static void pm_mouse(pmwin_t *f, int px, int py, int button, int down)
     if (button == 2) { if (down) { pm_b2_hwnd = w->hwnd; pm_b2_x = x; pm_b2_y = y; pm_b2_began = 0; } else pm_b2_hwnd = 0; }
     static const uint32_t dn[3] = { WM_BUTTON1DOWN, WM_BUTTON2DOWN, WM_BUTTON3DOWN }, up[3] = { WM_BUTTON1UP, WM_BUTTON2UP, WM_BUTTON3UP };
     if (button < 1 || button > 3) return;
-    if (down && f->drop && w != f->drop && w->id != 0x8005) { menu_close(f); return; }   /* (FID_MENU: it decides) */
+    if (down && f->drop && w != f->drop && w->id != FID_MENU) { menu_close(f); return; }   /* (the menu bar: it decides) */
     static uint64_t last_t;
     static int last_b, last_x, last_y;
     static uint32_t last_w;
@@ -495,12 +512,12 @@ static void pm_mouse(pmwin_t *f, int px, int py, int button, int down)
     if (down) {                                              /* (a second press, soon and near: a double-click) */
         uint64_t now = ms_now();
         if (last_b == button && last_w == w->hwnd && now - last_t < 500 && abs(x - last_x) < 5 && abs(y - last_y) < 5) {
-            msgdown = button == 1 ? WM_BUTTON1DBLCLK : button == 2 ? 0x0076 : 0x0079;
+            msgdown = button == 1 ? WM_BUTTON1DBLCLK : button == 2 ? WM_BUTTON2DBLCLK : WM_BUTTON3DBLCLK;
             last_t = 0;
         } else { last_t = now; last_b = button; last_x = x; last_y = y; last_w = w->hwnd; }
     }
     if (down && !(w->style & 0x40000000u)) set_focus((f->client && w == f) ? f->client->hwnd : w->hwnd);
-    if (w->style & 0x40000000u) return;                 /* WS_DISABLED */
+    if (w->style & WS_DISABLED) return;
     post(w, w->hwnd, down ? msgdown : up[button - 1], mp1, mp2);
 }
 static int key_hook(pmwin_t *f, int ch, int vk, int scan, int kc);
@@ -578,11 +595,14 @@ static int hl_idle(struct timespec *dl)
         if (sscanf(s, "ctrl %255s", a) == 1) { pm_key(f, a[0], 0, 0, KC_CTRL); return 1; }
         if (sscanf(s, "alt %255s", a) == 1) { pm_key(f, a[0], 0, 0, KC_ALT); return 1; }
         if (sscanf(s, "vkey %255s", a) == 1) {
-            static const struct { const char *n; int vk, ch; } vks[] = { { "up", 0x16, 0 }, { "down", 0x18, 0 }, { "left", 0x15, 0 },
-                { "right", 0x17, 0 }, { "pgup", 0x11, 0 }, { "pgdn", 0x12, 0 }, { "home", 0x14, 0 }, { "end", 0x13, 0 },
-                { "tab", 0x06, 9 }, { "backspace", 0x05, 8 }, { "delete", 0x1b, 0 }, { "enter", 0x08, '\r' }, { "esc", 0x0f, 27 } };
+            static const struct { const char *n; int vk, ch; } vks[] = {
+                { "up", VK_UP, 0 }, { "down", VK_DOWN, 0 }, { "left", VK_LEFT, 0 }, { "right", VK_RIGHT, 0 },
+                { "pgup", VK_PAGEUP, 0 }, { "pgdn", VK_PAGEDOWN, 0 }, { "home", VK_HOME, 0 }, { "end", VK_END, 0 },
+                { "tab", VK_TAB, '\t' }, { "backspace", VK_BACKSPACE, '\b' }, { "delete", VK_DELETE, 0 },
+                { "enter", VK_NEWLINE, '\r' }, { "esc", VK_ESC, '\033' },
+            };
             int vk = 0, ch = 0;
-            if (a[0] == 'f' && atoi(a + 1) >= 1 && atoi(a + 1) <= 12) vk = 0x20 + atoi(a + 1) - 1;
+            if (a[0] == 'f' && atoi(a + 1) >= 1 && atoi(a + 1) <= 12) vk = VK_F1 + atoi(a + 1) - 1;
             for (size_t k = 0; k < sizeof vks / sizeof *vks; k++) if (!strcmp(a, vks[k].n)) { vk = vks[k].vk; ch = vks[k].ch; }
             if (vk) { pm_key(f, ch, vk, 0, 0); return 1; }
         }
@@ -676,14 +696,14 @@ static int pm_take(pmq_t *q, uint32_t filt, uint32_t first, uint32_t last, int r
     int r = pm_take_raw(q, filt, first, last, remove, out);
     if (r && remove) {
         uint32_t m = out->msg;
-        if (m >= WM_MOUSEMOVE && m <= 0x0079) pm_sync_kc = (int)(out->mp2 >> 16) & (KC_SHIFT | KC_CTRL | KC_ALT);
+        if (m >= WM_MOUSEMOVE && m <= WM_BUTTON3DBLCLK) pm_sync_kc = (int)(out->mp2 >> 16) & (KC_SHIFT | KC_CTRL | KC_ALT);
         if (m == WM_CHAR) pm_sync_kc = (int)out->mp1 & (KC_SHIFT | KC_CTRL | KC_ALT);
         if (m == WM_BUTTON1DOWN || m == WM_BUTTON1DBLCLK) pm_sync_buttons |= 1;
         else if (m == WM_BUTTON1UP) pm_sync_buttons &= ~1;
-        else if (m == WM_BUTTON2DOWN || m == 0x0076) pm_sync_buttons |= 2;
+        else if (m == WM_BUTTON2DOWN || m == WM_BUTTON2DBLCLK) pm_sync_buttons |= 2;
         else if (m == WM_BUTTON2UP) pm_sync_buttons &= ~2;
-        else if (m == WM_BUTTON3DOWN || m == 0x0079) pm_sync_buttons |= 4;
-        else if (m == 0x0078) pm_sync_buttons &= ~4;
+        else if (m == WM_BUTTON3DOWN || m == WM_BUTTON3DBLCLK) pm_sync_buttons |= 4;
+        else if (m == WM_BUTTON3UP) pm_sync_buttons &= ~4;
     }
     return r;
 }
@@ -741,40 +761,50 @@ static uint32_t accel_new(uint32_t t);
 static void help_request(pmwin_t *top, uint32_t id);
 static uint32_t frame_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
 {
-    if (msg == 0x0022) { help_request(w, mp1); return 0; }   /* WM_HELP: the help manager's */
+    if (msg == WM_HELP) { help_request(w, mp1); return 0; }   /* (the help manager's) */
     if (msg == WM_COMMAND && w->client) { post(w->client, w->client->hwnd, msg, mp1, mp2); return 0; }
-    if ((msg == 0x0031 || msg == 0x0032 || msg == WM_CONTROL) && w->client) return pm_send(w->client, msg, mp1, mp2);   /* WM_VSCROLL, WM_HSCROLL */
+    if ((msg == WM_VSCROLL || msg == WM_HSCROLL || msg == WM_CONTROL) && w->client) return pm_send(w->client, msg, mp1, mp2);
     if (msg == WM_CLOSE) { if (w->client) post(w->client, w->client->hwnd, WM_CLOSE, 0, 0); else post(w, 0, WM_QUIT, 0, 0); }
     return 0;
+}
+/* a standard frame window (hidden), cx by cy: its title, its FCF_ parts (the menu, accelerators: hmod's resources id) */
+static pmwin_t *frame_new(uint32_t style, uint32_t id, const char *title, int cx, int cy, uint32_t fcf, uint32_t hmod)
+{
+    pmwin_t *f = win_new(0, "#1", style & ~WS_VISIBLE_, id);   /* (its id: idResources, as help tables know it) */
+    if (!f) return 0;
+    f->top = 1;
+    f->iproc = frame_proc;
+    snprintf(f->text, sizeof f->text, "%s", title ? title : "");
+    frame_pixels(f, cx, cy);
+    if (fcf & FCF_MENU) menu_load(f, hmod, id);
+    if (fcf & FCF_ACCELTABLE) { uint32_t a, n; if (find_resource(hmod, RT_ACCELTABLE, id, &a, &n)) f->haccel = accel_new(a); }
+    for (int k = 0; k < 2; k++)                          /* the scroll bars: the frame's, telling the client */
+        if (fcf & (k ? FCF_HORZSCROLL : FCF_VERTSCROLL)) {
+            pmwin_t *s = win_new(f, "#8", k ? 0 : 1, k ? FID_HORZSCROLL : FID_VERTSCROLL);
+            if (s) { s->owner = f; s->visible = 1; }
+        }
+    return f;
+}
+static pmwin_t *frame_client(pmwin_t *f, const char *cls, uint32_t style)   /* (laid out in it; WM_CREATE: the caller's) */
+{
+    pmwin_t *c = win_new(f, cls, style, FID_CLIENT);
+    if (!c) return 0;
+    f->client = c;
+    c->owner = f;
+    frame_layout(f);
+    return c;
 }
 static uint32_t api_WinCreateStdWindow(void)
 {
     /* (hwndParent, flStyle, pflCreate, pszClass, pszTitle, flClientStyle, hmod, idResources, phwndClient) */
     uint32_t style = A(1), pfl = A(2), pcls = A(3), ptitle = A(4), cstyle = A(5), hmod = A(6), idres = A(7), pclient = A(8);
-    uint32_t fcf = pfl ? g32(pfl) : 0;
     if (!pm_start()) return 0;
-    pmwin_t *f = win_new(0, "#1", style & ~WS_VISIBLE_, idres);   /* (its id: idResources, as help tables know it) */
+    pmwin_t *f = frame_new(style, idres, ptitle ? gs(ptitle) : 0, 480, 320, pfl ? g32(pfl) : 0, hmod);
     if (!f) return 0;
-    f->top = 1;
-    f->iproc = frame_proc;
-    char *t = ptitle ? gs(ptitle) : 0;
-    snprintf(f->text, sizeof f->text, "%s", t ? t : "");
-    frame_pixels(f, 480, 320);
-    if (fcf & 4) menu_load(f, hmod, idres);              /* FCF_MENU */
-    if (fcf & 0x8000) { uint32_t a, n; if (find_resource(hmod, 8, idres, &a, &n)) f->haccel = accel_new(a); }   /* FCF_ACCELTABLE */
-    for (int k = 0; k < 2; k++)                          /* FCF_VERTSCROLL, FCF_HORZSCROLL: the frame's, telling the client */
-        if (fcf & (k ? 0x80u : 0x40u)) {
-            pmwin_t *s = win_new(f, "#8", k ? 0 : 1, k ? 0x8007 : 0x8006);
-            if (s) { s->owner = f; s->visible = 1; }
-        }
     if (pcls) {
         char b[64];
-        const char *n = class_name(pcls, b);
-        pmwin_t *c = win_new(f, n, cstyle, FID_CLIENT);
+        pmwin_t *c = frame_client(f, class_name(pcls, b), cstyle);
         if (!c) { win_destroy(f); return 0; }
-        f->client = c;
-        c->owner = f;
-        frame_layout(f);
         pm_send(c, WM_CREATE, 0, 0);
         if (!c->used) { win_destroy(f); return 0; }
         if (pclient) p32(pclient, c->hwnd);
@@ -874,11 +904,11 @@ static uint32_t def_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
     case WM_CLOSE: post(w, 0, WM_QUIT, 0, 0); return 0;
     case WM_PAINT: w->invalid = 0; return 0;
     case WM_CHAR: return !w->top && w->owner ? pm_send(w->owner, msg, mp1, mp2) : 0;   /* (a key nobody took: up to the owner) */
-    case 0x0022:                                             /* WM_HELP: up to the frame, the help manager's there */
+    case WM_HELP:                                            /* up to the frame, the help manager's there */
         if (w->top) help_request(w, mp1);
         else if (w->owner ? w->owner : w->parent) pm_send(w->owner ? w->owner : w->parent, msg, mp1, mp2);
         return 0;
-    case WM_MOUSEMOVE: pm_set_pointer(sys_pointer(1)); return 1;                        /* (the arrow, as PM's) */
+    case WM_MOUSEMOVE: pm_set_pointer(sys_pointer(SPTR_ARROW)); return 1;               /* (as PM's) */
     case WM_ERASEBACKGROUND: return 0;
     }
     return 0;
@@ -980,7 +1010,7 @@ static uint32_t api_WinDrawText(void)
     int tw = text_w(s, n), th = pm_ascent + pm_descent;
     int x = fl & 0x100 ? x0 + (x1 - x0 - tw) / 2 : fl & 0x200 ? x1 - tw : x0;
     int ytop = fl & 0x400 ? y0 + (y1 - y0 + th) / 2 : fl & 0x800 ? y0 + th : y1;
-    if (fl & 2) {                            /* DT_QUERYEXTENT */
+    if (fl & DT_QUERYEXTENT) {
         put_rect(r, x, ytop - th, x + tw, ytop);
         pmf = save;
         return (uint32_t)n;
@@ -1030,8 +1060,8 @@ static uint32_t api_WinQueryWindowTextLength(void)
 }
 static uint32_t words_get(pmwin_t *w, int32_t i, int sz)
 {
-    if (i == -2) return w->style | (w->visible ? WS_VISIBLE_ : 0);   /* QWL_STYLE */
-    if (i == -1) return w->id;                                      /* QWS_ID */
+    if (i == QWL_STYLE) return w->style | (w->visible ? WS_VISIBLE_ : 0);
+    if (i == QWS_ID) return w->id;
     if (i < 0 || (uint32_t)i + (uint32_t)sz > w->nwords) return 0;
     uint32_t v = 0;
     memcpy(&v, w->words + i, (size_t)sz);
@@ -1039,8 +1069,8 @@ static uint32_t words_get(pmwin_t *w, int32_t i, int sz)
 }
 static uint32_t words_set(pmwin_t *w, int32_t i, int sz, uint32_t v)
 {
-    if (i == -2) { w->style = v & ~WS_VISIBLE_; return 1; }
-    if (i == -1) { w->id = v & 0xFFFF; return 1; }
+    if (i == QWL_STYLE) { w->style = v & ~WS_VISIBLE_; return 1; }
+    if (i == QWS_ID) { w->id = v & 0xFFFF; return 1; }
     if (i < 0 || (uint32_t)i + (uint32_t)sz > w->nwords) return 0;
     memcpy(w->words + i, &v, (size_t)sz);
     return 1;
@@ -1053,23 +1083,21 @@ static uint32_t api_WinQueryWindow(void)      /* (hwnd, cmd) */
 {
     pmwin_t *w = win(A(0));
     if (!w) return 0;
-    if (A(1) == 5) return w->parent ? w->parent->hwnd : HWND_DESKTOP_;     /* QW_PARENT */
-    if (A(1) == 4) return w->owner ? w->owner->hwnd : 0;                    /* QW_OWNER */
+    if (A(1) == QW_PARENT) return w->parent ? w->parent->hwnd : HWND_DESKTOP_;
+    if (A(1) == QW_OWNER) return w->owner ? w->owner->hwnd : 0;
     return 0;
 }
 static uint32_t api_WinWindowFromID(void)
 {
-    pmwin_t *p = win(A(0));
-    for (int i = 0; i < MAXWIN; i++)
-        if (pmwins[i].used && pmwins[i].parent == p && p && pmwins[i].id == A(1)) return pmwins[i].hwnd;
-    return 0;
+    pmwin_t *c = win_child(win(A(0)), A(1));
+    return c ? c->hwnd : 0;
 }
 static uint32_t api_WinSetWindowPos(void)     /* (hwnd, hwndInsertBehind, x, y, cx, cy, fl) */
 {
     pmwin_t *w = win(A(0));
     uint32_t fl = A(6);
     if (!w) return 0;
-    if (fl & 1) {                            /* SWP_SIZE */
+    if (fl & SWP_SIZE) {
         if (w->top) pm_resize(w, (int32_t)A(4), (int32_t)A(5));
         else { w->cx = (int32_t)A(4); w->cy = (int32_t)A(5); pm_send(w, WM_SIZE, 0, (A(4) & 0xFFFF) | A(5) << 16); invalidate(w); }
     }
@@ -1091,9 +1119,9 @@ static uint32_t api_WinQueryWindowPos(void)
 static uint32_t api_WinQuerySysValue(void)    /* (hwndDesktop, iSysValue) */
 {
     switch (A(1)) {
-    case 20: case 36: return 1920;           /* SV_CXSCREEN, SV_CXFULLSCREEN */
+    case SV_CXSCREEN: case SV_CXFULLSCREEN: return 1920;
     case 21: case 37: return 1080;
-    case 1: return 400;                      /* SV_DBLCLKTIME */
+    case SV_DBLCLKTIME: return 400;
     case 4: case 5: return 4;                /* size border */
     case 26: case 27: return 1;              /* border */
     case 28: case 29: return 3;              /* dialog frame */
@@ -1158,9 +1186,9 @@ static uint32_t mb_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
     switch (msg) {
     case WM_PAINT: {
         w->invalid = 0;
-        fill(w, 0, 0, w->cx, w->cy, 0xCCCCCC);
+        fill(w, 0, 0, w->cx, w->cy, C_FACE);
         int icon = (int)((w->mb_style >> 4) & 7), tx = 18;          /* MB_ICONQUESTION, EXCLAMATION, ASTERISK, HAND */
-        static const uint32_t sptr[5] = { 0, 12, 14, 11, 13 };
+        static const uint32_t sptr[5] = { 0, SPTR_ICONQUESTION, SPTR_ICONWARNING, SPTR_ICONINFORMATION, SPTR_ICONERROR };
         if (icon >= 1 && icon <= 4) { pmwin_t *p = win(sys_pointer(sptr[icon])); if (p) ptr_draw(w, 14, w->cy - 14 - 32, p, 0); tx = 58; }
         /* the text, line by line */
         int y = w->cy - 18 - pm_ascent;
@@ -1168,19 +1196,16 @@ static uint32_t mb_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
         while (*s) {
             const char *e = strchr(s, '\n');
             int l = e ? (int)(e - s) : (int)strlen(s);
-            text_at(w, tx, y, s, l, 0x000000);
+            text_at(w, tx, y, s, l, C_TEXT);
             y -= pm_lineh;
             s += l + (e ? 1 : 0);
         }
         for (int i = 0; i < n; i++) {
             int x0, x1;
             mb_button_rect(w, k, i, &x0, &x1);
-            fill(w, x0, 12, x1, 38, 0xDDDDDD);
-            line(w, x0, 38, x1 - 1, 38, 0xFFFFFF); line(w, x0, 12, x0, 38, 0xFFFFFF);
-            line(w, x0, 12, x1 - 1, 12, 0x606060); line(w, x1 - 1, 12, x1 - 1, 38, 0x606060);
-            if (i == def) { line(w, x0 - 1, 11, x1, 11, 0x000000); line(w, x0 - 1, 39, x1, 39, 0x000000); line(w, x0 - 1, 11, x0 - 1, 39, 0); line(w, x1, 11, x1, 39, 0); }
+            button_frame(w, x0 - 1, 11, x1 + 1, 40, 0, i == def);   /* (the buttons: as push buttons are) */
             const char *l = mb_labels[k][i];
-            text_at(w, x0 + (x1 - x0 - text_w(l, (int)strlen(l))) / 2, 20, l, (int)strlen(l), 0x000000);
+            text_at(w, x0 + (x1 - x0 - text_w(l, (int)strlen(l))) / 2, 20, l, (int)strlen(l), C_TEXT);
         }
         present(w);
         return 0;
@@ -1197,8 +1222,8 @@ static uint32_t mb_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
     case WM_CHAR: {
         if (mp1 & KC_KEYUP) return 1;
         int ch = (int)(mp2 & 0xFFFF), vk = (int)(mp2 >> 16);
-        if (ch == '\r' || vk == 0x1e || vk == 0x08) w->mb_result = mb_ids[k][def];
-        else if (ch == 27 || vk == 0x0f) w->mb_result = mb_ids[k][n - 1];
+        if (ch == '\r' || vk == VK_ENTER || vk == VK_NEWLINE) w->mb_result = mb_ids[k][def];
+        else if (ch == 27 || vk == VK_ESC) w->mb_result = mb_ids[k][n - 1];
         else for (int i = 0; i < n; i++)
             if (toupper(ch) == mb_labels[k][i][0]) w->mb_result = mb_ids[k][i];
         return 1;
@@ -1326,7 +1351,7 @@ static uint32_t api_GpiCreateLogColorTable(void)   /* (hps, flOptions, lFormat, 
 {
     pmps_t *ps = ps_get(A(0));
     if (!ps) return 0;
-    ps->rgb = A(2) == 3;                     /* LCOLF_RGB: colours are RGB */
+    ps->rgb = A(2) == LCOLF_RGB;             /* colours are RGB */
     return 1;
 }
 /* a font's FONTMETRICS (n bytes at p) */
@@ -1426,9 +1451,9 @@ static uint32_t api_GpiCreateLogFont(void)    /* (hps, pName, lLcid, pfat): FONT
     lfont_t *l = &ps->lf[id];
     l->used = 1;
     l->face = nf->face;
-    l->outline = (use & 4) || mbe <= 0 || (k >= 0 && font_list[k].outline);   /* FATTR_FONTUSE_OUTLINE */
+    l->outline = (use & FATTR_FONTUSE_OUTLINE) || mbe <= 0 || (k >= 0 && font_list[k].outline);
     l->px = mbe > 0 ? mbe : k >= 0 ? font_list[k].pt * 3 / 2 : 15;
-    return 2;                                       /* FONT_MATCH */
+    return FONT_MATCH;
 }
 static void ps_refont(pmps_t *ps)
 {
@@ -1483,12 +1508,12 @@ static uint32_t api_GpiQueryWidthTable(void)  /* (hps, lFirstChar, lCount, alDat
 }
 static void pp_set(pmwin_t *w, uint32_t id, uint32_t cb, uint32_t pv)
 {
-    if (id == 15 && cb) {                           /* PP_FONTNAMESIZE: "10.Helv" */
+    if (id == PP_FONTNAMESIZE && cb) {              /* "10.Helv" */
         char *s = gp(pv, cb);
         if (!s) return;
         snprintf(w->font_name, sizeof w->font_name, "%.*s", (int)cb, s);
         w->font = font_named(w->font_name, 0);
-    } else if ((id == 1 || id == 3) && cb >= 4) {   /* PP_FOREGROUNDCOLOR, PP_BACKGROUNDCOLOR: RGB */
+    } else if ((id == PP_FOREGROUNDCOLOR || id == PP_BACKGROUNDCOLOR) && cb >= 4) {   /* RGB */
         if (id == 1) { w->pp_fg = g32(pv) & 0xFFFFFF; w->has_fg = 1; } else { w->pp_bg = g32(pv) & 0xFFFFFF; w->has_bg = 1; }
     } else if ((id == 2 || id == 4) && cb >= 4) {   /* ... the INDEX ones */
         uint32_t c = pm_rgb((int32_t)g32(pv), 0, id == 4);
@@ -1590,8 +1615,8 @@ static uint32_t api_WinCloseClipbrd(void) { return 1; }
 static uint32_t api_WinEmptyClipbrd(void) { free(clip_text); clip_text = 0; clip_bitmap = 0; clip_ours = 1; return 1; }
 static uint32_t api_WinSetClipbrdData(void)       /* (hab, ulData, fmt, rgfFmtInfo) */
 {
-    if (A(2) == 1) { char *s = gs(A(1)); if (!s) return 0; clip_put(s); return 1; }   /* CF_TEXT: a pointer to the text */
-    if (A(2) == 2) { clip_bitmap = A(1); return 1; }                                  /* CF_BITMAP: a bitmap's handle */
+    if (A(2) == CF_TEXT) { char *s = gs(A(1)); if (!s) return 0; clip_put(s); return 1; }   /* a pointer to the text */
+    if (A(2) == CF_BITMAP) { clip_bitmap = A(1); return 1; }                          /* a bitmap's handle */
     return 0;
 }
 static uint32_t api_WinQueryClipbrdData(void)     /* (hab, fmt): CF_TEXT's in our memory, for the program */
@@ -1608,7 +1633,7 @@ static uint32_t api_WinQueryClipbrdData(void)     /* (hab, fmt): CF_TEXT's in ou
 static uint32_t api_WinQueryClipbrdFmtInfo(void)  /* (hab, fmt, prgfFmtInfo) */
 {
     int have = A(1) == 1 ? clip_take() != 0 : A(1) == 2 ? clip_bitmap != 0 : 0;
-    if (have && A(2)) p32(A(2), A(1) == 1 ? 0x0400 : 0x0200);   /* CFI_POINTER, CFI_HANDLE */
+    if (have && A(2)) p32(A(2), A(1) == 1 ? CFI_POINTER : CFI_HANDLE);
     return (uint32_t)have;
 }
 static uint32_t api_WinEnumClipbrdFmts(void)      /* (hab, fmt): the next one there */
@@ -1640,10 +1665,10 @@ static void desk_xy(pmwin_t *w, int *x, int *y)            /* w's bottom left on
 static uint32_t api_WinGetKeyState(void)          /* (hwndDesktop, vk): 0x8000 down, as of the message being handled */
 {
     switch (A(1)) {
-    case 0x01: case 0x02: case 0x03: return pm_sync_buttons & (1 << (A(1) - 1)) ? 0x8000 : 0;   /* VK_BUTTON1..3 */
-    case 0x09: return pm_sync_kc & KC_SHIFT ? 0x8000 : 0;   /* VK_SHIFT */
-    case 0x0A: return pm_sync_kc & KC_CTRL ? 0x8000 : 0;    /* VK_CTRL */
-    case 0x0B: return pm_sync_kc & KC_ALT ? 0x8000 : 0;     /* VK_ALT */
+    case VK_BUTTON1: case VK_BUTTON2: case VK_BUTTON3: return pm_sync_buttons & (1 << (A(1) - 1)) ? 0x8000 : 0;
+    case VK_SHIFT: return pm_sync_kc & KC_SHIFT ? 0x8000 : 0;
+    case VK_CTRL: return pm_sync_kc & KC_CTRL ? 0x8000 : 0;
+    case VK_ALT: return pm_sync_kc & KC_ALT ? 0x8000 : 0;
     }
     return 0;
 }

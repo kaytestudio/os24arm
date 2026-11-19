@@ -47,11 +47,11 @@ static void geo_combine(geo_t *g)
 static double unit_pels(int u)
 {
     switch (u) {
-    case 0x0C: return 3780.0 / 10000;         /* PU_LOMETRIC: 0.1 mm */
-    case 0x10: return 3780.0 / 100000;        /* PU_HIMETRIC: 0.01 mm */
-    case 0x14: return 3780.0 * 0.000254;      /* PU_LOENGLISH: 0.01 inch */
-    case 0x18: return 3780.0 * 0.0000254;     /* PU_HIENGLISH: 0.001 inch */
-    case 0x1C: return 3780.0 * 0.0254 / 1440; /* PU_TWIPS */
+    case PU_LOMETRIC: return 3780.0 / 10000;  /* 0.1 mm */
+    case PU_HIMETRIC: return 3780.0 / 100000; /* 0.01 mm */
+    case PU_LOENGLISH: return 3780.0 * 0.000254;      /* 0.01 inch */
+    case PU_HIENGLISH: return 3780.0 * 0.0000254;     /* 0.001 inch */
+    case PU_TWIPS: return 3780.0 * 0.0254 / 1440;
     default: return 1;                        /* PU_PELS, PU_ARBITRARY (until a page viewport says) */
     }
 }
@@ -107,14 +107,14 @@ static void geo_pel(pmps_t *ps, pmwin_t *w, int x, int y, uint32_t c, int mix)
     geo_t *g = ps->geo;
     if (g && g->clip && (x < g->cx0 || x >= g->cx1 || y < g->cy0 || y >= g->cy1)) return;
     switch (mix) {
-    case 5: return;                                          /* FM_LEAVEALONE */
-    case 4: pel(w, x, y, (getpel(w, x, y) ^ c) & 0xFFFFFF); return;   /* FM_XOR */
-    case 12: pel(w, x, y, ~getpel(w, x, y) & 0xFFFFFF); return;       /* FM_INVERT */
-    case 1: pel(w, x, y, (getpel(w, x, y) | c) & 0xFFFFFF); return;   /* FM_OR */
-    case 6: pel(w, x, y, getpel(w, x, y) & c); return;                /* FM_AND */
-    case 9: pel(w, x, y, 0); return;                                  /* FM_ZERO */
-    case 15: pel(w, x, y, 0xFFFFFF); return;                          /* FM_ONE */
-    case 11: pel(w, x, y, ~(getpel(w, x, y) ^ c) & 0xFFFFFF); return; /* FM_NOTXORSRC */
+    case FM_LEAVEALONE: return;
+    case FM_XOR: pel(w, x, y, (getpel(w, x, y) ^ c) & 0xFFFFFF); return;
+    case FM_INVERT: pel(w, x, y, ~getpel(w, x, y) & 0xFFFFFF); return;
+    case FM_OR: pel(w, x, y, (getpel(w, x, y) | c) & 0xFFFFFF); return;
+    case FM_AND: pel(w, x, y, getpel(w, x, y) & c); return;
+    case FM_ZERO: pel(w, x, y, 0); return;
+    case FM_ONE: pel(w, x, y, 0xFFFFFF); return;
+    case FM_NOTXORSRC: pel(w, x, y, ~(getpel(w, x, y) ^ c) & 0xFFFFFF); return;
     default: pel(w, x, y, c);                                         /* FM_DEFAULT, FM_OVERPAINT */
     }
 }
@@ -218,7 +218,7 @@ static void geo_fill_dev(pmps_t *ps, pmwin_t *w, geo_t *g, int winding)
             if (!in) continue;
             for (int x = xs[k]; x < xs[k + 1]; x++) {
                 if (geo_pat(g, x, y)) geo_pel(ps, w, x, y, c, geo_mix(g));
-                else if (g->bmix == 2) geo_pel(ps, w, x, y, b, 2);   /* (BM_OVERPAINT: the background between) */
+                else if (g->bmix == BM_OVERPAINT) geo_pel(ps, w, x, y, b, FM_OVERPAINT);   /* (the background between) */
             }
         }
     }
@@ -266,8 +266,8 @@ static void geo_shape(pmps_t *ps, const int32_t *p, int n, uint32_t control)
     geo_t tmp = *g;
     geofig_t f = { n, n, (int32_t *)p };
     tmp.fig = &f; tmp.nfig = 1;
-    if (control & 1) geo_fill(ps, w, &tmp, 0);              /* DRO_FILL */
-    if ((control & 2) || !control) geo_stroke(ps, w, &tmp, 1, g->lwidth);   /* DRO_OUTLINE */
+    if (control & DRO_FILL) geo_fill(ps, w, &tmp, 0);
+    if ((control & DRO_OUTLINE) || !control) geo_stroke(ps, w, &tmp, 1, g->lwidth);
 }
 /* points along the transformed arc: centre (cx, cy), multiplier m, from a0 by sweep (radians, anticlockwise) */
 static int geo_arc_pts(geo_t *g, double cx, double cy, double m, double a0, double sweep, int32_t *out, int max)
@@ -433,8 +433,8 @@ static uint32_t api_GpiPolygons(void)               /* (hps, ulCount, aplgn {ulP
         if (i == 0) geo_fig_add(&tmp, ps->x, ps->y);
         for (uint32_t k = 0; k < np; k++) geo_fig_add(&tmp, (int32_t)g32(pts + 8 * k), (int32_t)g32(pts + 8 * k + 4));
     }
-    geo_fill(ps, w, &tmp, (A(3) & 2) != 0);                   /* POLYGON_WINDING */
-    if (A(3) & 1) geo_stroke(ps, w, &tmp, 1, g->lwidth);     /* POLYGON_BOUNDARY */
+    geo_fill(ps, w, &tmp, (A(3) & POLYGON_WINDING) != 0);
+    if (A(3) & POLYGON_BOUNDARY) geo_stroke(ps, w, &tmp, 1, g->lwidth);
     geo_figs_clear(&tmp);
     return 1;
 }
@@ -447,8 +447,8 @@ static uint32_t api_GpiEndArea(void)
     if (!g->area) return 0;
     g->area = 0;
     if (w) {
-        geo_fill(ps, w, g, (g->area_fl & 2) != 0);           /* BA_WINDING */
-        if (g->area_fl & 1) geo_stroke(ps, w, g, 1, g->lwidth);   /* BA_BOUNDARY */
+        geo_fill(ps, w, g, (g->area_fl & BA_WINDING) != 0);
+        if (g->area_fl & BA_BOUNDARY) geo_stroke(ps, w, g, 1, g->lwidth);
     }
     geo_figs_clear(g);
     return 1;
@@ -566,7 +566,7 @@ static uint32_t api_GpiIntersectClipRectangle(void) /* (hps, prcl): RGN_RECT */
     if (y0 > y1) { int t = y0; y0 = y1; y1 = t; }
     if (!g->clip) { g->clip = 1; g->cx0 = x0; g->cy0 = y0; g->cx1 = x1; g->cy1 = y1; }
     else { if (x0 > g->cx0) g->cx0 = x0; if (y0 > g->cy0) g->cy0 = y0; if (x1 < g->cx1) g->cx1 = x1; if (y1 < g->cy1) g->cy1 = y1; }
-    return 2;                                                /* RGN_RECT */
+    return RGN_RECT;
 }
 static uint32_t api_GpiPtVisible(void)              /* (hps, pptl): PVIS_VISIBLE 2, PVIS_INVISIBLE 1 */
 {
