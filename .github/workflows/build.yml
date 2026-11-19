@@ -3,8 +3,12 @@ name: Build os24arm
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   qemu-image-and-iso:
@@ -13,7 +17,7 @@ jobs:
     env:
       CC: clang-17
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install build dependencies
         run: ci/scripts/install-deps-linux.sh
@@ -21,7 +25,7 @@ jobs:
       - name: Build os2warp.img and os2warp-arm64.iso
         run: ci/scripts/build-qemu.sh build
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: os24arm-qemu
           path: |
@@ -35,7 +39,7 @@ jobs:
     env:
       CC: clang-17
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install build dependencies
         run: ci/scripts/install-deps-linux.sh
@@ -43,7 +47,7 @@ jobs:
       - name: Build kernel8.img
         run: ci/scripts/build-rpi.sh build-rpi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: os24arm-rpi3
           path: build-rpi/kernel8.img
@@ -82,7 +86,7 @@ jobs:
     env:
       CC: clang-17
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install build dependencies
         run: ci/scripts/install-deps-linux.sh
@@ -90,8 +94,61 @@ jobs:
       - name: Build ${{ matrix.image }}
         run: ci/scripts/build-beagle.sh ${{ matrix.platform }} ${{ matrix.build_dir }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.files }}
           if-no-files-found: error
+
+  # Packs each board's images into a .tar.gz and attaches them to a GitHub
+  # Release: a tag v* gets its own release; a push to main (or a manual run)
+  # of main refreshes the rolling "latest" pre-release. Pull requests and
+  # other branches only build.
+  release:
+    name: Publish images (tar.gz) to GitHub Releases
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    needs: [qemu-image-and-iso, rpi3-image, beagle-images]
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: release-${{ github.ref }}
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: artifacts
+
+      - name: Pack images into tar.gz
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for dir in artifacts/*/; do
+            name="$(basename "${dir}")"
+            tar -C "${dir}" -czf "dist/${name}.tar.gz" .
+          done
+          (cd dist && sha256sum *.tar.gz > SHA256SUMS)
+          ls -l dist
+          cat dist/SHA256SUMS
+
+      - name: Publish release
+        run: |
+          set -euo pipefail
+          short="${GITHUB_SHA::7}"
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            tag="${GITHUB_REF_NAME}"
+            gh release create "${tag}" dist/* \
+              --title "os24arm ${tag}" \
+              --notes "Images built from ${tag} (${short})." \
+              --verify-tag
+          else
+            tag=latest
+            gh release delete "${tag}" --cleanup-tag --yes || true
+            gh release create "${tag}" dist/* \
+              --title "os24arm latest build (${short})" \
+              --notes "Rolling build of ${GITHUB_REF_NAME} at ${GITHUB_SHA}. Each .tar.gz holds one board's images; SHA256SUMS lists their checksums." \
+              --target "${GITHUB_SHA}" \
+              --prerelease
+          fi

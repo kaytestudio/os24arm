@@ -80,6 +80,7 @@ trap_entry:
     csrr    a0, scause
     csrr    a1, sepc
     csrr    a2, stval
+    mv      a3, ra
     la      sp, _stack_top
     call    report_sync_exception
     j       hang

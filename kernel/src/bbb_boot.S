@@ -120,6 +120,7 @@ exc_fiq:
     mov     r2, #0
 
 exc_report:
+    mov     r3, lr                  /* the exception mode's lr, before SVC's */
     cps     #0x13
     bl      report_sync_exception
     b       hang

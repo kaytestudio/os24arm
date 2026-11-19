@@ -89,10 +89,11 @@ void uart_puthex(unsigned long val)
  *
  * Same contract as uart.c's AArch64 version, with the three arguments
  * being whatever that architecture's trap entry captured:
- *   - ARMv7 (bbb_boot.S):     vector number, faulting PC, DFAR/IFAR
- *   - RV64  (beaglev_boot.S): scause, sepc, stval
+ *   - ARMv7 (bbb_boot.S):     vector number, faulting PC, DFAR/IFAR, lr
+ *   - RV64  (beaglev_boot.S): scause, sepc, stval, ra
  */
-void report_sync_exception(unsigned long cause, unsigned long pc, unsigned long addr)
+void report_sync_exception(unsigned long cause, unsigned long pc, unsigned long addr,
+                           unsigned long lr)
 {
 #if defined(__riscv)
     static const char *const labels[3] = { "scause", "sepc  ", "stval " };
@@ -103,4 +104,5 @@ void report_sync_exception(unsigned long cause, unsigned long pc, unsigned long 
     uart_puts("[EXC] "); uart_puts(labels[0]); uart_puts(": "); uart_puthex(cause); uart_puts("\r\n");
     uart_puts("[EXC] "); uart_puts(labels[1]); uart_puts(": "); uart_puthex(pc);    uart_puts("\r\n");
     uart_puts("[EXC] "); uart_puts(labels[2]); uart_puts(": "); uart_puthex(addr);  uart_puts("\r\n");
+    uart_puts("[EXC] lr    : "); uart_puthex(lr); uart_puts("\r\n");
 }

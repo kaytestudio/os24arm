@@ -170,7 +170,14 @@ static blkdev_t vb_devs[VB_DISKS];
 static int vb_count;
 static inline uint32_t vb_rd(vb_t *vb, uint32_t o) { return *(volatile uint32_t *)(vb->base + o); }
 static inline void vb_wr(vb_t *vb, uint32_t o, uint32_t v) { *(volatile uint32_t *)(vb->base + o) = v; }
-static inline void vb_barrier(void) { __asm__ volatile("dsb sy" ::: "memory"); }
+static inline void vb_barrier(void)
+{
+#if defined(__riscv)
+    __asm__ volatile("fence iorw, iorw" ::: "memory");
+#else
+    __asm__ volatile("dsb sy" ::: "memory");
+#endif
+}
 
 /* one request: type 0 IN (read), 1 OUT (write); n sectors through the bounce buffer */
 static int vb_request(vb_t *vbp, uint32_t type, int64_t lba, uint32_t n)
