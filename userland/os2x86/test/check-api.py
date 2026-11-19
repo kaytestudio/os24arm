@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-# userland/os2x86/test/check-api.py - the names of pm_api.inc or dos_api.inc
-# against OS/2's own headers (OpenWatcom's h/os2: pmwin.h, pmgpi.h,
-# bseerr.h, bsedos.h, ...): each enum or #define there with the value the
-# headers give it.
+# userland/os2x86/test/check-api.py - compares the constants in pm_api.inc or
+# dos_api.inc with OpenWatcom's OS/2 headers and fails on any difference.
 #   check-api.py HEADERDIR pm_api.inc|dos_api.inc
-# Names ending in _ are ours (WS_VISIBLE_, HWND_DESKTOP_), not checked; a
-# name the headers don't have is listed, and fails unless it's in OURS.
+# Names ending in _ are skipped. Names missing from the headers fail unless
+# they're listed in OURS.
 import glob, re, sys
 
 OURS = {'HLPM_WINDOW'}          # (IBM's pmhelp.h has it, OpenWatcom's doesn't)

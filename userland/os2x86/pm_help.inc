@@ -10,41 +10,41 @@
  * panel at a time), searching. "os2x86 --view FILE.INF [topic]": VIEW's
  * job, the file on its own. ── */
 
-enum { HS_ITALIC = 1, HS_BOLD = 2, HS_UNDER = 4 };   /* :hp1.-:hp7.: these together */
-/* the help window's look */
-enum { HV_W = 600, HV_H = 440, HV_BAR = 40, HV_MARGIN = 8, HV_BTN_W = 96, HV_BTN_H = 28, HV_BTN_GAP = 8, HV_HIST = 64, HV_INDENT = 3 };   /* (indent: characters a level) */
-#define HV_LINK    0x0000C0             /* (a link's colour) */
-#define HV_PICTURE C_DARK               /* (a [picture]'s) */
-enum { HV_PREVIOUS = 1, HV_CONTENTS, HV_INDEX };   /* its buttons */
-enum { HV_PG_CONTENTS = -1, HV_PG_INDEX = -2 };       /* pages of ours, not the file's */
+enum { HS_ITALIC = 1, HS_BOLD = 2, HS_UNDER = 4 };   /* :hp1.-:hp7. combine these */
+/* help window layout */
+enum { HV_W = 600, HV_H = 440, HV_BAR = 40, HV_MARGIN = 8, HV_BTN_W = 96, HV_BTN_H = 28, HV_BTN_GAP = 8, HV_HIST = 64, HV_INDENT = 3 };   /* HV_INDENT: characters per level */
+#define HV_LINK    0x0000C0
+#define HV_PICTURE C_DARK
+enum { HV_PREVIOUS = 1, HV_CONTENTS, HV_INDEX };   /* button ids */
+enum { HV_PG_CONTENTS = -1, HV_PG_INDEX = -2 };       /* pages that aren't in the file */
 enum { LINES_LEFT = 1, LINES_RIGHT = 2, LINES_CENTER = 4 };      /* :lines align= */
-enum { HL_PANEL, HL_INFORM, HL_LAUNCH };              /* a link's kind: to a panel, to the program (HM_INFORM), to VIEW */
+enum { HL_PANEL, HL_INFORM, HL_LAUNCH };              /* link targets */
 
-/* the structures, by their fields' offsets: an .INF's header (and its extended header's fonts), */
+/* .INF header field offsets */
 enum {
     INF_NTOC = 8, INF_TOCSTART = 18, INF_NRES = 22, INF_RESSTART = 24, INF_NNAME = 28, INF_NAMESTART = 30,
     INF_NINDEX = 34, INF_INDEXSTART = 36, INF_INDEXLEN = 40, INF_NSLOTS = 62, INF_SLOTSSTART = 64,
     INF_DICTLEN = 68, INF_NDICT = 72, INF_DICTSTART = 74, INF_EXTSTART = 91, INF_TITLE = 107, INF_TITLELEN = 48,
     INF_HEADER = 155, INF_FONT = 39, INF_FACELEN = 33,
 };
-/* a TOC entry (its length, flags, slots; then its window's, its slots' numbers, its title), */
+/* TOC entry */
 enum { TOC_LEN = 0, TOC_FLAGS = 1, TOC_NSLOT = 2, TOC_HEADER = 3, TOC_LEVEL = 0x0f, TOC_EXTENDED = 0x20, TOC_HIDDEN = 0x40 };
-/* an index entry (its text's length, flags, synonyms, panel; the text, 4 bytes a synonym), */
+/* index entry */
 enum { IX_LEN = 0, IX_FLAGS = 1, IX_NSYN = 2, IX_TOC = 3, IX_TEXT = 5, IX_LEVEL2 = 2 };
-/* a slot (its local dictionary, its size; its text's size, the text), its text's bytes past the words */
+/* slot header and text codes */
 enum { SL_LOCALDICT = 1, SL_NLOCAL = 5, SL_NTEXT = 6, SL_TEXT = 8 };
 enum { TX_PARA = 0xfa, TX_SPACING = 0xfc, TX_NEWLINE = 0xfd, TX_SPACE = 0xfe, TX_ESCAPE = 0xff };
-/* the escapes (TX_ESCAPE, its length, one of these, what it says) */
+/* escape codes (after TX_ESCAPE and a length byte) */
 enum {
     ESC_LMARGIN = 0x02, ESC_RMARGIN = 0x03, ESC_STYLE = 0x04, ESC_LINK = 0x05, ESC_LINK2 = 0x06, ESC_FOOTNOTE = 0x07,
     ESC_ENDLINK = 0x08, ESC_MONO = 0x0b, ESC_ENDMONO = 0x0c, ESC_HPCOLOR = 0x0d, ESC_ARTWORK = 0x0e, ESC_LAUNCH = 0x10,
     ESC_COLOR = 0x13, ESC_INFORM = 0x16, ESC_HIDE = 0x17, ESC_ENDHIDE = 0x18, ESC_FONT = 0x19, ESC_LINES = 0x1a,
     ESC_ENDLINES = 0x1b, ESC_MARGINHERE = 0x1c,
 };
-/* the program's HELPINIT, a HELPTABLE's entries (up to one with no window) */
+/* HELPINIT and HELPTABLE field offsets */
 enum { HI_RETURNCODE = 4, HI_HELPTABLE = 12, HI_HELPTABLEMOD = 16, HI_TITLE = 32, HI_LIBRARY = 40, HI_SIZE = 44 };
 enum { HT_APPWINDOW = 0, HT_SUBTABLE = 2, HT_EXTPANEL = 6, HT_SIZE = 8 };
-enum { HT_SCAN = 64, HST_SCAN = 128 };                 /* (a table in the program's memory: its end not known, this far looked) */
+enum { HT_SCAN = 64, HST_SCAN = 128 };                 /* scan limit for tables in program memory */
 
 /* IPF's words are code page 850; the fonts here, Latin-1 */
 static const uint8_t cp850_l1[256] = {
@@ -170,7 +170,7 @@ static int inf_name(inf_t *f, const char *name)              /* name= or id= : i
     }
     return -1;
 }
-/* the index's entries, one by one from *p (f->indexstart first): its text, panel, flags; 0 at the end */
+/* next index entry from *p; 0 at the end */
 static int inf_index(inf_t *f, uint32_t *p, char *s, size_t sn, int *toc, int *flags)
 {
     uint32_t a = *p, end = f->indexstart + f->indexlen;
@@ -199,9 +199,8 @@ static int inf_find(inf_t *f, const char *topic)
         if (strcasestr(s, topic)) page = toc;
     return page;
 }
-/* a book, a help library: as named (this system's name, OS/2's); else its file name looked for in dir
- * (the book linking to it, the program's), BOOKSHELF's and HELP's directories, here - as it is, in lower
- * case, in upper, each with .INF after it */
+/* open a book or help library: as named, else by file name in dir, BOOKSHELF,
+ * HELP and . (any case, .INF optional) */
 static inf_t *book_open(const char *name, const char *dir)
 {
     char host[PATH_MAX], dirs[8192], nm[300];
@@ -219,7 +218,7 @@ static inf_t *book_open(const char *name, const char *dir)
             if (os2_to_host(d, host, sizeof host, 0)) continue;
             d = host;
         }
-        for (int kase = 0; kase < 3 && !f; kase++)            /* as it is, in lower case, in upper */
+        for (int kase = 0; kase < 3 && !f; kase++)            /* as given, lower, upper */
             for (int ext = 0; ext < 2 && !f; ext++) {
                 char p[PATH_MAX * 2];
                 int k = snprintf(p, sizeof p, "%s/", d);
@@ -257,19 +256,19 @@ struct helpi {
     helptab_t *tab; int ntab;
     uint32_t active, app;                                    /* HM_SET_ACTIVE_WINDOW's; the window help is for now */
 };
-typedef struct {                                             /* a panel being laid out */
+typedef struct {                                             /* layout state for one panel */
     hview_t *v;
-    int x, y;                                                /* where the next word goes */
-    int lm, rm, width, cw, space;                            /* margins, the width, a character's, a space's */
-    int style, mono, fmono, link, hide;                      /* the words': HS_ style, :xmp., the font's, a link, hidden */
+    int x, y;                                                /* pen position */
+    int lm, rm, width, cw, space;                            /* margins, width, char width, space width */
+    int style, mono, fmono, link, hide;                      /* current style: HS_ bits, :xmp., fixed font, link, hidden */
     uint32_t rgb;
-    int spacing, save_spacing, align;                        /* spaces after words; :lines. */
-    int line0, run, any;                                     /* the line's first word, words that stay together; any laid */
+    int spacing, save_spacing, align;                        /* word spacing, :lines. alignment */
+    int line0, run, any;                                     /* line start, unbreakable run, anything laid out yet */
 } hlay_t;
 static pmfont_t *hv_font(int style, int mono)
 {
     int px = pm_deffont->ok ? pm_deffont->px : 15;
-    return font_get((mono ? 2 : 0) | (style & HS_BOLD ? 1 : 0), px);   /* (italic: as it is) */
+    return font_get((mono ? 2 : 0) | (style & HS_BOLD ? 1 : 0), px);   /* no italic font: drawn upright */
 }
 static void hv_clear(hview_t *v)
 {
@@ -362,7 +361,7 @@ static void lay_esc(hlay_t *L, int code, const uint8_t *a, uint32_t n)
     case ESC_ENDLINK: L->link = -1; break;
     case ESC_MONO: lay_para(L); L->save_spacing = L->spacing; L->spacing = 0; L->mono = 1; break;   /* :xmp., :cgraphic.: a block, as it is */
     case ESC_ENDMONO: if (L->mono) { L->spacing = L->save_spacing; L->mono = 0; } if (L->x > L->lm) lay_nl(L); break;
-    case ESC_LINES: if (n >= 1) L->align = a[0]; break;           /* (LINES_) */
+    case ESC_LINES: if (n >= 1) L->align = a[0]; break;
     case ESC_ENDLINES: L->align = 0; break;
     case ESC_FONT:                                           /* the file's fonts; a fixed one's, mono */
         L->fmono = 0;
@@ -465,7 +464,7 @@ static void hv_scrollbar(hview_t *v, pmwin_t *c)
     pm_send(s, SBM_SETSCROLLBAR, (uint32_t)v->top, (uint32_t)hi << 16);
     pm_send(s, SBM_SETTHUMBSIZE, (uint32_t)(vis & 0xFFFF) | (uint32_t)(tot & 0xFFFF) << 16, 0);
 }
-static void hv_scroll(hview_t *v, pmwin_t *c, int top)       /* to a line (past the end: the last page) */
+static void hv_scroll(hview_t *v, pmwin_t *c, int top)       /* scroll to a line; clamped */
 {
     int o = v->top;
     v->top = top;
@@ -526,7 +525,7 @@ static uint32_t hv_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
 {
     hview_t *v = w->ctl;
     if (!v) return 0;
-    int vis = (w->cy - HV_BAR) / v->lineh, page = vis > 1 ? vis - 1 : 1;   /* (a page: but its last line) */
+    int vis = (w->cy - HV_BAR) / v->lineh, page = vis > 1 ? vis - 1 : 1;   /* a page step keeps one line */
     switch (msg) {
     case WM_PAINT: {
         w->invalid = 0;
@@ -664,7 +663,7 @@ static hview_t *hv_open(inf_t *f, const char *title, int page)
  * its id), the panel of each window in it (by the focus's id), the extended
  * help panel. A window's instance: its helpi (WinAssociateHelpInstance) ── */
 static helpi_t *helpi_of(uint32_t hwnd) { pmwin_t *w = win(hwnd); return w && !strcmp(w->cls, "#help") ? w->ctl : 0; }
-static uint32_t desktop_helpi;                               /* (HWND_DESKTOP's: every window's, last) */
+static uint32_t desktop_helpi;                               /* HWND_DESKTOP's instance, the fallback */
 static void help_subtab(helptab_t *t, uint32_t a, uint32_t end)   /* HELPSUBTABLE: the words an item, then items (window, panel, ...) up to a 0 */
 {
     uint32_t size = g16(a);
@@ -674,8 +673,8 @@ static void help_subtab(helptab_t *t, uint32_t a, uint32_t end)   /* HELPSUBTABL
         t->sub[t->nsub][0] = g16(a); t->sub[t->nsub][1] = g16(a + 2); t->nsub++;
     }
 }
-/* the help table: p a HELPTABLE in the program's memory, or MAKELONG(id, 0xFFFF) a resource of hmod's (its
- * subtables too); 0, none. Entries (window id, subtable, extended help panel) up to one with no window */
+/* load a help table: p points into program memory, or is MAKELONG(id, 0xFFFF)
+ * for a resource; 0 clears it */
 static void help_table(helpi_t *h, uint32_t p, uint32_t hmod)
 {
     for (int i = 0; i < h->ntab; i++) free(h->tab[i].sub);
@@ -694,7 +693,7 @@ static void help_table(helpi_t *h, uint32_t p, uint32_t hmod)
     }
     if (trace) fprintf(stderr, "[help] table: %d windows\n", h->ntab);
 }
-/* its library: the first of its names (one or more, spaces between) there is - looked for as books are, the program's directory first */
+/* first library in h->lib (space-separated) that opens */
 static inf_t *help_inf(helpi_t *h)
 {
     if (h->f || h->tried) return h->f;
@@ -820,7 +819,7 @@ static uint32_t help_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
         inf_free(h->f); h->f = 0; h->tried = 0;
         return help_inf(h) ? 0 : HMERR_OPEN_LIB_FILE;
     }
-    case WM_DESTROY:                                         /* (h itself: the window's ctl, freed with it) */
+    case WM_DESTROY:                                         /* h is the window's ctl, freed by win_destroy */
         for (int i = 0; i < MAXWIN; i++) if (pmwins[i].used && pmwins[i].helpi == h->hwnd) pmwins[i].helpi = 0;
         if (desktop_helpi == h->hwnd) desktop_helpi = 0;
         if (h->view && win(h->view->frame)) win_destroy(win(h->view->frame));

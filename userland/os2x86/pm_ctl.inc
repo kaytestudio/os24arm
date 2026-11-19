@@ -12,8 +12,8 @@
  * character across, an eighth up). */
 
 #define MENU_H  22
-#define SS_TYPES 0x003f                 /* (a static's type, its style's low bits: SS_AUTOSIZE not one) */
-#define SB_W    16                      /* (a scroll bar's width: the frame's, an MLE's, a container's) */
+#define SS_TYPES 0x003f                 /* static type bits (SS_AUTOSIZE excluded) */
+#define SB_W    16                      /* scroll bar width */
 
 static int du_x(int v) { return v * 7 / 4; }            /* dialog units: pixels */
 static int du_y(int v) { return v * 2; }
@@ -541,9 +541,9 @@ static uint32_t list_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
         for (int j = 0; j < l->n; j++) {
             int k = (start < 0 ? j : (start + 1 + j)) % (l->n ? l->n : 1);
             const char *t = l->it[k].text;
-            int hit = (fl & LSS_SUBSTRING) ? (cs ? strstr(t, s) : strcasestr(t, s)) != 0           /* (it in the item) */
-                    : (fl & LSS_PREFIX) ? !(cs ? strncmp : strncasecmp)(t, s, strlen(s))     /* (the item begins with it) */
-                    : !(cs ? strcmp : strcasecmp)(t, s);                                     /* (neither: the whole item) */
+            int hit = (fl & LSS_SUBSTRING) ? (cs ? strstr(t, s) : strcasestr(t, s)) != 0
+                    : (fl & LSS_PREFIX) ? !(cs ? strncmp : strncasecmp)(t, s, strlen(s))
+                    : !(cs ? strcmp : strcasecmp)(t, s);
             if (hit) return (uint32_t)k;
         }
         return (uint32_t)LIT_NONE;
@@ -1337,7 +1337,7 @@ static uint32_t combo_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
     int bw = 18;
     switch (msg) {
     case WM_CREATE: {
-        c->type = (w->style & CBS_DROPDOWNLIST) ? CBS_DROPDOWNLIST : CBS_DROPDOWN;   /* (CBS_SIMPLE: a drop-down too) */
+        c->type = (w->style & CBS_DROPDOWNLIST) ? CBS_DROPDOWNLIST : CBS_DROPDOWN;   /* CBS_SIMPLE drawn as a drop-down */
         int eh = pm_lineh + 6;
         c->listh = w->cy - eh;
         if (c->listh < 4 * pm_lineh + 4) c->listh = 4 * pm_lineh + 4;
@@ -1947,8 +1947,8 @@ typedef struct { int n, pos, drag; uint8_t tick[256]; char *text[256]; } sld_t;
 static sld_t *sld(pmwin_t *w) { if (!w->ctl) { w->ctl = calloc(1, sizeof(sld_t)); ((sld_t *)w->ctl)->n = 11; } return w->ctl; }
 static int sld_vert(pmwin_t *w) { return w->style & SLS_VERTICAL; }
 /* along the shaft (from the left, or the bottom): where it starts and ends, the buttons' room */
-enum { SLD_BTN = 16, SLD_BTNPAD = 2 };                    /* (its buttons: squares, two side by side, at one end) */
-static int sld_btn0(pmwin_t *w)                          /* where along it the buttons begin; -1: none */
+enum { SLD_BTN = 16, SLD_BTNPAD = 2 };                    /* slider arrow buttons */
+static int sld_btn0(pmwin_t *w)                          /* offset of the arrow buttons, -1 if none */
 {
     if (!(w->style & (SLS_BUTTONSBOTTOM | SLS_BUTTONSTOP))) return -1;
     return (w->style & SLS_BUTTONSBOTTOM) ? SLD_BTNPAD : (sld_vert(w) ? w->cy : w->cx) - SLD_BTNPAD - 2 * SLD_BTN;
@@ -1981,7 +1981,7 @@ static uint32_t slider_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2
     switch (msg) {
     case WM_CREATE:
         if (mp1 && ok(mp1, 8) && g16(mp1 + 4) >= 2) s->n = g16(mp1 + 4) > 256 ? 256 : g16(mp1 + 4);   /* usScale1Increments */
-        if (w->style & SLS_HOMETOP) s->pos = 0;             /* (home at the right, the top: still 0 there) */
+        if (w->style & SLS_HOMETOP) s->pos = 0;             /* position 0 is still home */
         return 0;
     case WM_DESTROY: for (int i = 0; i < 256; i++) free(s->text[i]); return 0;
     case WM_PAINT: {
@@ -2035,7 +2035,7 @@ static uint32_t slider_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2
         if (!s->drag) return 1;
         int x = (int16_t)(mp1 & 0xFFFF), y = (int16_t)(mp1 >> 16), al = vert ? y : x, best = 0;
         for (int i = 1; i < s->n; i++) if (abs(sld_at(w, s, i) - al) < abs(sld_at(w, s, best) - al)) best = i;
-        if (msg == WM_BUTTON1UP) { s->drag = 0; pm_capture = 0; s->pos = -1; sld_set(w, best, SLN_CHANGE); }   /* (the drag's end: a change, whatever) */
+        if (msg == WM_BUTTON1UP) { s->drag = 0; pm_capture = 0; s->pos = -1; sld_set(w, best, SLN_CHANGE); }   /* end of drag: always notify */
         else if (best != s->pos) sld_set(w, best, SLN_SLIDERTRACK);
         return 1;
     }

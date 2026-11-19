@@ -9,7 +9,7 @@
 #include <math.h>
 
 /* ── WC_VALUESET ──────────────────────────────────────────────────────── */
-#define VS_ITEMS (VS_BITMAP | VS_ICON | VS_TEXT | VS_RGB | VS_COLORINDEX)   /* (what the items are: their VIA_, the same bits) */
+#define VS_ITEMS (VS_BITMAP | VS_ICON | VS_TEXT | VS_RGB | VS_COLORINDEX)   /* item type bits; VIA_ uses the same values */
 typedef struct { uint16_t attr; uint32_t val; char *text; } vsitem_t;
 typedef struct { int rows, cols, sr, sc, cr, cc, isx, isy, spx, spy; vsitem_t *it; } vs_t;
 static vs_t *vsd(pmwin_t *w)
@@ -212,8 +212,8 @@ static cs_t *csd(pmwin_t *w)
     return w->ctl;
 }
 /* the dial: its centre, its radius; the room for the buttons and the text below */
-enum { CS_BTN = 16, CS_BTNPAD = 2 };                      /* (its - and + buttons: squares in the corners below) */
-static int cs_btn_x(pmwin_t *w, int k) { return k ? w->cx - CS_BTNPAD - CS_BTN : CS_BTNPAD; }   /* (k: 0 the -, 1 the +) */
+enum { CS_BTN = 16, CS_BTNPAD = 2 };                      /* the - (k = 0) and + (k = 1) buttons */
+static int cs_btn_x(pmwin_t *w, int k) { return k ? w->cx - CS_BTNPAD - CS_BTN : CS_BTNPAD; }
 static void cs_geom(pmwin_t *w, int *cx, int *cy, int *r)
 {
     int below = ((w->style & (CSS_NOBUTTON | CSS_NOTEXT)) == (CSS_NOBUTTON | CSS_NOTEXT) ? 0 : 20), top = (w->style & CSS_NONUMBER) ? 4 : pm_lineh + 2;   /* (the buttons, the text; the number above) */

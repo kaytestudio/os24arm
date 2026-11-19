@@ -70,7 +70,7 @@ if [ -x "$W/armo64/wcl386" ] || [ -x "$W/binl64/wcl386" ]; then
     rm -f pmhelp.hlp
     [ -f wipfc-os2/binp/wipfc.exe ] && cp "$S/pmhelp.ipf" . && WIPFC="$PWD/wipfc-os2/wipfc" ../os2x86 wipfc-os2/binp/wipfc.exe -q pmhelp.ipf >/dev/null 2>&1
     owfail=0
-    # pm_api.inc's and dos_api.inc's names: as OS/2's headers (OpenWatcom's) have them
+    # pm_api.inc and dos_api.inc against OpenWatcom's OS/2 headers
     for f in pm_api dos_api; do
         python3 -I "$T/test/check-api.py" "$W/h/os2" "$T/$f.inc" >apicheck.out && echo "OS/2 names ($f.inc): ok" ||
             { echo "OS/2 names ($f.inc): FAIL"; cat apicheck.out; owfail=1; }
@@ -261,7 +261,7 @@ $(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf OS2X86_PM_SCRIPT="vkey tab
     qout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf OS2X86_PM_SCRIPT="shift click 30 40; close" ../os2x86 pmquery.exe 2>&1 | tr -d '\r')"
     if [ "$(tr '\n' '|' <<< "$qout")" = "down 1, shift 1; at 30 79, mapped back 30 79|from point: the button, the client; class #3; child 1|capture ours|thread 1|" ]
     then echo "PM pointer, points, key state: ok"; else echo "PM pointer, points, key state: FAIL"; echo "$qout"; owfail=1; fi
-    # a list box's search: the whole item, case or not, prefix, substring, after an item, none
+    # LM_SEARCHSTRING with each flag combination
     lssout="$(OS2X86_PM=headless OS2X86_FONT=fonts/DejaVuSans.ttf ../os2x86 pmsearch.exe 2>&1 | tr -d '\r')"
     if [ "$lssout" = "0 4 0 1 0 3 4 -1" ]; then echo "PM list box search: ok"; else echo "PM list box search: FAIL"; echo "$lssout"; owfail=1; fi
     # page units (LOENGLISH) and transforms (translate, scale, rotate; GpiConvert)

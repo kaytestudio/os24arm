@@ -1,7 +1,5 @@
-/* userland/os2x86/dos_api.inc - OS/2's names for the DOS calls' (and VIO's,
- * MOU's) values, as its headers (bseerr.h, bsedos.h, bsexcpt.h, bsesub.h)
- * give them: error codes, flags, exception codes (included by os2x86.c;
- * test/check-api.py checks them against OpenWatcom's headers). */
+/* userland/os2x86/dos_api.inc - DOS API constants, with the values from
+ * OS/2's headers (test/check-api.py checks them). */
 /* OS/2 error codes */
 #define NO_ERROR                 0
 #define ERROR_INVALID_FUNCTION   1
@@ -56,7 +54,7 @@
 #define ERROR_QUE_NAME_NOT_EXIST 343
 #define ERROR_INVALID_ADDRESS    487
 #define ERROR_TIMEOUT            640
-/* flags and values of the DOS calls' (bsedos.h, bsexcpt.h, bsesub.h) */
+/* DOS call flags */
 #define CREATE_SUSPENDED         1
 #define DCMW_WAIT_ALL            4
 #define DCWW_NOWAIT              1
@@ -75,7 +73,7 @@
 #define TC_EXIT                  0
 #define VGMT_OTHER               1
 #define XCPT_CONTINUE_EXECUTION  0xFFFFFFFFu
-/* exception codes (bsexcpt.h) */
+/* exception codes */
 #define XCPT_ACCESS_VIOLATION       0xC0000005
 #define XCPT_ILLEGAL_INSTRUCTION    0xC000001C
 #define XCPT_INTEGER_DIVIDE_BY_ZERO 0xC000009B

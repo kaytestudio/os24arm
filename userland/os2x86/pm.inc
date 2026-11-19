@@ -161,7 +161,7 @@ struct pmwin {
     int has_fg, has_bg;                 /* ... its colours (PP_FOREGROUNDCOLOR, PP_BACKGROUNDCOLOR) */
     uint32_t pp_fg, pp_bg;
     uint32_t dlg_result;
-    uint32_t helpi;                     /* its help instance (WinAssociateHelpInstance, pm_help.inc) */
+    uint32_t helpi;                     /* WinAssociateHelpInstance */
 };
 #define MAXWIN 1024                     /* (windows, controls, and bitmaps: they're hidden windows) */
 static pmwin_t pmwins[MAXWIN];
@@ -178,7 +178,7 @@ static pmwin_t *win(uint32_t h)
     uint32_t i = h - 0x80000100u;
     return i < MAXWIN && pmwins[i].used ? &pmwins[i] : 0;
 }
-static pmwin_t *win_child(pmwin_t *p, uint32_t id)         /* (WinWindowFromID's) */
+static pmwin_t *win_child(pmwin_t *p, uint32_t id)
 {
     for (int i = 0; p && i < MAXWIN; i++) if (pmwins[i].used && pmwins[i].parent == p && pmwins[i].id == id) return &pmwins[i];
     return 0;
@@ -244,7 +244,7 @@ typedef struct { int used; uint32_t hwnd, id, ms; uint64_t next; } pmtimer_t;
 static pmtimer_t pmtimers[64];
 
 /* ── pixels ──────────────────────────────────────────────────────────── */
-/* the look: buttons, dialogs, menus (the face, its light and dark edges), text, the highlight; windows, frames, the desktop */
+/* UI colours */
 #define C_FACE    0xCCCCCC
 #define C_LIGHT   0xFFFFFF
 #define C_DARK    0x808080
@@ -256,7 +256,7 @@ static pmtimer_t pmtimers[64];
 static uint32_t pm_rgb(int32_t c, int rgbmode, int back)
 {
     if (rgbmode && c >= 0) return (uint32_t)c & 0xFFFFFF;
-    static const uint32_t base[16] = {   /* (CLR_BACKGROUND, BLUE, RED, PINK, GREEN, CYAN, YELLOW, NEUTRAL; the dark ones; PALEGRAY) */
+    static const uint32_t base[16] = {   /* CLR_BACKGROUND .. CLR_PALEGRAY */
         0xFFFFFF, 0x0000FF, 0xFF0000, 0xFF00FF, 0x00FF00, 0x00FFFF, 0xFFFF00, 0x000000,
         0x808080, 0x000080, 0x800000, 0x800080, 0x008000, 0x008080, 0x808000, 0xCCCCCC };
     if (c >= 0 && c < 16) return base[c];
@@ -351,7 +351,7 @@ static void bevel(pmwin_t *w, int x0, int y0, int x1, int y1, int raised)   /* [
     line(w, x0, y1 - 1, x1 - 1, y1 - 1, tl); line(w, x0, y0, x0, y1 - 1, tl);
     line(w, x0, y0, x1 - 1, y0, br); line(w, x1 - 1, y0, x1 - 1, y1 - 1, br);
 }
-/* a push button's edges in [x0, x1) x [y0, y1): raised (or pressed) inside; the default's, black around it */
+/* push button border; def adds the black outline */
 static void button_frame(pmwin_t *w, int x0, int y0, int x1, int y1, int down, int def)
 {
     bevel(w, x0 + 1, y0 + 1, x1 - 1, y1 - 1, !down);
@@ -504,7 +504,7 @@ static void pm_mouse(pmwin_t *f, int px, int py, int button, int down)
     if (button == 2) { if (down) { pm_b2_hwnd = w->hwnd; pm_b2_x = x; pm_b2_y = y; pm_b2_began = 0; } else pm_b2_hwnd = 0; }
     static const uint32_t dn[3] = { WM_BUTTON1DOWN, WM_BUTTON2DOWN, WM_BUTTON3DOWN }, up[3] = { WM_BUTTON1UP, WM_BUTTON2UP, WM_BUTTON3UP };
     if (button < 1 || button > 3) return;
-    if (down && f->drop && w != f->drop && w->id != FID_MENU) { menu_close(f); return; }   /* (the menu bar: it decides) */
+    if (down && f->drop && w != f->drop && w->id != FID_MENU) { menu_close(f); return; }   /* the menu bar handles it */
     static uint64_t last_t;
     static int last_b, last_x, last_y;
     static uint32_t last_w;
@@ -767,7 +767,7 @@ static uint32_t frame_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
     if (msg == WM_CLOSE) { if (w->client) post(w->client, w->client->hwnd, WM_CLOSE, 0, 0); else post(w, 0, WM_QUIT, 0, 0); }
     return 0;
 }
-/* a standard frame window (hidden), cx by cy: its title, its FCF_ parts (the menu, accelerators: hmod's resources id) */
+/* a hidden standard frame with the FCF_ parts asked for */
 static pmwin_t *frame_new(uint32_t style, uint32_t id, const char *title, int cx, int cy, uint32_t fcf, uint32_t hmod)
 {
     pmwin_t *f = win_new(0, "#1", style & ~WS_VISIBLE_, id);   /* (its id: idResources, as help tables know it) */
@@ -778,14 +778,14 @@ static pmwin_t *frame_new(uint32_t style, uint32_t id, const char *title, int cx
     frame_pixels(f, cx, cy);
     if (fcf & FCF_MENU) menu_load(f, hmod, id);
     if (fcf & FCF_ACCELTABLE) { uint32_t a, n; if (find_resource(hmod, RT_ACCELTABLE, id, &a, &n)) f->haccel = accel_new(a); }
-    for (int k = 0; k < 2; k++)                          /* the scroll bars: the frame's, telling the client */
+    for (int k = 0; k < 2; k++)
         if (fcf & (k ? FCF_HORZSCROLL : FCF_VERTSCROLL)) {
             pmwin_t *s = win_new(f, "#8", k ? 0 : 1, k ? FID_HORZSCROLL : FID_VERTSCROLL);
             if (s) { s->owner = f; s->visible = 1; }
         }
     return f;
 }
-static pmwin_t *frame_client(pmwin_t *f, const char *cls, uint32_t style)   /* (laid out in it; WM_CREATE: the caller's) */
+static pmwin_t *frame_client(pmwin_t *f, const char *cls, uint32_t style)   /* caller sends WM_CREATE */
 {
     pmwin_t *c = win_new(f, cls, style, FID_CLIENT);
     if (!c) return 0;
@@ -1203,7 +1203,7 @@ static uint32_t mb_proc(pmwin_t *w, uint32_t msg, uint32_t mp1, uint32_t mp2)
         for (int i = 0; i < n; i++) {
             int x0, x1;
             mb_button_rect(w, k, i, &x0, &x1);
-            button_frame(w, x0 - 1, 11, x1 + 1, 40, 0, i == def);   /* (the buttons: as push buttons are) */
+            button_frame(w, x0 - 1, 11, x1 + 1, 40, 0, i == def);
             const char *l = mb_labels[k][i];
             text_at(w, x0 + (x1 - x0 - text_w(l, (int)strlen(l))) / 2, 20, l, (int)strlen(l), C_TEXT);
         }

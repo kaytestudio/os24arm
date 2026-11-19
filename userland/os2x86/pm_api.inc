@@ -1,8 +1,6 @@
-/* userland/os2x86/pm_api.inc - OS/2's Presentation Manager names, as its
- * headers (pmwin.h, pmstddlg.h, pmhelp.h, ...) give them, for the ones
- * pm*.inc use: messages, notifications, styles, keys, colours, the help
- * manager's (included by pm.inc). Names with a _ after them (WS_VISIBLE_,
- * HWND_DESKTOP_) are ours: unsigned, where a program's header has its own. */
+/* userland/os2x86/pm_api.inc - PM constants, with the values from OS/2's
+ * headers (test/check-api.py checks them). Names ending in _ are our own
+ * unsigned versions. */
 
 /* ── windows, messages, keys, notifications, message boxes, frames, resources ── */
 enum {
@@ -14,8 +12,7 @@ enum {
     WM_BUTTON2UP = 0x0075, WM_BUTTON2DBLCLK = 0x0076, WM_BUTTON3DOWN = 0x0077, WM_BUTTON3UP = 0x0078,
     WM_BUTTON3DBLCLK = 0x0079, WM_CHAR = 0x007a, WM_BUTTON1CLICK = 0x0413, WM_BEGINDRAG = 0x0420,
 };
-/* the controls' messages: buttons, entry fields, list boxes, combo boxes, menus, scroll bars, MLEs, containers,
- * notebooks, sliders, value sets, circular sliders; direct manipulation */
+/* control messages */
 enum {
     BKM_CALCPAGERECT = 0x0353, BKM_DELETEPAGE = 0x0354, BKM_INSERTPAGE = 0x0355, BKM_INVALIDATETABS = 0x0356,
     BKM_TURNTOPAGE = 0x0357, BKM_QUERYPAGECOUNT = 0x0358, BKM_QUERYPAGEID = 0x0359, BKM_QUERYPAGEDATA = 0x035a,
@@ -93,12 +90,12 @@ enum {
     VM_SELECTITEM = 0x0379, VM_SETITEM = 0x037a, VM_SETITEMATTR = 0x037b, VM_SETMETRICS = 0x037c,
 };
 enum { KC_CHAR = 1, KC_VIRTUALKEY = 2, KC_SCANCODE = 4, KC_SHIFT = 8, KC_CTRL = 0x10, KC_ALT = 0x20, KC_KEYUP = 0x40, KC_PREVDOWN = 0x80 };
-/* the controls' notifications (WM_CONTROL's high word; the low, the control's id), by control */
+/* control notifications (high word of WM_CONTROL's mp1) */
 enum { BN_CLICKED = 1 };
 enum { EN_CHANGE = 4 };
 enum { LN_SELECT = 1, LN_ENTER = 5 };
 enum { CBN_EFCHANGE = 1, CBN_LBSELECT = 4, CBN_SHOWLIST = 6, CBN_ENTER = 7, CBID_LIST = 0x029a, CBID_EDIT = 0x029b };
-enum { SB_LINEUP = 1, SB_LINEDOWN, SB_PAGEUP, SB_PAGEDOWN, SB_SLIDERTRACK, SB_SLIDERPOSITION, SB_ENDSCROLL };   /* (WM_VSCROLL's) */
+enum { SB_LINEUP = 1, SB_LINEDOWN, SB_PAGEUP, SB_PAGEDOWN, SB_SLIDERTRACK, SB_SLIDERPOSITION, SB_ENDSCROLL };   /* WM_VSCROLL/WM_HSCROLL commands */
 enum { MLN_CHANGE = 7 };
 enum { SPBN_UPARROW = 0x020a, SPBN_DOWNARROW, SPBN_ENDSPIN, SPBN_CHANGE };
 enum { SLN_CHANGE = 1, SLN_SLIDERTRACK };
@@ -114,12 +111,12 @@ enum {
     VK_PAGEDOWN = 0x12, VK_END = 0x13, VK_HOME = 0x14, VK_LEFT = 0x15, VK_UP = 0x16, VK_RIGHT = 0x17, VK_DOWN = 0x18,
     VK_SPACE = 0x10, VK_INSERT = 0x1a, VK_DELETE = 0x1b, VK_ENTER = 0x1e, VK_F1 = 0x20, VK_F10 = 0x29,
 };
-enum {                                  /* WinMessageBox's style: the icon, the frame */
+enum {                                  /* WinMessageBox styles */
     MB_ICONQUESTION = 0x0010, MB_ICONEXCLAMATION = 0x0020, MB_ICONASTERISK = 0x0030, MB_ICONHAND = 0x0040,
     MB_WARNING = MB_ICONEXCLAMATION, MB_INFORMATION = MB_ICONASTERISK, MB_ERROR = MB_ICONHAND, MB_MOVEABLE = 0x4000,
 };
 #define HWND_DESKTOP_ 1
-enum { QWS_ID = -1, QWL_STYLE = -2 };   /* (window words of the system's) */
+enum { QWS_ID = -1, QWL_STYLE = -2 };   /* WinQueryWindowULong indexes */
 #define FID_MENU 0x8005
 #define FID_VERTSCROLL 0x8006
 #define FID_HORZSCROLL 0x8007
@@ -129,7 +126,7 @@ enum { FCF_MENU = 0x0004, FCF_VERTSCROLL = 0x0040, FCF_HORZSCROLL = 0x0080, FCF_
 enum { RT_POINTER = 1, RT_BITMAP = 2, RT_MENU = 3, RT_DIALOG = 4, RT_ACCELTABLE = 8 };
 
 /* ── colours ── */
-/* colours by index: CLR_ (the 16 of the default table, 0-15; these below 0) and SYSCLR_ */
+/* colour indexes */
 enum { CLR_DEFAULT = -3, CLR_WHITE = -2, CLR_BLACK = -1 };
 enum {
     SYSCLR_WINDOWTEXT = -17, SYSCLR_MENUTEXT = -18, SYSCLR_WINDOWFRAME = -19, SYSCLR_WINDOW = -20,
@@ -143,15 +140,15 @@ enum {
 #define WS_DISABLED_ 0x40000000u
 
 /* ── controls' styles ── */
-/* the controls' styles (the low word of a window's), by control */
+/* control styles */
 enum { BS_PUSHBUTTON, BS_CHECKBOX, BS_AUTOCHECKBOX, BS_RADIOBUTTON, BS_AUTORADIOBUTTON, BS_3STATE, BS_AUTO3STATE,
        BS_USERBUTTON, BS_NOTEBOOKBUTTON, BS_PRIMARYSTYLES = 0x000f, BS_DEFAULT = 0x0400 };
 enum { SS_TEXT = 1, SS_GROUPBOX, SS_ICON, SS_BITMAP, SS_FGNDRECT, SS_HALFTONERECT, SS_BKGNDRECT, SS_FGNDFRAME,
        SS_HALFTONEFRAME, SS_BKGNDFRAME, SS_SYSICON, SS_AUTOSIZE = 0x0040 };
-enum { DT_CENTER = 0x0100, DT_RIGHT = 0x0200, DT_VCENTER = 0x0400, DT_BOTTOM = 0x0800 };   /* (a static's text) */
+enum { DT_CENTER = 0x0100, DT_RIGHT = 0x0200, DT_VCENTER = 0x0400, DT_BOTTOM = 0x0800 };   /* static text alignment */
 enum { ES_MARGIN = 0x0008, ES_READONLY = 0x0020, ES_UNREADABLE = 0x0080 };
 enum { LS_OWNERDRAW = 0x0002 };
-enum { LIT_END = -1, LIT_NONE = -1, LIT_FIRST = -1, LIT_SORTASCENDING = -2, LIT_SORTDESCENDING = -3 };   /* (a list's item positions) */
+enum { LIT_END = -1, LIT_NONE = -1, LIT_FIRST = -1, LIT_SORTASCENDING = -2, LIT_SORTDESCENDING = -3 };
 enum { MIS_SEPARATOR = 0x0004, MIS_OWNERDRAW = 0x0008, MIS_SUBMENU = 0x0010 };
 enum { MIA_CHECKED = 0x2000, MIA_DISABLED = 0x4000 };
 enum { SBS_VERT = 0x0001 };
@@ -159,12 +156,12 @@ enum { CBS_SIMPLE = 1, CBS_DROPDOWN = 2, CBS_DROPDOWNLIST = 4 };
 enum { MLS_WORDWRAP = 0x0001, MLS_BORDER = 0x0002, MLS_VSCROLL = 0x0004, MLS_READONLY = 0x0010, MLS_IGNORETAB = 0x0020 };
 enum { SPBS_READONLY = 0x0002, SPBS_JUSTRIGHT = 0x0004, SPBS_JUSTLEFT = 0x0008, SPBS_JUSTCENTER = 0x000c, SPBS_NOBORDER = 0x0020 };
 enum { SLS_VERTICAL = 0x0001, SLS_BUTTONSBOTTOM = 0x0010, SLS_BUTTONSTOP = 0x0020, SLS_READONLY = 0x0080,
-       SLS_RIBBONSTRIP = 0x0100, SLS_HOMETOP = 0x0200 };   /* (BUTTONSLEFT, BUTTONSRIGHT, HOMERIGHT: the same bits) */
+       SLS_RIBBONSTRIP = 0x0100, SLS_HOMETOP = 0x0200 };   /* BUTTONSLEFT/RIGHT and HOMERIGHT share these bits */
 enum { BKA_AUTOPAGESIZE = 0x0100 };
 
 /* ── containers ── */
 enum { CCS_EXTENDSEL = 0x0001, CCS_MULTIPLESEL = 0x0002, CCS_MINIRECORDCORE = 0x0040 };
-enum { CV_TEXT = 0x0001, CV_NAME = 0x0002, CV_ICON = 0x0004, CV_DETAIL = 0x0008, CV_MINI = 0x0020, CV_TREE = 0x0040 };   /* the views */
+enum { CV_TEXT = 0x0001, CV_NAME = 0x0002, CV_ICON = 0x0004, CV_DETAIL = 0x0008, CV_MINI = 0x0020, CV_TREE = 0x0040 };   /* container views */
 enum { CA_CONTAINERTITLE = 0x0200, CA_TITLESEPARATOR = 0x0400, CA_TITLERIGHT = 0x1000, CA_TITLECENTER = 0x2000,
        CA_DETAILSVIEWTITLES = 0x8000, CA_TREELINE = 0x00400000 };
 
@@ -178,7 +175,7 @@ enum { VIA_BITMAP = 0x0001, VIA_ICON = 0x0002, VIA_TEXT = 0x0004, VIA_RGB = 0x00
 enum { CSS_NOBUTTON = 0x0001, CSS_NOTEXT = 0x0002, CSS_NONUMBER = 0x0004, CSS_360 = 0x0010, CSS_NOTICKS = 0x0080 };
 
 /* ── the help manager ── */
-enum {                                  /* the help manager's messages */
+enum {                                  /* help manager messages */
     HM_DISMISS_WINDOW = 0x0221, HM_DISPLAY_HELP = 0x0222, HM_EXT_HELP = 0x0223, HM_SET_ACTIVE_WINDOW = 0x0224,
     HM_LOAD_HELP_TABLE = 0x0225, HM_CREATE_HELP_TABLE = 0x0226, HM_SET_HELP_WINDOW_TITLE = 0x0227,
     HM_HELP_INDEX = 0x022a, HM_HELP_CONTENTS = 0x022b, HM_KEYS_HELP = 0x022c, HM_SET_HELP_LIBRARY_NAME = 0x022d,
@@ -189,7 +186,7 @@ enum {                                  /* the help manager's messages */
 enum { HMERR_OPEN_LIB_FILE = 0x2003, HMERR_NO_MEMORY = 0x2007, HMERR_PANEL_NOT_FOUND = 0x2010 };
 enum { RT_HELPTABLE = 18, RT_HELPSUBTABLE = 19 };
 
-/* ── drawing, devices, printing, dialogs, the clipboard, ... (checked against OS/2's headers) ── */
+/* ── drawing, devices, printing, dialogs, the clipboard ── */
 enum {
     BA_BOUNDARY = 0x0001, BA_WINDING = 0x0002,
 };
@@ -307,7 +304,6 @@ enum { SPBM_SETMASTER = 0x0209 };
 enum { VK_BUTTON2 = 0x02 };
 enum { SPTR_ARROW = 1 };
 
-/* ── drawing, devices, printing, dialogs, the clipboard, ... (checked against OS/2's headers) ── */
 enum {
     CFI_HANDLE = 0x0200, CFI_POINTER = 0x0400,
 };
@@ -363,7 +359,7 @@ enum {
     WS_DISABLED = 0x40000000, WS_VISIBLE = 0x80000000,
 };
 enum { FWEIGHT_NORMAL = 5, FATTR_FONTUSE_TRANSFORMABLE = 0x0008 };
-enum { LSS_SUBSTRING = 0x0001, LSS_PREFIX = 0x0002, LSS_CASESENSITIVE = 0x0004 };   /* (LM_SEARCHSTRING's) */
+enum { LSS_SUBSTRING = 0x0001, LSS_PREFIX = 0x0002, LSS_CASESENSITIVE = 0x0004 };   /* LM_SEARCHSTRING flags */
 enum { CMDSRC_PUSHBUTTON = 1 };
 enum { HBM_ERROR = -1 };
 enum { NERR_QNotFound = 2150 };
